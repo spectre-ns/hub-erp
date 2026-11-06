@@ -413,7 +413,6 @@ class Kernel:
                   "approved_by": approved_by, "grant": grant.get("id")}
         rec = self.create("journal", journal.get("folder", "Finance"), fields, by=by, run_id=run_id, release=release,
                           state="posted")
-        rec["fields"]["number"] = rec["number"]
         if journal.get("bill"):
             bill = self.get(f"bill:{journal['bill']}")
             if bill:

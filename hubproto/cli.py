@@ -198,7 +198,7 @@ def cmd_mail_in(args):
 def cmd_ledger(args):
     hub = _hub(args)
     for j in hub.kernel.journals().values():
-        print(f"{j['number']} {j['date']} {j['memo']}  prepared={j['prepared_by']} approved={j['approved_by']} run={j['run_id']} release={j['release'][:12]}")
+        print(f"{j['id']} {j['date']} {j['memo']}  prepared={j['prepared_by']} approved={j['approved_by']} run={j['run_id']} release={j['release'][:12]}")
         for line in j["lines"]:
             print(f"    {line['account']:28s} {line['debit']:10.2f} {line['credit']:10.2f}")
 
