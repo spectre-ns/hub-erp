@@ -219,7 +219,7 @@ def test_the_editor_page_offers_members_and_roles_as_mentions(shell, working_doc
 def test_two_people_edit_the_same_document_together_and_the_last_out_releases_it(shell):
     hub = shell["hub"]
     content, mime = wopi.blank_document("docx")
-    doc = hub.dms.create(title="Shared plan", doc_class="working", folder="Finance/Payables", by="alice", content=content,
+    doc = hub.dms.create(title="Shared plan", doc_class="working", folder="Quality/Controlled Documents", by="alice", content=content,
                          filename="shared.docx", mime=mime, doc_type="document")
     number, loc = doc["number"], doc["locator"]
     hub.dms.checkout(loc, by="alice", via="editor")  # alice opens the editor
