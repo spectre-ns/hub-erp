@@ -72,7 +72,15 @@ def grounding_guard(rules: list[dict], frames: dict[str, Frame]) -> list[Finding
 def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict | None = None) -> list[Finding]:
     out: list[Finding] = []
     roles = {r["name"] for r in rules if r["kind"] == "role"}
-    members = {r["principal"]: r for r in rules if r["kind"] == "member"}
+    members: dict[str, dict] = {}
+    for r in rules:
+        if r["kind"] == "member":
+            if r["principal"] in members:
+                if members[r["principal"]]["principal_type"] != r["principal_type"]:
+                    out.append(Finding("consistency", "error", f"member {r['principal']} is declared as both a person and a cog", rule_key(r), *_where(r)))
+                members[r["principal"]] = {**members[r["principal"]], "roles": sorted(set(members[r["principal"]]["roles"]) | set(r["roles"]))}
+            else:
+                members[r["principal"]] = dict(r)
     folders = {r["path"] for r in rules if r["kind"] == "folder"}
     criteria_by_cog = {}
     for r in rules:

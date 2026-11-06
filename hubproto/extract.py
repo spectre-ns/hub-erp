@@ -33,8 +33,14 @@ def slug(text: str) -> str:
 
 def singular_role(words: str) -> str:
     parts = words.strip().lower().split()
-    if parts and parts[-1].endswith("s") and not parts[-1].endswith("ss"):
-        parts[-1] = parts[-1][:-1]
+    if parts:
+        last = parts[-1]
+        if last.endswith("ies") and len(last) > 4:
+            parts[-1] = last[:-3] + "y"
+        elif last.endswith(("sses", "ches", "shes", "xes")):
+            parts[-1] = last[:-2]
+        elif last.endswith("s") and not last.endswith("ss"):
+            parts[-1] = last[:-1]
     return "-".join(parts)
 
 

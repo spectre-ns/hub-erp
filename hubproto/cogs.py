@@ -14,6 +14,7 @@ offline. Their interfaces are the ones a model-backed version would keep.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -97,9 +98,26 @@ class RecordFiler(Cog):
         rec = ctx.rec()
         if rec is None:
             return make_envelope(self.id, self.version, "run", error={"code": "no-record", "detail": "run has no record"})
-        fields = {k: v for k, v in prior.items() if k not in ("id", "folder", "state", "locator", "citations")}
+        attachments = prior.pop("attachments", None) or (input.get("record") or {}).get("attachments") or []
+        fields = {k: v for k, v in prior.items() if k not in ("id", "folder", "state", "locator", "citations", "attachments")}
         fields["filed_by"] = ctx.owner
         ctx.kernel.set_fields(rec["locator"], fields, by=ctx.owner, run_id=ctx.run_id, release=ctx.release)
+        filed = []
+        if attachments and ctx.dms is not None:
+            import base64
+
+            for att in attachments:
+                raw = att.get("content")
+                content = base64.b64decode(att["content_b64"]) if att.get("content_b64") else (
+                    raw.encode("utf-8") if isinstance(raw, str) else json.dumps(raw).encode("utf-8") if raw is not None else b"")
+                doc = ctx.dms.create(title=att.get("title") or att.get("name", "attachment"), doc_class=att.get("doc_class", "controlled"),
+                                     folder=rec["folder"], by=ctx.owner, content=content, filename=att.get("name", ""),
+                                     doc_type=att.get("doc_type", ""), run_id=ctx.run_id, release=ctx.release,
+                                     attach_to=rec["locator"])
+                filed.append(doc["locator"])
+            ctx.kernel.set_fields(rec["locator"], {"attachments_filed": filed}, by=ctx.owner, run_id=ctx.run_id, release=ctx.release)
+            if "attachments" in rec["fields"]:
+                ctx.kernel.set_fields(rec["locator"], {"attachments": None}, by=ctx.owner, run_id=ctx.run_id, release=ctx.release)
         if prior.get("citations"):
             ctx.kernel.set_fields(rec["locator"], {"citations": prior["citations"]}, by=ctx.owner, run_id=ctx.run_id,
                                   release=ctx.release)
@@ -575,6 +593,9 @@ class CogRegistry:
                     NCRClassifier, CAPAOpener, NCROpener, CAPADrafter, EffectivenessScheduler, AuditChecklistDrafter,
                     DocumentClassifier, APReviewer, DocReviewer, QualityAssistant):
             self.register(cls())
+        from . import cad  # CAD and ECAD cogs live in their own module
+
+        cad.register(self)
 
     def register(self, cog: Cog) -> None:
         self.cogs[cog.id] = cog

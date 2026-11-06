@@ -135,6 +135,8 @@ class Kernel:
                     rec["decisions"].append(d["decision"])
                 rec["assignees"] = list(d.get("assignees", []))
                 rec["due"] = d.get("due")
+            elif t == "record.decision":
+                rec["decisions"].append(d)
             elif t == "record.assigned":
                 rec["assignees"] = list(d.get("assignees", []))
                 rec["due"] = d.get("due", rec.get("due"))

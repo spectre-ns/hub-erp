@@ -128,8 +128,13 @@ def render(rules: list[dict], record_types: dict | None = None) -> dict:
         if kind == "role":
             roles.append(r["name"])
         elif kind == "member":
-            members[r["principal"]] = {"type": r["principal_type"], "roles": sorted(r["roles"]),
-                                       "source": r["source"]}
+            cur = members.get(r["principal"])
+            if cur:
+                cur["roles"] = sorted(set(cur["roles"]) | set(r["roles"]))
+                cur.setdefault("sources", []).append(r["source"])
+            else:
+                members[r["principal"]] = {"type": r["principal_type"], "roles": sorted(r["roles"]),
+                                           "source": r["source"]}
         elif kind == "folder":
             folders.append(r["path"])
         elif kind == "permission":

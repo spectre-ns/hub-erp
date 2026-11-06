@@ -98,7 +98,7 @@ def test_widening_needs_two_approvers_and_release_is_deterministic(hub):
     assert hub.releases.current()["digest"] == meta["digest"]
     bundle = hub.releases.bundle(meta["digest"])
     assert bundle["thresholds"]["match-tolerance"]["value"] == 2.0
-    assert set(bundle["ops"]) == {"purchase-to-pay", "document-control"}
+    assert {"purchase-to-pay", "document-control"} <= set(bundle["ops"])
 
 
 def test_no_op_edit_makes_no_new_release(released):

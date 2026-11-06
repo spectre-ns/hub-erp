@@ -31,6 +31,8 @@ CONDITION_VOCABULARY = {
     "the document is a minor revision": "change_minor",
     "no open nonconformance exists": "no_open_ncr",
     "the risk is not high": "risk_not_high",
+    "the bill of materials is resolved": "bom_resolved",
+    "the design checks are clean": "design_checks_clean",
 }
 
 

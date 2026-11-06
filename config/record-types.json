@@ -412,5 +412,98 @@
   "defaults": {
    "status": "in-service"
   }
+ },
+ "item": {
+  "prefix": "ITEM",
+  "digits": 5,
+  "yearly": false,
+  "object": "item",
+  "fields": {
+   "name": "text",
+   "mpn": "text",
+   "manufacturer": "text",
+   "approved_manufacturer": "bool",
+   "footprint": "text",
+   "stock": "number",
+   "unit": "text",
+   "supplier": "ref",
+   "lead_time_days": "int",
+   "unit_cost": "money",
+   "currency": "text"
+  },
+  "required_by_state": {},
+  "defaults": {
+   "unit": "ea",
+   "approved_manufacturer": true,
+   "stock": 0
+  },
+  "retention": "standard",
+  "sensitivity": "internal"
+ },
+ "part": {
+  "prefix": "PN",
+  "digits": 5,
+  "yearly": false,
+  "object": "part",
+  "fields": {
+   "title": "text",
+   "revision": "text",
+   "design": "ref",
+   "released_by": "principal",
+   "material": "text",
+   "mass_g": "number",
+   "classification": "text"
+  },
+  "required_by_state": {
+   "released": [
+    "title",
+    "revision"
+   ]
+  },
+  "defaults": {
+   "revision": "A"
+  },
+  "retention": "quality",
+  "sensitivity": "internal"
+ },
+ "design": {
+  "prefix": "DSN",
+  "digits": 4,
+  "yearly": true,
+  "object": "design",
+  "fields": {
+   "title": "text",
+   "kind": "enum:mechanical,electrical,mixed",
+   "description": "text",
+   "part": "ref",
+   "revision": "text",
+   "change_class": "enum:1,2,3",
+   "sources": "list",
+   "exports": "list",
+   "bom_lines": "list",
+   "parts": "list",
+   "checks": "object",
+   "bom_resolved": "list",
+   "bom_unresolved": "list",
+   "bom_unapproved": "list",
+   "risk": "text",
+   "conditions": "object",
+   "designer": "principal"
+  },
+  "required_by_state": {
+   "awaiting-review-the-design": [
+    "title",
+    "kind"
+   ],
+   "released": [
+    "part"
+   ]
+  },
+  "defaults": {
+   "designer": "$owner",
+   "change_class": "2"
+  },
+  "retention": "quality",
+  "sensitivity": "internal"
  }
 }

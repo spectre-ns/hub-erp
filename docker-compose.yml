@@ -13,7 +13,27 @@ services:
       - ./profiles:/hub/profiles
     environment:
       HUBPROTO_ROOT: /hub
+      HUBPROTO_CAD_WORKER_URL: http://cad-worker:9000
       # Optional: HUBPROTO_EXTRACTOR=claude and ANTHROPIC_API_KEY for guided-mode extraction
+    depends_on:
+      - cad-worker
+    restart: unless-stopped
+
+  # FreeCAD and KiCad behind the /invoke seam. Large image; build with:
+  #   docker compose build cad-worker
+  # Without the tools installed (CAD_TOOLS=none) it answers with synthetic exports.
+  cad-worker:
+    build:
+      context: .
+      dockerfile: docker/cad-worker/Dockerfile
+      args:
+        CAD_TOOLS: ${CAD_TOOLS:-full}
+    image: hub-erp-cad-worker:local
+    container_name: hub-erp-cad-worker
+    environment:
+      HUBPROTO_CAD_FAKE: ${HUBPROTO_CAD_FAKE:-0}
+    expose:
+      - "9000"
     restart: unless-stopped
 
   # One-off escalation tick for SLAs; run with: docker compose run --rm tick

@@ -115,6 +115,7 @@ class Runner:
         else:
             fields = dict(inputs.get("record") or {})
             fields.pop("locator", None)
+            fields.pop("attachments", None)  # filed as documents by record-filer, never stored as fields
             for k, v in (self.kernel.types.get(wf["record_type"], {}).get("defaults") or {}).items():
                 if fields.get(k) in (None, ""):
                     fields[k] = {"$owner": owner_name, "$today": date.today().isoformat()}.get(v, v)
