@@ -224,23 +224,23 @@ def test_two_people_edit_the_same_document_together_and_the_last_out_releases_it
     number, loc = doc["number"], doc["locator"]
     hub.dms.checkout(loc, by="alice", via="editor")  # alice opens the editor
     alice = wopi.issue_token("alice", number, can_write=True, root=shell["root"])
-    bob = wopi.issue_token("bob", number, can_write=True, root=shell["root"])
-    assert json.loads(wopi_call(shell, f"/wopi/files/{number}", bob)[1])["UserCanWrite"] is True, "a second editor joins with write access"
-    status, _, _ = wopi_call(shell, f"/wopi/files/{number}/contents", bob, "POST", b"PK-bob", {"X-WOPI-Override": "PUT"})
+    carol = wopi.issue_token("carol", number, can_write=True, root=shell["root"])
+    assert json.loads(wopi_call(shell, f"/wopi/files/{number}", carol)[1])["UserCanWrite"] is True, "a second editor joins with write access"
+    status, _, _ = wopi_call(shell, f"/wopi/files/{number}/contents", carol, "POST", b"PK-carol", {"X-WOPI-Override": "PUT"})
     assert status == 200
     rec = hub.kernel.get(loc)
-    assert rec["fields"]["checked_out_by"] == "alice" and set(rec["fields"]["editors"]) == {"alice", "bob"}
-    assert hub.dms.versions(loc)[-1]["by"] == "bob"
+    assert rec["fields"]["checked_out_by"] == "alice" and set(rec["fields"]["editors"]) == {"alice", "carol"}
+    assert hub.dms.versions(loc)[-1]["by"] == "carol"
     # A manual check-in by someone outside the session is still refused.
     with pytest.raises(Exception, match="checked out by alice"):
-        hub.dms.checkin(loc, b"x", by="carol")
+        hub.dms.checkin(loc, b"x", by="dave")
     # The document page tells carol it is being edited and offers joining; alice finishing leaves bob holding it.
-    status, page = get(shell, "/document/" + quote(loc, safe=":"), **{"as": "bob"})
+    status, page = get(shell, "/document/" + quote(loc, safe=":"), **{"as": "carol"})
     assert status == 200 and "Join the editing" in page
     post(shell, "/finish-edit", {"as": "alice", "doc": loc})
     rec = hub.kernel.get(loc)
-    assert rec["fields"]["checked_out_by"] == "bob" and rec["fields"]["editors"] == ["bob"]
-    post(shell, "/finish-edit", {"as": "bob", "doc": loc})
+    assert rec["fields"]["checked_out_by"] == "carol" and rec["fields"]["editors"] == ["carol"]
+    post(shell, "/finish-edit", {"as": "carol", "doc": loc})
     rec = hub.kernel.get(loc)
     assert rec["fields"]["checked_out_by"] is None and rec["fields"]["editors"] == []
 
