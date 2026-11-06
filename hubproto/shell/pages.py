@@ -35,6 +35,7 @@ def mermaid_for(wf: dict, current: str | None) -> str:
     if wf["terminal"] in ids:
         lines.append(f"    {ids[wf['terminal']]} --> [*]")
     if current in ids:
+        lines.append("    classDef current stroke:#0b5f8a,stroke-width:3px")  # a stroke only, so it reads in both themes
         lines.append(f"    class {ids[current]} current")
     return "\n".join(lines)
 
@@ -426,12 +427,12 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
         can = []
         if may_approve["allowed"]:
             can.append("approve here" if user in rec["assignees"] else "hold or release this item")
-        if run and run["owner"] == user:
-            can.append("retry or cancel its run when it stops")
+        if run and run["owner"] == user and run["status"] in ("failed", "waiting"):
+            can.append("retry or cancel its run" if run["status"] == "failed" else "cancel its run")
         body = f"""<h1>{esc(rec['number'])} {tag(tname)} {self._state_chip(rec['state'], wf)}{hold}</h1>
 <div class="card"><b>{esc(short(headline, 300))}</b><div class="why">{esc(tname)} in <a href="{href('/files', user, folder=rec['folder'])}">{esc(rec['folder'])}</a> &middot; owner {esc(owner_of(rec))}
 &middot; with {esc(', '.join(rec['assignees']) or '-')}{' &middot; due ' + esc(day(typed_due)) if typed_due else ''}{' &middot; approval due ' + self._due_html(approval_due) if approval_due else ''}
-&middot; {esc(self._process_name(process)) if process else 'no process'} &middot; {self._run_link(run, 'run ' + run['id'][:8]) + ' ' + self._state_chip(run['status']) if run else 'no run'} &middot; {labels}</div>
+{(' &middot; ' + esc(self._process_name(process))) if process and self._process_name(process) != tname else ''} &middot; {self._run_link(run, 'run ' + run['id'][:8]) + ' ' + self._state_chip(run['status']) if run else 'no run'} &middot; {labels}</div>
 {('<div class=why>You may ' + esc(' and '.join(can)) + '.</div>') if can else ''}</div>"""
         if rec["hold"]:
             body += f"<div class='card crit' role='status'><b>On hold:</b> {esc(short(rec.get('hold_reason') or 'no reason given', 400))}. Nothing can be decided until an approver releases the hold.</div>"
@@ -582,7 +583,7 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
         elif immutable:
             body += f"<span class='why'>{esc(f.get('doc_class'))} documents are never edited; file a new one that supersedes it.</span>"
         elif rec["state"] not in EDITABLE_DOC_STATES:
-            body += (f"<span class='why'>{esc(rec['number'])} is {esc(rec['state'])}; a controlled document changes only through a new revision "
+            body += (f"<span class='why'>{esc(rec['number'])} is {esc(state_name(rec['state']).lower())}; a controlled document changes only through a new revision "
                      f"(propose a document change with the same title).</span>")
         else:
             if locked and locked != user:

@@ -515,7 +515,8 @@ class BaseHandler(BaseHTTPRequestHandler):
             return esc(ref.rsplit(":", 1)[-1])
         page = "/document/" if rec["type"] == "document" else "/record/"
         link = f'<a href="{href(page + quote(rec["locator"], safe=":"), self.user)}">{esc(rec["number"])}</a>'
-        return link + (f' <span class="muted">{esc(summary_of_record(rec))}</span>' if with_summary else "")
+        summary = summary_of_record(rec)
+        return link + (f' <span class="muted">{esc(summary)}</span>' if with_summary and summary != rec["number"] else "")
 
     def _number_link(self, locator: str, number: str) -> str:
         return self._record_link(locator, with_summary=False) or esc(number)
@@ -647,8 +648,10 @@ class BaseHandler(BaseHTTPRequestHandler):
         """Pickers for references people would otherwise have to look up: suppliers, items, purchase orders, people, assets..."""
         if name == "supplier":
             return self._supplier_options()
-        if name in ("po", "po_ref"):
+        if name == "po_ref":  # a bill is matched against the finance system's purchase orders
             return self._po_options()
+        if name == "po":  # a receipt is checked against a purchase-order record
+            return self._record_options("purchase-order")
         if name == "item":
             return self._record_options("item")
         if name == "design":

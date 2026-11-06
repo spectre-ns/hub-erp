@@ -488,6 +488,10 @@ def test_start_forms_mark_required_fields_use_pickers_and_refuse_before_any_reco
     task = entry(text, "task")
     assert '<select name="assignee"' in task and '<option value="">choose…</option>' in task
     assert ">Report a nonconformance</button>" in entry(text, "nonconformance")
+    status, text, _ = get(shell, "/", **{"as": "dave"})
+    receipt = entry(text, "goods-receipt")
+    assert '<select name="po" required>' in receipt and "PO-1001" not in receipt, "a receipt names a purchase-order record, not a finance PO"
+    assert "Lines received" in receipt and "(one per line: item number, quantity)" in receipt
 
 
 def test_message_form_needs_a_body_defaults_to_a_person_and_shows_what_was_sent(shell):
