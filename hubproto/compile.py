@@ -34,7 +34,8 @@ def _reviewers(rules: list[dict]) -> set[str]:
 
 
 def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], releases: ReleaseStore,
-                     extractor=None, now: str | None = None) -> dict:
+                     extractor=None, now: str | None = None, record_types: dict | None = None,
+                     config_digests: dict | None = None) -> dict:
     extractor = extractor or ConventionExtractor()
     frames = store.resolve(scopes)
     rules: list[dict] = []
@@ -51,7 +52,7 @@ def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], re
     findings = []
     findings += schema_guard(rules)
     findings += grounding_guard(rules, store.frames)
-    findings += consistency_guard(rules, cog_ids)
+    findings += consistency_guard(rules, cog_ids, record_types)
     base = releases.current(now)
     old_rules = releases.rules(base["digest"]) if base else []
     changes = drift_guard(old_rules, rules)
@@ -63,6 +64,9 @@ def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], re
         "extractor": extractor.name,
         "scopes": scopes,
         "frames": store.bill_of_materials(frames),
+        "config": config_digests or {},
+        "record_types": record_types or {},
+        "clauses": {f.name: list(f.frontmatter.get("clauses") or []) for f in frames},
         "rules": rules,
         "notes": notes,
         "findings": [f.as_dict() for f in findings],
@@ -127,10 +131,11 @@ def finalize(proposal: dict, releases: ReleaseStore, *, by: str, effective_from:
     rejected_keys = {rule_key(c["rule"]) for c in proposal["changes"] if c["id"] in rejected and c["op"] == "add"}
     kept_old = [c["rule"] for c in proposal["changes"] if c["id"] in rejected and c["op"] == "remove"]
     rules = [r for r in proposal["rules"] if rule_key(r) not in rejected_keys] + kept_old
-    bundle = render(rules)
+    bundle = render(rules, proposal.get("record_types") or None)
     meta = releases.save(bundle, effective_from=effective_from or (now or utcnow()), released_by=by,
                          proposal_id=proposal["id"], bom=proposal["frames"], rules=rules,
-                         parent=proposal["base"], now=now)
+                         parent=proposal["base"], now=now, config=proposal.get("config", {}),
+                         clauses=proposal.get("clauses", {}))
     proposal["status"] = "released"
     proposal["release"] = meta["digest"]
     return meta

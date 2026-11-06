@@ -1,0 +1,10 @@
+{
+  "$comment": "Track and record retention classes. years: minimum retention from the record's closing event; evidence: what a Track for a record of this class must contain.",
+  "standard": {"years": 1, "evidence": ["release_digest", "manifest_digest", "decisions"]},
+  "financial-reporting": {"years": 7, "evidence": ["release_digest", "manifest_digest", "decisions", "grants", "cog_versions", "inputs_digest"]},
+  "personnel": {"years": 6, "evidence": ["release_digest", "decisions", "grants"]},
+  "quality": {"years": 7, "evidence": ["release_digest", "manifest_digest", "decisions", "grants", "cog_versions", "guard_findings", "documents"]},
+  "audit": {"years": 3, "evidence": ["release_digest", "decisions", "guard_findings", "documents"]},
+  "training": {"years": 6, "evidence": ["release_digest", "decisions", "documents"]},
+  "calibration": {"years": 10, "evidence": ["release_digest", "decisions", "documents", "guard_findings"]}
+}

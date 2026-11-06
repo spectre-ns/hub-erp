@@ -33,8 +33,9 @@ The author and the approver of a document must be different people.
 
 ## Process: document-control
 Records are filed in Quality/Controlled Documents.
+Closes as effective.
 1. [author] Draft the document (document-drafter)
-2. [system] File the document (document-filer)
+2. [system] File the document (record-filer)
 3. [system] Score the risk (risk-scorer)
 4. [reviewer] Approve the document
 5. [system] Publish the document (document-publisher)

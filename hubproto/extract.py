@@ -54,14 +54,19 @@ _PERMISSION_READ = re.compile(
     r"^(?P<subject>[A-Z][\w -]+?) may (?P<neg>not )?read (?P<folder>[A-Z][\w /-]+?)\.$"
 )
 _THRESHOLD = re.compile(
-    r"^The (?P<name>[\w -]+? (?:threshold|tolerance|limit)) is (?P<value>[\d,]+(?:\.\d+)?) (?P<unit>USD|EUR|GBP|percent|days)\.$"
+    r"^The (?P<name>[\w -]+? (?:threshold|tolerance|limit|interval)) is (?P<value>[\d,]+(?:\.\d+)?) (?P<unit>USD|EUR|GBP|percent|days)\.$"
 )
 _ROUTING = re.compile(
-    r"^Approvals in (?P<process>[a-z0-9-]+)"
+    r"^(?:(?P<approvals>Approvals)|At (?P<title>[A-Z][^,]*?)|(?P<overdue>Overdue items)) in (?P<process>[a-z0-9-]+)"
     r"(?: (?P<op>over|above|under|below|at or under|at or over) (?P<amount>[\d,]+(?:\.\d+)?) (?P<cur>[A-Z]{3})"
-    r"| with (?P<risk>low|medium|high) risk)?"
+    r"| with (?P<risk>low|medium|high) risk"
+    r"|(?: for (?P<doctype>[a-z][a-z -]*?)s?)?(?: with a (?P<change>minor|major) change)?)?"
     r" go to (?P<assignee>the [\w -]+? cog|the [\w -]+?|[a-z][\w-]*)\.$"
 )
+_SLA = re.compile(r"^(?:(?P<approvals>Approvals)|(?P<title>[A-Z][^,]*?)) in (?P<process>[a-z0-9-]+) (?:is|are) due within (?P<days>\d+) days?\.$")
+_PROCESS_TERMINAL = re.compile(r"^Closes as (?P<state>[a-z][a-z-]*)\.$")
+_PROCESS_TYPE = re.compile(r"^The record type is (?P<t>[a-z][a-z-]*)\.$")
+_PROCESS_REJECT = re.compile(r"^Rejections return to (?P<title>[A-Z][^.]+?)\.$")
 _CRITERIA = re.compile(
     r"^The (?P<cog>[a-z][\w-]*) cog may approve (?P<process>[a-z0-9-]+) (?P<object>[a-z]+)"
     r"(?: under (?P<amount>[\d,]+(?:\.\d+)?) (?P<cur>[A-Z]{3}))?"
@@ -84,8 +89,25 @@ class Extraction:
     notes: list[dict] = field(default_factory=list)
 
 
+_FIELD_ASSIGNEES = {"the assignee": "assignee", "the owner": "owner", "the record owner": "owner", "the author": "author",
+                    "the requester": "requested_by", "the auditor": "auditor", "the chair": "chair",
+                    "the evaluator": "evaluator", "the reporter": "reported_by"}
+
+
+def object_of(title: str) -> str:
+    """'File the training record' -> 'training-record'; 'Extract the bill' -> 'bill'."""
+    words = title.strip().split()
+    if len(words) > 1:
+        words = words[1:]
+    while words and words[0].lower() in ("the", "a", "an", "this"):
+        words = words[1:]
+    return slug(" ".join(words)) or slug(title)
+
+
 def _assignee(text: str) -> str:
     text = text.strip()
+    if text in _FIELD_ASSIGNEES:
+        return "field:" + _FIELD_ASSIGNEES[text]
     if text.startswith("the ") and text.endswith(" cog"):
         return "cog:" + slug(text[4:-4])
     if text.startswith("the "):
@@ -98,6 +120,12 @@ class ConventionExtractor:
 
     def extract(self, frame: Frame) -> Extraction:
         out = Extraction()
+        mode = str(frame.frontmatter.get("compile", "convention"))
+        if mode == "none":
+            return out
+        if mode == "guided":
+            out.notes.append({"frame": frame.name, "line": 0, "text": "",
+                              "note": "guided mode requested; the convention extractor read this Frame (set HUBPROTO_EXTRACTOR=claude for model extraction)"})
         section = ""
         process: dict | None = None
 
@@ -122,7 +150,7 @@ class ConventionExtractor:
                 close_process()
                 section = "process"
                 process = {"kind": "process", "name": m.group("name"), "folder": "", "object": "",
-                           "steps": [], "source": src(n, line)}
+                           "steps": [], "terminal": "closed", "reject_to": None, "source": src(n, line)}
                 continue
             if line.startswith("## "):
                 close_process()
@@ -137,6 +165,18 @@ class ConventionExtractor:
                 if m:
                     process["folder"] = m.group("folder")
                     continue
+                m = _PROCESS_TERMINAL.match(line)
+                if m:
+                    process["terminal"] = m.group("state")
+                    continue
+                m = _PROCESS_TYPE.match(line)
+                if m:
+                    process["record_type"] = m.group("t")
+                    continue
+                m = _PROCESS_REJECT.match(line)
+                if m:
+                    process["reject_to"] = slug(m.group("title"))
+                    continue
                 m = _PROCESS_STEP.match(line)
                 if m:
                     title = m.group("title").strip()
@@ -145,7 +185,7 @@ class ConventionExtractor:
                             "kind": "cog" if m.group("cog") else "checkpoint",
                             "line": n}
                     if not process["steps"]:
-                        process["object"] = slug(title.split()[-1])
+                        process["object"] = object_of(title)
                     process["steps"].append(step)
                     continue
                 out.notes.append({"frame": frame.name, "line": n, "text": line,
@@ -195,14 +235,27 @@ class ConventionExtractor:
             return True
         m = _ROUTING.match(line)
         if m:
-            cond = None
+            conds = []
             if m.group("op"):
-                cond = {"field": "amount", "op": _OPS[m.group("op")], "value": number(m.group("amount")),
-                        "currency": m.group("cur")}
-            elif m.group("risk"):
-                cond = {"field": "risk", "op": "==", "value": m.group("risk")}
-            add("routing", n, line, process=m.group("process"), step="approve", condition=cond,
+                conds.append({"field": "amount", "op": _OPS[m.group("op")], "value": number(m.group("amount")),
+                              "currency": m.group("cur")})
+            if m.group("risk"):
+                conds.append({"field": "risk", "op": "==", "value": m.group("risk")})
+            if m.group("doctype"):
+                conds.append({"field": "doc_type", "op": "==", "value": slug(m.group("doctype"))})
+            if m.group("change"):
+                conds.append({"field": "change_type", "op": "==", "value": m.group("change")})
+            if m.group("overdue"):
+                conds.append({"field": "overdue", "op": "==", "value": True})
+            cond = None if not conds else (conds[0] if len(conds) == 1 else {"all": conds})
+            step = "*" if m.group("overdue") else ("approve" if m.group("approvals") else slug(m.group("title")))
+            add("routing", n, line, process=m.group("process"), step=step, condition=cond,
                 assignee=_assignee(m.group("assignee")))
+            return True
+        m = _SLA.match(line)
+        if m:
+            add("sla", n, line, process=m.group("process"),
+                step="approve" if m.group("approvals") else slug(m.group("title")), days=int(m.group("days")))
             return True
         m = _CRITERIA.match(line)
         if m:

@@ -1,0 +1,18 @@
+{
+  "$comment": "Link vocabulary: relation name -> inverse label shown on the other record. Links are stored once and traversed both ways.",
+  "concerns": "concerned-by",
+  "caused": "caused-by",
+  "fulfils": "fulfilled-by",
+  "settles": "settled-by",
+  "supersedes": "superseded-by",
+  "custodian-of": "custodian",
+  "evidence-for": "has-evidence",
+  "has-document": "attached-to",
+  "part-of": "has-part",
+  "defines": "defined-by",
+  "realized-by": "realizes",
+  "affects": "affected-by",
+  "trains-on": "trained-by",
+  "assigned-to": "assignments",
+  "references": "referenced-by"
+}

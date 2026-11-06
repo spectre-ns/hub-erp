@@ -41,8 +41,9 @@ The preparer and the approver of a bill must be different people.
 
 ## Process: purchase-to-pay
 Records are filed in Finance/Payables.
+Closes as posted.
 1. [finance-clerk] Extract the bill (invoice-extractor)
-2. [system] File the bill (bill-filer)
+2. [system] File the bill (record-filer)
 3. [system] Match the bill to purchase orders (three-way-matcher)
 4. [system] Score the risk (risk-scorer)
 5. [payables-reviewer] Approve the bill

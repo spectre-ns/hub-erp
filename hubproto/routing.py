@@ -20,6 +20,8 @@ _OPS = {
 def condition_holds(cond: dict | None, ctx: dict) -> bool:
     if cond is None:
         return True
+    if "all" in cond:
+        return all(condition_holds(c, ctx) for c in cond["all"])
     value = ctx.get(cond["field"])
     if value is None:
         return False
@@ -31,9 +33,16 @@ def condition_holds(cond: dict | None, ctx: dict) -> bool:
 def candidates(bundle: dict, process: str, step: str, ctx: dict) -> list[dict]:
     out = []
     for rule in bundle["routing"]:
-        if rule["process"] == process and rule["step"] == step and condition_holds(rule["condition"], ctx):
+        if rule["process"] != process or not condition_holds(rule["condition"], ctx):
+            continue
+        if rule["step"] == step or (step != "*" and rule["step"] == "*" and ctx.get("overdue")):
             out.append(rule)
     return out
+
+
+def sla_days(bundle: dict, process: str, step: str):
+    wf = bundle.get("workflows", {}).get(process, {})
+    return wf.get("sla", {}).get(step)
 
 
 def principals_for(bundle: dict, assignee: str) -> list[str]:

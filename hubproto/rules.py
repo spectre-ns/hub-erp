@@ -17,9 +17,10 @@ KINDS = {
     "permission": {"subject", "action", "object", "resource", "effect"},
     "threshold": {"name", "value", "unit"},
     "routing": {"process", "step", "condition", "assignee"},
+    "sla": {"process", "step", "days"},
     "approval_criteria": {"approver", "process", "max_amount", "currency", "conditions"},
     "sod": {"object", "roles"},
-    "process": {"name", "folder", "steps"},
+    "process": {"name", "folder", "steps", "terminal", "reject_to"},
 }
 
 CONDITION_VOCABULARY = {
@@ -27,6 +28,9 @@ CONDITION_VOCABULARY = {
     "the supplier is approved": "supplier_approved",
     "the risk is low": "risk_low",
     "the change is minor": "change_minor",
+    "the document is a minor revision": "change_minor",
+    "no open nonconformance exists": "no_open_ncr",
+    "the risk is not high": "risk_not_high",
 }
 
 

@@ -37,8 +37,8 @@ def render_manifest(process: dict) -> dict:
         if step["kind"] == "checkpoint":
             if not steps:
                 raise ValueError("process starts with a checkpoint")
-            steps[-1]["gate"] = {"type": "human", "step": step["id"], "route": {"process": process["name"], "step": "approve"},
-                                 "title": step["title"]}
+            steps[-1]["gate"] = {"type": "human", "step": step["id"], "route": {"process": process["name"], "step": step["id"]},
+                                 "title": step["title"], "role": step["role"]}
             continue
         entry = {
             "id": step["id"],
@@ -64,11 +64,64 @@ def render_manifest(process: dict) -> dict:
     }
 
 
-def render(rules: list[dict]) -> dict:
+def checkpoint_for(process: dict, step: str) -> dict | None:
+    """Resolve a routing or SLA step name against a process: a checkpoint id, or the
+    'approve' alias meaning the first checkpoint whose title starts with Approve."""
+    cps = [s for s in process["steps"] if s["kind"] == "checkpoint"]
+    if step == "approve":
+        for cp in cps:
+            if cp["id"].startswith("approv"):
+                return cp
+        return None
+    for cp in cps:
+        if cp["id"] == step:
+            return cp
+    return None
+
+
+def render_workflow(process: dict, slas: dict[str, int], record_type: str) -> dict:
+    """The state machine a record type follows, derived from the process section."""
+    states = ["open"]
+    transitions: list[dict] = []
+    checkpoints: list[dict] = []
+    current = "open"
+    pending_auto: list[str] = []
+    for step in process["steps"]:
+        if step["kind"] == "cog":
+            pending_auto.append(step["id"])
+            continue
+        waiting = f"awaiting-{step['id']}"
+        states.append(waiting)
+        transitions.append({"from": current, "to": waiting, "kind": "automatic", "steps": pending_auto})
+        checkpoints.append({"id": step["id"], "title": step["title"], "role": step["role"], "state": waiting,
+                            "sla_days": slas.get(step["id"])})
+        pending_auto = []
+        current = waiting
+    terminal = process.get("terminal") or "closed"
+    states.append(terminal)
+    reject_to = process.get("reject_to")
+    on_reject = f"awaiting-{reject_to}" if reject_to else "rejected"
+    if not reject_to:
+        states.append("rejected")
+    # Close the human transitions: each checkpoint approves into the next waiting state or the terminal.
+    human = []
+    for i, cp in enumerate(checkpoints):
+        nxt = checkpoints[i + 1]["state"] if i + 1 < len(checkpoints) else terminal
+        human.append({"from": cp["state"], "to": nxt, "kind": "human", "step": cp["id"], "title": cp["title"],
+                      "on_reject": on_reject, "sla_days": cp["sla_days"]})
+    if pending_auto or not checkpoints:
+        transitions.append({"from": current, "to": terminal, "kind": "automatic", "steps": pending_auto})
+    return {"record_type": record_type, "object": process["object"], "states": states,
+            "transitions": transitions + human, "checkpoints": checkpoints, "terminal": terminal,
+            "reject_to": reject_to, "sla": {cp["id"]: cp["sla_days"] for cp in checkpoints if cp["sla_days"]}}
+
+
+def render(rules: list[dict], record_types: dict | None = None) -> dict:
     members: dict[str, dict] = {}
     roles: list[str] = []
     folders: list[str] = []
     permissions, routing, criteria, sod, thresholds, processes = [], [], [], [], {}, {}
+    slas: list[dict] = []
     for r in rules:
         body = {k: v for k, v in r.items() if k != "kind"}
         kind = r["kind"]
@@ -84,21 +137,44 @@ def render(rules: list[dict]) -> dict:
         elif kind == "threshold":
             thresholds[r["name"]] = {"value": r["value"], "unit": r["unit"], "source": r["source"]}
         elif kind == "routing":
-            routing.append(body)
+            routing.append(dict(body))
+        elif kind == "sla":
+            slas.append(dict(body))
         elif kind == "approval_criteria":
             criteria.append(body)
         elif kind == "sod":
             sod.append(body)
         elif kind == "process":
             processes[r["name"]] = body
+    # Resolve the 'approve' alias and bare checkpoint names to checkpoint ids.
+    for r in routing + slas:
+        proc = processes.get(r["process"])
+        if proc and r["step"] != "*":
+            cp = checkpoint_for(proc, r["step"])
+            if cp:
+                r["step"] = cp["id"]
     # Specific routes before default routes; the order is part of the bundle.
     routing.sort(key=lambda x: (x["process"], x["step"], 0 if x["condition"] else 1, x["source"]["line"]))
     permissions.sort(key=lambda x: (x["resource"], x["subject"], x["action"], x["object"], x["effect"]))
     criteria.sort(key=lambda x: (x["approver"], x["process"]))
     sod.sort(key=lambda x: (x["object"], x["roles"]))
     ops = {name: render_manifest(p) for name, p in sorted(processes.items())}
+
+    def type_for(obj: str) -> str:
+        for tname, td in (record_types or {}).items():
+            if td.get("object") == obj or tname == obj:
+                return tname
+        return obj
+
+    workflows = {}
+    for name, p_ in sorted(processes.items()):
+        sla_map = {x["step"]: x["days"] for x in slas if x["process"] == name}
+        workflows[name] = render_workflow(p_, sla_map, p_.get("record_type") or type_for(p_["object"]))
+    for name, op in ops.items():
+        op["record_type"] = workflows[name]["record_type"]
     return {
         "profile": PROFILE,
+        "workflows": workflows,
         "roles": sorted(set(roles)),
         "members": dict(sorted(members.items())),
         "folders": sorted(set(folders)),
@@ -142,7 +218,8 @@ class ReleaseStore:
         return json.loads(self.index_path.read_text())
 
     def save(self, bundle: dict, *, effective_from: str, released_by: str, proposal_id: str,
-             bom: list[dict], rules: list[dict], parent: str | None, now: str | None = None) -> dict:
+             bom: list[dict], rules: list[dict], parent: str | None, now: str | None = None,
+             config: dict | None = None, clauses: dict | None = None) -> dict:
         d = digest(bundle)
         rel_dir = self.root / d
         meta = {
@@ -153,6 +230,8 @@ class ReleaseStore:
             "proposal_id": proposal_id,
             "parent": parent,
             "frames": bom,
+            "config": config or {},
+            "clauses": clauses or {},
             "inheritance": "transitive",
         }
         # Re-saving the same digest refreshes the citations (same semantics, current Frame lines).

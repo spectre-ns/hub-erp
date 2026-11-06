@@ -1,0 +1,416 @@
+{
+ "$comment": "Record type definitions: a versioned configuration document referenced from Frames and pinned in the release bill of materials. Fields are typed; required_by_state lists the fields a record must have before it may enter a state; retention and sensitivity are defaults the scope may raise.",
+ "task": {
+  "prefix": "TASK",
+  "digits": 4,
+  "yearly": false,
+  "object": "task",
+  "fields": {
+   "title": "text",
+   "description": "text",
+   "assignee": "principal",
+   "due": "date",
+   "priority": "enum:low,medium,high"
+  },
+  "required_by_state": {
+   "done": [
+    "title"
+   ]
+  },
+  "retention": "standard",
+  "sensitivity": "internal",
+  "defaults": {
+   "assignee": "$owner"
+  }
+ },
+ "document": {
+  "prefix": "DOC",
+  "digits": 4,
+  "yearly": false,
+  "object": "document",
+  "fields": {
+   "title": "text",
+   "doc_class": "enum:controlled,evidence,external,working,template",
+   "doc_type": "text",
+   "revision": "text",
+   "minor": "int",
+   "owner": "principal",
+   "effective_from": "date",
+   "review_date": "date",
+   "training_roles": "list",
+   "supersedes": "ref",
+   "language": "text",
+   "keywords": "list",
+   "change_type": "enum:minor,major",
+   "content_sha": "text",
+   "filename": "text",
+   "mime": "text",
+   "size": "int",
+   "checked_out_by": "principal",
+   "provenance": "object"
+  },
+  "required_by_state": {
+   "effective": [
+    "title",
+    "owner",
+    "revision",
+    "review_date"
+   ],
+   "in-review": [
+    "title",
+    "owner"
+   ]
+  },
+  "retention": "quality",
+  "sensitivity": "internal",
+  "defaults": {
+   "owner": "$owner",
+   "author": "$owner",
+   "revision": "A",
+   "minor": 0,
+   "doc_class": "controlled"
+  }
+ },
+ "bill": {
+  "prefix": "BILL",
+  "digits": 4,
+  "yearly": false,
+  "object": "bill",
+  "fields": {
+   "supplier": "ref",
+   "amount": "money",
+   "currency": "text",
+   "date": "date",
+   "po_ref": "ref",
+   "description": "text",
+   "citations": "object",
+   "match": "object",
+   "risk": "text",
+   "journal": "ref"
+  },
+  "required_by_state": {
+   "posted": [
+    "supplier",
+    "amount",
+    "currency",
+    "date",
+    "journal"
+   ]
+  },
+  "retention": "financial-reporting",
+  "sensitivity": "internal"
+ },
+ "journal": {
+  "prefix": "JE",
+  "digits": 5,
+  "yearly": false,
+  "object": "journal",
+  "fields": {
+   "date": "date",
+   "currency": "text",
+   "memo": "text",
+   "lines": "list",
+   "bill": "ref",
+   "prepared_by": "principal",
+   "approved_by": "principal",
+   "grant": "text"
+  },
+  "required_by_state": {},
+  "retention": "financial-reporting",
+  "sensitivity": "internal",
+  "gapless": true
+ },
+ "ncr": {
+  "prefix": "NCR",
+  "digits": 4,
+  "yearly": true,
+  "object": "nonconformance",
+  "fields": {
+   "title": "text",
+   "source": "enum:inspection,complaint,audit,calibration,supplier,internal",
+   "description": "text",
+   "part": "ref",
+   "lot": "text",
+   "quantity": "number",
+   "containment": "text",
+   "disposition": "enum:rework,scrap,use-as-is,return",
+   "disposition_rationale": "text",
+   "risk": "text",
+   "reported_by": "principal",
+   "capa": "ref"
+  },
+  "required_by_state": {
+   "awaiting-disposition-the-nonconformance": [
+    "title",
+    "description"
+   ],
+   "closed": [
+    "disposition",
+    "disposition_rationale"
+   ]
+  },
+  "retention": "quality",
+  "sensitivity": "internal",
+  "defaults": {
+   "reported_by": "$owner"
+  }
+ },
+ "capa": {
+  "prefix": "CAPA",
+  "digits": 4,
+  "yearly": true,
+  "object": "capa",
+  "fields": {
+   "title": "text",
+   "ncrs": "list",
+   "root_cause_method": "enum:5-whys,fishbone,fault-tree,other",
+   "root_cause": "text",
+   "actions": "list",
+   "owner": "principal",
+   "due": "date",
+   "effectiveness_criteria": "text",
+   "effectiveness_check_date": "date",
+   "effectiveness_result": "text",
+   "risk": "text"
+  },
+  "required_by_state": {
+   "awaiting-verify-the-actions": [
+    "actions",
+    "owner",
+    "due"
+   ],
+   "awaiting-verify-effectiveness": [
+    "root_cause",
+    "effectiveness_check_date"
+   ],
+   "closed": [
+    "effectiveness_result"
+   ]
+  },
+  "retention": "quality",
+  "sensitivity": "internal",
+  "defaults": {
+   "owner": "$owner"
+  }
+ },
+ "training": {
+  "prefix": "TRN",
+  "digits": 5,
+  "yearly": false,
+  "object": "training-record",
+  "fields": {
+   "person": "principal",
+   "document": "ref",
+   "revision": "text",
+   "assigned": "date",
+   "due": "date",
+   "acknowledged": "date",
+   "assessed_by": "principal"
+  },
+  "required_by_state": {
+   "acknowledged": [
+    "person",
+    "document"
+   ]
+  },
+  "retention": "training",
+  "sensitivity": "internal",
+  "defaults": {
+   "assigned": "$today"
+  }
+ },
+ "audit": {
+  "prefix": "AUD",
+  "digits": 3,
+  "yearly": true,
+  "object": "audit",
+  "fields": {
+   "title": "text",
+   "scope_clauses": "list",
+   "processes": "list",
+   "auditor": "principal",
+   "planned": "date",
+   "checklist": "list",
+   "findings": "list",
+   "summary": "text"
+  },
+  "required_by_state": {
+   "awaiting-accept-the-findings": [
+    "findings"
+   ],
+   "closed": [
+    "summary"
+   ]
+  },
+  "retention": "audit",
+  "sensitivity": "internal",
+  "defaults": {
+   "auditor": "$owner"
+  }
+ },
+ "supplier-evaluation": {
+  "prefix": "SUP",
+  "digits": 4,
+  "yearly": false,
+  "object": "supplier-evaluation",
+  "fields": {
+   "supplier": "ref",
+   "criteria": "object",
+   "score": "number",
+   "approved": "bool",
+   "scope": "text",
+   "reevaluation_date": "date",
+   "evaluator": "principal"
+  },
+  "required_by_state": {
+   "approved": [
+    "supplier",
+    "score",
+    "scope",
+    "reevaluation_date"
+   ]
+  },
+  "retention": "quality",
+  "sensitivity": "internal",
+  "defaults": {
+   "evaluator": "$owner"
+  }
+ },
+ "change-request": {
+  "prefix": "CR",
+  "digits": 4,
+  "yearly": true,
+  "object": "change-request",
+  "fields": {
+   "title": "text",
+   "description": "text",
+   "impact": "text",
+   "affected_documents": "list",
+   "affected_processes": "list",
+   "plan": "text",
+   "verification": "text",
+   "requested_by": "principal",
+   "risk": "text"
+  },
+  "required_by_state": {
+   "awaiting-approve-the-change": [
+    "title",
+    "description",
+    "impact"
+   ],
+   "closed": [
+    "verification"
+   ]
+  },
+  "retention": "quality",
+  "sensitivity": "internal",
+  "defaults": {
+   "requested_by": "$owner"
+  }
+ },
+ "management-review": {
+  "prefix": "MR",
+  "digits": 3,
+  "yearly": true,
+  "object": "management-review",
+  "fields": {
+   "title": "text",
+   "date": "date",
+   "chair": "principal",
+   "inputs": "object",
+   "outputs": "object",
+   "actions": "list",
+   "minutes": "ref"
+  },
+  "required_by_state": {
+   "awaiting-hold-the-review": [
+    "date",
+    "inputs"
+   ],
+   "closed": [
+    "outputs"
+   ]
+  },
+  "retention": "quality",
+  "sensitivity": "internal",
+  "defaults": {
+   "chair": "$owner"
+  }
+ },
+ "calibration": {
+  "prefix": "CAL",
+  "digits": 5,
+  "yearly": false,
+  "object": "calibration",
+  "fields": {
+   "asset": "ref",
+   "procedure": "ref",
+   "standard": "text",
+   "result": "enum:in-tolerance,out-of-tolerance",
+   "measured": "object",
+   "performed_by": "principal",
+   "performed": "date",
+   "next_due": "date",
+   "ncr": "ref"
+  },
+  "required_by_state": {
+   "closed": [
+    "asset",
+    "result",
+    "next_due"
+   ]
+  },
+  "retention": "calibration",
+  "sensitivity": "internal",
+  "defaults": {
+   "performed_by": "$owner",
+   "performed": "$today"
+  }
+ },
+ "complaint": {
+  "prefix": "CMP",
+  "digits": 4,
+  "yearly": true,
+  "object": "complaint",
+  "fields": {
+   "title": "text",
+   "customer": "ref",
+   "description": "text",
+   "product": "ref",
+   "severity": "enum:low,medium,high",
+   "response": "text",
+   "ncr": "ref",
+   "risk": "text"
+  },
+  "required_by_state": {
+   "closed": [
+    "response"
+   ]
+  },
+  "retention": "quality",
+  "sensitivity": "internal",
+  "defaults": {}
+ },
+ "asset": {
+  "prefix": "AST",
+  "digits": 4,
+  "yearly": false,
+  "object": "asset",
+  "fields": {
+   "name": "text",
+   "serial": "text",
+   "location": "text",
+   "custodian": "principal",
+   "calibration_interval_days": "int",
+   "last_calibrated": "date",
+   "next_due": "date",
+   "status": "enum:in-service,out-of-service,retired"
+  },
+  "required_by_state": {},
+  "retention": "standard",
+  "sensitivity": "internal",
+  "defaults": {
+   "status": "in-service"
+  }
+ }
+}

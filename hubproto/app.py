@@ -7,6 +7,7 @@ from pathlib import Path
 
 from . import authz
 from .cogs import CogRegistry
+from .dms import DMS, BlobStore
 from .compile import ProposalStore, compile_proposal, decide_change, finalize, readiness
 from .extract import get_extractor
 from .frames import FrameStore
@@ -15,7 +16,11 @@ from .kernel import Kernel
 from .release import ReleaseStore
 from .runner import Runner
 
-DEFAULT_SCOPES = ["finance-policy", "document-control-sop"]
+DEFAULT_SCOPES: list[str] | None = None  # None: every Frame whose scope is not "reference"
+
+
+def default_scopes(store) -> list[str]:
+    return [f.name for f in store.frames.values() if f.scope != "reference"]
 
 
 class Hub:
@@ -28,12 +33,14 @@ class Hub:
         self.kernel = Kernel(state / "kernel.db")
         self.registry = CogRegistry()
         self.inbox = Inbox(state / "inbox")
-        self.runner = Runner(state / "runs", self.kernel, self.releases, self.registry, self.inbox)
+        self.dms = DMS(self.kernel, BlobStore(state / "blobs"))
+        self.runner = Runner(state / "runs", self.kernel, self.releases, self.registry, self.inbox, self.dms)
 
     # --- policy lifecycle ---------------------------------------------------
     def compile(self, scopes: list[str] | None = None, extractor=None, now: str | None = None) -> dict:
-        proposal = compile_proposal(self.frames, scopes or DEFAULT_SCOPES, self.registry.ids(), self.releases,
-                                    extractor=extractor or get_extractor(), now=now)
+        proposal = compile_proposal(self.frames, scopes or default_scopes(self.frames), self.registry.ids(), self.releases,
+                                    extractor=extractor or get_extractor(), now=now,
+                                    record_types=self.kernel.types, config_digests=self.kernel.config_digests)
         self.proposals.save(proposal)
         return proposal
 

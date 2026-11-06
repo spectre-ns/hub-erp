@@ -1,0 +1,30 @@
+services:
+  hub:
+    build: .
+    image: hub-erp-proto:local
+    container_name: hub-erp
+    ports:
+      - "8080:8080"
+    volumes:
+      - hub-state:/hub/state
+      # Edit Frames on the host and recompile from inside the container:
+      #   docker compose exec hub hubproto compile
+      - ./frames:/hub/frames
+      - ./profiles:/hub/profiles
+    environment:
+      HUBPROTO_ROOT: /hub
+      # Optional: HUBPROTO_EXTRACTOR=claude and ANTHROPIC_API_KEY for guided-mode extraction
+    restart: unless-stopped
+
+  # One-off escalation tick for SLAs; run with: docker compose run --rm tick
+  tick:
+    image: hub-erp-proto:local
+    profiles: ["tools"]
+    volumes:
+      - hub-state:/hub/state
+      - ./frames:/hub/frames
+      - ./profiles:/hub/profiles
+    entrypoint: ["hubproto", "tick"]
+
+volumes:
+  hub-state:
