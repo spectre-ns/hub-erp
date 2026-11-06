@@ -38,7 +38,7 @@ services:
     environment:
       aliasgroup1: http://hub:8080
       server_name: ${HUBPROTO_COLLABORA_HOST:-localhost:9980}
-      extra_params: --o:ssl.enable=false --o:ssl.termination=false --o:net.frame_ancestors=${HUBPROTO_PUBLIC_URL:-http://localhost:8080} --o:storage.wopi.alias_groups[@mode]=groups
+      extra_params: --o:ssl.enable=false --o:ssl.termination=false --o:net.content_security_policy=frame-ancestors ${HUBPROTO_PUBLIC_URL:-http://localhost:8080};
       dictionaries: en_US
     cap_add:
       - MKNOD

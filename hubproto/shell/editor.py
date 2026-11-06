@@ -64,7 +64,7 @@ class EditorMixin:
                           "e.g. http://localhost:9980) and <code>HUBPROTO_WOPI_BASE</code> (this hub's address as the editor reaches it, e.g. http://hub:8080); "
                           "docker-compose.yml starts Collabora Online with both set. Until then, download the file, edit it and check it in.</div>")
             return self._page(f"Edit {number}", body)
-        token = wopi.issue_token(user, number, can_write=writable)
+        token = wopi.issue_token(user, number, can_write=writable, root=self.hub.root)
         frame = wopi.editor_frame_url(rec, token, browser_url=browser_url, host_url=host_url,
                                       discovery_url=os.environ.get("HUBPROTO_COLLABORA_DISCOVERY", ""))
         body = bar + f'<iframe class="editor" src="{esc(frame)}" title="{esc(title)} in the editor" allow="clipboard-read; clipboard-write"></iframe>'
@@ -121,7 +121,7 @@ class EditorMixin:
     def handle_wopi(self, method: str) -> None:
         host = wopi.WopiHost(self.hub)
         token = self.q.get("access_token", [""])[0]
-        claims = wopi.read_token(token)
+        claims = wopi.read_token(token, root=self.hub.root)
         if claims is None:
             return self._json({"error": "invalid or expired access token"}, 401)
         rest = self.route[len("/wopi/files/"):]

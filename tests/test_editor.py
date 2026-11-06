@@ -37,7 +37,7 @@ def test_tokens_are_signed_and_expire():
 def test_check_file_info_get_file_and_put_file_make_versions(shell, working_doc):
     hub = shell["hub"]
     number, loc = working_doc["number"], working_doc["locator"]
-    token = wopi.issue_token("alice", number, can_write=True)
+    token = wopi.issue_token("alice", number, can_write=True, root=shell["root"])
     status, body, _ = wopi_call(shell, f"/wopi/files/{number}", token)
     info = json.loads(body)
     assert status == 200 and info["BaseFileName"] == "Test procedure.docx" and info["UserCanWrite"] is True and info["Version"] == "1"
@@ -51,7 +51,7 @@ def test_check_file_info_get_file_and_put_file_make_versions(shell, working_doc)
     assert rec["fields"]["checked_out_by"] == "alice" and len(versions) == 2 and versions[-1]["note"] == "saved in the editor"
     assert hub.dms.content(loc)[0] == b"PK-new-bytes"
     # Someone else sees it read-only and cannot save.
-    bob = wopi.issue_token("bob", number, can_write=True)
+    bob = wopi.issue_token("bob", number, can_write=True, root=shell["root"])
     info = json.loads(wopi_call(shell, f"/wopi/files/{number}", bob)[1])
     assert info["UserCanWrite"] is False and info["ReadOnly"] is True
     status, _, headers = wopi_call(shell, f"/wopi/files/{number}/contents", bob, "POST", b"x", {"X-WOPI-Override": "PUT"})
@@ -64,19 +64,19 @@ def test_check_file_info_get_file_and_put_file_make_versions(shell, working_doc)
 def test_bad_tokens_and_wrong_files_are_refused(shell, working_doc):
     number = working_doc["number"]
     assert wopi_call(shell, f"/wopi/files/{number}", "nonsense")[0] == 401
-    other = wopi.issue_token("alice", "DOC-9999", can_write=True)
+    other = wopi.issue_token("alice", "DOC-9999", can_write=True, root=shell["root"])
     assert wopi_call(shell, f"/wopi/files/{number}", other)[0] == 404
 
 
 def test_locks_map_onto_the_checkout(shell, working_doc):
     hub = shell["hub"]
     number, loc = working_doc["number"], working_doc["locator"]
-    token = wopi.issue_token("alice", number, can_write=True)
+    token = wopi.issue_token("alice", number, can_write=True, root=shell["root"])
     status, _, _ = wopi_call(shell, f"/wopi/files/{number}", token, "POST", b"", {"X-WOPI-Override": "LOCK", "X-WOPI-Lock": "L1"})
     assert status == 200 and hub.kernel.get(loc)["fields"]["checked_out_by"] == "alice"
     status, _, headers = wopi_call(shell, f"/wopi/files/{number}", token, "POST", b"", {"X-WOPI-Override": "GET_LOCK"})
     assert status == 200 and headers["X-WOPI-Lock"] == "L1"
-    bob = wopi.issue_token("bob", number, can_write=True)
+    bob = wopi.issue_token("bob", number, can_write=True, root=shell["root"])
     status, _, headers = wopi_call(shell, f"/wopi/files/{number}", bob, "POST", b"", {"X-WOPI-Override": "LOCK", "X-WOPI-Lock": "L2"})
     assert status == 409 and headers["X-WOPI-Lock"] == "L1"
     status, _, _ = wopi_call(shell, f"/wopi/files/{number}", token, "POST", b"", {"X-WOPI-Override": "UNLOCK", "X-WOPI-Lock": "L1"})
@@ -91,7 +91,7 @@ def test_effective_controlled_documents_are_read_only_in_the_editor(shell):
                          filename="sop.odt", mime=mime, doc_type="sop", fields={"revision": "A", "review_date": "2027-01-01"})
     doc = hub.kernel.transition(doc["locator"], "effective", by="carol")
     assert doc["state"] == "effective"
-    token = wopi.issue_token("carol", doc["number"], can_write=True)
+    token = wopi.issue_token("carol", doc["number"], can_write=True, root=shell["root"])
     info = json.loads(wopi_call(shell, f"/wopi/files/{doc['number']}", token)[1])
     assert info["UserCanWrite"] is False
     status, _, headers = wopi_call(shell, f"/wopi/files/{doc['number']}/contents", token, "POST", b"x", {"X-WOPI-Override": "PUT"})

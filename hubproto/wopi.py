@@ -21,6 +21,7 @@ import hmac
 import io
 import json
 import os
+import pathlib
 import secrets
 import time
 import zipfile
@@ -44,7 +45,33 @@ EDITABLE_EXTENSIONS = {v: k for k, v in EDITABLE_MIMES.items()}
 VIEWABLE_EXTENSIONS = {"pdf": "application/pdf"}  # opened in the editor read-only
 TOKEN_TTL = 10 * 60 * 60  # ten hours, the length of a working day
 
-_SECRET = os.environ.get("HUBPROTO_SECRET") or secrets.token_hex(32)
+_SECRET_CACHE: dict[str, str] = {}
+
+
+def secret(root: str | os.PathLike | None = None) -> str:
+    """The signing secret: HUBPROTO_SECRET, else one generated once into <root>/state/.secret so every process on
+    the same hub (shell, CLI, worker) accepts the same tokens."""
+    env = os.environ.get("HUBPROTO_SECRET")
+    if env:
+        return env
+    base = str(root or os.environ.get("HUBPROTO_ROOT") or ".")
+    if base in _SECRET_CACHE:
+        return _SECRET_CACHE[base]
+    path = pathlib.Path(base) / "state" / ".secret"
+    try:
+        value = path.read_text().strip()
+    except OSError:
+        value = ""
+    if not value:
+        value = secrets.token_hex(32)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(value)
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    _SECRET_CACHE[base] = value
+    return value
 
 
 def extension_of(filename: str) -> str:
@@ -61,19 +88,19 @@ def is_viewable(rec: dict) -> bool:
 
 
 # ---------------------------------------------------------------- access tokens
-def issue_token(user: str, number: str, *, can_write: bool, ttl: int = TOKEN_TTL) -> str:
+def issue_token(user: str, number: str, *, can_write: bool, ttl: int = TOKEN_TTL, root=None) -> str:
     payload = json.dumps({"u": user, "f": number, "w": bool(can_write), "exp": int(time.time()) + ttl}, separators=(",", ":"))
     body = base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
-    sig = hmac.new(_SECRET.encode(), body.encode(), hashlib.sha256).hexdigest()[:32]
+    sig = hmac.new(secret(root).encode(), body.encode(), hashlib.sha256).hexdigest()[:32]
     return f"{body}.{sig}"
 
 
-def read_token(token: str) -> dict | None:
+def read_token(token: str, root=None) -> dict | None:
     try:
         body, sig = token.split(".", 1)
     except ValueError:
         return None
-    if not hmac.compare_digest(sig, hmac.new(_SECRET.encode(), body.encode(), hashlib.sha256).hexdigest()[:32]):
+    if not hmac.compare_digest(sig, hmac.new(secret(root).encode(), body.encode(), hashlib.sha256).hexdigest()[:32]):
         return None
     try:
         data = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
