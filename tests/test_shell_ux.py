@@ -589,11 +589,12 @@ def test_rail_is_trimmed_by_role_and_boards_open_on_my_work(shell):
     status, text, _ = get(shell, "/inbox", **{"as": "alice"})
     nav = text.split('<nav class="rail" aria-label="Workspace">')[1].split("</nav>")[0]
     assert "People and roles" not in nav and "Policy versions" not in nav and ">Why<" not in nav
-    assert '<a aria-current="page" href="/inbox?as=alice">Inbox</a>' in nav and nav.count("<li>") >= 4
+    assert '<a aria-current="page" href="/inbox?as=alice">' in nav and "<span>Inbox</span></a>" in nav and nav.count("<li>") >= 4
+    assert "<li><svg" not in nav, "the icon is inside the link, on the same line as its label"
     status, text, _ = get(shell, "/releases", **{"as": "bob"})
     nav = text.split('<nav class="rail" aria-label="Workspace">')[1].split("</nav>")[0]
     assert "People and roles" in nav and "Policy versions" in nav and "<h2 id=\"rail-policy\">Policy</h2>" in nav
-    assert '<a aria-current="page" href="/releases?as=bob">Policy versions</a>' in nav
+    assert '<a aria-current="page" href="/releases?as=bob">' in nav and "<span>Policy versions</span></a>" in nav
     status, text, _ = get(shell, "/boards", **{"as": "alice"})
     assert "<h1>My work</h1>" in text and "Waiting on others" in text and "Returned or stopped" in text
     assert "awaiting-approve-the-bill" not in plain(text)

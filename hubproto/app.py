@@ -263,22 +263,27 @@ class Hub:
                 "model": profile.get("model") or "stand-in", "about": rec["locator"] if rec else None, "cog": cog,
                 "sops": sorted(ctx.sop_texts()), "rec": rec}
 
-    def chat_answer(self, prep: dict, sender: str, text: str) -> dict:
-        """Ask the model (slow; touches no shared state but the gateway's call log)."""
+    def chat_answer(self, prep: dict, sender: str, text: str, call_tool=None) -> dict:
+        """Ask the model (slow), letting it look records up with the record tools as the person chatting.
+        ``call_tool(name, args)`` runs one tool; the shell passes one that takes the hub's lock for the call."""
         from .cogs import stand_in_chat
+        from .tools import RecordTools, tool_specs
 
-        out = self.model.complete(model=prep["model"], system=prep["system"], user=text, by=prep["cog"], max_tokens=600, history=prep["history"])
+        tools = RecordTools(self, sender)
+        out = self.model.complete_with_tools(model=prep["model"], system=prep["system"], user=text, by=prep["cog"], max_tokens=800,
+                                             history=prep["history"], tools=tool_specs(), call_tool=call_tool or tools.call)
         reply = (out["text"] or "").strip()
-        if out["stand_in"] or not reply:
+        if not reply:
             reply = stand_in_chat(prep["cog"], text, prep.get("rec"), prep.get("sops") or [])
-        return {"text": reply, "model": out.get("served_model") or prep["model"], "stand_in": out["stand_in"]}
+        return {"text": reply, "model": out.get("served_model") or prep["model"], "stand_in": out["stand_in"], "tool_calls": out.get("tool_calls") or []}
 
     def chat(self, sender: str, cog: str, text: str, about: str | None = None) -> dict:
         """One informal chat turn with a cog: the person's line and the cog's answer are both kept. Nothing else changes."""
         prep = self.chat_prepare(sender, cog, text, about)
         self.inbox.chat_append(sender=sender, to=cog, body=text.strip(), about=prep["about"])
         ans = self.chat_answer(prep, sender, text.strip())
-        return self.inbox.chat_append(sender=cog, to=sender, body=ans["text"], about=prep["about"], model=ans["model"], stand_in=ans["stand_in"])
+        return self.inbox.chat_append(sender=cog, to=sender, body=ans["text"], about=prep["about"], model=ans["model"], stand_in=ans["stand_in"],
+                                      tools=ans["tool_calls"])
 
     def send(self, sender: str, to: str, subject: str, body: str, channel: str = "dm", attachments=None,
              record: str | None = None, comment_id: str | None = None) -> dict:

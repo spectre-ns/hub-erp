@@ -164,6 +164,12 @@ class BaseHandler(BaseHTTPRequestHandler):
         try:
             if self.route == "/healthz":
                 return self._text("ok")
+            if self.route == "/mcp":
+                self.raw_body = self._read_raw() if method == "POST" else b""
+                with self.lock:
+                    self.meta = self.hub.releases.current()
+                    self.bundle = self.hub.releases.bundle(self.meta["digest"]) if self.meta else None
+                    return self.handle_mcp(method)
             if self.route.startswith("/wopi/files/"):
                 self.raw_body = self._read_raw() if method == "POST" else b""
                 with self.lock:
@@ -442,7 +448,7 @@ class BaseHandler(BaseHTTPRequestHandler):
 
         def item(n, p, ic):
             cur = ' aria-current="page"' if (self.route == p or (p != "/" and self.route.startswith(p))) else ""
-            return f'<li>{icon(ic)}<a{cur} href="{href(p, user)}">{esc(n)}</a></li>'
+            return f'<li><a{cur} href="{href(p, user)}">{icon(ic)}<span>{esc(n)}</span></a></li>'
 
         out = '<nav class="rail" aria-label="Workspace"><ul class="main">' + "".join(item(n, p, ic) for n, p, ic in RAIL_MAIN) + "</ul>"
         if self._policy_owner():

@@ -213,7 +213,7 @@ main{{padding:var(--sp-3) var(--sp-4)}}.grid2{{grid-template-columns:1fr}}.sheet
 .mx-msg{{display:flex;gap:6px;align-items:flex-end;max-width:100%}}.mx-msg.mine{{justify-content:flex-end}}
 .mx-bubble{{max-width:78%;padding:8px 10px;border-radius:12px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.4}}
 .mx-msg.theirs .mx-bubble{{background:var(--chip);border-bottom-left-radius:4px}}.mx-msg.mine .mx-bubble{{background:var(--accent);color:var(--accent-fg);border-bottom-right-radius:4px}}
-.mx-when{{display:block;margin-top:3px;font-size:10px;opacity:.7}}.mx-av{{flex:none}}
+.mx-when{{display:block;margin-top:3px;font-size:10px;opacity:.7}}.mx-looked{{display:block;margin-top:4px;font-size:11px;opacity:.75;font-style:italic}}.mx-looked::before{{content:'🔎 '}}.mx-av{{flex:none}}
 .mx-empty,.mx-error{{list-style:none;color:var(--muted);font-size:var(--fs-s);text-align:center;padding:12px}}.mx-error{{color:var(--crit)}}
 .mx-form{{display:flex;gap:6px;padding:8px;border-top:1px solid var(--line)}}.mx-form textarea{{flex:1;resize:none;min-height:40px;max-height:120px;border:1px solid var(--ctl);border-radius:8px;padding:6px 8px;font:inherit;background:var(--panel);color:var(--fg)}}
 .mx-form button{{align-self:flex-end;border-radius:8px;padding:8px 10px}}.mx-form button[disabled]{{opacity:.5;cursor:progress}}

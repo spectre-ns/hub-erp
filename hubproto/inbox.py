@@ -65,10 +65,12 @@ class Inbox:
             self._write_eml(reply)
         return reply
 
-    def chat_append(self, *, sender: str, to: str, body: str, about: str | None = None, model: str = "", stand_in: bool = False) -> dict:
+    def chat_append(self, *, sender: str, to: str, body: str, about: str | None = None, model: str = "", stand_in: bool = False,
+                    tools: list[dict] | None = None) -> dict:
         """One line of an informal chat (the messenger): kept apart from messages, notifications and an item's chatter."""
         return self._append({"id": uuid.uuid4().hex[:8], "at": utcnow(), "from": sender, "to": to, "channel": "chat", "kind": "chat",
-                             "subject": "", "body": body, "about": about, "run_id": "", "attachments": [], "model": model, "stand_in": stand_in})
+                             "subject": "", "body": body, "about": about, "run_id": "", "attachments": [], "model": model, "stand_in": stand_in,
+                             "tools": tools or []})
 
     def chat_thread(self, a: str, b: str, limit: int = 60) -> list[dict]:
         """The chat between two members, oldest first."""

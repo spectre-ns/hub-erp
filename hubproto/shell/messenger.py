@@ -31,6 +31,7 @@ function open(on){panel.hidden=!on;btn.setAttribute('aria-expanded',on?'true':'f
 function li(cls){var x=document.createElement('li');x.className='mx-msg '+cls;return x}
 function bubble(m){var x=li(m.mine?'mine':'theirs');if(!m.mine){var a=document.createElement('span');a.className='mx-av';a.innerHTML=avatars[m.from]||'';x.appendChild(a)}
 var b=document.createElement('div');b.className='mx-bubble';b.textContent=m.body;x.appendChild(b);
+if(m.looked){var lk=document.createElement('span');lk.className='mx-looked';lk.textContent=m.looked;b.appendChild(lk)}
 if(m.when){var t=document.createElement('span');t.className='mx-when';t.textContent=m.when+(m.stand_in?' · no model':'');b.appendChild(t)}return x}
 function empty(){var x=li('mx-empty');x.textContent='Say hello to '+cog+'. It can see what you are looking at, the procedures it follows and its queue. It will not change anything from here.';return x}
 function render(msgs){list.innerHTML='';if(!msgs.length)list.appendChild(empty());msgs.forEach(function(m){list.appendChild(bubble(m))});list.scrollTop=list.scrollHeight}
@@ -51,6 +52,27 @@ if(res.ok&&res.j.reply){list.appendChild(bubble(res.j.reply))}else{var x=li('mx-
 list.scrollTop=list.scrollHeight}).catch(function(){typing.remove();var x=li('mx-error');x.textContent='The hub did not answer; try again.';list.appendChild(x)}).then(function(){send.disabled=false;sel.disabled=false;ta.focus()})});
 if(load('open')==='1')open(true);
 })();"""
+
+
+def looked_words(calls: list[dict]) -> str:
+    """'looked at BILL-0012, searched "torque"' for the line under a cog's answer."""
+    bits = []
+    for c in calls or []:
+        a = c.get("arguments") or {}
+        if c["tool"] in ("get_record", "read_document", "record_history") and a.get("number"):
+            bits.append(("read " if c["tool"] == "read_document" else "looked at ") + str(a["number"]))
+        elif c["tool"] == "search_records":
+            bits.append("searched " + (f"“{a.get('query')}”" if a.get("query") else "") + (f" {a.get('type')}" if a.get("type") else "")).strip()
+        elif c["tool"] == "waiting_for":
+            bits.append("checked " + (a.get("who") or "your") + " queue")
+        elif c["tool"] == "overview":
+            bits.append("counted the records")
+    seen, out = set(), []
+    for b in bits:
+        if b not in seen:
+            seen.add(b)
+            out.append(b)
+    return ", ".join(out[:8])
 
 
 class MessengerMixin:
@@ -91,7 +113,7 @@ data-thread="{esc(href('/chat-thread', self.user, about=about))}" data-post="{es
         if cog not in self.hub.chat_cogs():
             return self._json({"error": f"{cog!r} is not a cog you can chat with"}, 400)
         msgs = [{"from": m["from"], "mine": m["from"] == self.user, "body": m["body"], "when": (m.get("at") or "")[11:16],
-                 "stand_in": bool(m.get("stand_in"))} for m in self.hub.inbox.chat_thread(self.user, cog)]
+                 "stand_in": bool(m.get("stand_in")), "looked": looked_words(m.get("tools") or [])} for m in self.hub.inbox.chat_thread(self.user, cog)]
         rec = self.hub.kernel.get(about) if about else None
         context = (f"{cog} can see {rec['number']} ({(rec['fields'].get('title') or '')[:60]}) and the procedures it follows."
                    if rec else f"{cog} can see the procedures it follows and its queue.")
@@ -121,11 +143,21 @@ data-thread="{esc(href('/chat-thread', self.user, about=about))}" data-post="{es
             except Exception:
                 prep = self.hub.chat_prepare(self.user, cog, text, None)  # not theirs to read: the cog does not see it either
         self.hub.inbox.chat_append(sender=self.user, to=cog, body=text, about=prep["about"])
+        from ..tools import RecordTools
+
+        tools = RecordTools(self.hub, self.user)
+
+        def call_tool(name, args):  # the model runs unlocked; each look-up takes the lock for its own moment
+            with self.lock:
+                return tools.call(name, args)
+
         with self._unlocked():  # the slow part: other requests are served meanwhile
-            ans = self.hub.chat_answer(prep, self.user, text)
-        line = self.hub.inbox.chat_append(sender=cog, to=self.user, body=ans["text"], about=prep["about"], model=ans["model"], stand_in=ans["stand_in"])
-        log_line(f"chat {self.user} -> {cog} about={prep['about'] or '-'} model={ans['model']} stand_in={ans['stand_in']}")
-        return self._json({"reply": {"from": cog, "mine": False, "body": line["body"], "when": line["at"][11:16], "stand_in": ans["stand_in"]}})
+            ans = self.hub.chat_answer(prep, self.user, text, call_tool=call_tool)
+        line = self.hub.inbox.chat_append(sender=cog, to=self.user, body=ans["text"], about=prep["about"], model=ans["model"], stand_in=ans["stand_in"],
+                                          tools=ans["tool_calls"])
+        log_line(f"chat {self.user} -> {cog} about={prep['about'] or '-'} model={ans['model']} stand_in={ans['stand_in']} tools={len(ans['tool_calls'])}")
+        return self._json({"reply": {"from": cog, "mine": False, "body": line["body"], "when": line["at"][11:16], "stand_in": ans["stand_in"],
+                                     "looked": looked_words(ans["tool_calls"])}})
 
     def post_chat_clear(self):
         cog = self._f("with")
