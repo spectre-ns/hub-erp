@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import difflib
 import re
 from dataclasses import dataclass, field
 
@@ -82,6 +83,7 @@ _SOD = re.compile(
     r"^The (?P<a>[\w -]+?) and the (?P<b>[\w -]+?) of a (?P<object>[\w-]+) must be different people\.$"
 )
 _PROCESS_HEAD = re.compile(r"^## Process: (?P<name>[a-z0-9-]+)$")
+_MODAL = re.compile(r"\b(may|must|shall|can|cannot|go to|goes to|are reported to|is due|closes as|threshold|tolerance|limit|interval)\b", re.I)
 _PROCESS_FOLDER = re.compile(r"^Records are filed in (?P<folder>[A-Z][\w /-]+?)\.$")
 _PROCESS_STEP = re.compile(
     r"^(?P<n>\d+)\. \[(?P<role>[a-z][\w-]*)\] (?P<title>[^()]+?)(?: \((?P<cog>[a-z][\w-]*)\))?$"
@@ -147,7 +149,7 @@ class ConventionExtractor:
                 out.rules.append(process)
                 process = None
 
-        for n, raw in enumerate(frame.lines, start=1):
+        for n, raw in enumerate(frame.lines, start=frame.body_start):
             line = raw.strip()
             if not line:
                 continue
@@ -161,6 +163,14 @@ class ConventionExtractor:
             if line.startswith("## "):
                 close_process()
                 section = line[3:].strip().lower()
+                if section not in RULE_SECTIONS and not section.startswith("process:"):
+                    near = difflib.get_close_matches(section, RULE_SECTIONS, n=1, cutoff=0.75)
+                    if near:
+                        out.notes.append({"frame": frame.name, "line": n, "text": line, "severity": "error",
+                                          "note": f"unknown section heading; did you mean '## {near[0].title()}'? Its sentences would be ignored"})
+                    elif section.startswith("process"):
+                        out.notes.append({"frame": frame.name, "line": n, "text": line, "severity": "error",
+                                          "note": "a process heading reads '## Process: <name>'; this one would be ignored"})
                 continue
             if line.startswith("#"):
                 close_process()
@@ -202,8 +212,12 @@ class ConventionExtractor:
                 continue
             matched = self._match_sentence(line, n, section, add)
             if not matched:
-                out.notes.append({"frame": frame.name, "line": n, "text": line,
-                                  "note": f"unparsed sentence in the {section!r} section"})
+                note = {"frame": frame.name, "line": n, "text": line, "note": f"unparsed sentence in the {section!r} section"}
+                if _MODAL.search(line):
+                    note["severity"] = "error"
+                    note["note"] = (f"this sentence in the {section!r} section looks like a rule but does not parse "
+                                    "(see the writing-policy-frames reference); it would be silently dropped")
+                out.notes.append(note)
         close_process()
         return out
 
@@ -333,7 +347,7 @@ class ClaudeExtractor:
         self.model = model or os.environ.get("HUBPROTO_MODEL", "claude-opus-5-5")
 
     def extract(self, frame: Frame) -> Extraction:
-        numbered = "\n".join(f"{i:4d}: {line}" for i, line in enumerate(frame.lines, start=1))
+        numbered = "\n".join(f"{i:4d}: {line}" for i, line in enumerate(frame.lines, start=frame.body_start))
         prompt = _PROMPT.format(name=frame.name, version=frame.version, numbered=numbered,
                                 vocab=sorted(CONDITION_VOCABULARY.values()))
         with self.client.beta.messages.stream(

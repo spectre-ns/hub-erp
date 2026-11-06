@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ROOT
+from conftest import ROOT, seen
 from hubproto.app import Hub
 from hubproto.profile import conformance, install, load_profile
 from hubproto.runner import RunError
@@ -200,9 +200,9 @@ def test_high_severity_ncr_waits_for_the_quality_manager_and_opens_a_capa(seeded
     assert ncr["state"] == "awaiting-disposition-the-nonconformance" and ncr["fields"]["risk"] == "high"
     assert ncr["fields"]["severity"] == "high" and ncr["fields"]["reported_by"] == "alice"
     with pytest.raises(RunError, match="not an assignee"):
-        seeded.runner.decide(run_id, "alice", "approve")
+        seeded.runner.decide(run_id, "alice", "approve", meaning="ok", payload_digest=seen(seeded.runner, run_id))
     state = seeded.runner.decide(run_id, "carol", "approve", meaning="scrap the lot",
-                                 fields={"disposition": "scrap", "disposition_rationale": "The crack cannot be reworked safely."})
+                                 fields={"disposition": "scrap", "disposition_rationale": "The crack cannot be reworked safely."}, payload_digest=seen(seeded.runner, run_id))
     assert state["status"] == "completed", events(seeded, run_id)
     ncr = seeded.kernel.get(state["record"])
     assert ncr["state"] == "closed" and ncr["fields"]["disposition"] == "scrap"
@@ -221,15 +221,15 @@ def test_high_severity_ncr_waits_for_the_quality_manager_and_opens_a_capa(seeded
 def test_capa_runs_to_closure_with_an_effectiveness_check(seeded):
     run_id = seeded.runner.submit("nonconformance", {"record": {"title": "Field failure",
                                                                  "description": "Unit failed in the field"}}, owner="alice")
-    seeded.runner.decide(run_id, "carol", "approve", fields={"disposition": "return", "disposition_rationale": "Return for analysis."})
+    seeded.runner.decide(run_id, "carol", "approve", fields={"disposition": "return", "disposition_rationale": "Return for analysis."}, meaning="ok", payload_digest=seen(seeded.runner, run_id))
     capa = seeded.kernel.query(type_="capa")[0]
     cid = seeded.runner.run_for_record(capa["locator"])["id"]
     state = seeded.runner.decide(cid, "carol", "approve", meaning="actions complete",
-                                 fields={"root_cause": "Wrong torque on the retaining screw."})
+                                 fields={"root_cause": "Wrong torque on the retaining screw."}, payload_digest=seen(seeded.runner, cid))
     assert state["status"] == "waiting" and state["pending"]["checkpoint"] == "verify-effectiveness"
     capa = seeded.kernel.get(capa["locator"])
     assert capa["state"] == "awaiting-verify-effectiveness" and capa["fields"]["effectiveness_check_date"]
-    state = seeded.runner.decide(cid, "carol", "approve", fields={"effectiveness_result": "No recurrence in 90 days."})
+    state = seeded.runner.decide(cid, "carol", "approve", fields={"effectiveness_result": "No recurrence in 90 days."}, meaning="ok", payload_digest=seen(seeded.runner, cid))
     assert state["status"] == "completed" and seeded.kernel.get(capa["locator"])["state"] == "closed"
 
 
@@ -256,8 +256,8 @@ def test_effective_document_assigns_training_and_tick_escalates_overdue_items(se
     tr = seeded.runner.run_for_record(mine["locator"])
     assert tr["parent_run"] == run_id
     with pytest.raises(RunError, match="not an assignee"):
-        seeded.runner.decide(tr["id"], "bob", "approve")
-    state = seeded.runner.decide(tr["id"], "alice", "approve", meaning="read and understood")
+        seeded.runner.decide(tr["id"], "bob", "approve", meaning="ok", payload_digest=seen(seeded.runner, tr["id"]))
+    state = seeded.runner.decide(tr["id"], "alice", "approve", meaning="read and understood", payload_digest=seen(seeded.runner, tr["id"]))
     assert state["status"] == "completed" and seeded.kernel.get(mine["locator"])["state"] == "acknowledged"
     escalated = [e for e in seeded.runner.tick(today="2099-01-01") if e["to"]]  # overdue items that gained an assignee
     assert {e["record"] for e in escalated} == {t["locator"] for t in trainings if t["fields"]["person"] in ("bob", "dave")}
@@ -283,7 +283,7 @@ def test_task_routes_to_the_assignee(seeded):
     state = run_state(seeded, run_id)
     assert state["status"] == "waiting" and state["pending"]["assignees"] == ["bob"]
     assert "go to the assignee" in state["pending"]["route_rule"]["text"]
-    state = seeded.runner.decide(run_id, "bob", "approve", meaning="done")
+    state = seeded.runner.decide(run_id, "bob", "approve", meaning="done", payload_digest=seen(seeded.runner, run_id))
     assert state["status"] == "completed" and seeded.kernel.get(state["record"])["state"] == "done"
     own = seeded.runner.submit("task", {"record": {"title": "Check the stock count"}}, owner="dave")
     assert run_state(seeded, own)["pending"]["assignees"] == ["dave"], "the assignee defaults to the owner"
@@ -296,7 +296,7 @@ def test_calibration_out_of_tolerance_opens_an_ncr_after_review(seeded):
     state = run_state(seeded, run_id)
     assert state["status"] == "waiting" and state["pending"]["assignees"] == ["carol"]
     assert seeded.kernel.query(type_="ncr") == []
-    state = seeded.runner.decide(run_id, "carol", "approve", meaning="confirmed out of tolerance")
+    state = seeded.runner.decide(run_id, "carol", "approve", meaning="confirmed out of tolerance", payload_digest=seen(seeded.runner, run_id))
     assert state["status"] == "completed", events(seeded, run_id)
     cal = seeded.kernel.get(state["record"])
     ncrs = seeded.kernel.query(type_="ncr")
@@ -308,7 +308,7 @@ def test_calibration_out_of_tolerance_opens_an_ncr_after_review(seeded):
     assert nrun["parent_run"] == run_id and nrun["status"] == "waiting"
     assert nrun["pending"]["assignees"] == ["bob"], "carol opened it, so segregation of duties sends it to bob"
     in_tol = seeded.runner.submit("calibration", {"record": {**rec, "result": "in-tolerance"}}, owner="alice")
-    seeded.runner.decide(in_tol, "carol", "approve")
+    seeded.runner.decide(in_tol, "carol", "approve", meaning="ok", payload_digest=seen(seeded.runner, in_tol))
     assert len(seeded.kernel.query(type_="ncr")) == 1, "an in-tolerance result opens nothing"
 
 
@@ -320,8 +320,8 @@ def test_complaint_is_answered_and_opens_an_ncr(seeded):
     assert state["status"] == "waiting" and state["pending"]["assignees"] == ["carol"]
     assert seeded.kernel.get(state["record"])["fields"]["risk"] == "high"
     with pytest.raises(RunError, match="not an assignee"):
-        seeded.runner.decide(run_id, "dave", "approve")
-    state = seeded.runner.decide(run_id, "carol", "approve", fields={"response": "Apologised; credit note issued."})
+        seeded.runner.decide(run_id, "dave", "approve", meaning="ok", payload_digest=seen(seeded.runner, run_id))
+    state = seeded.runner.decide(run_id, "carol", "approve", fields={"response": "Apologised; credit note issued."}, meaning="ok", payload_digest=seen(seeded.runner, run_id))
     assert state["status"] == "completed", events(seeded, run_id)
     ncr = seeded.kernel.query(type_="ncr")[0]
     assert ncr["fields"]["source"] == "complaint" and seeded.kernel.get(state["record"])["fields"]["ncr"] == ncr["locator"]
@@ -336,11 +336,11 @@ def test_internal_audit_records_findings_and_the_quality_manager_accepts_them(se
     assert audit["fields"]["auditor"] == "bob"
     assert [c["process"] for c in audit["fields"]["checklist"]] == ["document-control"] * 5
     findings = [{"clause": "7.5.3", "statement": "Two obsolete copies on the shop floor", "severity": "minor"}]
-    state = seeded.runner.decide(run_id, "bob", "approve", fields={"findings": findings})
+    state = seeded.runner.decide(run_id, "bob", "approve", fields={"findings": findings}, meaning="ok", payload_digest=seen(seeded.runner, run_id))
     assert state["status"] == "waiting" and state["pending"]["checkpoint"] == "accept-the-findings"
     assert state["pending"]["assignees"] == ["carol"]
     assert seeded.kernel.get(audit["locator"])["state"] == "awaiting-accept-the-findings"
-    state = seeded.runner.decide(run_id, "carol", "approve", fields={"summary": "One minor finding; NCR raised."})
+    state = seeded.runner.decide(run_id, "carol", "approve", fields={"summary": "One minor finding; NCR raised."}, meaning="ok", payload_digest=seen(seeded.runner, run_id))
     assert state["status"] == "completed" and seeded.kernel.get(audit["locator"])["state"] == "closed"
 
 
@@ -350,12 +350,12 @@ def test_change_request_is_approved_then_verified_by_the_requester(seeded):
     state = run_state(seeded, run_id)
     assert state["status"] == "waiting" and state["pending"]["assignees"] == ["carol"]
     assert seeded.kernel.get(state["record"])["state"] == "awaiting-approve-the-change"
-    state = seeded.runner.decide(run_id, "carol", "approve", meaning="agreed")
+    state = seeded.runner.decide(run_id, "carol", "approve", meaning="agreed", payload_digest=seen(seeded.runner, run_id))
     assert state["status"] == "waiting" and state["pending"]["assignees"] == ["alice"]
     assert "go to the requester" in state["pending"]["route_rule"]["text"]
     with pytest.raises(RunError, match="needs verification"):
-        seeded.runner.decide(run_id, "alice", "approve")
-    state = seeded.runner.decide(run_id, "alice", "approve", fields={"verification": "Both documents revised and trained."})
+        seeded.runner.decide(run_id, "alice", "approve", meaning="ok", payload_digest=seen(seeded.runner, run_id))
+    state = seeded.runner.decide(run_id, "alice", "approve", fields={"verification": "Both documents revised and trained."}, meaning="ok", payload_digest=seen(seeded.runner, run_id))
     assert state["status"] == "completed" and seeded.kernel.get(state["record"])["state"] == "closed"
 
 
@@ -364,7 +364,7 @@ def test_supplier_evaluation_and_management_review(seeded):
                                                                   "reevaluation_date": "2027-11-01"}}, owner="carol")
     state = run_state(seeded, sup)
     assert state["status"] == "waiting" and state["pending"]["assignees"] == ["bob"]
-    state = seeded.runner.decide(sup, "bob", "approve", meaning="approved for tooling")
+    state = seeded.runner.decide(sup, "bob", "approve", meaning="approved for tooling", payload_digest=seen(seeded.runner, sup))
     assert state["status"] == "completed" and seeded.kernel.get(state["record"])["state"] == "approved"
     with pytest.raises(RunError, match="alice may not start management-review"):
         seeded.runner.submit("management-review", {"record": {"title": "x", "date": "2026-12-15", "inputs": {}}}, owner="alice")
@@ -372,7 +372,7 @@ def test_supplier_evaluation_and_management_review(seeded):
                                                                "inputs": {"audits": 1, "complaints": 1}}}, owner="bob")
     state = run_state(seeded, mr)
     assert state["status"] == "waiting" and state["pending"]["assignees"] == ["bob"], "the chair defaults to the preparer"
-    state = seeded.runner.decide(mr, "bob", "approve", fields={"outputs": {"decisions": ["hire a second auditor"]}})
+    state = seeded.runner.decide(mr, "bob", "approve", fields={"outputs": {"decisions": ["hire a second auditor"]}}, meaning="ok", payload_digest=seen(seeded.runner, mr))
     assert state["status"] == "completed"
     review = seeded.kernel.get(state["record"])
     assert review["state"] == "closed" and seeded.dms.documents_of(review["locator"]), "the minutes were rendered"

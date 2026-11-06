@@ -5,7 +5,7 @@ import zipfile
 
 import pytest
 
-from conftest import release_all
+from conftest import release_all, seen
 from hubproto import worker
 from hubproto.cad import bom_csv, call_worker, fcstd_parts, kicad_sch_bom
 from hubproto.runner import RunError
@@ -148,13 +148,13 @@ def test_design_release_end_to_end(hub, fake_worker):
     assert f["checks"]["erc"] == {"ran": True, "errors": 0, "warnings": 0}
     assert f["parts"][0]["part_number"] == "PN-BRK-01"
     with pytest.raises(RunError, match="not an assignee"):
-        hub.runner.decide(run_id, "alice", "approve")
+        hub.runner.decide(run_id, "alice", "approve", meaning="ok", payload_digest=seen(hub.runner, run_id))
     with pytest.raises(RunError, match="requirements not accepted"):
-        hub.runner.decide(run_id, "bob", "approve", meaning="too early")
+        hub.runner.decide(run_id, "bob", "approve", meaning="too early", payload_digest=seen(hub.runner, run_id))
     for req in k.query(type_="requirement"):
         rr = hub.runner.run_for_record(req["locator"])
-        hub.runner.decide(rr["id"], "bob", "approve", meaning="accepted", fields={"acceptance_criteria": "ATP-1", "verification_method": "test"})
-    state = hub.runner.decide(run_id, "bob", "approve", meaning="design package reviewed")
+        hub.runner.decide(rr["id"], "bob", "approve", meaning="accepted", fields={"acceptance_criteria": "ATP-1", "verification_method": "test"}, payload_digest=seen(hub.runner, rr["id"]))
+    state = hub.runner.decide(run_id, "bob", "approve", meaning="design package reviewed", payload_digest=seen(hub.runner, run_id))
     assert state["status"] == "completed"
     design = k.get(design["locator"])
     assert design["state"] == "released" and design["fields"]["part"]

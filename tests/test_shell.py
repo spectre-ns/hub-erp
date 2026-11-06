@@ -14,7 +14,7 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from conftest import BIG_BILL, MID_BILL, ROOT, SMALL_BILL, dated, release_all
+from conftest import BIG_BILL, MID_BILL, ROOT, SMALL_BILL, dated, release_all, seen
 from hubproto import cli
 from hubproto.app import Hub
 from hubproto.shell import free_port, serve_in_thread
@@ -150,12 +150,12 @@ def test_start_decide_upload_attach_flow(shell):
 
     # The inbox shows the approval with the routing sentence; bob decides.
     status, text = get(shell, "/inbox", **{"as": "bob"})
-    assert status == 200 and "over 10,000 USD" in text and state["pending"]["payload_digest"] in text
+    assert status == 200 and "over 10,000 USD" in text and state["seen_digest"] in text
     status, url, text = post(shell, "/decide", {"as": "dave", "run": run_id, "verdict": "approve", "meaning": "x",
-                                                "digest": state["pending"]["payload_digest"]})
+                                                "digest": hub.runner.load(run_id)["seen_digest"]})
     assert status == 400 and "not an assignee" in text
     status, url, text = post(shell, "/decide", {"as": "bob", "run": run_id, "verdict": "approve", "meaning": "approved for posting",
-                                                "digest": state["pending"]["payload_digest"]})
+                                                "digest": hub.runner.load(run_id)["seen_digest"]})
     assert status == 200, text[:500]
     assert hub.runner.load(run_id)["status"] == "completed"
     status, text = get(shell, "/record/" + quote(locator, safe=":"), **{"as": "alice"})
@@ -395,7 +395,7 @@ def test_decide_form_offers_only_allowed_fields_and_refuses_others(shell):
     assert 'name="journal"' not in text and 'name="meaning"' in text and "required" in text
     assert "billed to date" in card and "match result" in card and "4000" in card
     status, url, text = post(shell, "/decide", {"as": approver, "run": run_id, "verdict": "approve", "meaning": "x", "journal": "TYPED-BY-BOB",
-                                                "digest": state["pending"]["payload_digest"]})
+                                                "digest": hub.runner.load(run_id)["seen_digest"]})
     assert status == 400 and "may not set journal" in text and "this Gate accepts" in text
     assert "TYPED-BY-BOB" not in str(hub.kernel.get(state["record"])["fields"])
     # An NCR: disposition and rationale are required for 'closed', containment is optional; risk and capa are never offered.
@@ -412,10 +412,10 @@ def test_decide_form_offers_only_allowed_fields_and_refuses_others(shell):
     assert 'name="containment"' in card and 'name="risk"' not in card and 'name="capa"' not in card
     assert "closed needs: disposition, disposition_rationale" in card
     status, url, text = post(shell, "/decide", {"as": who, "run": ncr_run, "verdict": "approve", "meaning": "scrap it", "risk": "low",
-                                                "digest": state["pending"]["payload_digest"]})
+                                                "digest": hub.runner.load(ncr_run)["seen_digest"]})
     assert status == 400 and "may not set risk" in text
     status, url, text = post(shell, "/decide", {"as": who, "run": ncr_run, "verdict": "approve", "meaning": "scrap it", "disposition": "scrap",
-                                                "disposition_rationale": "beyond repair", "digest": state["pending"]["payload_digest"]})
+                                                "disposition_rationale": "beyond repair", "digest": hub.runner.load(ncr_run)["seen_digest"]})
     assert status == 200, text[:300]
     rec = hub.kernel.get(state["record"])
     assert rec["state"] == "closed" and rec["fields"]["disposition"] == "scrap"
@@ -503,7 +503,7 @@ def test_reject_returns_the_design_and_resubmit_restarts_it(shell, monkeypatch):
     run_id, state = _start_design(shell, "[shell] resubmit")
     loc = state["record"]
     status, url, text = post(shell, "/decide", {"as": "bob", "run": run_id, "verdict": "reject", "meaning": "needs a drawing",
-                                                "digest": state["pending"]["payload_digest"]})
+                                                "digest": hub.runner.load(run_id)["seen_digest"]})
     assert status == 200, text[:300]
     state = hub.runner.load(run_id)
     assert state["pending"]["kind"] == "resubmit" and state["pending"]["assignees"] == ["alice"]
@@ -627,7 +627,7 @@ def test_cli_pending_resubmit_retry_cancel(shell, monkeypatch, tmp_path):
     run_id = hub.runner.submit("design-release", {"record": {"title": "[cli] bracket", "kind": "mechanical", "user_needs": ["Must fit."]}}, owner="alice")
     out = run_cli(root, "inbox-pending", "--as", "bob")
     assert run_id in out and "Review the design" in out and "fields=" in out
-    hub.runner.decide(run_id, "bob", "reject", meaning="needs a model")
+    hub.runner.decide(run_id, "bob", "reject", meaning="needs a model", payload_digest=seen(hub.runner, run_id))
     out = run_cli(root, "inbox-pending", "--as", "alice")
     assert run_id in out and "resubmit" in out and "needs a model" in out
     with pytest.raises(SystemExit, match="not an assignee"):

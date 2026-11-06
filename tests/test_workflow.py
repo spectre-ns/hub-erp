@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ROOT, release_all
+from conftest import ROOT, release_all, seen
 from hubproto.app import Hub
 from hubproto.extract import ConventionExtractor, object_of, slug
 from hubproto.frames import load_frame
@@ -73,7 +73,7 @@ def test_routing_sentences_name_the_checkpoint():
     assert at["step"] == slug("Review the sample") == "review-the-sample"
     frame = load_frame(TEST_FRAMES / "grammar-sample.frame.md")
     assert at["source"]["frame"] == "grammar-sample" and at["source"]["version"] == "1.0.0"
-    assert frame.lines[at["source"]["line"] - 1] == at["source"]["text"], "the citation points at the sentence"
+    assert frame.line(at["source"]["line"]) == at["source"]["text"], "the citation points at the sentence"
     approvals = routing["Approvals in sample-review go to the sample reviewer."]
     assert approvals["step"] == "approve" and approvals["condition"] is None
     assert approvals["assignee"] == "role:sample-reviewer"
@@ -237,7 +237,7 @@ def test_checkpoint_without_a_routing_sentence_is_a_warning_and_routes_to_its_ro
     assert warning["severity"] == "warning" and warning["frame"] == "widget-policy" and warning["line"] > 0
     release_all(h)
     run_id = h.runner.submit(P, {"record": {"title": "w"}}, owner="erin")
-    h.runner.decide(run_id, "erin", "approve")
+    h.runner.decide(run_id, "erin", "approve", meaning="ok", payload_digest=seen(h.runner, run_id))
     pending = h.runner.load(run_id)["pending"]
     assert pending["checkpoint"] == "approve-the-widget" and pending["assignees"] == ["hank", "jack"]
     assert pending["route_rule"]["frame"] == "(process step)" and pending["route_rule"]["text"] == "[widget-approver] Approve the widget"
@@ -333,7 +333,7 @@ def test_first_checkpoint_waits_with_assignees_due_date_and_inbox(widgets):
 
 def test_role_route_puts_an_approval_in_every_assignees_inbox(widgets):
     run_id = widgets.runner.submit(P, {"record": {"title": "w"}}, owner="erin")
-    widgets.runner.decide(run_id, "erin", "approve")
+    widgets.runner.decide(run_id, "erin", "approve", meaning="ok", payload_digest=seen(widgets.runner, run_id))
     pending = widgets.runner.load(run_id)["pending"]
     assert pending["checkpoint"] == "approve-the-widget" and pending["assignees"] == ["hank", "jack"]
     assert pending["due"] == (TODAY + timedelta(days=5)).isoformat()
@@ -348,11 +348,11 @@ def test_role_route_puts_an_approval_in_every_assignees_inbox(widgets):
 def test_only_an_assignee_may_decide(widgets):
     run_id = widgets.runner.submit(P, {"record": {"title": "w"}}, owner="erin")
     with pytest.raises(RunError, match="frank is not an assignee of this decision \\(assigned: erin\\)"):
-        widgets.runner.decide(run_id, "frank", "approve")
+        widgets.runner.decide(run_id, "frank", "approve", meaning="ok", payload_digest=seen(widgets.runner, run_id))
     with pytest.raises(RunError, match="not an assignee"):
-        widgets.runner.decide(run_id, "person:hank", "approve")
+        widgets.runner.decide(run_id, "person:hank", "approve", meaning="ok", payload_digest=seen(widgets.runner, run_id))
     with pytest.raises(RunError, match="verdict must be approve or reject"):
-        widgets.runner.decide(run_id, "erin", "defer")
+        widgets.runner.decide(run_id, "erin", "defer", meaning="ok", payload_digest=seen(widgets.runner, run_id))
     state = widgets.runner.load(run_id)
     assert state["status"] == "waiting" and state["pending"]["assignees"] == ["erin"]
     assert not event(widgets, run_id, "gate.decided")
@@ -361,10 +361,10 @@ def test_only_an_assignee_may_decide(widgets):
 def test_decide_with_fields_sets_them_and_advances(widgets):
     run_id = widgets.runner.submit(P, {"record": {"title": "w"}}, owner="erin")
     state = widgets.runner.decide(run_id, "erin", "approve", meaning="checked the drawing",
-                                  fields={"description": "fits", "priority": "high"})
+                                  fields={"description": "fits"}, payload_digest=seen(widgets.runner, run_id))
     assert state["status"] == "waiting" and state["pending"]["checkpoint"] == "approve-the-widget"
     rec = widgets.kernel.get(state["record"])
-    assert rec["fields"]["description"] == "fits" and rec["fields"]["priority"] == "high"
+    assert rec["fields"]["description"] == "fits"
     assert rec["state"] == "awaiting-approve-the-widget"
     decision = state["steps"]["request-the-widget"]["decision"]
     assert decision["by"] == "erin" and decision["verdict"] == "approve" and decision["meaning"] == "checked the drawing"
@@ -372,16 +372,16 @@ def test_decide_with_fields_sets_them_and_advances(widgets):
     assert state["grant"]["decided_by"] == "erin" and state["grant"]["run_id"] == run_id
     types = types_of(widgets, run_id)
     assert types[4:] == ["record.fields_set", "gate.decided", "grant.issued", "step.started", "step.result", "gate.pending"]
-    assert event(widgets, run_id, "record.fields_set")[0]["fields"] == ["description", "priority"]
+    assert event(widgets, run_id, "record.fields_set")[0]["fields"] == ["description"]
     with pytest.raises(RunError, match="must be one of low,medium,high"):
-        widgets.runner.decide(run_id, "hank", "approve", fields={"priority": "asap"})
+        widgets.runner.decide(run_id, "hank", "approve", fields={"priority": "asap"}, meaning="ok", payload_digest=seen(widgets.runner, run_id))
     assert widgets.runner.load(run_id)["status"] == "waiting"
 
 
 def test_completion_applies_the_terminal_state(widgets):
     run_id = widgets.runner.submit(P, {"record": {"title": "w"}}, owner="erin")
-    widgets.runner.decide(run_id, "erin", "approve")
-    state = widgets.runner.decide(run_id, "jack", "approve", meaning="approved")
+    widgets.runner.decide(run_id, "erin", "approve", meaning="ok", payload_digest=seen(widgets.runner, run_id))
+    state = widgets.runner.decide(run_id, "jack", "approve", meaning="approved", payload_digest=seen(widgets.runner, run_id))
     assert state["status"] == "completed" and state["pending"] is None
     rec = widgets.kernel.get(state["record"])
     assert rec["state"] == "done" and rec["assignees"] == [] and rec["due"] is None
@@ -391,14 +391,14 @@ def test_completion_applies_the_terminal_state(widgets):
     assert len(done) == 1 and done[0]["record"] == rec["locator"] and done[0]["state"] == "done"
     assert types_of(widgets, run_id)[-1] == "run.completed"
     with pytest.raises(RunError, match="not waiting"):
-        widgets.runner.decide(run_id, "jack", "approve")
+        widgets.runner.decide(run_id, "jack", "approve", meaning="ok", payload_digest=seen(widgets.runner, run_id))
     assert [r["number"] for r in widgets.kernel.query(type_="task", state="done")] == [rec["number"]]
 
 
 def test_rejection_returns_to_the_first_checkpoint(widgets):
     run_id = widgets.runner.submit(P, {"record": {"title": "w"}}, owner="erin")
-    widgets.runner.decide(run_id, "erin", "approve")
-    state = widgets.runner.decide(run_id, "hank", "reject", meaning="wrong size")
+    widgets.runner.decide(run_id, "erin", "approve", meaning="ok", payload_digest=seen(widgets.runner, run_id))
+    state = widgets.runner.decide(run_id, "hank", "reject", meaning="wrong size", payload_digest=seen(widgets.runner, run_id))
     assert state["status"] == "waiting"
     assert state["pending"]["checkpoint"] == "check-the-widget" and state["pending"]["step"] == "request-the-widget"
     assert state["pending"]["route_rule"]["text"] == "returned by a rejection"
@@ -407,7 +407,7 @@ def test_rejection_returns_to_the_first_checkpoint(widgets):
     rec = widgets.kernel.get(state["record"])
     assert rec["state"] == "awaiting-check-the-widget"
     assert [(d["by"], d["verdict"], d["meaning"]) for d in rec["decisions"]] == [
-        ("erin", "approve", "approved check the widget"), ("hank", "reject", "wrong size")]
+        ("erin", "approve", "ok"), ("hank", "reject", "wrong size")]
     rejected = event(widgets, run_id, "run.rejected")
     assert len(rejected) == 1 and rejected[0]["to"] == "awaiting-check-the-widget" and rejected[0]["by"] == "hank"
     assert types_of(widgets, run_id)[-2:] == ["run.rejected", "gate.pending"]
@@ -415,18 +415,18 @@ def test_rejection_returns_to_the_first_checkpoint(widgets):
 
 def test_rewound_gate_keeps_its_assignees_so_it_can_be_decided_again(widgets):
     run_id = widgets.runner.submit(P, {"record": {"title": "w"}}, owner="erin")
-    widgets.runner.decide(run_id, "erin", "approve")
-    state = widgets.runner.decide(run_id, "hank", "reject", meaning="wrong size")
+    widgets.runner.decide(run_id, "erin", "approve", meaning="ok", payload_digest=seen(widgets.runner, run_id))
+    state = widgets.runner.decide(run_id, "hank", "reject", meaning="wrong size", payload_digest=seen(widgets.runner, run_id))
     assert state["pending"]["assignees"] == ["erin"]
     assert widgets.kernel.get(state["record"])["assignees"] == ["erin"]
-    state = widgets.runner.decide(run_id, "erin", "approve", meaning="resized")
+    state = widgets.runner.decide(run_id, "erin", "approve", meaning="resized", payload_digest=seen(widgets.runner, run_id))
     assert state["status"] == "waiting" and state["pending"]["checkpoint"] == "approve-the-widget"
 
 
 def test_rejection_without_reject_to_ends_the_run(widgets):
     run_id = widgets.runner.submit(G, {"record": {"title": "g"}}, owner="erin")
     assert widgets.runner.load(run_id)["pending"]["assignees"] == ["hank", "jack"]
-    state = widgets.runner.decide(run_id, "hank", "reject", meaning="not needed")
+    state = widgets.runner.decide(run_id, "hank", "reject", meaning="not needed", payload_digest=seen(widgets.runner, run_id))
     assert state["status"] == "rejected" and state["pending"] is None and state["grant"] is None
     rec = widgets.kernel.get(state["record"])
     assert rec["state"] == "rejected" and rec["decisions"][0]["by"] == "hank"
@@ -435,7 +435,7 @@ def test_rejection_without_reject_to_ends_the_run(widgets):
     assert len(rejected) == 1 and rejected[0]["to"] == "rejected"
     assert types_of(widgets, run_id)[-1] == "run.rejected"
     with pytest.raises(RunError, match="not waiting"):
-        widgets.runner.decide(run_id, "hank", "approve")
+        widgets.runner.decide(run_id, "hank", "approve", meaning="ok", payload_digest=seen(widgets.runner, run_id))
     assert not event(widgets, run_id, "run.completed")
 
 
@@ -461,7 +461,7 @@ def test_tick_escalates_overdue_items_once(widgets):
     assert widgets.runner.tick(today="2999-01-02") == []
     assert len(event(widgets, run_id, "gate.escalated")) == 1
     assert len([m for m in widgets.inbox.for_principal("ivy") if m["run_id"] == run_id]) == 1
-    state = widgets.runner.decide(run_id, "ivy", "approve", meaning="escalated approval")
+    state = widgets.runner.decide(run_id, "ivy", "approve", meaning="escalated approval", payload_digest=seen(widgets.runner, run_id))
     assert state["pending"]["checkpoint"] == "approve-the-widget"
 
 
@@ -469,7 +469,7 @@ def test_tick_ignores_runs_that_are_not_waiting(widgets):
     run_id = widgets.runner.submit(G, {"record": {"title": "g"}}, owner="erin")
     assert widgets.runner.load(run_id)["pending"]["due"] is None, "no SLA on the gadget approval"
     assert widgets.runner.tick(today="2999-01-01") == []
-    widgets.runner.decide(run_id, "hank", "approve")
+    widgets.runner.decide(run_id, "hank", "approve", meaning="ok", payload_digest=seen(widgets.runner, run_id))
     assert widgets.runner.tick(today="2999-01-01") == []
     assert not event(widgets, run_id, "gate.escalated")
 
@@ -480,11 +480,11 @@ def test_decide_precheck_requires_the_terminal_fields_when_the_gate_is_last(widg
     run_id = widgets.runner.submit(G, {"record": {"description": "untitled"}}, owner="erin")
     assert widgets.runner.load(run_id)["status"] == "waiting"
     with pytest.raises(RunError, match="done needs title before approval"):
-        widgets.runner.decide(run_id, "hank", "approve")
+        widgets.runner.decide(run_id, "hank", "approve", meaning="ok", payload_digest=seen(widgets.runner, run_id))
     state = widgets.runner.load(run_id)
     assert state["status"] == "waiting" and state["grant"] is None
     assert not event(widgets, run_id, "gate.decided") and record_of(widgets, run_id)["state"] == "awaiting-approve-the-gadget"
-    state = widgets.runner.decide(run_id, "hank", "approve", fields={"title": "Gadget"})
+    state = widgets.runner.decide(run_id, "hank", "approve", fields={"title": "Gadget"}, meaning="ok", payload_digest=seen(widgets.runner, run_id))
     assert state["status"] == "completed"
     rec = widgets.kernel.get(state["record"])
     assert rec["state"] == "done" and rec["fields"]["title"] == "Gadget"
@@ -494,7 +494,7 @@ def test_decide_precheck_requires_the_terminal_fields_when_the_gate_is_last(widg
 
 def test_child_process_is_admitted_by_the_parent_grant(widgets):
     parent = widgets.runner.submit(P, {"record": {"title": "parent"}}, owner="erin")
-    widgets.runner.decide(parent, "erin", "approve")
+    widgets.runner.decide(parent, "erin", "approve", meaning="ok", payload_digest=seen(widgets.runner, parent))
     assert widgets.runner.load(parent)["grant"]
     child = widgets.runner.submit(G, {"record": {"title": "child"}}, owner="erin", parent_run=parent)
     state = widgets.runner.load(child)
@@ -526,7 +526,7 @@ def test_run_for_record_returns_the_latest_run(widgets, monkeypatch):
     loc = widgets.runner.load(r1)["record"]
     assert widgets.runner.run_for_record(loc)["id"] == r1
     assert widgets.runner.run_for_record("rec:task:TASK-0999") is None
-    widgets.runner.decide(r1, "hank", "reject", meaning="again please")
+    widgets.runner.decide(r1, "hank", "reject", meaning="again please", payload_digest=seen(widgets.runner, r1))
     r2 = widgets.runner.submit(G, {"record": {}}, owner="erin", record=loc)
     assert widgets.runner.load(r2)["record"] == loc
     assert [r["number"] for r in widgets.kernel.query(type_="task")] == [widgets.kernel.get(loc)["number"]], "no second record"
@@ -553,7 +553,7 @@ def test_run_for_record_is_the_latest_even_within_one_second(widgets, monkeypatc
     monkeypatch.setattr(runner_module, "uuid", Ids)
     r1 = widgets.runner.submit(G, {"record": {"title": "g"}}, owner="erin")
     loc = widgets.runner.load(r1)["record"]
-    widgets.runner.decide(r1, "hank", "reject", meaning="again please")
+    widgets.runner.decide(r1, "hank", "reject", meaning="again please", payload_digest=seen(widgets.runner, r1))
     r2 = widgets.runner.submit(G, {"record": {}}, owner="erin", record=loc)
     assert (r1, r2) == ("f" * 10, "0" * 10)
     assert widgets.runner.run_for_record(loc)["id"] == r2
@@ -563,11 +563,11 @@ def test_list_statuses_are_derived_from_the_track(widgets):
     assert widgets.runner.list() == []
     r1 = widgets.runner.submit(G, {"record": {"title": "g"}}, owner="erin")
     loc = widgets.runner.load(r1)["record"]
-    widgets.runner.decide(r1, "hank", "reject", meaning="again please")
+    widgets.runner.decide(r1, "hank", "reject", meaning="again please", payload_digest=seen(widgets.runner, r1))
     r2 = widgets.runner.submit(G, {"record": {}}, owner="erin", record=loc)
     statuses = {s["id"]: s["status"] for s in widgets.runner.list()}
     assert statuses == {r1: "rejected", r2: "waiting"}
-    widgets.runner.decide(r2, "jack", "approve")
+    widgets.runner.decide(r2, "jack", "approve", meaning="ok", payload_digest=seen(widgets.runner, r2))
     statuses = {s["id"]: s["status"] for s in widgets.runner.list()}
     assert statuses == {r1: "rejected", r2: "completed"}
     for s in widgets.runner.list():
@@ -591,8 +591,8 @@ def test_field_assignee_route_waits_for_the_named_person(widgets):
     assert rec["fields"]["assignee"] == "frank" and rec["assignees"] == ["frank"]
     assert [m["to"] for m in widgets.inbox.all() if m["kind"] == "approval" and m["run_id"] == run_id] == ["frank"]
     with pytest.raises(RunError, match="erin is not an assignee"):
-        widgets.runner.decide(run_id, "erin", "approve")
-    assert widgets.runner.decide(run_id, "frank", "approve")["pending"]["checkpoint"] == "approve-the-widget"
+        widgets.runner.decide(run_id, "erin", "approve", meaning="ok", payload_digest=seen(widgets.runner, run_id))
+    assert widgets.runner.decide(run_id, "frank", "approve", meaning="ok", payload_digest=seen(widgets.runner, run_id))["pending"]["checkpoint"] == "approve-the-widget"
 
 
 def test_field_assignee_without_approve_permission_fails_the_run(widgets):
@@ -608,4 +608,4 @@ def test_field_assignee_without_approve_permission_fails_the_run(widgets):
     assert rec["state"] == "failed" and rec["assignees"] == [widgets.runner.load(run_id)["owner"]]
     assert not [m for m in widgets.inbox.all() if m["kind"] == "approval" and m["run_id"] == run_id]
     with pytest.raises(RunError, match="not waiting"):
-        widgets.runner.decide(run_id, "gina", "approve")
+        widgets.runner.decide(run_id, "gina", "approve", meaning="ok", payload_digest=seen(widgets.runner, run_id))

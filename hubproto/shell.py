@@ -38,7 +38,7 @@ from . import authz
 from .app import Hub
 from .dms import CLASSES
 from .kernel import KernelGuardError
-from .runner import RunError
+from .runner import FIELD_ROLES, RunError
 
 MERMAID_URL = "https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.4.1/mermaid.min.js"
 DEFAULT_USER = "alice"
@@ -675,7 +675,7 @@ released by {esc(meta['released_by'])} (<a href="{href('/releases', user)}">rele
         for name, op in bundle["ops"].items():
             d = authz.check(bundle, user, "create", op["object"], op["folder"])
             first_role = op["steps"][0]["role"]
-            holds = first_role == "system" or first_role in authz.roles_of(bundle, user)
+            holds = first_role in ("system", *FIELD_ROLES) or first_role in authz.roles_of(bundle, user)
             if d["allowed"] and holds:
                 startable.append((name, op, d))
             else:
@@ -986,7 +986,7 @@ run <a href="{href('/run/' + r['id'], user)}">{esc(r['id'])}</a> started by {esc
 {brief}
 {'<div class="why"><b>Guard findings:</b><br>' + '<br>'.join(esc(x) for x in problems) + '</div>' if problems else ''}
 {hold}
-<form method="post" action="/decide">{hidden_as(user)}<input type="hidden" name="run" value="{esc(r['id'])}"><input type="hidden" name="digest" value="{esc(p['payload_digest'])}">
+<form method="post" action="/decide">{hidden_as(user)}<input type="hidden" name="run" value="{esc(r['id'])}"><input type="hidden" name="digest" value="{esc(r.get('seen_digest') or self.hub.runner.seen_digest(r))}">
 {needs}<div>{inputs}</div>
 <div><label class="f"><span>meaning of your signature <b>*</b></span><input name="meaning" placeholder="e.g. approved for posting" size="40" required></label>
 <button name="verdict" value="approve">Approve</button> <button class="secondary" name="verdict" value="reject">Reject</button></div></form></div>"""
@@ -1381,7 +1381,7 @@ record {self._record_link(s['record']) if s.get('record') else '-'}; pinned to r
         except Exception:
             raise ShellError(f"No Frame {self.arg!r}.", 404) from None
         lines = "".join(f"<tr id='L{i}'><td class='why'><a href='#L{i}'>{i}</a></td><td><pre style='margin:0;background:none;padding:0'>{esc(line)}</pre></td></tr>"
-                        for i, line in enumerate(frame.lines, start=1))
+                        for i, line in enumerate(frame.file_lines, start=1))
         body = f"<h1>{esc(frame.name)} <span class='chip'>v{esc(frame.version)}</span></h1><div class='card'>{esc(frame.description)}<br><span class='why'>scope {esc(frame.scope)}; maintained by {esc(frame.maintainer)}; visibility {esc(frame.visibility)}; inherits {esc(', '.join(frame.inherits) or 'nothing')}</span></div><table>{lines}</table>"
         self._page(frame.name, body)
 

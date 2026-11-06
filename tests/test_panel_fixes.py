@@ -6,7 +6,7 @@ from datetime import date
 
 import pytest
 
-from conftest import BIG_BILL, SMALL_BILL, dated, release_all
+from conftest import BIG_BILL, SMALL_BILL, dated, release_all, seen
 from hubproto.app import Hub
 from hubproto.kernel import Kernel, KernelGuardError, ScopedKernel
 from hubproto.runner import RunError
@@ -27,8 +27,8 @@ def test_cog_never_orders_without_a_price_and_buyer_price_reaches_the_po(release
     review = next(e for e in released.runner.track(run_id) if e["type"] == "gate.cog_review")
     assert review["verdict"] == "escalate"
     with pytest.raises(RunError, match="may not set"):
-        released.runner.decide(run_id, "dave", "approve", fields={"requested_by": "dave", "risk": "low"})
-    released.runner.decide(run_id, "dave", "approve", meaning="ordered", fields={"unit_cost": 0.02})
+        released.runner.decide(run_id, "dave", "approve", fields={"requested_by": "dave", "risk": "low"}, meaning="ok", payload_digest=seen(released.runner, run_id))
+    released.runner.decide(run_id, "dave", "approve", meaning="ordered", fields={"unit_cost": 0.02}, payload_digest=seen(released.runner, run_id))
     pr = k.get(state["record"])
     po = k.get(pr["fields"]["po"])
     assert po["fields"]["amount"] == 20000.0 and pr["fields"]["amount"] == 20000.0
@@ -39,7 +39,7 @@ def test_buyer_cannot_issue_a_po_to_an_unapproved_supplier(released):
     k = released.kernel
     item = _item(k, "T-9", supplier=None, unit_cost=10.0)
     run_id = released.runner.submit("purchase-request", {"record": {"title": "tools", "item": item["locator"], "quantity": 2}}, owner="alice")
-    state = released.runner.decide(run_id, "dave", "approve", meaning="use NewCo", fields={"supplier": "newco-tools"})
+    state = released.runner.decide(run_id, "dave", "approve", meaning="use NewCo", fields={"supplier": "newco-tools"}, payload_digest=seen(released.runner, run_id))
     assert state["status"] == "failed"
     failed = next(e for e in released.runner.track(run_id) if e["type"] == "run.failed")
     assert "not approved" in failed["reason"]
@@ -51,8 +51,9 @@ def test_buyer_cannot_issue_a_po_to_an_unapproved_supplier(released):
 def test_negative_quantities_are_refused(released):
     k = released.kernel
     item = _item(k, "N-1", unit_cost=1.0)
-    run_id = released.runner.submit("purchase-request", {"record": {"title": "neg", "item": item["locator"], "quantity": -5}}, owner="alice")
-    assert released.runner.load(run_id)["status"] == "failed"
+    with pytest.raises(RunError, match="cannot be negative"):  # refused before any record exists
+        released.runner.submit("purchase-request", {"record": {"title": "neg", "item": item["locator"], "quantity": -5}}, owner="alice")
+    assert not [r for r in released.kernel.query(type_="purchase-request") if r["fields"].get("title") == "neg"]
 
 
 # ---------------------------------------------------------------- accounting: duplicate bills, negative bills, reversal
@@ -68,8 +69,8 @@ def test_duplicate_bill_against_a_fully_billed_po_is_refused(released):
 
 
 def test_negative_bill_never_posts(released):
-    run_id = released.runner.submit("purchase-to-pay", {"record": dated({**SMALL_BILL, "amount": -1500})}, owner="alice")
-    assert released.runner.load(run_id)["status"] == "failed"
+    with pytest.raises(RunError, match="cannot be negative"):  # refused before any record exists
+        released.runner.submit("purchase-to-pay", {"record": dated({**SMALL_BILL, "amount": -1500})}, owner="alice")
     with pytest.raises(KernelGuardError, match="negative"):
         released.kernel.post_journal({"date": date.today().isoformat(), "lines": [{"account": "a", "debit": -5, "credit": 0}, {"account": "b", "debit": 0, "credit": -5}]},
                                      run_id="r", release="x", grant={"id": "g", "run_id": "r", "decided_by": "bob"}, prepared_by="alice", approved_by="bob", by="t")
@@ -89,15 +90,15 @@ def test_journal_reversal_is_a_gated_mirror_posting(released):
     state = released.runner.load(rev)
     assert state["status"] == "waiting" and state["pending"]["assignees"] == ["bob"]
     with pytest.raises(RunError, match="segregation|not an assignee"):
-        released.runner.decide(rev, "alice", "approve")
-    released.runner.decide(rev, "bob", "approve", meaning="reversal approved")
+        released.runner.decide(rev, "alice", "approve", meaning="ok", payload_digest=seen(released.runner, rev))
+    released.runner.decide(rev, "bob", "approve", meaning="reversal approved", payload_digest=seen(released.runner, rev))
     journals = list(released.kernel.journals().values())
     assert len(journals) == 2
     reversal = next(j for j in journals if j["id"] != journal["id"])
     assert reversal["lines"][0]["credit"] == journal["lines"][0]["debit"] and reversal["lines"][1]["debit"] == journal["lines"][1]["credit"]
     assert any(l["rel"] == "supersedes" for l in released.kernel.get(reversal["locator"])["links"])
     again = released.runner.submit("journal-reversal", {"record": {"journal": journal["locator"], "reason": "twice"}}, owner="alice")
-    released.runner.decide(again, "bob", "approve", meaning="oops")
+    released.runner.decide(again, "bob", "approve", meaning="oops", payload_digest=seen(released.runner, again))
     assert released.runner.load(again)["status"] == "failed", "a journal is reversed once"
 
 
@@ -111,8 +112,8 @@ def test_partial_and_over_receipts(released):
     assert released.runner.load(own)["status"] == "failed", "the only buyer recorded it himself: segregation of duties leaves no approver"
     gr1 = released.runner.submit("goods-receipt", {"record": {"po": po["locator"], "lines": [{"item": item["locator"], "quantity": 4}]}}, owner="alice")
     with pytest.raises(RunError, match="not an assignee"):
-        released.runner.decide(gr1, "alice", "approve")
-    released.runner.decide(gr1, "dave", "approve", meaning="4 received")
+        released.runner.decide(gr1, "alice", "approve", meaning="ok", payload_digest=seen(released.runner, gr1))
+    released.runner.decide(gr1, "dave", "approve", meaning="4 received", payload_digest=seen(released.runner, gr1))
     assert k.get(item["locator"])["fields"]["stock"] == 4
     assert k.get(po["locator"])["state"] == "issued", "a partial receipt leaves the order open"
     assert k.purchase_orders()[f"po:{po['number']}"]["received"] is False
@@ -121,7 +122,7 @@ def test_partial_and_over_receipts(released):
     gr3 = released.runner.submit("goods-receipt", {"record": {"po": po["locator"], "lines": [{"item": item["locator"], "quantity": -2}]}}, owner="alice")
     assert released.runner.load(gr3)["status"] == "failed"
     gr4 = released.runner.submit("goods-receipt", {"record": {"po": po["locator"], "lines": [{"item": item["locator"], "quantity": 6}]}}, owner="alice")
-    released.runner.decide(gr4, "dave", "approve", meaning="rest received")
+    released.runner.decide(gr4, "dave", "approve", meaning="rest received", payload_digest=seen(released.runner, gr4))
     assert k.get(item["locator"])["fields"]["stock"] == 10 and k.get(po["locator"])["state"] == "received"
     gr5 = released.runner.submit("goods-receipt", {"record": {"po": po["locator"], "lines": [{"item": item["locator"], "quantity": 1}]}}, owner="alice")
     assert released.runner.load(gr5)["status"] == "failed", "nothing outstanding"
@@ -131,7 +132,7 @@ def test_people_can_create_items_through_a_process(released):
     run_id = released.runner.submit("item-request", {"record": {"name": "M3 bolt", "mpn": "DIN933-M3"}}, owner="alice")
     state = released.runner.load(run_id)
     assert state["status"] == "waiting" and state["pending"]["assignees"] == ["dave"]
-    released.runner.decide(run_id, "dave", "approve", meaning="item approved", fields={"supplier": "acme-metals", "unit_cost": 0.1})
+    released.runner.decide(run_id, "dave", "approve", meaning="item approved", fields={"supplier": "acme-metals", "unit_cost": 0.1}, payload_digest=seen(released.runner, run_id))
     item = released.kernel.get(state["record"])
     assert item["state"] == "active" and item["fields"]["supplier"] == "acme-metals"
 
@@ -142,12 +143,12 @@ def test_hold_blocks_decisions_and_failed_runs_are_retryable(released):
     rec = released.runner.load(run_id)["record"]
     released.kernel.hold(rec, True, "legal hold", by="bob")
     with pytest.raises(RunError, match="on hold"):
-        released.runner.decide(run_id, "bob", "approve")
+        released.runner.decide(run_id, "bob", "approve", meaning="ok", payload_digest=seen(released.runner, run_id))
     released.kernel.hold(rec, False, "", by="bob")
-    assert released.runner.decide(run_id, "bob", "approve", meaning="ok")["status"] == "completed"
+    assert released.runner.decide(run_id, "bob", "approve", meaning="ok", payload_digest=seen(released.runner, run_id))["status"] == "completed"
     bad = released.runner.submit("purchase-to-pay", {"record": {**SMALL_BILL, "date": "2000-01-01", "po_ref": "PO-1003"}}, owner="alice")
     with pytest.raises(RunError, match="not waiting"):
-        released.runner.decide(bad, "dave", "approve")
+        released.runner.decide(bad, "dave", "approve", meaning="ok", payload_digest=seen(released.runner, bad))
     with pytest.raises(RunError, match="may not retry"):
         released.runner.retry(bad, "carol")
     released.kernel.set_fields(released.runner.load(bad)["record"], {"date": date.today().isoformat(), "po_ref": "PO-1003"}, by="alice")
@@ -166,8 +167,8 @@ def test_decisions_pre_check_required_fields_at_every_gate(released):
     assert rec["fields"]["risk"] == "high", "an NCR is scored as an NCR even with a quantity"
     assignee = state["pending"]["assignees"][0]
     with pytest.raises(RunError, match="needs disposition"):
-        released.runner.decide(run_id, assignee, "approve", meaning="ok")
-    released.runner.decide(run_id, assignee, "approve", meaning="scrap it", fields={"disposition": "scrap", "disposition_rationale": "beyond repair"})
+        released.runner.decide(run_id, assignee, "approve", meaning="ok", payload_digest=seen(released.runner, run_id))
+    released.runner.decide(run_id, assignee, "approve", meaning="scrap it", fields={"disposition": "scrap", "disposition_rationale": "beyond repair"}, payload_digest=seen(released.runner, run_id))
     assert released.kernel.get(state["record"])["state"] == "closed"
 
 
@@ -177,8 +178,8 @@ def test_rejection_to_a_cog_step_returns_the_item_for_rework(hub, monkeypatch):
     run_id = hub.runner.submit("design-release", {"record": {"title": "Widget", "kind": "mechanical", "user_needs": ["Must fit the slot."]}}, owner="alice")
     for req in hub.kernel.query(type_="requirement"):
         hub.runner.decide(hub.runner.run_for_record(req["locator"])["id"], "bob", "approve", meaning="ok",
-                          fields={"acceptance_criteria": "fits", "verification_method": "inspection"})
-    state = hub.runner.decide(run_id, "bob", "reject", meaning="needs a drawing")
+                          fields={"acceptance_criteria": "fits", "verification_method": "inspection"}, payload_digest=seen(hub.runner, hub.runner.run_for_record(req["locator"])["id"]))
+    state = hub.runner.decide(run_id, "bob", "reject", meaning="needs a drawing", payload_digest=seen(hub.runner, run_id))
     assert state["status"] == "waiting" and state["pending"]["kind"] == "resubmit" and state["pending"]["assignees"] == ["alice"]
     design = hub.kernel.get(state["record"])
     assert design["state"] == "returned" and "returned" in state["workflow"]["states"]
@@ -190,7 +191,7 @@ def test_rejection_to_a_cog_step_returns_the_item_for_rework(hub, monkeypatch):
                                 note="added the drawing")
     assert state["status"] == "waiting" and state["pending"]["kind"] == "decision" and state["pending"]["assignees"] == ["bob"]
     assert any(d["fields"]["doc_type"] == "drawing" for d in hub.dms.documents_of(design["locator"]))
-    assert hub.runner.decide(run_id, "bob", "approve", meaning="released")["status"] == "completed"
+    assert hub.runner.decide(run_id, "bob", "approve", meaning="released", payload_digest=seen(hub.runner, run_id))["status"] == "completed"
 
 
 def test_design_cannot_be_released_with_unaccepted_or_no_requirements(hub, monkeypatch):
@@ -198,16 +199,16 @@ def test_design_cannot_be_released_with_unaccepted_or_no_requirements(hub, monke
     release_all(hub)
     none = hub.runner.submit("design-release", {"record": {"title": "No reqs", "kind": "mechanical"}}, owner="alice")
     with pytest.raises(RunError, match="traces to no requirement"):
-        hub.runner.decide(none, "bob", "approve", meaning="go")
+        hub.runner.decide(none, "bob", "approve", meaning="go", payload_digest=seen(hub.runner, none))
     some = hub.runner.submit("design-release", {"record": {"title": "Reqs", "kind": "mechanical", "user_needs": ["Must be blue."]}}, owner="alice")
     with pytest.raises(RunError, match="requirements not accepted"):
-        hub.runner.decide(some, "bob", "approve", meaning="go")
+        hub.runner.decide(some, "bob", "approve", meaning="go", payload_digest=seen(hub.runner, some))
     req = hub.kernel.query(type_="requirement")[-1]
     assert req["fields"]["statement"] == "Must be blue."
     hub.runner.decide(hub.runner.run_for_record(req["locator"])["id"], "bob", "approve", meaning="ok",
-                      fields={"acceptance_criteria": "RAL 5010", "verification_method": "inspection"})
+                      fields={"acceptance_criteria": "RAL 5010", "verification_method": "inspection"}, payload_digest=seen(hub.runner, hub.runner.run_for_record(req["locator"])["id"]))
     design = hub.kernel.get(hub.runner.load(some)["record"])
-    hub.runner.decide(some, "bob", "approve", meaning="released")
+    hub.runner.decide(some, "bob", "approve", meaning="released", payload_digest=seen(hub.runner, some))
     design = hub.kernel.get(design["locator"])
     assert design["state"] == "released" and design["fields"]["requirements_accepted"] is True and design["fields"]["risk"] != "high"
 
@@ -224,7 +225,7 @@ def test_notify_only_escalation_adds_no_approver(released):
 
 def test_child_runs_need_a_live_parent_and_a_related_owner(released):
     run_id = released.runner.submit("purchase-to-pay", {"record": dated(BIG_BILL)}, owner="alice")
-    released.runner.decide(run_id, "bob", "approve", meaning="ok")
+    released.runner.decide(run_id, "bob", "approve", meaning="ok", payload_digest=seen(released.runner, run_id))
     with pytest.raises(RunError, match="only its owner or the person who approved"):
         released.runner.submit("task", {"record": {"title": "x"}}, owner="carol", parent_run=run_id)
     rejected = released.runner.submit("purchase-to-pay", {"record": dated({**BIG_BILL, "po_ref": "PO-1003", "amount": 12000})}, owner="alice")

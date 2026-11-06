@@ -39,6 +39,8 @@ class Frame:
     visibility: str
     body: str
     frontmatter: dict
+    body_start: int = 1  # file line of the first body line
+    text: str = ""  # the whole file, for display with file line numbers
     version: str = "0"
     scope: str = ""
     maintainer: str = ""
@@ -48,6 +50,16 @@ class Frame:
     @property
     def lines(self) -> list[str]:
         return self.body.splitlines()
+
+    @property
+    def file_lines(self) -> list[str]:
+        """Every line of the file, frontmatter included, so index i is file line i+1."""
+        return (self.text or self.body).splitlines()
+
+    def line(self, n: int) -> str | None:
+        """The text on file line n (1-based, as an editor shows it); None when out of range."""
+        lines = self.file_lines
+        return lines[n - 1] if 1 <= n <= len(lines) else None
 
 
 def _parse_scalar(raw: str):
@@ -86,22 +98,33 @@ def _mini_yaml(text: str) -> dict:
 
 
 def parse_frontmatter(text: str) -> tuple[dict, str]:
+    data, body, _ = parse_frontmatter_offset(text)
+    return data, body
+
+
+def parse_frontmatter_offset(text: str) -> tuple[dict, str, int]:
+    """Frontmatter, body and the 1-based file line on which the body starts (so citations use editor line numbers)."""
     if not text.startswith("---"):
-        raise FrameError("missing frontmatter block")
+        raise FrameError("missing frontmatter block (the file must start with '---')")
     parts = text.split("\n---", 1)
     if len(parts) != 2:
-        raise FrameError("unterminated frontmatter block")
+        raise FrameError("unterminated frontmatter block (no closing '---')")
     raw = parts[0][3:]
-    body = parts[1].lstrip("\n")
+    rest = parts[1]
+    body = rest.lstrip("\n")
+    body_start = parts[0].count("\n") + 2 + (len(rest) - len(body))  # frontmatter lines, the closing ---, blank lines
     data = yaml.safe_load(raw) if yaml else _mini_yaml(raw)
     if not isinstance(data, dict):
-        raise FrameError("frontmatter must be a mapping")
-    return data, body
+        raise FrameError("frontmatter must be a mapping of key: value lines")
+    return data, body, body_start
 
 
 def load_frame(path: Path) -> Frame:
     text = path.read_text(encoding="utf-8")
-    data, body = parse_frontmatter(text)
+    try:
+        data, body, body_start = parse_frontmatter_offset(text)
+    except FrameError as e:
+        raise FrameError(f"{path}: {e}") from None
     for key in REQUIRED_FIELDS:
         if key not in data or data[key] in ("", None):
             raise FrameError(f"{path}: missing required field {key!r}")
@@ -117,6 +140,8 @@ def load_frame(path: Path) -> Frame:
         description=str(data["description"]),
         visibility=str(data["visibility"]),
         body=body,
+        body_start=body_start,
+        text=text,
         frontmatter=data,
         version=str(data.get("version", "0")),
         scope=str(data.get("scope", "")),
@@ -135,9 +160,14 @@ class FrameStore:
         for path in sorted(self.root.rglob("*.frame.md")):
             if any(part.startswith(".") for part in path.relative_to(self.root).parts):
                 continue  # dot-directories hold replaced or archived Frames
-            frame = load_frame(path)
+            try:
+                frame = load_frame(path)
+            except FrameError:
+                raise
+            except Exception as e:  # a bad YAML value, an odd encoding: still name the file
+                raise FrameError(f"{path}: {e}") from None
             if frame.name in self.frames:
-                raise FrameError(f"duplicate Frame name {frame.name!r}")
+                raise FrameError(f"duplicate Frame name {frame.name!r} ({path} and {self.frames[frame.name].path})")
             self.frames[frame.name] = frame
 
     def get(self, name: str) -> Frame:

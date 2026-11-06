@@ -5,7 +5,7 @@ import base64
 
 import pytest
 
-from conftest import dated, release_all
+from conftest import dated, release_all, seen
 from hubproto import worker
 from hubproto.runner import RunError
 from test_cad import SCHEMATIC, fcstd_bytes
@@ -53,9 +53,9 @@ def test_design_to_order_to_receipt_to_ledger(hub, fake_worker):
     for r in reqs:
         rr = hub.runner.run_for_record(r["locator"])
         with pytest.raises(RunError, match="not an assignee"):
-            hub.runner.decide(rr["id"], "alice", "approve")
+            hub.runner.decide(rr["id"], "alice", "approve", meaning="ok", payload_digest=seen(hub.runner, rr["id"]))
         hub.runner.decide(rr["id"], "bob", "approve", meaning="requirement accepted",
-                          fields={"acceptance_criteria": "Verified by the acceptance test procedure", "verification_method": "test"})
+                          fields={"acceptance_criteria": "Verified by the acceptance test procedure", "verification_method": "test"}, payload_digest=seen(hub.runner, rr["id"]))
         assert k.get(r["locator"])["state"] == "accepted"
 
     # The waiting design is refreshed by the acceptance itself, before anyone opens its review card.
@@ -75,7 +75,7 @@ def test_design_to_order_to_receipt_to_ledger(hub, fake_worker):
 
     # 4. The design authority approves the review: the part is released, the unknown item is created,
     #    and purchase requests are raised for the shortages under the design's grant.
-    hub.runner.decide(run2, "bob", "approve", meaning="design package reviewed and released")
+    hub.runner.decide(run2, "bob", "approve", meaning="design package reviewed and released", payload_digest=seen(hub.runner, run2))
     d2 = k.get(d2["locator"])
     assert d2["state"] == "released" and k.get(d2["fields"]["part"])["state"] == "released"
     created = {k.get(ref)["fields"]["mpn"]: k.get(ref) for ref in d2["fields"]["items_created"]}
@@ -100,8 +100,8 @@ def test_design_to_order_to_receipt_to_ledger(hub, fake_worker):
     review = next(e for e in hub.runner.track(u_run["id"]) if e["type"] == "gate.cog_review")
     assert review["verdict"] == "escalate"
     with pytest.raises(RunError, match="segregation of duties|not an assignee"):
-        hub.runner.decide(u_run["id"], "alice", "approve")
-    hub.runner.decide(u_run["id"], "dave", "approve", meaning="ordered from Acme", fields={"supplier": "acme-metals", "unit_cost": 0.05})
+        hub.runner.decide(u_run["id"], "alice", "approve", meaning="ok", payload_digest=seen(hub.runner, u_run["id"]))
+    hub.runner.decide(u_run["id"], "dave", "approve", meaning="ordered from Acme", fields={"supplier": "acme-metals", "unit_cost": 0.05}, payload_digest=seen(hub.runner, u_run["id"]))
     unknown = k.get(unknown["locator"])
     assert unknown["state"] == "ordered"
     po2 = k.get(unknown["fields"]["po"])
@@ -114,7 +114,7 @@ def test_design_to_order_to_receipt_to_ledger(hub, fake_worker):
                                                                                         "quantity": 1}]}}, owner="alice")
     gstate = hub.runner.load(gr)
     assert gstate["status"] == "waiting" and gstate["pending"]["assignees"] == ["dave"]
-    hub.runner.decide(gr, "dave", "approve", meaning="goods checked and received")
+    hub.runner.decide(gr, "dave", "approve", meaning="goods checked and received", payload_digest=seen(hub.runner, gr))
     assert k.get(gstate["record"])["state"] == "received"
     assert k.get(known["fields"]["item"])["fields"]["stock"] == 2
     assert k.purchase_orders()[f"po:{po['number']}"]["received"] is True and k.get(po["locator"])["state"] == "received"

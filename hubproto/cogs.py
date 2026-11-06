@@ -107,8 +107,16 @@ class RecordFiler(Cog):
             return make_envelope(self.id, self.version, "run", error={"code": "no-record", "detail": "run has no record"})
         attachments = prior.pop("attachments", None) or (input.get("record") or {}).get("attachments") or []
         fields = {k: v for k, v in prior.items() if k not in ("id", "folder", "state", "locator", "citations", "attachments")}
-        fields["filed_by"] = ctx.owner
-        ctx.kernel.set_fields(rec["locator"], fields, by=ctx.owner, run_id=ctx.run_id, release=ctx.release)
+        # What the person submitted stays theirs; what an earlier cog drafted is filed as the machine's draft, so a
+        # person at a later Gate may correct it.
+        declared = {k: v for k, v in fields.items() if rec["fields"].get(k) == v}
+        drafted = {k: v for k, v in fields.items() if k not in declared}
+        if declared:
+            ctx.kernel.set_fields(rec["locator"], {**declared, "filed_by": ctx.owner}, by=ctx.owner, run_id=ctx.run_id, release=ctx.release)
+        else:
+            ctx.kernel.set_fields(rec["locator"], {"filed_by": ctx.owner}, by=ctx.owner, run_id=ctx.run_id, release=ctx.release)
+        if drafted:
+            ctx.kernel.set_fields(rec["locator"], drafted, by=self.id, run_id=ctx.run_id, release=ctx.release)
         filed = []
         if attachments and ctx.dms is not None:
             import base64
@@ -485,7 +493,7 @@ class NCRClassifier(Cog):
                "containment": rec.get("containment") or f"Quarantine the affected items ({rec.get('part') or rec.get('title') or 'see description'}; lot {rec.get('lot') or 'n/a'}; quantity {rec.get('quantity') or 'n/a'}) pending disposition, and notify the process owner."}
         if sev == "low":
             out.setdefault("disposition", "rework")
-            out.setdefault("disposition_rationale", "Proposed by the classifier for a low-risk nonconformance; confirmed at the Gate.")
+            out.setdefault("disposition_rationale", "Proposed by the ncr-classifier cog for a low-risk nonconformance (rework); whoever approves the disposition confirms it.")
         return self.ok("run", out, problems)
 
 

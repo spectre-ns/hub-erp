@@ -4,7 +4,7 @@ import shutil
 
 import pytest
 
-from conftest import BIG_BILL, ROOT, dated, release_all
+from conftest import BIG_BILL, ROOT, dated, release_all, seen
 from hubproto.app import Hub
 from hubproto.dms import BlobStore, next_revision
 from hubproto.kernel import KernelGuardError
@@ -198,7 +198,7 @@ def test_one_document_attached_to_two_records_of_different_types(d, hub):
 
 def approved_big_bill(p2p):
     run_id = p2p.runner.submit("purchase-to-pay", {"record": dated(BIG_BILL)}, owner="alice")
-    p2p.runner.decide(run_id, "bob", "approve", meaning="approved for posting")
+    p2p.runner.decide(run_id, "bob", "approve", meaning="approved for posting", payload_digest=seen(p2p.runner, run_id))
     state = p2p.runner.load(run_id)
     assert state["status"] == "completed"
     return p2p.kernel.get(state["record"])
@@ -241,7 +241,7 @@ def test_render_snapshot_shows_the_approval_signature(p2p):
 
 def test_render_snapshot_shows_the_rejection_signature(p2p):
     run_id = p2p.runner.submit("purchase-to-pay", {"record": dated(BIG_BILL)}, owner="alice")
-    p2p.runner.decide(run_id, "bob", "reject", meaning="duplicate invoice")
+    p2p.runner.decide(run_id, "bob", "reject", meaning="duplicate invoice", payload_digest=seen(p2p.runner, run_id))
     bill = p2p.kernel.get(p2p.runner.load(run_id)["record"])
     assert bill["state"] == "rejected"
     decision = bill["decisions"][0]

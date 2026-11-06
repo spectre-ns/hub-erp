@@ -28,7 +28,7 @@ def test_extraction_cites_the_sentence(hub):
     assert {"permission", "threshold", "routing", "approval_criteria", "sod", "process"} <= kinds
     for rule in ex.rules:
         src = rule["source"]
-        assert hub.frames.get(src["frame"]).lines[src["line"] - 1].strip() == src["text"]
+        assert hub.frames.get(src["frame"]).line(src["line"]).strip() == src["text"]
     routing = [r for r in ex.rules if r["kind"] == "routing"]
     assert routing[0]["condition"] == {"field": "amount", "op": ">", "value": 10000.0, "currency": "USD"}
     assert routing[1]["assignee"] == "cog:ap-reviewer"

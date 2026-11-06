@@ -214,7 +214,7 @@ def cmd_inbox_pending(args):
         label = f"{rec['number']} {_summary(rec)}".strip() if rec else (s.get("record") or "-")
         print(f"{s['id']} {kind:9s} {p['title']:40s} {s['process']:22s} {label}{due}")
         if kind == "decision":
-            print(f"    digest={p['payload_digest']} fields={','.join(hub.runner.allowed_decision_fields(s)) or '-'}")
+            print(f"    digest={s.get('seen_digest') or hub.runner.seen_digest(s)} fields={','.join(hub.runner.allowed_decision_fields(s)) or '-'}")
         else:
             print(f"    reason={p.get('reason', '')!r} rework from step {p.get('step')}")
     failed = [s for s in hub.runner.list() if s["status"] == "failed" and s["owner"] == args.as_user]

@@ -58,10 +58,10 @@ def grounding_guard(rules: list[dict], frames: dict[str, Frame]) -> list[Finding
             out.append(Finding("source-grounding", "error", "source names an unknown Frame", key))
             continue
         line = int(src.get("line", 0) or 0)
-        if not (1 <= line <= len(frame.lines)):
+        if not (1 <= line <= len(frame.file_lines)):
             out.append(Finding("source-grounding", "error", f"line {line} is outside the Frame", key, frame.name, line))
             continue
-        if frame.lines[line - 1].strip() != str(src.get("text", "")).strip():
+        if (frame.line(line) or "").strip() != str(src.get("text", "")).strip():
             out.append(Finding("source-grounding", "error",
                                "cited text does not match the Frame at that line", key, frame.name, line))
         if str(frame.version) != str(src.get("version")):

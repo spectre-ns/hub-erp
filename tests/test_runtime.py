@@ -2,7 +2,7 @@
 
 import pytest
 
-from conftest import BIG_BILL, MID_BILL, SMALL_BILL, dated, edit_frame, release_all
+from conftest import BIG_BILL, MID_BILL, SMALL_BILL, dated, edit_frame, release_all, seen
 from hubproto.runner import RunError
 
 
@@ -44,10 +44,10 @@ def test_big_bill_waits_for_the_controller(released):
     assert "over 10,000 USD" in state["pending"]["route_rule"]["text"]
     assert any(m["to"] == "bob" and m["kind"] == "approval" for m in released.inbox.all())
     with pytest.raises(RunError, match="not an assignee"):
-        released.runner.decide(run_id, "dave", "approve")
+        released.runner.decide(run_id, "dave", "approve", meaning="ok", payload_digest=seen(released.runner, run_id))
     with pytest.raises(RunError, match="item changed"):
-        released.runner.decide(run_id, "bob", "approve", payload_digest="deadbeef")
-    state = released.runner.decide(run_id, "bob", "approve", meaning="approved for posting")
+        released.runner.decide(run_id, "bob", "approve", payload_digest="deadbeef", meaning="ok")
+    state = released.runner.decide(run_id, "bob", "approve", meaning="approved for posting", payload_digest=seen(released.runner, run_id))
     assert state["status"] == "completed"
     assert released.kernel.journals()
 
@@ -86,7 +86,7 @@ def test_segregation_of_duties_binds_people_and_cogs(released):
     # alice holds no approve permission, but dave as preparer could try to approve his own bill.
     run_id = released.runner.submit("purchase-to-pay", {"record": dated(MID_BILL)}, owner="alice")
     with pytest.raises(RunError, match="not an assignee"):
-        released.runner.decide(run_id, "alice", "approve")
+        released.runner.decide(run_id, "alice", "approve", meaning="ok", payload_digest=seen(released.runner, run_id))
     # The cog files a small bill itself: it is routed to itself, skipped for SoD, and a person decides.
     run_id = released.runner.submit("purchase-to-pay", {"record": dated(SMALL_BILL)}, owner="ap-reviewer")
     state = released.runner.load(run_id)
@@ -97,11 +97,11 @@ def test_segregation_of_duties_binds_people_and_cogs(released):
 
 def test_rejection_is_final_and_nothing_posts(released):
     run_id = released.runner.submit("purchase-to-pay", {"record": dated(BIG_BILL)}, owner="alice")
-    state = released.runner.decide(run_id, "bob", "reject", meaning="duplicate invoice")
+    state = released.runner.decide(run_id, "bob", "reject", meaning="duplicate invoice", payload_digest=seen(released.runner, run_id))
     assert state["status"] == "rejected"
     assert not released.kernel.journals()
     with pytest.raises(RunError, match="not waiting"):
-        released.runner.decide(run_id, "bob", "approve")
+        released.runner.decide(run_id, "bob", "approve", meaning="ok", payload_digest=seen(released.runner, run_id))
 
 
 def test_run_keeps_its_release_across_a_cutover(released):
@@ -111,7 +111,7 @@ def test_run_keeps_its_release_across_a_cutover(released):
                "Approvals in purchase-to-pay over 10,000 USD go to the payables reviewer.", bump="1.3.0")
     second = release_all(released)["digest"]
     assert released.releases.current()["digest"] == second != first
-    state = released.runner.decide(run_id, "bob", "approve")
+    state = released.runner.decide(run_id, "bob", "approve", meaning="ok", payload_digest=seen(released.runner, run_id))
     assert state["status"] == "completed" and state["release"] == first
     assert next(iter(released.kernel.journals().values()))["release"] == first
     # A new run uses the new routing: the big bill now goes to dave (against a fresh order; PO-1002 is fully billed).

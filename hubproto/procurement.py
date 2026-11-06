@@ -52,14 +52,15 @@ class SupplierChecker(Cog):
         unit_cost = prior.get("unit_cost")
         if unit_cost in (None, "") and item is not None:
             unit_cost = item["fields"].get("unit_cost")
-        if unit_cost in (None, ""):
+        priced = unit_cost not in (None, "")
+        if not priced:
             problems.append(problem("unit-cost", "no unit cost on the request or the item; amount is 0 until a buyer sets it", "warning"))
             unit_cost = 0
         amount = round(qty * float(unit_cost), 2)
         currency = prior.get("currency") or (item["fields"].get("currency") if item else None) or "USD"
         conditions = dict(prior.get("conditions") or {})
         conditions.update({"supplier_approved": ok, "item_known": item is not None})
-        fields = {"supplier": supplier, "supplier_approved": ok, "supplier_note": why, "unit_cost": float(unit_cost),
+        fields = {"supplier": supplier, "supplier_approved": ok, "supplier_note": why, "unit_cost": float(unit_cost) if priced else None,  # left empty so the buyer may price it at the Gate
                   "amount": amount, "currency": currency, "conditions": conditions,
                   "mpn": prior.get("mpn") or (item["fields"].get("mpn") if item else ""),
                   "manufacturer": prior.get("manufacturer") or (item["fields"].get("manufacturer") if item else "")}

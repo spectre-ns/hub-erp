@@ -36,6 +36,10 @@ from .track import Track
 FIELD_ROLES = {"assignee": "assignee", "owner": "owner", "author": "author", "requester": "requested_by",
                "auditor": "auditor", "chair": "chair", "evaluator": "evaluator", "reporter": "reported_by"}
 LIVE_STATUSES = ("submitted", "running", "waiting", "completed")
+def pending_title(step: dict) -> str:
+    return (step.get("gate") or {}).get("title") or step.get("title") or "Approval"
+
+
 PRE_DECISION_HOOKS: dict = {}  # record type -> fn(kernel, record, verdict); raise KernelGuardError to block
 POST_DECISION_HOOKS: dict = {}  # record type -> fn(kernel, record, verdict); runs after the decision took effect
 
@@ -77,7 +81,25 @@ class Runner:
         matches = [p for p in self.root.iterdir() if p.is_dir() and p.name.startswith(run_id)]
         if len(matches) != 1:
             raise RunError(f"run {run_id!r}: {len(matches)} matches")
-        return json.loads((matches[0] / "state.json").read_text())
+        state = json.loads((matches[0] / "state.json").read_text())
+        if state.get("pending") and state["pending"].get("kind") == "decision":
+            state["seen_digest"] = self.seen_digest(state)
+        return state
+
+    def seen_digest(self, state: dict) -> str:
+        """What a signer is confirming: the pending payload plus the record as it is now (fields, links, document
+        versions). A decision must quote it, so a change to the item after the card was rendered is refused."""
+        pending = state.get("pending") or {}
+        seen = {"payload": pending.get("payload_digest"), "step": pending.get("step")}
+        if state.get("record"):
+            rec = self.kernel.get(state["record"])
+            if rec:
+                seen["fields"] = rec["fields"]
+                seen["state"] = rec["state"]
+                seen["links"] = sorted((l["rel"], l["target"]) for l in rec["links"])
+                docs = self.dms.documents_of(rec["locator"]) if self.dms else []
+                seen["documents"] = sorted((d["locator"], str(d["fields"].get("content_sha") or ""), str(d["fields"].get("revision") or "")) for d in docs)
+        return sha256_of(seen)[:16]
 
     def _save(self, state: dict) -> None:
         state["status"] = Track(self._dir(state["id"])).status()
@@ -331,11 +353,19 @@ class Runner:
                                       "reason": f"the next state needs {', '.join(missing)}, which a cog may not supply",
                                       "route_rule": rule["source"]})
                         continue
+                    self._notify([state["owner"]], kind="auto-decided",
+                                 subject=f"{pending_title(step)} on {state.get('record') or state['process']}: approved automatically by {name}",
+                                 body=f"The {name} cog approved this within the fixed criteria in {rule['source'].get('frame')} line {rule['source'].get('line')}. "
+                                      "No person reviewed it; you can see the criteria and the reasons on the run page.", run_id=state["id"])
                     self._record_decision(state, step, track, by=name, by_type="cog", verdict="approve",
                                           meaning="approved within fixed criteria", payload_digest=sha256_of(payload),
                                           delegating_rule=rp.get("delegating_rule"))
                     return "passed"
                 if verdict == "reject":
+                    self._notify([state["owner"]], kind="auto-decided",
+                                 subject=f"{pending_title(step)} on {state.get('record') or state['process']}: rejected automatically by {name}",
+                                 body=f"The {name} cog rejected this within the fixed criteria in {rule['source'].get('frame')} line {rule['source'].get('line')}: "
+                                      + "; ".join(rp.get("reasons") or []), run_id=state["id"])
                     self._record_decision(state, step, track, by=name, by_type="cog", verdict="reject",
                                           meaning="rejected within fixed criteria", payload_digest=sha256_of(payload),
                                           delegating_rule=rp.get("delegating_rule"))
@@ -500,7 +530,11 @@ class Runner:
         td = self.kernel.types.get(rec["type"], {})
         nxt, _ = self._next_state(state, state["pending"]["checkpoint"])
         missing = self._missing_for_person(state, nxt)  # a signer supplies what is still missing, never rewrites what is there
-        return sorted((set(missing) | set(td.get("decision_fields") or [])) - set(td.get("system_fields") or []))
+        machines = set(self.registry.ids()) | {"hub", "system"}
+        setters = rec.get("setters") or {}
+        declared = {k for k, v in rec["fields"].items()  # values a person put there (at Start or at an earlier Gate)
+                    if v not in (None, "", [], {}) and setters.get(k, rec.get("created_by")) not in machines}
+        return sorted((set(missing) | set(td.get("decision_fields") or [])) - set(td.get("system_fields") or []) - declared)
 
     def required_at_start(self, process: str, at: str | None = None) -> list[str]:
         """Fields the submitter must supply: what the first Gate's state requires, minus system fields and defaults."""
@@ -530,17 +564,21 @@ class Runner:
         by = authz.principal_name(by)
         if verdict not in ("approve", "reject"):
             raise RunError("verdict must be approve or reject")
-        if payload_digest and payload_digest != pending["payload_digest"]:
-            raise RunError("the payload you saw differs from the pending payload; the item changed")
         bundle = self.releases.bundle(state["release"])
         allowed = authz.check(bundle, by, "approve", state["manifest"]["object"], state["manifest"]["folder"])
         if not allowed["allowed"]:
             raise RunError(allowed["why"])
         if self._sod_applies(bundle, state) and by == authz.principal_name(state["owner"]):
             raise RunError("segregation of duties: you prepared this item and cannot approve it")
+        if not payload_digest:
+            raise RunError("a decision must quote what you saw: pass the run's seen_digest (shown on the card and by inbox-pending)")
+        if payload_digest != self.seen_digest(state):
+            raise RunError("the item changed since you opened it (its fields, links or documents differ); open it again and decide on what it is now")
         step = next(s for s in state["manifest"]["steps"] if s["id"] == pending["step"])
         track = Track(self._dir(state["id"]))
         rec = self.kernel.get(state["record"]) if state.get("record") else None
+        if verdict == "reject":
+            fields = None  # a rejection changes nothing on the record; its reason is the meaning
         if fields and rec is not None:
             permitted = set(self.allowed_decision_fields(state))
             refused = sorted(k for k in fields if k not in permitted)
@@ -564,10 +602,11 @@ class Runner:
                     hook(self.kernel, rec, verdict)
                 except KernelGuardError as e:
                     raise RunError(str(e)) from None
-        given = bool(meaning.strip())
+        if not meaning.strip():
+            raise RunError("a signature needs its meaning: say in a few words what you are confirming "
+                           "(for example 'invoice matches the order and goods were received')")
         self._record_decision(state, step, track, by=by, by_type="person", verdict=verdict,
-                              meaning=meaning.strip() or f"{verdict}d {pending['title'].lower()}",
-                              payload_digest=pending["payload_digest"], meaning_given=given)
+                              meaning=meaning.strip(), payload_digest=pending["payload_digest"], meaning_given=True)
         self._save(state)
         result = self.advance(run_id) if verdict == "approve" else self.load(run_id)
         hook = POST_DECISION_HOOKS.get(rec["type"]) if rec is not None else None
@@ -614,8 +653,9 @@ class Runner:
         self._save(state)
         return self.advance(run_id)
 
-    def retry(self, run_id: str, by: str, note: str = "") -> dict:
-        """Retry a failed run from the failed step, after the owner fixed the record."""
+    def retry(self, run_id: str, by: str, note: str = "", fields: dict | None = None,
+              attachments: list[dict] | None = None) -> dict:
+        """Retry a failed run from the failed step, fixing the record's fields and attachments on the way."""
         state = self.load(run_id)
         by = authz.principal_name(by)
         if state["status"] != "failed":
@@ -624,6 +664,17 @@ class Runner:
         if by != state["owner"] and not authz.check(bundle, by, "approve", state["manifest"]["object"], state["manifest"]["folder"])["allowed"]:
             raise RunError(f"{by} may not retry this run: only its owner or an approver of {state['manifest']['object']} may")
         track = Track(self._dir(state["id"]))
+        if fields and state.get("record"):
+            try:
+                self.kernel.set_fields(state["record"], fields, by=by, run_id=state["id"], release=state["release"])
+            except KernelGuardError as e:
+                raise RunError(str(e)) from None
+            track.append({"type": "record.fields_set", "run_id": state["id"], "by": by, "fields": sorted(fields)})
+            inputs = state.setdefault("inputs", {})
+            inputs["record"] = {**(inputs.get("record") or {}), **fields}
+        if attachments:
+            inputs = state.setdefault("inputs", {})
+            inputs["record"] = {**(inputs.get("record") or {}), "attachments": attachments}
         failed = next((e for e in reversed(track.read()) if e["type"] == "run.failed"), None)
         sid = failed.get("step") if failed else None
         ids = [s["id"] for s in state["manifest"]["steps"]]

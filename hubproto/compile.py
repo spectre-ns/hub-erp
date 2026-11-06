@@ -50,6 +50,9 @@ def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], re
         by_key[rule_key(r)] = r
     rules = list(by_key.values())
     findings = []
+    from .guards import Finding as _Finding
+    findings += [_Finding("grammar", "error", n["note"] + ": " + n["text"], frame=n["frame"], line=n["line"])
+                 for n in notes if n.get("severity") == "error"]
     findings += schema_guard(rules)
     findings += grounding_guard(rules, store.frames)
     findings += consistency_guard(rules, cog_ids, record_types)
@@ -125,6 +128,15 @@ def readiness(proposal: dict) -> list[str]:
 
 def finalize(proposal: dict, releases: ReleaseStore, *, by: str, effective_from: str | None = None,
              now: str | None = None) -> dict:
+    if proposal.get("status") != "open":
+        raise CompileError(f"proposal {proposal['id']} is {proposal.get('status')}; compile a new one")
+    if by not in proposal["reviewers"]:
+        raise CompileError(f"{by} is not a policy owner and cannot release (policy owners: {', '.join(proposal['reviewers']) or 'none'})")
+    current = releases.current(now)
+    if (current["digest"] if current else None) != proposal.get("base"):
+        raise CompileError("the proposal is based on release "
+                           f"{(proposal.get('base') or 'none')[:12]} but {(current['digest'] if current else 'none')[:12]} is in force; "
+                           "compile again so the change is reviewed against the current policy")
     problems = readiness(proposal)
     if problems:
         raise CompileError("proposal is not ready:\n  " + "\n  ".join(problems))

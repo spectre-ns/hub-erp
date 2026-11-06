@@ -54,3 +54,12 @@ def dated(bill: dict) -> dict:
     from datetime import date
 
     return {**bill, "date": date.today().isoformat()}
+
+
+def seen(runner, run_id: str) -> str | None:
+    """The digest a person quotes with a decision: what the card shows right now."""
+    try:
+        state = runner.load(run_id)
+    except Exception:
+        return None
+    return state.get("seen_digest")

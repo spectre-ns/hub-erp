@@ -16,6 +16,8 @@ the release bill of materials.
 from __future__ import annotations
 
 import json
+import math
+import re
 import sqlite3
 from datetime import date
 from pathlib import Path
@@ -24,6 +26,9 @@ from .release import utcnow
 from .rules import sha256_of
 
 CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
+
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})?)?$")
 
 
 class KernelGuardError(Exception):
@@ -136,6 +141,7 @@ class Kernel:
                 rec["release"] = ev["release"]
             if t == "record.fields_set":
                 rec["fields"].update(d["fields"])
+                rec.setdefault("setters", {}).update({k: ev["by"] for k in d["fields"]})
             elif t == "record.transitioned":
                 rec["state"] = d["to"]
                 rec["transitions"].append({"from": d["from"], "to": d["to"], "at": ev["at"], "by": ev["by"],
@@ -257,8 +263,23 @@ class Kernel:
             spec = td["fields"].get(name)
             if spec is None:
                 continue  # unknown fields are kept; the type definition lists the governed ones
-            if spec.startswith("enum:") and value not in (None, "") and str(value) not in spec[5:].split(","):
+            if value in (None, ""):
+                continue
+            if spec.startswith("enum:") and str(value) not in spec[5:].split(","):
                 raise KernelGuardError("field-enum", f"{type_}.{name} must be one of {spec[5:]}, not {value!r}")
+            if spec in ("money", "number", "int"):
+                try:
+                    num = float(value)
+                except (TypeError, ValueError):
+                    raise KernelGuardError("field-number", f"{type_}.{name} must be a number, not {value!r}") from None
+                if math.isnan(num) or math.isinf(num):
+                    raise KernelGuardError("field-number", f"{type_}.{name} must be a finite number, not {value!r}")
+                if num < 0:
+                    raise KernelGuardError("field-number", f"{type_}.{name} cannot be negative ({value!r}); use a reversal or a credit")
+                if spec == "int" and num != int(num):
+                    raise KernelGuardError("field-number", f"{type_}.{name} must be a whole number, not {value!r}")
+            if spec == "date" and not _DATE_RE.match(str(value)):
+                raise KernelGuardError("field-date", f"{type_}.{name} must be a date written YYYY-MM-DD, not {value!r}")
 
     def create(self, type_: str, folder: str, fields: dict | None = None, *, by: str, run_id: str = "",
                release: str = "", state: str = "open", labels: dict | None = None) -> dict:

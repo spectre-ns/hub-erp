@@ -255,7 +255,11 @@ class ReleaseStore:
             "clauses": clauses or {},
             "inheritance": "transitive",
         }
-        # Re-saving the same digest refreshes the citations (same semantics, current Frame lines).
+        # Re-saving the same digest refreshes the citations (same semantics, current Frame lines) but never
+        # rewrites who released it, when it took effect or what it descends from.
+        existing = next((m for m in self._index() if m["digest"] == d), None)
+        if existing:
+            meta = {**existing, "frames": bom, "clauses": clauses or existing.get("clauses", {})}
         rel_dir.mkdir(exist_ok=True)
         (rel_dir / "bundle.json").write_text(canonical(bundle))
         (rel_dir / "rules.json").write_text(json.dumps(rules, indent=1, sort_keys=True))
