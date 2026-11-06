@@ -141,6 +141,8 @@ class WopiHost:
             return False, f"{rec['number']} is {rec['state']}; a controlled document changes only through a new revision"
         locked = f.get("checked_out_by")
         if locked and locked != user:
+            if f.get("checked_out_via") == "editor":
+                return True, ""  # an editing session: the editor merges everyone's changes
             return False, f"checked out by {locked}"
         return True, ""
 
@@ -184,13 +186,19 @@ class WopiHost:
         if not ok:
             raise KernelGuardError("read-only", why)
         user = claims["u"]
-        if not rec["fields"].get("checked_out_by"):
-            self.hub.dms.checkout(rec["locator"], by=user)
+        f = rec["fields"]
+        holder = f.get("checked_out_by") or user
+        editors = sorted(set(f.get("editors") or []) | {holder, user})
+        if not f.get("checked_out_by"):
+            self.hub.dms.checkout(rec["locator"], by=user, via="editor")
+        elif f.get("checked_out_via") == "editor" and user not in (f.get("editors") or []):
+            self.hub.dms.join_editing(rec["locator"], by=user)
         _, latest = self.hub.dms.content(rec["locator"])
-        self.hub.dms.add_version(rec["locator"], content, by=user, filename=latest.get("filename") or rec["fields"].get("filename", ""),
-                                 mime=latest.get("mime") or rec["fields"].get("mime", ""), note="saved in the editor")
-        # A new version is a check-in for the DMS; the editing session keeps the document until "Finish editing".
-        self.hub.dms.checkout(rec["locator"], by=user)
+        self.hub.dms.add_version(rec["locator"], content, by=user, filename=latest.get("filename") or f.get("filename", ""),
+                                 mime=latest.get("mime") or f.get("mime", ""), note="saved in the editor")
+        # A new version is a check-in for the DMS; the editing session keeps the document until the last editor finishes.
+        self.hub.dms.checkout(rec["locator"], by=holder, via="editor")
+        self.hub.kernel.set_fields(rec["locator"], {"editors": editors}, by=user)
         _, version = self.hub.dms.content(rec["locator"])
         self.index(rec, content, user)
         return {"LastModifiedTime": wopi_time(version.get("at"))}
@@ -218,10 +226,56 @@ class WopiHost:
                 continue
             author = c["author"].strip().lower() if c["author"] and c["author"].strip().lower() in members else user
             try:
-                posted.append(self.hub.send(author, author, f"Comment in {rec['number']}", c["text"], record=rec["locator"]))
+                reply = self.hub.send(author, author, f"Comment in {rec['number']}", c["text"], record=rec["locator"], comment_id=c["id"])
+                posted.append(reply)
             except Exception as e:  # a comment that cannot be routed never breaks the save
                 posted.append({"error": str(e)})
         return posted
+
+    def pending_replies(self, rec: dict) -> list[dict]:
+        """Chatter replies to comments in this document that are not yet written into it."""
+        msgs = self.hub.inbox.on_record(rec["locator"])
+        by_id = {m["id"]: m for m in msgs}
+        out = []
+        for m in msgs:
+            if m.get("kind") != "reply" or m.get("applied_in"):
+                continue
+            parent = by_id.get(m.get("in_reply_to") or "")
+            if parent and parent.get("comment_id") not in (None, ""):
+                out.append({**m, "comment_id": parent["comment_id"]})
+        return out
+
+    def apply_replies(self, rec: dict, by: str) -> list[dict]:
+        """Write every pending reply into the document as a reply comment by its author (a new version), so the
+        thread in the editor carries the answer."""
+        from . import office
+
+        pending = self.pending_replies(rec)
+        if not pending:
+            return []
+        content, latest = self.hub.dms.content(rec["locator"])
+        ext = extension_of(latest.get("filename") or rec["fields"].get("filename") or "")
+        applied = []
+        for m in pending:
+            new = office.add_reply(content, ext, str(m["comment_id"]), m["from"], m.get("body") or "", date=m.get("at") or "")
+            if new is None:
+                continue
+            content = new
+            applied.append(m)
+        if not applied:
+            return []
+        holder = rec["fields"].get("checked_out_by") or by
+        self.hub.dms.add_version(rec["locator"], content, by="hub", filename=latest.get("filename") or "", mime=latest.get("mime") or "",
+                                 note="replies from " + ", ".join(sorted({m["from"] for m in applied})) + " written into the document")
+        if rec["fields"].get("checked_out_via") == "editor" or rec["fields"].get("checked_out_by"):
+            self.hub.dms.checkout(rec["locator"], by=holder, via="editor")
+            self.hub.kernel.set_fields(rec["locator"], {"editors": sorted(set(rec["fields"].get("editors") or []) | {holder})}, by=by)
+        _, version = self.hub.dms.content(rec["locator"])
+        for m in applied:
+            self.hub.inbox.mark(m["id"], applied_in=version.get("version"))
+        comments = office.extract_comments(content, ext)
+        self.hub.kernel.set_fields(rec["locator"], {"office_comments": [{k: c[k] for k in ("id", "author", "date", "text", "digest")} for c in comments]}, by=by)
+        return applied
 
     def lock(self, rec: dict, claims: dict, lock_id: str) -> tuple[int, dict]:
         """Lock, RefreshLock and Unlock map onto the check-out; the lock id is remembered on the record."""
@@ -245,8 +299,11 @@ class WopiHost:
         return 200, {"X-WOPI-Lock": rec["fields"].get("wopi_lock") or ""}
 
     def finish(self, rec: dict, user: str) -> dict:
-        """Release the check-out after editing; nothing changes if the user does not hold it."""
-        if rec["fields"].get("checked_out_by") == user:
+        """Leave the editing session: the last one out releases the document; nothing changes for a bystander."""
+        f = rec["fields"]
+        if f.get("checked_out_via") == "editor" and (user in (f.get("editors") or []) or f.get("checked_out_by") == user):
+            return self.hub.dms.leave_editing(rec["locator"], by=user)
+        if f.get("checked_out_by") == user:
             self.hub.kernel.set_fields(rec["locator"], {"wopi_lock": None}, by=user)
             return self.hub.dms.undo_checkout(rec["locator"], by=user)
         return rec

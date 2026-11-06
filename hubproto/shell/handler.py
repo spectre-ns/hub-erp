@@ -215,13 +215,13 @@ class BaseHandler(BaseHTTPRequestHandler):
                 return fixed[r]
             for prefix, fn in (("/record/", self.page_record), ("/document/", self.page_document), ("/doc/", self.page_document),
                                ("/run/", self.page_run), ("/frame/", self.page_frame), ("/release/", self.page_release),
-                               ("/edit/", self.page_edit), ("/items/", self.page_items), ("/app/", self.page_app), ("/user/", self.page_user)):
+                               ("/edit/", self.page_edit), ("/editor-replies/", self.page_editor_replies), ("/items/", self.page_items), ("/app/", self.page_app), ("/user/", self.page_user)):
                 if r.startswith(prefix) and len(r) > len(prefix):
                     self.arg = r[len(prefix):]
                     return fn
             return None
         posts = {"/start": self.post_start, "/decide": self.post_decide, "/msg": self.post_msg, "/attach": self.post_attach,
-                 "/finish-edit": self.post_finish_edit, "/new-document": self.post_new_document, "/working-copy": self.post_working_copy,
+                 "/finish-edit": self.post_finish_edit, "/new-document": self.post_new_document, "/working-copy": self.post_working_copy, "/apply-replies": self.post_apply_replies,
                  "/upload": self.post_upload, "/checkout": self.post_checkout, "/checkin": self.post_checkin, "/link": self.post_link,
                  "/snapshot": self.post_snapshot, "/hold": self.post_hold, "/resubmit": self.post_resubmit, "/retry": self.post_retry,
                  "/cancel": self.post_cancel, "/undo-checkout": self.post_undo_checkout, "/bulk-hold": self.post_bulk_hold}

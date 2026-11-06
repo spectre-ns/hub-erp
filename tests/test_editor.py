@@ -50,12 +50,10 @@ def test_check_file_info_get_file_and_put_file_make_versions(shell, working_doc)
     versions = hub.dms.versions(loc)
     assert rec["fields"]["checked_out_by"] == "alice" and len(versions) == 2 and versions[-1]["note"] == "saved in the editor"
     assert hub.dms.content(loc)[0] == b"PK-new-bytes"
-    # Someone else sees it read-only and cannot save.
+    # Someone else joins the editing session with write access (the editor merges everyone's changes).
     bob = wopi.issue_token("bob", number, can_write=True, root=shell["root"])
     info = json.loads(wopi_call(shell, f"/wopi/files/{number}", bob)[1])
-    assert info["UserCanWrite"] is False and info["ReadOnly"] is True
-    status, _, headers = wopi_call(shell, f"/wopi/files/{number}/contents", bob, "POST", b"x", {"X-WOPI-Override": "PUT"})
-    assert status == 409 and "checked out by alice" in headers.get("X-WOPI-LockFailureReason", "")
+    assert info["UserCanWrite"] is True
     # Finish editing releases the check-out.
     status, url, text = post(shell, "/finish-edit", {"as": "alice", "doc": loc})
     assert status == 200 and "Finished editing" in text and hub.kernel.get(loc)["fields"]["checked_out_by"] is None
@@ -216,3 +214,63 @@ def test_the_editor_page_offers_members_and_roles_as_mentions(shell, working_doc
     assert '"username": "quality-assistant"' in text and '"username": "design-review-committee"' in text and '"username": "bob"' in text
     assert 'var origin="http://editor.test:9980"' in text
     shell["hub"].dms.undo_checkout(working_doc["locator"], by="alice")
+
+
+def test_two_people_edit_the_same_document_together_and_the_last_out_releases_it(shell):
+    hub = shell["hub"]
+    content, mime = wopi.blank_document("docx")
+    doc = hub.dms.create(title="Shared plan", doc_class="working", folder="Finance/Payables", by="alice", content=content,
+                         filename="shared.docx", mime=mime, doc_type="document")
+    number, loc = doc["number"], doc["locator"]
+    hub.dms.checkout(loc, by="alice", via="editor")  # alice opens the editor
+    alice = wopi.issue_token("alice", number, can_write=True, root=shell["root"])
+    bob = wopi.issue_token("bob", number, can_write=True, root=shell["root"])
+    assert json.loads(wopi_call(shell, f"/wopi/files/{number}", bob)[1])["UserCanWrite"] is True, "a second editor joins with write access"
+    status, _, _ = wopi_call(shell, f"/wopi/files/{number}/contents", bob, "POST", b"PK-bob", {"X-WOPI-Override": "PUT"})
+    assert status == 200
+    rec = hub.kernel.get(loc)
+    assert rec["fields"]["checked_out_by"] == "alice" and set(rec["fields"]["editors"]) == {"alice", "bob"}
+    assert hub.dms.versions(loc)[-1]["by"] == "bob"
+    # A manual check-in by someone outside the session is still refused.
+    with pytest.raises(Exception, match="checked out by alice"):
+        hub.dms.checkin(loc, b"x", by="carol")
+    # The document page tells carol it is being edited and offers joining; alice finishing leaves bob holding it.
+    status, page = get(shell, "/document/" + quote(loc, safe=":"), **{"as": "bob"})
+    assert status == 200 and "Join the editing" in page
+    post(shell, "/finish-edit", {"as": "alice", "doc": loc})
+    rec = hub.kernel.get(loc)
+    assert rec["fields"]["checked_out_by"] == "bob" and rec["fields"]["editors"] == ["bob"]
+    post(shell, "/finish-edit", {"as": "bob", "doc": loc})
+    rec = hub.kernel.get(loc)
+    assert rec["fields"]["checked_out_by"] is None and rec["fields"]["editors"] == []
+
+
+
+def test_a_cogs_answer_is_written_into_the_document_as_a_reply_comment(shell):
+    hub = shell["hub"]
+    content, mime = wopi.blank_document("docx")
+    doc = hub.dms.create(title="Torque spec", doc_class="working", folder="Quality/Controlled Documents", by="carol", content=content,
+                         filename="torque.docx", mime=mime, doc_type="document")
+    number, loc = doc["number"], doc["locator"]
+    token = wopi.issue_token("carol", number, can_write=True, root=shell["root"])
+    saved = docx_with_comment("@quality-assistant please review this document.")
+    assert wopi_call(shell, f"/wopi/files/{number}/contents", token, "POST", saved, {"X-WOPI-Override": "PUT"})[0] == 200
+    status, text = get(shell, "/editor-replies/" + quote(loc, safe=":"), **{"as": "carol"})
+    assert status == 200 and json.loads(text)["pending"] == 1 and json.loads(text)["by"] == ["quality-assistant"]
+    status, url, text = post(shell, "/apply-replies", {"as": "carol", "doc": loc})
+    assert status == 200 and json.loads(text)["applied"] == 1, text[:300]
+    from hubproto import office
+
+    content, version = hub.dms.content(loc)
+    comments = office.extract_comments(content, "docx")
+    assert [c["author"] for c in comments] == ["carol", "quality-assistant"] and f"Review of {number}" in comments[1]["text"]
+    assert version["by"] == "hub" and "replies from quality-assistant" in version["note"]
+    assert json.loads(get(shell, "/editor-replies/" + quote(loc, safe=":"), **{"as": "carol"})[1])["pending"] == 0
+    # A session that has not seen the new version is told to reload before it may overwrite it.
+    status, _, _ = wopi_call(shell, f"/wopi/files/{number}/contents", token, "POST", saved,
+                             {"X-WOPI-Override": "PUT", "X-COOL-WOPI-Timestamp": "2026-01-01T00:00:00.000000Z"})
+    assert status == 409
+    stamp = wopi.wopi_time(version["at"])
+    assert wopi_call(shell, f"/wopi/files/{number}/contents", token, "POST", content, {"X-WOPI-Override": "PUT", "X-COOL-WOPI-Timestamp": stamp})[0] == 200
+    assert len([m for m in hub.inbox.on_record(loc) if m["kind"] == "message"]) == 1, "the written reply is not posted to the chatter again"
+    hub.dms.undo_checkout(loc, by="carol")

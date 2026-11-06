@@ -790,9 +790,11 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
         attached = [l for l in self.hub.kernel.links_of(loc) if l["direction"] == "in" and l["rel"] == "has-document"]
         other = [l for l in self.hub.kernel.links_of(loc) if not (l["direction"] == "in" and l["rel"] == "has-document")]
         btns = ""
-        editable_now = wopi.is_viewable(rec) and versions and can and not immutable and rec["state"] in EDITABLE_DOC_STATES and wopi.is_editable(rec) and (not locked or locked == user)
+        session = f.get("checked_out_via") == "editor"
+        editable_now = wopi.is_viewable(rec) and versions and can and not immutable and rec["state"] in EDITABLE_DOC_STATES and wopi.is_editable(rec) and (not locked or locked == user or session)
         if wopi.is_viewable(rec) and versions:
-            btns += f'<a class="button" href="{href("/edit/" + quote(loc, safe=":"), user)}">{icon("edit" if editable_now else "eye")}{"Edit online" if editable_now else "Open in the viewer"}</a>'
+            label = "Edit online" if editable_now and not (session and locked != user) else ("Join the editing" if editable_now else "Open in the viewer")
+            btns += f'<a class="button" href="{href("/edit/" + quote(loc, safe=":"), user)}">{icon("edit" if editable_now else "eye")}{label}</a>'
         if versions and wopi.is_editable(rec) and (immutable or rec["state"] not in EDITABLE_DOC_STATES) and may_file(bundle, user, rec["folder"])["allowed"]:
             btns += f"""<form method="post" action="/working-copy" class="inline">{hidden_as(user)}{self._once()}<input type="hidden" name="doc" value="{esc(loc)}"><button class="ghost" title="A new working document with this content, attached to the same items, that you can edit online">{icon("plus")}Make a working copy</button></form>"""
         if versions:
@@ -823,7 +825,9 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
             body += (f"<span class='why'>{esc(rec['number'])} is {esc(state_name(rec['state']).lower())}; a controlled document changes only through a new revision "
                      f"(propose a document change with the same title).</span>")
         else:
-            if locked and locked != user:
+            if locked and locked != user and f.get("checked_out_via") == "editor":
+                body += f"<span class='chip ok'>being edited by {esc(', '.join(f.get('editors') or [locked]))}</span> <span class='why'>Join the editing above; everyone's changes merge in the editor, and the last to finish releases the document.</span>"
+            elif locked and locked != user:
                 body += f"<span class='chip warn'>checked out by {esc(locked)}</span> <span class='why'>Only {esc(locked)} can check it in or undo the check-out.</span>"
             elif not locked:
                 body += f"<p class='why'>Check the document out to work on it; nobody else can check in a version while you hold it.</p><form method='post' action='/checkout' class='inline'>{hidden_as(user)}<input type='hidden' name='doc' value='{esc(loc)}'><button>Check out</button></form>"

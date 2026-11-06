@@ -114,11 +114,11 @@ class Hub:
 
     # --- messaging ----------------------------------------------------------
     def send(self, sender: str, to: str, subject: str, body: str, channel: str = "dm", attachments=None,
-             record: str | None = None) -> dict:
+             record: str | None = None, comment_id: str | None = None) -> dict:
         """A message to a person or a cog, optionally about an item (then it is on the item's chatter and its
         @mentions are acted on: see hubproto.mentions)."""
         meta = self.releases.current()
         bundle = self.releases.bundle(meta["digest"]) if meta else {"members": {}}
         return self.inbox.send(sender=sender, to=to, subject=subject, body=body, channel=channel,
                                attachments=attachments, bundle=bundle, registry=self.registry, runner=self.runner,
-                               kernel=self.kernel, release=meta["digest"] if meta else "", record=record, hub=self)
+                               kernel=self.kernel, release=meta["digest"] if meta else "", record=record, hub=self, comment_id=comment_id)

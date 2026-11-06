@@ -102,7 +102,8 @@ class DMS:
         if rec["fields"].get("doc_class") in ("controlled", "template") and rec["state"] not in ("open", "draft", "returned", "failed"):
             raise KernelGuardError("controlled", f"{rec['number']} is {rec['state']}; a controlled document changes only through a new revision (start document-control with the same title)")
         locked_by = rec["fields"].get("checked_out_by")
-        if locked_by and locked_by != by:
+        in_session = rec["fields"].get("checked_out_via") == "editor" and by in (rec["fields"].get("editors") or [])
+        if locked_by and locked_by != by and not in_session and by != "hub":
             raise KernelGuardError("checked-out", f"{rec['number']} is checked out by {locked_by}")
         mime = mime or (mimetypes.guess_type(filename)[0] if filename else "") or (rec["fields"].get("mime") if self.versions(ref) else "") or "application/octet-stream"
         sha = self.blobs.put(content)
@@ -128,7 +129,9 @@ class DMS:
         v = vs[-1] if version is None else next(x for x in vs if x["version"] == version)
         return self.blobs.get(v["sha256"]), v
 
-    def checkout(self, ref: str, *, by: str, run_id: str = "", release: str = "") -> dict:
+    def checkout(self, ref: str, *, by: str, run_id: str = "", release: str = "", via: str = "manual") -> dict:
+        """Take the document to work on it. ``via="editor"`` opens an editing session that others may join
+        (``join_editing``); a manual check-out is one person's alone."""
         rec = self.kernel.require(ref)
         if rec["fields"].get("doc_class") in IMMUTABLE_CLASSES:
             raise KernelGuardError("immutable", "evidence and external documents are never edited")
@@ -136,9 +139,35 @@ class DMS:
             raise KernelGuardError("controlled", f"{rec['number']} is {rec['state']} and cannot be checked out; revise it through document-control")
         locked_by = rec["fields"].get("checked_out_by")
         if locked_by and locked_by != by:
+            if via == "editor" and rec["fields"].get("checked_out_via") == "editor":
+                return self.join_editing(ref, by=by, run_id=run_id, release=release)
             raise KernelGuardError("checked-out", f"{rec['number']} is checked out by {locked_by}")
-        self.kernel.append("document.checked_out", rec["locator"], {"by": by}, run_id=run_id, release=release, by=by)
-        return self.kernel.set_fields(rec["locator"], {"checked_out_by": by}, by=by, run_id=run_id, release=release)
+        editors = sorted(set(rec["fields"].get("editors") or []) | {by}) if via == "editor" else []
+        self.kernel.append("document.checked_out", rec["locator"], {"by": by, "via": via}, run_id=run_id, release=release, by=by)
+        return self.kernel.set_fields(rec["locator"], {"checked_out_by": by, "checked_out_via": via, "editors": editors}, by=by,
+                                      run_id=run_id, release=release)
+
+    def join_editing(self, ref: str, *, by: str, run_id: str = "", release: str = "") -> dict:
+        """Join an open editing session: the editor merges everyone's changes; the session's lock stays with whoever opened it."""
+        rec = self.kernel.require(ref)
+        if rec["fields"].get("checked_out_via") != "editor" or not rec["fields"].get("checked_out_by"):
+            raise KernelGuardError("not-editing", f"{rec['number']} is not in an editing session")
+        editors = sorted(set(rec["fields"].get("editors") or [rec["fields"]["checked_out_by"]]) | {by})
+        self.kernel.append("document.editing_joined", rec["locator"], {"by": by}, run_id=run_id, release=release, by=by)
+        return self.kernel.set_fields(rec["locator"], {"editors": editors}, by=by, run_id=run_id, release=release)
+
+    def leave_editing(self, ref: str, *, by: str, run_id: str = "", release: str = "") -> dict:
+        """Finish editing: the last one out releases the session; otherwise the lock passes to someone still in it."""
+        rec = self.kernel.require(ref)
+        f = rec["fields"]
+        editors = [e for e in (f.get("editors") or []) if e != by]
+        if not editors or f.get("checked_out_via") != "editor":
+            self.kernel.append("document.checkout_undone", rec["locator"], {"by": by}, run_id=run_id, release=release, by=by)
+            return self.kernel.set_fields(rec["locator"], {"checked_out_by": None, "checked_out_via": None, "editors": [], "wopi_lock": None},
+                                          by=by, run_id=run_id, release=release)
+        holder = f.get("checked_out_by") if f.get("checked_out_by") in editors else editors[0]
+        self.kernel.append("document.editing_left", rec["locator"], {"by": by, "holder": holder}, run_id=run_id, release=release, by=by)
+        return self.kernel.set_fields(rec["locator"], {"checked_out_by": holder, "editors": editors}, by=by, run_id=run_id, release=release)
 
     def undo_checkout(self, ref: str, *, by: str, run_id: str = "", release: str = "") -> dict:
         """Release a check-out without a new version; only the holder may."""
@@ -149,7 +178,7 @@ class DMS:
         if locked_by != by:
             raise KernelGuardError("checked-out", f"{rec['number']} is checked out by {locked_by}; only they can undo it")
         self.kernel.append("document.checkout_undone", rec["locator"], {"by": by}, run_id=run_id, release=release, by=by)
-        return self.kernel.set_fields(rec["locator"], {"checked_out_by": None}, by=by, run_id=run_id, release=release)
+        return self.kernel.set_fields(rec["locator"], {"checked_out_by": None, "checked_out_via": None, "editors": []}, by=by, run_id=run_id, release=release)
 
     def checkin(self, ref: str, content: bytes, *, by: str, filename: str = "", mime: str = "", note: str = "",
                 run_id: str = "", release: str = "") -> dict:

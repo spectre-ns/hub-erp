@@ -49,16 +49,19 @@ class EditorMixin:
             raise ShellError(f"{rec['number']} ({rec['fields'].get('filename') or 'no file'}) is not a kind of file the editor opens; download it instead.", 400)
         may, why_not = self._may_edit_document(rec)
         writable = may and wopi.is_editable(rec) and host.can_write(rec, user)[0]
-        if writable and not rec["fields"].get("checked_out_by"):
-            self.hub.dms.checkout(rec["locator"], by=user)
+        if writable:
+            self.hub.dms.checkout(rec["locator"], by=user, via="editor")  # opens the session, or joins one that is open
             rec = self.hub.kernel.get(rec["locator"])
         browser_url, host_url = wopi.collabora_urls()
         number, title = rec["number"], rec["fields"].get("title") or rec["number"]
         back = href("/document/" + quote(rec["locator"], safe=":"), user)
         mode = "editing" if writable else "read-only"
         reason = "" if writable else (why_not or host.can_write(rec, user)[1] or ("the editor shows this kind of file but does not change it" if not wopi.is_editable(rec) else ""))
+        others = [e for e in (rec["fields"].get("editors") or []) if e != user]
+        if writable and others:
+            reason = "also editing: " + ", ".join(others) + "; everyone's changes merge in the editor"
         bar = f"""<div class="editbar"><a class="button ghost" href="{back}">{icon('chevron-right')}{esc(number)}</a> {icon('edit' if writable else 'eye')} <b>{esc(title)}</b> <span class="chip {'ok' if writable else 'warn'}">{mode}</span>
-{f"<span class='why'>{esc(reason)}</span>" if reason else "<span class='why'>Every save becomes a version; finish to release the document for others.</span>"}
+{f"<span class='why'>{esc(reason)}</span>" if reason else "<span class='why'>Every save becomes a version; others may join and edit with you; the last to finish releases the document.</span>"} <span class='why' id='editstatus' role='status'></span>
 <form method="post" action="/finish-edit" class="inline">{hidden_as(user)}<input type="hidden" name="doc" value="{esc(rec['locator'])}"><button class="{'primary' if writable else 'secondary'}">{icon('check' if writable else 'x')}{'Finish editing' if writable else 'Close'}</button></form></div>"""
         if not (browser_url and host_url):
             body = bar + ("<div class='card'><b>No online editor is configured.</b> Set <code>HUBPROTO_COLLABORA_URL</code> (the editor's address for the browser, "
@@ -84,8 +87,36 @@ window.addEventListener('message',function(ev){{if(origin&&ev.origin!==origin)re
 if(m.MessageId==='App_LoadingStatus'&&m.Values&&m.Values.Status==='Document_Loaded'){{post({{MessageId:'Host_PostmessageReady'}})}}
 if(m.MessageId==='UI_Mention'){{var v=m.Values||{{}};if(v.type==='autocomplete'){{var q=String(v.text||'').replace(/^@/,'').toLowerCase();
 var out=list.filter(function(x){{return x.username.toLowerCase().indexOf(q)===0}}).slice(0,10).map(function(x){{return {{username:x.username,profile:x.profile}}}});
-post({{MessageId:'Action_Mention',SendTime:Date.now(),Values:{{list:out}}}})}}}}}});}})();</script>"""
+post({{MessageId:'Action_Mention',SendTime:Date.now(),Values:{{list:out}}}})}}}}
+if(m.MessageId==='Action_Save_Resp'){{if(window.__applyAfterSave){{window.__applyAfterSave=false;applyReplies()}}}}}});
+var repliesUrl={json.dumps(href("/editor-replies/" + quote(rec["locator"], safe=":"), user))};var applyUrl={json.dumps(href("/apply-replies", user))};var loc={json.dumps(rec["locator"])};var busy=false;
+function applyReplies(){{var fd=new FormData();fd.append('as',{json.dumps(user)});fd.append('doc',loc);fetch(applyUrl,{{method:'POST',body:fd}}).then(function(r){{return r.json()}}).then(function(j){{busy=false;if(j.applied>0){{var s=document.getElementById('editstatus');if(s)s.textContent='Replies from '+j.by.join(', ')+' written into the document; reloading…';frame.src=frame.src.replace(/&reload=\d+/,'')+'&reload='+Date.now()}}}}).catch(function(){{busy=false}})}}
+function poll(){{if(busy)return;fetch(repliesUrl).then(function(r){{return r.json()}}).then(function(j){{if(j.pending>0&&!busy){{busy=true;window.__applyAfterSave=true;post({{MessageId:'Action_Save',Values:{{DontTerminateEdit:true,DontSaveIfUnmodified:true,Notify:true}}}});setTimeout(function(){{if(window.__applyAfterSave){{window.__applyAfterSave=false;applyReplies()}}}},2500)}}}}).catch(function(){{}})}}
+setInterval(poll,4000);}})();</script>"""
         self._page(f"Edit {number}", body, head="<style>main#main{padding:0;max-width:none} .editbar{display:flex;gap:.6em;align-items:center;flex-wrap:wrap;padding:.5em .8em;border-bottom:1px solid var(--line);background:var(--panel)} .editbar form{margin-left:auto} .editor{width:100%;height:calc(100vh - 9.5em);border:0;display:block;background:var(--panel)}</style>")
+
+    def page_editor_replies(self):
+        """For the editor page's polling: how many chatter replies to comments wait to be written into the document."""
+        self._need_release()
+        rec = self.hub.kernel.get(self.arg)
+        if rec is None or rec["type"] != "document":
+            return self._json({"error": "no such document"}, 404)
+        self._require_read(rec["folder"])
+        pending = wopi.WopiHost(self.hub).pending_replies(rec)
+        return self._json({"pending": len(pending), "by": sorted({m["from"] for m in pending})})
+
+    def post_apply_replies(self):
+        """Write the waiting replies into the document as reply comments (a new version by the hub)."""
+        self._need_release()
+        rec = self.hub.kernel.require(self._f("doc"))
+        if rec["type"] != "document":
+            return self._json({"error": "not a document"}, 400)
+        self._require_read(rec["folder"])
+        try:
+            applied = wopi.WopiHost(self.hub).apply_replies(rec, self.user)
+        except KernelGuardError as e:
+            return self._json({"applied": 0, "error": e.detail}, 409)
+        return self._json({"applied": len(applied), "by": sorted({m["from"] for m in applied})})
 
     # ------------------------------------------------------------ actions
     def post_finish_edit(self):
@@ -195,6 +226,11 @@ post({{MessageId:'Action_Mention',SendTime:Date.now(),Values:{{list:out}}}})}}}}
                 self.wfile.write(content)
                 return None
             if method == "POST" and tail == "contents" and override in ("PUT", ""):
+                seen_stamp = self.headers.get("X-COOL-WOPI-Timestamp") or self.headers.get("X-LOOL-WOPI-Timestamp")
+                _, latest = host.get_file(rec)
+                if seen_stamp and wopi.wopi_time(latest.get("at")) != seen_stamp and latest.get("by") == "hub":
+                    # The hub wrote a reply into the document after this session last saved: the editor reloads first.
+                    return self._json({"COOLStatusCode": 1010, "LOOLStatusCode": 1010}, 409)
                 result = host.put_file(rec, claims, self.raw_body)
                 log_line(f"editor save doc={rec['number']} by={claims['u']} bytes={len(self.raw_body)}")
                 return self._json(result)

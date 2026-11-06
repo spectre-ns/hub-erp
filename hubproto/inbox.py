@@ -31,6 +31,11 @@ class Inbox:
             fh.write(json.dumps(msg, sort_keys=True) + "\n")
         return msg
 
+    def _rewrite(self, msgs: list[dict]) -> None:
+        tmp = self.path.with_suffix(".jsonl.tmp")
+        tmp.write_text("".join(json.dumps(m, sort_keys=True) + "\n" for m in msgs), encoding="utf-8")
+        tmp.replace(self.path)
+
     def all(self) -> list[dict]:
         if not self.path.exists():
             return []
@@ -60,15 +65,28 @@ class Inbox:
             self._write_eml(reply)
         return reply
 
+    def mark(self, msg_id: str, **fields) -> None:
+        """Set fields on a stored message (e.g. applied_in: the document version a reply was written into)."""
+        msgs = self.all()
+        changed = False
+        for m in msgs:
+            if m["id"] == msg_id:
+                m.update(fields)
+                changed = True
+        if changed:
+            self._rewrite(msgs)
+
     def on_record(self, locator: str) -> list[dict]:
         """The chatter of an item: every message, reply and notification about it, oldest first."""
         return [m for m in self.all() if m.get("record") == locator]
 
     def send(self, *, sender: str, to: str, subject: str, body: str, channel: str = "dm", attachments=None,
              bundle: dict | None = None, registry=None, runner=None, kernel=None, release: str = "",
-             record: str | None = None, hub=None) -> dict:
+             record: str | None = None, hub=None, comment_id: str | None = None) -> dict:
         msg = {"id": uuid.uuid4().hex[:8], "at": utcnow(), "from": sender, "to": to, "channel": channel,
                "kind": "message", "subject": subject, "body": body, "run_id": "", "record": record, "attachments": attachments or []}
+        if comment_id is not None:
+            msg["comment_id"] = str(comment_id)
         self._append(msg)
         member = (bundle or {}).get("members", {}).get(to)
         if channel == "email":
