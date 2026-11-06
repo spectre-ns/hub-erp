@@ -14,6 +14,7 @@ grant; only then can reaching Cogs write.
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from datetime import date, timedelta
 from pathlib import Path
@@ -76,7 +77,7 @@ class Runner:
         for p in sorted(self.root.iterdir()):
             if (p / "state.json").exists():
                 out.append(json.loads((p / "state.json").read_text()))
-        return sorted(out, key=lambda s: s["created_at"])
+        return sorted(out, key=lambda s: (s["created_at"], s.get("created_ns", 0)))
 
     def track(self, run_id: str) -> list[dict]:
         return Track(self._dir(self.load(run_id)["id"])).read()
@@ -138,6 +139,7 @@ class Runner:
             "pending": None,
             "grant": None,
             "created_at": utcnow(),
+            "created_ns": time.time_ns(),
             "status": "submitted",
         }
         track = Track(self._dir(run_id))
@@ -350,14 +352,27 @@ class Runner:
                                    release=state["release"], by=by)
         else:
             track.append({"type": "run.rejected", "run_id": state["id"], "step": step["id"], "by": by, "to": on_reject})
+            assignees, due = [], None
+            if on_reject.startswith("awaiting-"):
+                assignees, due = self._prior_pending(state, track, on_reject[len("awaiting-"):])
             if state.get("record"):
                 try:
                     self.kernel.transition(state["record"], on_reject, by=by, run_id=state["id"], release=state["release"],
-                                           decision=decision, reason=meaning)
+                                           decision=decision, reason=meaning, assignees=assignees, due=due)
                 except KernelGuardError as e:
                     track.append({"type": "run.failed", "run_id": state["id"], "step": step["id"], "reason": str(e)})
             if on_reject.startswith("awaiting-"):
-                self._rewind(state, on_reject[len("awaiting-"):], track)
+                self._rewind(state, on_reject[len("awaiting-"):], track, assignees, due)
+
+    def _prior_pending(self, state: dict, track: Track, checkpoint: str) -> tuple[list[str], str | None]:
+        """The assignees and due date the target Gate had when it was last pending, from the Track."""
+        step = next((s for s in state["manifest"]["steps"] if s.get("gate", {}).get("step") == checkpoint), None)
+        if step is None:
+            return [], None
+        for ev in reversed(track.read()):
+            if ev["type"] == "gate.pending" and ev.get("step") == step["id"]:
+                return list(ev.get("assignees") or []), ev.get("due")
+        return [], None
 
     def _immediate_next(self, state: dict, step_id: str) -> bool:
         """True when no automatic step runs between this Gate and the next state."""
@@ -368,8 +383,8 @@ class Runner:
         ids = [s["id"] for s in state["manifest"]["steps"]]
         return len(ids) - ids.index(step_id) - 1
 
-    def _rewind(self, state: dict, checkpoint: str, track: Track) -> None:
-        """A rejection that returns to an earlier checkpoint: reopen that Gate with its original payload."""
+    def _rewind(self, state: dict, checkpoint: str, track: Track, people: list[str], due: str | None) -> None:
+        """A rejection that returns to an earlier checkpoint: reopen that Gate with its original payload and assignees."""
         target_step = next((s for s in state["manifest"]["steps"] if s.get("gate", {}).get("step") == checkpoint), None)
         if target_step is None:
             return
@@ -377,16 +392,18 @@ class Runner:
         for sid in ids[ids.index(target_step["id"]) + 1:]:
             state["steps"].pop(sid, None)
         env = state["steps"][target_step["id"]]["envelope"]
-        rec = self.kernel.get(state["record"])
-        people = rec["assignees"] if rec else []
         state["steps"][target_step["id"]]["status"] = "gate-pending"
         state["steps"][target_step["id"]].pop("decision", None)
         state["pending"] = {"step": target_step["id"], "checkpoint": checkpoint, "assignees": people,
                             "route_rule": {"frame": "(rejection)", "line": 0, "text": "returned by a rejection"},
-                            "payload_digest": sha256_of(env["payload"] or {}), "title": target_step["gate"]["title"], "due": None}
+                            "payload_digest": sha256_of(env["payload"] or {}), "title": target_step["gate"]["title"], "due": due}
         track.append({"type": "gate.pending", "run_id": state["id"], "step": target_step["id"], "assignees": people,
                       "route_rule": state["pending"]["route_rule"], "payload_digest": state["pending"]["payload_digest"],
-                      "routing_ctx": {}, "due": None})
+                      "routing_ctx": {}, "due": due})
+        if self.inbox is not None:
+            for p in people:
+                self.inbox.notify(p, kind="approval", subject=f"{target_step['gate']['title']} (returned): {state['process']} {state.get('record')}",
+                                  body="An item you decided earlier was rejected at a later step and has come back to you.", run_id=state["id"])
 
     # ---------------------------------------------------------- human decisions
     def decide(self, run_id: str, by: str, verdict: str, meaning: str = "", payload_digest: str | None = None,

@@ -242,7 +242,12 @@ def _reason(rule: dict, op: str) -> str:
         return f"{op} {rule['effect']} {rule['subject']} {rule['action']} {rule['object']} in {rule['resource']}"
     if kind == "routing":
         cond = rule.get("condition")
-        c = "" if not cond else f" when {cond['field']} {cond['op']} {cond['value']}"
+        if not cond:
+            c = ""
+        elif "all" in cond:
+            c = " when " + " and ".join(f"{x['field']} {x['op']} {x['value']}" for x in cond["all"])
+        else:
+            c = f" when {cond['field']} {cond['op']} {cond['value']}"
         return f"{op} route {rule['process']}/{rule['step']}{c} to {rule['assignee']}"
     if kind == "threshold":
         return f"{op} threshold {rule['name']} = {rule['value']} {rule['unit']}"
