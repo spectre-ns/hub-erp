@@ -375,7 +375,10 @@ def rows_from_lines(lines: list[str]) -> list[list[str]]:
         if t.startswith("|") and t.endswith("|"):
             if re.fullmatch(r"\|[\s:|-]+\|", t):
                 continue
-            rows.append([c.strip().replace("**", "") for c in t.strip("|").split("|")])
+            cells = [c.strip().replace("**", "") for c in t.strip("|").split("|")]
+            while len(cells) > 1 and not cells[0]:  # a row written as '|| a | b |' has no empty first cell
+                cells.pop(0)
+            rows.append(cells)
         else:
             rows.append([re.sub(r"^(#+\s*|[-*•]\s+|\d+[.)]\s+)", "", t).replace("**", "")])
     return rows
