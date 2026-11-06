@@ -1,0 +1,310 @@
+"""Rule extraction from Frame prose.
+
+Two extractors share one output shape (see ``rules.py``):
+
+* ``ConventionExtractor`` is deterministic. It reads the sentence patterns
+  described in the ``writing-policy-frames`` Frame. It needs no model and is
+  the default.
+* ``ClaudeExtractor`` asks Claude to produce the same statements from
+  free-form prose. It is optional (``HUBPROTO_EXTRACTOR=claude``) and its
+  output passes through the same Guards, so a mis-extracted rule is caught by
+  the Source-Grounding Guard before any person reviews it.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+from dataclasses import dataclass, field
+
+from .frames import Frame
+from .rules import CONDITION_VOCABULARY
+
+RULE_SECTIONS = (
+    "roles", "members", "folders", "permissions", "thresholds", "routing",
+    "approval criteria", "segregation of duties",
+)
+
+
+def slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", text.strip().lower()).strip("-")
+
+
+def singular_role(words: str) -> str:
+    parts = words.strip().lower().split()
+    if parts and parts[-1].endswith("s") and not parts[-1].endswith("ss"):
+        parts[-1] = parts[-1][:-1]
+    return "-".join(parts)
+
+
+def number(text: str) -> float:
+    return float(text.replace(",", ""))
+
+
+_ROLE_ITEM = re.compile(r"^- (?P<name>[a-z][a-z0-9-]*)$")
+_MEMBER_ITEM = re.compile(
+    r"^- (?P<principal>[a-z][a-z0-9-]*) \((?P<ptype>person|cog)\): (?P<roles>[a-z0-9-]+(?:, [a-z0-9-]+)*)$"
+)
+_FOLDER_ITEM = re.compile(r"^- (?P<path>[A-Z][\w /-]*)$")
+_PERMISSION = re.compile(
+    r"^(?P<subject>[A-Z][\w -]+?) may (?P<neg>not )?(?P<action>[a-z]+) (?P<object>[a-z-]+) in (?P<folder>[A-Z][\w /-]+?)\.$"
+)
+_PERMISSION_READ = re.compile(
+    r"^(?P<subject>[A-Z][\w -]+?) may (?P<neg>not )?read (?P<folder>[A-Z][\w /-]+?)\.$"
+)
+_THRESHOLD = re.compile(
+    r"^The (?P<name>[\w -]+? (?:threshold|tolerance|limit)) is (?P<value>[\d,]+(?:\.\d+)?) (?P<unit>USD|EUR|GBP|percent|days)\.$"
+)
+_ROUTING = re.compile(
+    r"^Approvals in (?P<process>[a-z0-9-]+)"
+    r"(?: (?P<op>over|above|under|below|at or under|at or over) (?P<amount>[\d,]+(?:\.\d+)?) (?P<cur>[A-Z]{3})"
+    r"| with (?P<risk>low|medium|high) risk)?"
+    r" go to (?P<assignee>the [\w -]+? cog|the [\w -]+?|[a-z][\w-]*)\.$"
+)
+_CRITERIA = re.compile(
+    r"^The (?P<cog>[a-z][\w-]*) cog may approve (?P<process>[a-z0-9-]+) (?P<object>[a-z]+)"
+    r"(?: under (?P<amount>[\d,]+(?:\.\d+)?) (?P<cur>[A-Z]{3}))?"
+    r"(?: when (?P<conds>.+?))?\.$"
+)
+_SOD = re.compile(
+    r"^The (?P<a>[\w -]+?) and the (?P<b>[\w -]+?) of a (?P<object>[\w-]+) must be different people\.$"
+)
+_PROCESS_HEAD = re.compile(r"^## Process: (?P<name>[a-z0-9-]+)$")
+_PROCESS_FOLDER = re.compile(r"^Records are filed in (?P<folder>[A-Z][\w /-]+?)\.$")
+_PROCESS_STEP = re.compile(
+    r"^(?P<n>\d+)\. \[(?P<role>[a-z][\w-]*)\] (?P<title>[^()]+?)(?: \((?P<cog>[a-z][\w-]*)\))?$"
+)
+_OPS = {"over": ">", "above": ">", "under": "<", "below": "<", "at or under": "<=", "at or over": ">="}
+
+
+@dataclass
+class Extraction:
+    rules: list[dict] = field(default_factory=list)
+    notes: list[dict] = field(default_factory=list)
+
+
+def _assignee(text: str) -> str:
+    text = text.strip()
+    if text.startswith("the ") and text.endswith(" cog"):
+        return "cog:" + slug(text[4:-4])
+    if text.startswith("the "):
+        return "role:" + slug(text[4:])
+    return "person:" + slug(text)
+
+
+class ConventionExtractor:
+    name = "convention"
+
+    def extract(self, frame: Frame) -> Extraction:
+        out = Extraction()
+        section = ""
+        process: dict | None = None
+
+        def src(n: int, text: str) -> dict:
+            return {"frame": frame.name, "version": frame.version, "line": n, "text": text}
+
+        def add(kind: str, n: int, text: str, **fields):
+            out.rules.append({"kind": kind, **fields, "source": src(n, text)})
+
+        def close_process():
+            nonlocal process
+            if process is not None:
+                out.rules.append(process)
+                process = None
+
+        for n, raw in enumerate(frame.lines, start=1):
+            line = raw.strip()
+            if not line:
+                continue
+            m = _PROCESS_HEAD.match(line)
+            if m:
+                close_process()
+                section = "process"
+                process = {"kind": "process", "name": m.group("name"), "folder": "", "object": "",
+                           "steps": [], "source": src(n, line)}
+                continue
+            if line.startswith("## "):
+                close_process()
+                section = line[3:].strip().lower()
+                continue
+            if line.startswith("#"):
+                close_process()
+                section = ""
+                continue
+            if section == "process" and process is not None:
+                m = _PROCESS_FOLDER.match(line)
+                if m:
+                    process["folder"] = m.group("folder")
+                    continue
+                m = _PROCESS_STEP.match(line)
+                if m:
+                    title = m.group("title").strip()
+                    step = {"n": int(m.group("n")), "id": slug(title), "title": title,
+                            "role": m.group("role"), "cog": m.group("cog"),
+                            "kind": "cog" if m.group("cog") else "checkpoint",
+                            "line": n}
+                    if not process["steps"]:
+                        process["object"] = slug(title.split()[-1])
+                    process["steps"].append(step)
+                    continue
+                out.notes.append({"frame": frame.name, "line": n, "text": line,
+                                  "note": "unparsed line in a process section"})
+                continue
+
+            if section not in RULE_SECTIONS:
+                continue
+            matched = self._match_sentence(line, n, section, add)
+            if not matched:
+                out.notes.append({"frame": frame.name, "line": n, "text": line,
+                                  "note": f"unparsed sentence in the {section!r} section"})
+        close_process()
+        return out
+
+    def _match_sentence(self, line: str, n: int, section: str, add) -> bool:
+        m = _MEMBER_ITEM.match(line)
+        if m and section == "members":
+            add("member", n, line, principal=m.group("principal"), principal_type=m.group("ptype"),
+                roles=[r.strip() for r in m.group("roles").split(",")])
+            return True
+        m = _ROLE_ITEM.match(line)
+        if m and section == "roles":
+            add("role", n, line, name=m.group("name"))
+            return True
+        m = _FOLDER_ITEM.match(line)
+        if m and section == "folders":
+            add("folder", n, line, path=m.group("path").strip())
+            return True
+        m = _PERMISSION.match(line)
+        if m:
+            add("permission", n, line, subject="role:" + singular_role(m.group("subject")),
+                action=m.group("action"), object=singular_role(m.group("object")),
+                resource="folder:" + m.group("folder").strip(),
+                effect="deny" if m.group("neg") else "allow")
+            return True
+        m = _PERMISSION_READ.match(line)
+        if m:
+            add("permission", n, line, subject="role:" + singular_role(m.group("subject")),
+                action="read", object="*", resource="folder:" + m.group("folder").strip(),
+                effect="deny" if m.group("neg") else "allow")
+            return True
+        m = _THRESHOLD.match(line)
+        if m:
+            add("threshold", n, line, name=slug(m.group("name")), value=number(m.group("value")),
+                unit=m.group("unit"))
+            return True
+        m = _ROUTING.match(line)
+        if m:
+            cond = None
+            if m.group("op"):
+                cond = {"field": "amount", "op": _OPS[m.group("op")], "value": number(m.group("amount")),
+                        "currency": m.group("cur")}
+            elif m.group("risk"):
+                cond = {"field": "risk", "op": "==", "value": m.group("risk")}
+            add("routing", n, line, process=m.group("process"), step="approve", condition=cond,
+                assignee=_assignee(m.group("assignee")))
+            return True
+        m = _CRITERIA.match(line)
+        if m:
+            conds = []
+            if m.group("conds"):
+                for phrase in m.group("conds").split(" and "):
+                    conds.append(CONDITION_VOCABULARY.get(phrase.strip(), "unknown:" + phrase.strip()))
+            add("approval_criteria", n, line, approver="cog:" + m.group("cog"), process=m.group("process"),
+                max_amount=number(m.group("amount")) if m.group("amount") else None,
+                currency=m.group("cur"), conditions=conds)
+            return True
+        m = _SOD.match(line)
+        if m:
+            add("sod", n, line, object=slug(m.group("object")), roles=[slug(m.group("a")), slug(m.group("b"))])
+            return True
+        return False
+
+
+_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "rules": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string"},
+                    "fields_json": {"type": "string"},
+                    "line": {"type": "integer"},
+                    "text": {"type": "string"},
+                },
+                "required": ["kind", "fields_json", "line", "text"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["rules"],
+    "additionalProperties": False,
+}
+
+_PROMPT = """You extract governance rules from a policy document written in Markdown.
+Return every rule the document states, as JSON matching the schema. For each rule:
+- kind: one of role, member, folder, permission, threshold, routing, approval_criteria, sod, process
+- fields_json: a JSON object string with the rule's fields, using exactly these shapes:
+  role {{"name"}}; member {{"principal","principal_type","roles"}}; folder {{"path"}};
+  permission {{"subject":"role:<slug>","action","object","resource":"folder:<Path>","effect":"allow"|"deny"}};
+  threshold {{"name","value","unit"}}; routing {{"process","step":"approve","condition":null or
+  {{"field":"amount","op","value","currency"}} or {{"field":"risk","op":"==","value"}},"assignee":"role:x"|"cog:x"|"person:x"}};
+  approval_criteria {{"approver":"cog:<slug>","process","max_amount","currency","conditions":[ids]}} where ids are from {vocab};
+  sod {{"object","roles":[a,b]}}; process {{"name","folder","object","steps":[{{"n","id","title","role","cog","kind":"cog"|"checkpoint"}}]}}
+- line: the 1-based line number of the sentence the rule comes from (lines are numbered below)
+- text: that line, copied verbatim and stripped of surrounding whitespace
+Only state rules the document states. Do not invent roles, amounts or conditions.
+
+Document "{name}" (version {version}):
+{numbered}
+"""
+
+
+class ClaudeExtractor:
+    """Model-backed extraction through the Anthropic SDK (optional)."""
+
+    name = "claude"
+
+    def __init__(self, model: str | None = None):
+        import anthropic  # imported lazily so the prototype runs without the SDK
+
+        self.client = anthropic.Anthropic()
+        self.model = model or os.environ.get("HUBPROTO_MODEL", "claude-opus-5-5")
+
+    def extract(self, frame: Frame) -> Extraction:
+        numbered = "\n".join(f"{i:4d}: {line}" for i, line in enumerate(frame.lines, start=1))
+        prompt = _PROMPT.format(name=frame.name, version=frame.version, numbered=numbered,
+                                vocab=sorted(CONDITION_VOCABULARY.values()))
+        with self.client.beta.messages.stream(
+            model=self.model,
+            max_tokens=64000,
+            betas=["server-side-fallback-2026-07-01"],
+            fallbacks="default",
+            output_config={"format": {"type": "json_schema", "schema": _SCHEMA}},
+            messages=[{"role": "user", "content": prompt}],
+        ) as stream:
+            message = stream.get_final_message()
+        if message.stop_reason == "refusal":
+            raise RuntimeError("extraction refused by the model")
+        text = next(b.text for b in message.content if b.type == "text")
+        data = json.loads(text)
+        out = Extraction()
+        for item in data["rules"]:
+            try:
+                fields = json.loads(item["fields_json"])
+            except json.JSONDecodeError:
+                out.notes.append({"frame": frame.name, "line": item["line"], "text": item["text"],
+                                  "note": "model returned unparsable fields"})
+                continue
+            out.rules.append({"kind": item["kind"], **fields,
+                              "source": {"frame": frame.name, "version": frame.version,
+                                         "line": item["line"], "text": item["text"].strip()}})
+        return out
+
+
+def get_extractor():
+    if os.environ.get("HUBPROTO_EXTRACTOR", "convention") == "claude":
+        return ClaudeExtractor()
+    return ConventionExtractor()
