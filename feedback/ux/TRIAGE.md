@@ -52,3 +52,11 @@ now says when Frames differ from the release in force).
 
 - finance-policy: bill approvals have a 5-day SLA (present since round 1; the running release predates it: stale-release).
 - document-control-sop: the doc-reviewer cog's criteria stay (a minor change may be approved within fixed criteria); the owner is now told.
+
+## Status after the fix passes (2026-11-06)
+
+- **core**: done (commits a29caf4, 1234e02, 45a0738, 10798af): seen digest and meaning mandatory, no rewriting a person's declaration (kernel tracks setters; the record filer files cog drafts under the cog), reject writes nothing, retry takes fields, release and review need a policy owner and an open proposal based on the release in force, decisions carry forward on recompile and older proposals are superseded, restated rules are one change, grammar errors block release, citations are file lines with the path, Frame errors name the file and stop only verbs that read Frames, field validation before any record exists, owners told of cog decisions, `undo_checkout`.
+- **shell**: done (a5aebc6, b5d8e91, 4d225e2, 0de91a6): `hubproto/shell/` package; identity chooser, refusals re-render the form, queue inbox, separate Reject with reason, status lines, words and formats, pickers, accessibility, release diff page, People and roles. Not built (planned): delegation and "not me" (approver-12), batch decisions, Files as a library with icons and sorting (visual-14), a user-needs control on the design form (first-time-user-18).
+- **cli**: done (69ddd63, f2ab49d, faac6cd, 895507f): exit codes, members only, wrong root refused, ordered help, proposals, release-diff, status, backup and restore, clean output, entrypoint drift warning. The shell-side `REQUIRED_EXTRA` map for bills stays until the invoice extractor declares what it provides from an attachment.
+- **stale-release**: the container was rebuilt and policy version 2 compiled, reviewed by bob and carol and released from the CLI; `hubproto status` reports the Frames match; `docker/smoke.py` passes end to end against the real CAD worker.
+- Suite: 286 tests.
