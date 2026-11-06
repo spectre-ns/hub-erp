@@ -440,7 +440,7 @@ class BaseHandler(BaseHTTPRequestHandler):
         out = '<nav class="rail" aria-label="Workspace"><ul class="main">' + "".join(item(n, p, ic) for n, p, ic in RAIL_MAIN) + "</ul>"
         if self._policy_owner():
             out += '<h2 id="rail-policy">Policy</h2><ul class="main" aria-labelledby="rail-policy">' + "".join(item(n, p, ic) for n, p, ic in RAIL_POLICY) + "</ul>"
-        if bundle and user in members:
+        if bundle and user in members and (self.route in ("/files", "/documents") or self.route.startswith(("/document/", "/doc/", "/edit/"))):
             cur_folder = self.q.get("folder", [""])[0]
             out += '<h2 id="rail-folders">Folders</h2><div class="tree" aria-labelledby="rail-folders">' + render_tree(folder_tree(bundle["folders"]), "", user, cur_folder) + "</div>"
         return out + "</nav>"

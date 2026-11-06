@@ -157,7 +157,7 @@ label.f.bad>span{{color:var(--crit);font-weight:700}}label.f.bad input,label.f.b
 .kpi:hover{{border-color:var(--accent)}}.kpi .kpi-h{{display:flex;align-items:center;gap:var(--sp-2);color:var(--muted);font-size:var(--fs-s)}}.kpi .kpi-h svg.i{{color:var(--accent)}}
 .kpi b{{display:block;font-size:var(--fs-xxl);line-height:1.1;margin:4px 0}}.kpi.crit b{{color:var(--crit)}}.kpi .spark{{display:block;width:100%;height:28px;margin-top:4px}}
 .charts{{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:var(--sp-3)}}.chart{{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:var(--sp-3);box-shadow:0 1px 3px var(--shadow);min-width:0}}
-.chart h2{{border:0;margin:0 0 var(--sp-2);font-size:var(--fs-m);display:flex;align-items:center;gap:var(--sp-2)}}.chart svg{{width:100%;height:auto;display:block}}.chart .legend{{display:flex;flex-wrap:wrap;gap:var(--sp-1) var(--sp-3);font-size:var(--fs-s);color:var(--muted);margin-top:var(--sp-1)}}
+.chart h2{{border:0;margin:0 0 var(--sp-2);font-size:var(--fs-m);display:flex;align-items:center;gap:var(--sp-2)}}.chart>svg{{width:100%;height:auto;display:block}}.chart .legend{{display:flex;flex-wrap:wrap;gap:var(--sp-1) var(--sp-3);font-size:var(--fs-s);color:var(--muted);margin-top:var(--sp-1)}}
 .chart .legend i{{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}}
 .sw{{fill:var(--c1)}}.sw2{{fill:var(--c2)}}.sw3{{fill:var(--c3)}}.sw4{{fill:var(--c4)}}.sw5{{fill:var(--c5)}}.sw6{{fill:var(--c6)}}.sw-ok{{fill:var(--ok)}}.sw-warn{{fill:var(--warn)}}.sw-crit{{fill:var(--crit)}}.sw-line{{fill:var(--line)}}
 .legend .sw{{background:var(--c1)}}.legend .sw2{{background:var(--c2)}}.legend .sw3{{background:var(--c3)}}.legend .sw4{{background:var(--c4)}}.legend .sw5{{background:var(--c5)}}.legend .sw6{{background:var(--c6)}}.legend .sw-ok{{background:var(--ok)}}.legend .sw-warn{{background:var(--warn)}}.legend .sw-crit{{background:var(--crit)}}
@@ -169,7 +169,7 @@ svg a:hover rect,svg a:focus rect{{opacity:.75}}
 .apphome{{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:var(--sp-3)}}.apphome .card{{margin:0}}.apphome .card h3{{margin:0 0 4px;display:flex;align-items:center;gap:var(--sp-2)}}
 .apphome .card b.n{{font-size:var(--fs-xl)}}
 /* --- inbox --- */
-.queue{{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:minmax(18em,2fr) 3fr;gap:var(--sp-2) var(--sp-3);align-items:start}}
+.filterbar{{display:flex;gap:var(--sp-2);align-items:end;flex-wrap:wrap;margin:var(--sp-2) 0}}.filterbar .f{{margin:0}}.queue{{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:minmax(18em,2fr) 3fr;gap:var(--sp-2) var(--sp-3);align-items:start}}
 .queue>li{{grid-column:1;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:var(--sp-2) var(--sp-3);margin:0;display:grid;grid-template-columns:auto 1fr;gap:var(--sp-1) var(--sp-2);align-items:start;box-shadow:0 1px 2px var(--shadow)}}
 .queue>li .ty{{color:var(--accent);padding-top:2px}}.queue h3{{margin:0;font-weight:600}}.queue h3 a{{text-decoration:none;color:var(--fg)}}.queue h3 a:hover{{color:var(--accent)}}
 .queue .meta{{grid-column:2;display:flex;gap:var(--sp-1) var(--sp-2);flex-wrap:wrap;align-items:center;font-size:var(--fs-s);color:var(--muted)}}

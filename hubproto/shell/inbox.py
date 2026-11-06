@@ -491,7 +491,7 @@ class InboxMixin:
         body += f"<h2 id='forme'>Waiting for me <span class='muted'>{len(waiting)}</span></h2>"
         if types and len(types) > 1 or type_filter:
             opts = "".join(f'<option value="{esc(t)}"{" selected" if t == type_filter else ""}>{esc(type_name(t))}</option>' for t in types)
-            body += f"""<form method="get" action="/inbox" class="card">{hidden_as(user)}<div class="fields"><label class="f"><span>Show only</span><select name="type"><option value="">every type</option>{opts}</select></label></div><div class="actions"><button class="secondary">Filter</button></div></form>"""
+            body += f"""<form method="get" action="/inbox" class="filterbar">{hidden_as(user)}<label class="f"><span>Show only</span><select name="type"><option value="">every type</option>{opts}</select></label><button class="secondary">Filter</button></form>"""
         if not waiting:
             body += "<p class='muted'>Nothing is waiting for you.</p>"
         else:

@@ -603,9 +603,15 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
                                     + ([("Reviews", len(reviews), "eye", "reviews")] if reviews else []))
         # --- the sheet
         body += f"""<div class="sheet"><h1 class="title">{esc(rec['number'])} {tag(tname)} {self._state_chip(rec['state'], wf)}{hold}</h1>
-<div class="subtitle"><b>{esc(short(headline, 300))}</b><div class="why">{esc(tname)} in <a href="{href('/files', user, folder=rec['folder'])}">{esc(rec['folder'])}</a> &middot; owner {self._avatar(owner_of(rec), size='sm', named=True) if owner_of(rec) else '-'}
-&middot; with {' '.join(self._avatar(a, size='sm', named=True) for a in rec['assignees']) or '-'}{' &middot; due ' + esc(day(typed_due)) if typed_due else ''}{' &middot; approval due ' + self._due_html(approval_due) if approval_due else ''}
-{(' &middot; ' + esc(self._process_name(process))) if process and self._process_name(process) != tname else ''} &middot; {self._run_link(run, 'run ' + run['id'][:8]) + ' ' + self._state_chip(run['status']) if run else 'no run'} &middot; {labels}</div>
+<div class="subtitle"><b>{esc(short(headline, 300))}</b><div class="why">{' &middot; '.join(x for x in [
+    f"{esc(tname)} in <a href=\"{href('/files', user, folder=rec['folder'])}\">{esc(rec['folder'])}</a>",
+    ("owner " + self._avatar(owner_of(rec), size='sm', named=True)) if owner_of(rec) else "",
+    ("with " + " ".join(self._avatar(a, size='sm', named=True) for a in rec['assignees'])) if rec['assignees'] else "",
+    ("due " + esc(day(typed_due))) if typed_due else "",
+    ("approval due " + self._due_html(approval_due)) if approval_due else "",
+    esc(self._process_name(process)) if process and self._process_name(process) != tname else "",
+    (self._run_link(run, 'run ' + run['id'][:8]) + ' ' + self._state_chip(run['status'])) if run else "",
+    labels] if x)}</div>
 {('<div class=why>You may ' + esc(' and '.join(can)) + '.</div>') if can else ''}</div>"""
         if rec["hold"]:
             body += f"<div class='card crit' role='status'><b>On hold:</b> {esc(short(rec.get('hold_reason') or 'no reason given', 400))}. Nothing can be decided until an approver releases the hold.</div>"
@@ -627,9 +633,18 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
         body += '<nav class="tabs" role="tablist" aria-label="Sections">' + "".join(
             f'<a href="#{t}" data-tab="tab-{t}" role="tab" aria-selected="{"true" if i == 0 else "false"}">{icon(ic)}{label}</a>' for i, (t, label, ic) in enumerate(tabs)) + "</nav>"
         # Details: a two-column sheet of fields, then the hold form.
-        flds = "".join(f'<div class="fld"><dt>{esc(field_label(k))}</dt><dd>{self._field_html(k, v, rec["fields"])}</dd></div>'
-                       for k, v in sorted(rec["fields"].items()) if k not in BLOB_FIELDS and k != "reviews" and v not in (None, "", [], {}))
+        td = self.hub.kernel.types.get(rec["type"], {})
+        system = set(td.get("system_fields") or [])
+        lead = ["title", "description", "statement", "kind", "severity", "supplier", "amount", "currency", "quantity", "unit_cost", "item", "po", "date", "due"]
+        declared = [k for k in lead if k in rec["fields"]] + [k for k in sorted(td.get("fields") or {}) if k not in lead and k not in system and k in rec["fields"]]
+        declared += [k for k in sorted(rec["fields"]) if k not in declared and k not in system]
+        shown = lambda k, v: k not in BLOB_FIELDS and k != "reviews" and v not in (None, "", [], {})
+        row = lambda k: f'<div class="fld"><dt>{esc(field_label(k))}</dt><dd>{self._field_html(k, rec["fields"][k], rec["fields"])}</dd></div>'
+        flds = "".join(row(k) for k in declared if shown(k, rec["fields"][k]))
+        sys_rows = "".join(row(k) for k in sorted(system) if k in rec["fields"] and shown(k, rec["fields"][k]))
         body += '<section class="tab-panel active" id="tab-details"><h2 id="details">Details</h2>' + (f'<dl class="sheetfields">{flds}</dl>' if flds else "<p class='muted'>No fields.</p>")
+        if sys_rows:
+            body += details("Set by the system", f'<dl class="sheetfields">{sys_rows}</dl>')
         err_hold = self._field_error("reason") if self.route == "/hold" else None
         err_form = self._form_error(["reason"]) if self.route in ("/hold", "/snapshot") else ""
         body += f"""<div class="card" id="hold">{err_form}<form method="post" action="/hold">{hidden_as(user)}<input type="hidden" name="record" value="{esc(loc)}"><input type="hidden" name="on" value="{'0' if rec['hold'] else '1'}">
@@ -730,6 +745,8 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
             return esc(self._supplier_name(v)) + (f" <span class='muted'>({esc(v)})</span>" if self._supplier_name(v) != v else "")
         if isinstance(v, str) and (v.startswith("rec:") or self.hub.kernel.get(v) is not None) and name not in ("title", "description"):
             return self._record_link(v)
+        if isinstance(v, list) and v and all(isinstance(x, str) and x.startswith("rec:") for x in v):
+            return ", ".join(self._record_link(x, with_summary=False) for x in v[:12]) + (f" <span class='muted'>and {len(v) - 12} more</span>" if len(v) > 12 else "")
         if isinstance(v, (dict, list)) and not (isinstance(v, list) and all(isinstance(x, (str, int, float)) for x in v)):
             return details("show", f"<pre class='cell'>{esc(short(json.dumps(v, indent=1, default=str), 4000))}</pre>")
         return esc(value_text(name, v, fields))
