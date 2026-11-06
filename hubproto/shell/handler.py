@@ -1,0 +1,662 @@
+"""Request plumbing for the workspace shell: identity, body reading, error handling that re-renders the form the
+error came from, the page frame (skip link, breadcrumbs, role-trimmed rail), one-use form tokens and the
+lookups every page shares.
+
+Request handling: ``/healthz`` is answered without the hub lock; a POST body is validated (``Content-Length``
+present, non-negative, at most ``HUBPROTO_MAX_UPLOAD`` bytes) and read before the lock is taken, so one stalled or
+malformed client never freezes the shell for everyone. An oversize body is drained up to the limit and answered
+with a readable 413; a stalled body is answered with a 408. One log line per request and one per decision go to
+stdout.
+"""
+
+from __future__ import annotations
+
+import email.policy
+import os
+import socket
+import sys
+import threading
+import time
+import traceback
+import uuid
+from datetime import date
+from email.parser import BytesParser
+from http.server import BaseHTTPRequestHandler
+from urllib.parse import parse_qs, quote, urlencode, urlparse
+
+from .. import authz
+from ..app import Hub
+from ..frames import FrameError, FrameStore
+from ..kernel import KernelGuardError
+from ..runner import RunError
+from .css import CSS
+from .forms import RESERVED_KEYS, ShellError, error_field
+from .text import (chip, clean, day, esc, friendly, humanize, short, summary_of_record, tag, type_name, version_label,
+                   why_sentence)
+
+DEFAULT_MAX_UPLOAD = 25 * 1024 * 1024
+RAIL_MAIN = [("Home", "/"), ("Inbox", "/inbox"), ("Files", "/files"), ("Boards", "/boards")]
+RAIL_POLICY = [("Runs", "/runs"), ("Policy versions", "/releases"), ("Policies", "/frames"), ("Why", "/why"),
+               ("Conformance", "/conformance"), ("People and roles", "/admin")]
+ONCE_KEEP = 2000  # one-use tokens remembered (the oldest are forgotten first)
+
+
+def log_line(text: str) -> None:
+    sys.stdout.write(text + "\n")
+    sys.stdout.flush()
+
+
+def href(path: str, user: str, **params) -> str:
+    q = {"as": user}
+    q.update({k: v for k, v in params.items() if v not in (None, "")})
+    return f"{path}?{urlencode(q)}"
+
+
+def hidden_as(user: str) -> str:
+    return f'<input type="hidden" name="as" value="{esc(user)}">'
+
+
+def table(headers: list[str], rows: list[list[str]], empty: str = "Nothing here.", row_header: bool = False) -> str:
+    """A data table in an overflow container, with column headers scoped and, when asked, the first cell a row header."""
+    if not rows:
+        return f'<p class="muted">{esc(empty)}</p>'
+    head = "".join(f'<th scope="col">{esc(h)}</th>' for h in headers)
+    body = ""
+    for row in rows:
+        cells = "".join((f'<th scope="row">{c}</th>' if (row_header and i == 0) else f"<td>{c}</td>") for i, c in enumerate(row))
+        body += f"<tr>{cells}</tr>"
+    return f'<div class="tbl"><table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
+
+
+def kv(items: list[tuple[str, str]]) -> str:
+    if not items:
+        return ""
+    return '<dl class="kv">' + "".join(f"<dt>{esc(k)}</dt><dd>{v}</dd>" for k, v in items if v not in (None, "")) + "</dl>"
+
+
+def details(summary: str, body: str, open_: bool = False, cls: str = "") -> str:
+    return f'<details{" open" if open_ else ""}{(" class=&quot;" + cls + "&quot;") if cls else ""}><summary>{summary}</summary>{body}</details>'
+
+
+def folder_tree(folders: list[str]) -> dict:
+    tree: dict = {}
+    for f in folders:
+        node = tree
+        for part in f.split("/"):
+            node = node.setdefault(part, {})
+    return tree
+
+
+def render_tree(node: dict, prefix: str, user: str, current: str) -> str:
+    out = "<ul>"
+    for name, child in node.items():
+        path = f"{prefix}/{name}" if prefix else name
+        cur = ' aria-current="page"' if path == current else ""
+        out += f'<li><a{cur} href="{href("/files", user, folder=path)}">{esc(name)}</a>'
+        out += (render_tree(child, path, user, current) if child else "") + "</li>"
+    return out + "</ul>"
+
+
+class BaseHandler(BaseHTTPRequestHandler):
+    hub: Hub = None  # set by make_server()
+    lock = threading.RLock()
+    server_version = "hubproto-shell/0.2"
+    max_upload = DEFAULT_MAX_UPLOAD
+    timeout = 30  # a stalled client gives up its thread (and gets a 408), never the lock
+    _once_used: dict[str, str] = {}  # one-use form tokens -> where their first submission landed
+    _once_lock = threading.Lock()
+    _frames_stamp: float = -1.0
+
+    def version_string(self) -> str:  # no Python version in the Server header
+        return self.server_version
+
+    def log_message(self, *a):  # the request log is written by _handle
+        pass
+
+    def send_response(self, code, message=None):
+        self._status = code
+        super().send_response(code, message)
+
+    # --- request plumbing --------------------------------------------------
+    def do_GET(self):
+        self._handle("GET")
+
+    def do_POST(self):
+        self._handle("POST")
+
+    def _handle(self, method: str) -> None:
+        t0 = time.monotonic()
+        self._status = 0
+        url = urlparse(self.path)
+        self.q = parse_qs(url.query, keep_blank_values=True)
+        self.form: dict[str, str] = {}
+        self.files: list[tuple[str, str, bytes]] = []
+        self.user = clean(self.q.get("as", [""])[0] or "").strip()
+        self.route = url.path.rstrip("/") or "/"
+        self.arg = ""
+        self.meta = None
+        self.bundle = None
+        self.err: tuple[str, str | None] | None = None  # (message, field) when re-rendering a form after a refusal
+        self.vals: dict[str, str] = {}  # the posted values to keep on that form
+        self.today = date.today().isoformat()
+        self._force_status = 0
+        self._err_shown = False
+        try:
+            if self.route == "/healthz":
+                return self._text("ok")
+            if method == "POST":
+                self._read_body()  # validated and read outside the lock
+                self.user = clean(self.form.get("as") or self.q.get("as", [""])[0] or "").strip()
+                if not self.user:
+                    raise ShellError("Say who you are: choose your name from 'Acting as' before sending a form.", 400)
+            with self.lock:
+                self._refresh_frames()
+                self.meta = self.hub.releases.current()
+                self.bundle = self.hub.releases.bundle(self.meta["digest"]) if self.meta else None
+                if method == "GET" and not self.user and self.route not in ("/download",):
+                    return self.page_whoami()
+                self._dispatch(method)
+        except ShellError as e:
+            self._error_page(str(e), e.status)
+        finally:
+            ms = int((time.monotonic() - t0) * 1000)
+            log_line(f"request method={method} path={url.path} as={self.user} status={self._status} ms={ms}")
+
+    def _dispatch(self, method: str) -> None:
+        try:
+            handler = self._route(method)
+            if handler is None:
+                raise ShellError("There is no such page." if method == "GET" else "There is no such action.", 404)
+            return handler()
+        except (RunError, KernelGuardError, ShellError) as e:
+            if method == "POST":
+                return self._after_post_error(e)
+            if isinstance(e, ShellError):
+                raise
+            return self._error_page(friendly(str(e)), 400)
+        except Exception as e:  # readable, never a blank 500; the traceback goes to the log, not the browser
+            err_id = uuid.uuid4().hex[:8]
+            log_line(f"error id={err_id} {type(e).__name__}: {e}\n{traceback.format_exc()}")
+            detail = f"<pre>{esc(traceback.format_exc())}</pre>" if os.environ.get("HUBPROTO_DEBUG") else ""
+            return self._error_page(f"Something went wrong on the server (error id {err_id}; the log has the details).", 500, extra=detail)
+
+    def _route(self, method: str):
+        r = self.route
+        if method == "GET":
+            fixed = {"/": self.page_home, "/files": self.page_files, "/boards": self.page_boards, "/inbox": self.page_inbox,
+                     "/runs": self.page_runs, "/releases": self.page_releases, "/frames": self.page_frames, "/why": self.page_why,
+                     "/admin": self.page_admin, "/conformance": self.page_conformance, "/download": self.page_download,
+                     "/start": self.page_start}
+            if r in fixed:
+                return fixed[r]
+            for prefix, fn in (("/record/", self.page_record), ("/document/", self.page_document), ("/doc/", self.page_document),
+                               ("/run/", self.page_run), ("/frame/", self.page_frame), ("/release/", self.page_release)):
+                if r.startswith(prefix) and len(r) > len(prefix):
+                    self.arg = r[len(prefix):]
+                    return fn
+            return None
+        posts = {"/start": self.post_start, "/decide": self.post_decide, "/msg": self.post_msg, "/attach": self.post_attach,
+                 "/upload": self.post_upload, "/checkout": self.post_checkout, "/checkin": self.post_checkin, "/link": self.post_link,
+                 "/snapshot": self.post_snapshot, "/hold": self.post_hold, "/resubmit": self.post_resubmit, "/retry": self.post_retry,
+                 "/cancel": self.post_cancel, "/undo-checkout": self.post_undo_checkout}
+        return posts.get(r)
+
+    def _read_body(self) -> None:
+        raw = self.headers.get("Content-Length")
+        if raw is None:
+            self.close_connection = True
+            raise ShellError("The form could not be read: the request had no Content-Length header. Go back and send it again.", 411)
+        try:
+            length = int(raw)
+        except ValueError:
+            self.close_connection = True
+            raise ShellError(f"Content-Length {raw!r} is not a number.", 400) from None
+        if length < 0:
+            self.close_connection = True
+            raise ShellError("Content-Length cannot be negative.", 400)
+        if length > self.max_upload:
+            self._drain(length)
+            self.close_connection = True
+            raise ShellError(f"That upload is too big: {length:,} bytes, and the limit is {self.max_upload:,} bytes "
+                             f"({self.max_upload // (1024 * 1024)} MB, HUBPROTO_MAX_UPLOAD). Choose a smaller file.", 413)
+        try:
+            body = self.rfile.read(length) if length else b""
+        except (socket.timeout, TimeoutError):
+            self.close_connection = True
+            raise ShellError("The upload stopped before it was complete (the connection stalled). Go back and send the form again.", 408) from None
+        ctype = self.headers.get("Content-Type", "") or ""
+        if ctype.startswith("multipart/form-data"):
+            msg = BytesParser(policy=email.policy.default).parsebytes(b"Content-Type: " + ctype.encode("latin-1") + b"\r\n\r\n" + body)
+            parts = msg.iter_parts() if msg.is_multipart() else []
+            for part in parts:
+                name = part.get_param("name", header="content-disposition") or ""
+                filename = part.get_filename()
+                payload = part.get_payload(decode=True) or b""
+                if filename:
+                    self.files.append((name, clean(os.path.basename(filename)), payload))
+                else:
+                    self.form[name] = clean(payload.decode("utf-8", "replace"))
+        else:
+            for k, v in parse_qs(body.decode("utf-8", "replace"), keep_blank_values=True).items():
+                self.form[k] = clean(v[0])
+
+    def _drain(self, length: int) -> None:
+        """Read and discard an oversize body (up to the limit) so the client sees the 413 instead of a reset."""
+        left = min(length, self.max_upload)
+        try:
+            self.connection.settimeout(5)
+            while left > 0:
+                chunk = self.rfile.read(min(65536, left))
+                if not chunk:
+                    break
+                left -= len(chunk)
+        except (OSError, socket.timeout):
+            pass
+
+    def _text(self, text: str, status: int = 200) -> None:
+        data = text.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _redirect(self, location: str) -> None:
+        self.send_response(303)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _back_link(self) -> str:
+        ref = self.headers.get("Referer") or ""
+        scheme = urlparse(ref).scheme
+        if ref and scheme in ("", "http", "https"):
+            return f' &middot; <a href="{esc(ref)}">Back to the previous page</a>'
+        return ""
+
+    # --- one-use form tokens ------------------------------------------------
+    def _once(self) -> str:
+        return f'<input type="hidden" name="once" value="{uuid.uuid4().hex}">'
+
+    def _once_done(self) -> str | None:
+        """Where the first submission with this token landed, if it was already used."""
+        token = (self.form.get("once") or "").strip()
+        if not token:
+            return None
+        with self._once_lock:
+            return self._once_used.get(token)
+
+    def _once_finish(self, location: str) -> str:
+        token = (self.form.get("once") or "").strip()
+        if token:
+            with self._once_lock:
+                if len(self._once_used) >= ONCE_KEEP:
+                    for k in list(self._once_used)[: ONCE_KEEP // 4]:
+                        del self._once_used[k]
+                self._once_used[token] = location
+        return location
+
+    # --- errors ---------------------------------------------------------------
+    def _error_page(self, message: str, status: int = 400, extra: str = "") -> None:
+        user = self.user
+        first = message.split(". ")[0].rstrip(".")
+        links = f'<a href="{href("/", user)}">Home</a> &middot; <a href="{href("/inbox", user)}">Inbox</a>' if user else f'<a href="/">Choose who you are</a>'
+        self._page(f"Not done: {short(first, 60)}", f'<h1>Not done</h1><div class="card crit" role="alert"><p>{esc(message)}</p></div>'
+                   f"<p>{links}{self._back_link()}</p>{extra}", status=status)
+
+    def _after_post_error(self, e: Exception) -> None:
+        """A refused POST re-renders the form it came from with the typed values kept and the message beside the field."""
+        msg = str(e) if isinstance(e, ShellError) else friendly(str(e))
+        status = e.status if isinstance(e, ShellError) else 400
+        field = getattr(e, "field", None)
+        self.vals = dict(self.form)
+        self.err = (msg, field)
+        self._force_status = status
+        raw = str(e)
+        try:
+            if self.route == "/start":
+                return self.page_home(status=status)
+            if self.route == "/decide":
+                stale = isinstance(e, RunError) and ("not waiting for a" in raw or "changed since you opened it" in raw)
+                return self.page_inbox(status=status, stale=stale)
+            if self.route in ("/resubmit", "/retry", "/cancel"):
+                run = self.hub.runner.load(self.form.get("run", "")) if self.form.get("run") else None
+                if run and run.get("record"):
+                    self.arg = run["record"]
+                    return self.page_record(status=status)
+                return self.page_inbox(status=status)
+            if self.route in ("/attach", "/link", "/hold", "/snapshot"):
+                self.arg = self.form.get("record", "")
+                return self.page_record(status=status)
+            if self.route == "/msg":
+                return self.page_inbox(status=status)
+            if self.route == "/upload":
+                self.q["folder"] = [self.form.get("folder", "")]
+                return self.page_files(status=status)
+            if self.route in ("/checkout", "/checkin", "/undo-checkout"):
+                self.arg = self.form.get("doc", "")
+                return self.page_document(status=status)
+        except (RunError, KernelGuardError, ShellError):
+            pass
+        except Exception as inner:  # the re-render failed: fall back to the plain error page, never a 500
+            log_line(f"rerender failed after {type(e).__name__}: {inner}\n{traceback.format_exc()}")
+        return self._error_page(msg, status)
+
+    def _error_for(self, *fields: str) -> str | None:
+        """The pending error message when it concerns one of these fields (or none of them, for a form-level message)."""
+        if not self.err:
+            return None
+        msg, field = self.err
+        return msg if field in fields else None
+
+    def _form_error(self, candidates=()) -> str:
+        """The pending error as an alert above a form, unless a control carries it."""
+        if not self.err:
+            return ""
+        msg, field = self.err
+        if field is None:
+            field = error_field(msg, candidates)
+            self.err = (msg, field)
+        if field and field in candidates:
+            self._err_shown = True  # the control carries it
+            return ""
+        self._err_shown = True
+        return f'<p class="err" role="alert">{esc(msg)}</p>'
+
+    def _field_error(self, name: str) -> str | None:
+        if not self.err:
+            return None
+        msg, field = self.err
+        if field == name:
+            self._err_shown = True
+            return msg
+        return None
+
+    def _val(self, name: str, default="") -> str:
+        return self.vals.get(name, default) if self.vals else default
+
+    # --- page frame --------------------------------------------------------
+    def _rail(self) -> str:
+        user, bundle = self.user, self.bundle
+        members = bundle["members"] if bundle else {}
+
+        def item(n, p):
+            cur = self.route == p or (p != "/" and self.route.startswith(p))
+            return f'<li><a{" aria-current=&quot;page&quot;" if cur else ""} href="{href(p, user)}">{esc(n)}</a></li>'
+
+        out = '<nav class="rail" aria-label="Workspace"><ul class="main">' + "".join(item(n, p) for n, p in RAIL_MAIN) + "</ul>"
+        if self._policy_owner():
+            out += '<h2 id="rail-policy">Policy</h2><ul class="main" aria-labelledby="rail-policy">' + "".join(item(n, p) for n, p in RAIL_POLICY) + "</ul>"
+        if bundle and user in members:
+            cur_folder = self.q.get("folder", [""])[0]
+            out += '<h2 id="rail-folders">Folders</h2><div class="tree" aria-labelledby="rail-folders">' + render_tree(folder_tree(bundle["folders"]), "", user, cur_folder) + "</div>"
+        return out + "</nav>"
+
+    def _page(self, title: str, body: str, status: int = 200, head: str = "", crumbs: list[tuple[str, str | None]] | None = None) -> None:
+        user = self.user
+        bundle = self.bundle
+        members = dict(bundle["members"]) if bundle else {}
+        people = sorted(m for m in members if members[m]["type"] == "person")
+        options = "".join(f'<option value="{esc(m)}"{" selected" if m == user else ""}>{esc(m)}</option>' for m in people)
+        if user and user not in people:
+            options = f'<option value="{esc(user)}" selected>{esc(user)} (not a member)</option>' + options
+        if not user:
+            options = '<option value="" selected>choose…</option>' + options
+        keep = "".join(f'<input type="hidden" name="{esc(k)}" value="{esc(v[0])}">' for k, v in self.q.items() if k not in ("as", "done") and v)
+        action = self.route if self.route in ("/", "/inbox", "/files", "/boards", "/runs", "/releases", "/frames", "/why", "/admin", "/conformance") \
+            or self.route.startswith(("/record/", "/document/", "/run/", "/frame/", "/release/")) else "/"
+        crumb_items = [("Hub", href("/", user) if user else "/")] + list(crumbs or [(title, None)])
+        crumb = "".join(f'<li>{f"<a href=&quot;{esc(h)}&quot;>{esc(n)}</a>" if h else esc(n)}</li>' for n, h in crumb_items)
+        done = self.q.get("done", [""])[0]
+        status_line = f'<p class="status" role="status">{esc(short(done, 300))}</p>' if done else ""
+        if self.err and not getattr(self, "_err_shown", False):  # the form that was refused is not on this page: say it up front
+            status_line += f'<div class="card crit" role="alert"><p>{esc(self.err[0])}</p></div>'
+        full_title = (f"{short(done, 40)} - " if done else "") + title + (f" ({user})" if user else "") + " - Hub"
+        page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{esc(full_title)}</title><style>{CSS}</style>{head}</head>
+<body><a class="skip" href="#main">Skip to content</a><div class="top"><a href="{href("/", user) if user else "/"}">Hub</a><ol class="crumb" aria-label="You are here">{crumb}</ol>
+<form method="get" action="{esc(action)}">{keep}<label>Acting as <select name="as">{options}</select></label> <button class="secondary">Go</button></form></div>
+<div class="layout">{self._rail()}<main id="main">{status_line}{body}</main></div></body></html>"""
+        data = page.encode("utf-8")
+        if status == 200 and getattr(self, "_force_status", 0):
+            status = self._force_status  # a refused POST re-rendered its form: the page keeps the refusal's status
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def page_whoami(self) -> None:
+        """No principal on the request: ask who is here instead of assuming anyone."""
+        members = (self.bundle or {"members": {}})["members"]
+        people = sorted(p for p, m in members.items() if m["type"] == "person")
+        cogs = sorted(p for p, m in members.items() if m["type"] == "cog")
+        target = self.route if self.route != "/healthz" else "/"
+        query = {k: v[0] for k, v in self.q.items() if k != "as" and v}
+        cards = "".join(f'<div class="card"><a href="{esc(target)}?{urlencode({"as": p, **query})}">{esc(p)}</a><div class="why">'
+                        f'{esc(", ".join(r.replace("-", " ") for r in members[p]["roles"]))}</div></div>' for p in people)
+        body = (f"<h1>Who are you?</h1><p>This prototype has no sign-in: choose your name to act as that person. Every signature, "
+                f"message and change is recorded under the name you choose.</p><div class='who'>{cards or '<p class=muted>No policy release is in effect yet.</p>'}</div>")
+        if cogs:
+            body += f"<p class='why'>Automatic reviewers ({esc(', '.join(cogs))}) act on their own within the policy; nobody signs in as one.</p>"
+        self._page("Who are you?", body, status=200)
+
+    # --- shared lookups -------------------------------------------------------
+    def _refresh_frames(self) -> None:
+        """Re-read the Frames when a file changed on disk, so /frame pages and citations show what is there now."""
+        root = self.hub.frames.root
+        try:
+            stamp = max((p.stat().st_mtime for p in root.rglob("*.frame.md")), default=0.0)
+        except OSError:
+            return
+        if stamp != type(self)._frames_stamp:
+            try:
+                self.hub.frames = FrameStore(root)
+            except FrameError as e:
+                log_line(f"frames not reloaded: {e}")
+            type(self)._frames_stamp = stamp
+
+    def _need_release(self) -> dict:
+        if not self.bundle:
+            raise ShellError("No policy release is in effect. Compile and release Frames first (hubproto bootstrap-release).", 409)
+        return self.bundle
+
+    def _is_member(self) -> bool:
+        return bool(self.bundle) and self.user in self.bundle["members"]
+
+    def _policy_owner(self) -> bool:
+        return bool(self.bundle) and "policy-owner" in authz.roles_of(self.bundle, self.user)
+
+    def _people(self) -> list[str]:
+        return sorted(p for p, m in (self.bundle or {"members": {}})["members"].items() if m["type"] == "person")
+
+    def _can_read(self, folder: str) -> dict:
+        return authz.check(self._need_release(), self.user, "read", "*", folder)
+
+    def _require_read(self, folder: str) -> dict:
+        d = self._can_read(folder)
+        if not d["allowed"]:
+            raise ShellError(f"You cannot read {folder}. " + self._why_text(d, "read", "*", folder), 403)
+        return d
+
+    def _why_text(self, decision: dict, action: str, obj: str, folder: str) -> str:
+        """The permission sentence as plain text (no links) for an error message."""
+        import re
+
+        return re.sub(r"<[^>]+>", "", why_sentence(self.bundle, decision, self.user, action, obj, folder)).replace("&quot;", '"').replace("&#x27;", "'")
+
+    def _why_html(self, decision: dict, action: str, obj: str, folder: str, principal: str | None = None) -> str:
+        return why_sentence(self.bundle, decision, principal or self.user, action, obj, folder, link_rule=self._rule_link)
+
+    def _rule_link(self, src: dict | None) -> str:
+        src = src or {}
+        frame, line = src.get("frame", ""), src.get("line", 0)
+        if frame and not frame.startswith("(") and frame in self.hub.frames.frames:
+            return f'<a href="{href("/frame/" + frame, self.user)}#L{line}">{esc(frame)} line {esc(line)}</a>'
+        return esc(f"{frame} line {line}" if line else frame)
+
+    def _rule_html(self, rule: dict | None) -> str:
+        rule = rule or {}
+        return f'{self._rule_link(rule)}: “{esc(rule.get("text", ""))}”'
+
+    def _record_link(self, ref, with_summary: bool = True) -> str:
+        if not ref or not isinstance(ref, str):
+            return esc(str(ref)) if ref else ""
+        rec = self.hub.kernel.get(ref)
+        if rec is None:
+            return esc(ref.rsplit(":", 1)[-1])
+        page = "/document/" if rec["type"] == "document" else "/record/"
+        link = f'<a href="{href(page + quote(rec["locator"], safe=":"), self.user)}">{esc(rec["number"])}</a>'
+        return link + (f' <span class="muted">{esc(summary_of_record(rec))}</span>' if with_summary else "")
+
+    def _number_link(self, locator: str, number: str) -> str:
+        return self._record_link(locator, with_summary=False) or esc(number)
+
+    def _human(self, text) -> str:
+        return humanize(str(text or ""), self._number_link)
+
+    def _run_link(self, run: dict | str, text: str | None = None) -> str:
+        rid = run if isinstance(run, str) else run["id"]
+        return f'<a href="{href("/run/" + rid, self.user)}">{esc(text or ("run " + rid[:8]))}</a>'
+
+    def _run_visible(self, run: dict) -> bool:
+        """A run is shown to a member who may read its record's folder, owns it, or is asked to act on it."""
+        if not self._is_member():
+            return False
+        folder = (run.get("manifest") or {}).get("folder", "")
+        if folder and self._can_read(folder)["allowed"]:
+            return True
+        if run.get("owner") == self.user:
+            return True
+        pending = run.get("pending") or {}
+        return self.user in (pending.get("assignees") or [])
+
+    def _visible_runs(self) -> list[dict]:
+        if not self._is_member():
+            return []
+        cache: dict[str, bool] = {}
+        out = []
+        for r in self.hub.runner.list():
+            folder = (r.get("manifest") or {}).get("folder", "")
+            if folder not in cache:
+                cache[folder] = bool(folder) and self._can_read(folder)["allowed"]
+            if cache[folder] or r.get("owner") == self.user or self.user in ((r.get("pending") or {}).get("assignees") or []):
+                out.append(r)
+        return out
+
+    def _pending(self, user: str, kind: str | None = None) -> list[dict]:
+        runs = self.hub.runner.pending_for(user)
+        return [r for r in runs if kind is None or r["pending"].get("kind", "decision") == kind]
+
+    def _failed_for(self, user: str) -> list[dict]:
+        return [r for r in self.hub.runner.list() if r["status"] == "failed" and r["owner"] == user]
+
+    def _waiting_on_others(self, user: str) -> list[dict]:
+        return [r for r in self.hub.runner.list() if r["status"] == "waiting" and r["owner"] == user and r.get("pending")
+                and user not in (r["pending"].get("assignees") or [])]
+
+    def _failure_of(self, run_id: str) -> dict:
+        for ev in reversed(self.hub.runner.track(run_id)):
+            if ev["type"] == "run.failed":
+                return ev
+        return {}
+
+    def _record_type_of(self, run: dict) -> str:
+        wf = run.get("workflow") or {}
+        if wf.get("record_type"):
+            return wf["record_type"]
+        op = (self.bundle or {}).get("ops", {}).get(run.get("process", ""), {})
+        return op.get("record_type", "")
+
+    def _process_name(self, process: str) -> str:
+        """A process named by what it produces: 'Supplier bill' for purchase-to-pay."""
+        op = (self.bundle or {}).get("ops", {}).get(process, {})
+        rt = op.get("record_type") or ""
+        return type_name(rt) if rt else process.replace("-", " ").capitalize()
+
+    def _version_label(self, digest: str | None) -> str:
+        if not digest:
+            return "no policy version"
+        try:
+            meta = self.hub.releases.get(digest)
+        except KeyError:
+            return f"policy version {digest[:12]}"
+        return version_label(meta, self.hub.releases.list())
+
+    def _version_html(self, digest: str | None) -> str:
+        if not digest:
+            return "no policy version"
+        label = self._version_label(digest)
+        return f'<a href="{href("/release/" + digest[:16], self.user)}">{esc(label)}</a>'
+
+    def _type_chip(self, rt: str) -> str:
+        return tag(type_name(rt))
+
+    def _state_chip(self, state: str, wf: dict | None = None) -> str:
+        from .text import chip_class, state_name
+
+        return f'<span class="chip {chip_class(state)}" data-state="{esc(state)}">{esc(state_name(state, wf))}</span>'
+
+    def _due_html(self, due: str | None) -> str:
+        from .text import due_chip
+
+        return due_chip(due, self.today)
+
+    def _supplier_options(self) -> list[tuple[str, str]]:
+        out = []
+        for key, s in sorted(self.hub.kernel.suppliers().items()):
+            out.append((s.get("id") or key.split(":", 1)[1], f"{s.get('name') or s.get('id')}{'' if s.get('approved') else ' (not approved)'}"))
+        if "supplier" in self.hub.kernel.types:
+            for r in self.hub.kernel.query(type_="supplier"):
+                out.append((r["locator"], f"{r['number']} {summary_of_record(r)}"))
+        return out
+
+    def _record_options(self, type_: str, key: str = "locator") -> list[tuple[str, str]]:
+        if type_ not in self.hub.kernel.types:
+            return []
+        return [(r[key], f"{r['number']} {summary_of_record(r)}") for r in self.hub.kernel.query(type_=type_) if r["state"] not in ("cancelled", "rejected", "obsolete")]
+
+    def _supplier_name(self, ref) -> str:
+        """A supplier's name for its id ('Acme Metals' for acme-metals); the id when unknown."""
+        if not ref:
+            return ""
+        s = self.hub.kernel.suppliers().get(f"supplier:{ref}")
+        if s and s.get("name"):
+            return str(s["name"])
+        rec = self.hub.kernel.get(str(ref)) if isinstance(ref, str) and ref.startswith("rec:") else None
+        return summary_of_record(rec) if rec else str(ref)
+
+    def _po_options(self) -> list[tuple[str, str]]:
+        from .text import money
+
+        out = [(po.get("id") or key.split(":", 1)[1], f"{po.get('id')}: {self._supplier_name(po.get('supplier'))}, {money(po.get('amount'), po.get('currency'))}"
+                + ("" if po.get("received") else ", not yet received"))
+               for key, po in sorted(self.hub.kernel.purchase_orders().items())]
+        out += self._record_options("purchase-order")
+        return out
+
+    def _picker_options(self, name: str, spec: str | None) -> list[tuple[str, str]] | None:
+        """Pickers for references people would otherwise have to look up: suppliers, items, purchase orders, people, assets..."""
+        if name == "supplier":
+            return self._supplier_options()
+        if name in ("po", "po_ref"):
+            return self._po_options()
+        if name == "item":
+            return self._record_options("item")
+        if name == "design":
+            return self._record_options("design")
+        if name == "journal":
+            return self._record_options("journal")
+        if name == "asset":
+            return self._record_options("asset")
+        if name == "customer" and "customer" in self.hub.kernel.types:
+            return self._record_options("customer")
+        if name == "procedure":
+            return self._record_options("document")
+        if name == "ncrs":
+            return self._record_options("ncr")
+        if spec == "ref" and name in self.hub.kernel.types:
+            return self._record_options(name)
+        return None

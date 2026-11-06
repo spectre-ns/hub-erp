@@ -73,16 +73,15 @@ def test_healthz(shell):
 
 
 @pytest.mark.parametrize("path,needle", [
-    ("/", "Processes you can start"),
+    ("/", "Start something"),
     ("/files?folder=Finance/Payables", "Upload a file"),
-    ("/boards?type=bill", "awaiting-approve-the-bill"),
+    ("/boards?type=bill", "Awaiting: Approve the bill"),
     ("/inbox", "Send a message"),
     ("/runs", "Runs"),
     ("/releases", "Routing in effect"),
     ("/frames", "finance-policy"),
     ("/frame/finance-policy", 'id=\'L1\''),
-    ("/why?action=create&object=bill&folder=Finance/Payables", "allowed by finance-policy line"),
-    ("/admin", "record-filer"),
+    ("/why?action=create&object=bill&folder=Finance/Payables", "Open finance-policy at line"),
     ("/conformance", "Conformance"),
     ("/files", "Finance"),
     ("/boards", "Boards"),
@@ -97,14 +96,14 @@ def test_pages_answer(shell, path, needle):
 def test_home_shows_roles_and_release(shell):
     status, text = get(shell, "/", **{"as": "bob"})
     assert status == 200
-    assert "controller" in text and "policy-owner" in text
-    assert "Policy release in effect" in text
+    assert "controller" in text and "policy owner" in text
+    assert "Policy in effect" in text and "policy version 1" in text
 
 
 def test_denied_folder_shows_why(shell):
     status, text = get(shell, "/files?folder=Finance/Payables", **{"as": "carol"})
     assert status == 403
-    assert "no rule in the release" in text or "denied by" in text
+    assert "Who may:" in text and "you are:" in text and "ask:" in text
 
 
 def test_why_links_to_the_frame_line(shell):
@@ -115,7 +114,7 @@ def test_why_links_to_the_frame_line(shell):
 
 def test_unknown_page_is_a_readable_404(shell):
     status, text = get(shell, "/nope", **{"as": "alice"})
-    assert status == 404 and "No such page" in text
+    assert status == 404 and "There is no such page" in text and "<h1>Not done</h1>" in text
 
 
 def test_conformance_without_profile_says_so(shell):
@@ -143,23 +142,23 @@ def test_start_decide_upload_attach_flow(shell):
     status, text = get(shell, "/record/" + quote(locator, safe=":"), **{"as": "alice"})
     assert status == 200
     for s in ("open", "awaiting-approve-the-bill", "posted", "rejected"):
-        assert s in text
+        assert f'data-state="{s}"' in text
     assert "stateDiagram-v2" in text and "pending" in text
     status, text = get(shell, "/record/" + rec["number"], **{"as": "bob"})
-    assert status == 200 and "may bob approve bill in Finance/Payables" in text and "allowed" in text
+    assert status == 200 and "You may approve here" in text and 'action="/decide"' in text
 
     # The inbox shows the approval with the routing sentence; bob decides.
-    status, text = get(shell, "/inbox", **{"as": "bob"})
+    status, text = get(shell, "/inbox", **{"as": "bob", "open": run_id})
     assert status == 200 and "over 10,000 USD" in text and state["seen_digest"] in text
-    status, url, text = post(shell, "/decide", {"as": "dave", "run": run_id, "verdict": "approve", "meaning": "x",
+    status, url, text = post(shell, "/decide", {"as": "dave", "run": run_id, "verdict": "approve", "meaning": "x", "confirm": "1",
                                                 "digest": hub.runner.load(run_id)["seen_digest"]})
-    assert status == 400 and "not an assignee" in text
+    assert status == 400 and "not assigned to you" in text
     status, url, text = post(shell, "/decide", {"as": "bob", "run": run_id, "verdict": "approve", "meaning": "approved for posting",
-                                                "digest": hub.runner.load(run_id)["seen_digest"]})
+                                                "confirm": "1", "digest": hub.runner.load(run_id)["seen_digest"]})
     assert status == 200, text[:500]
     assert hub.runner.load(run_id)["status"] == "completed"
     status, text = get(shell, "/record/" + quote(locator, safe=":"), **{"as": "alice"})
-    assert status == 200 and ">posted<" in text and "approved for posting" in text
+    assert status == 200 and 'data-state="posted"' in text and "approved for posting" in text
 
     # Upload files an external document into the folder; it appears on /files.
     content = b"Invoice 4711\nAcme Metals\nTotal 12,000.00 USD\n"
@@ -202,7 +201,7 @@ def test_document_checkout_checkin_over_http(shell):
                          content=b"v1", filename="sop9.md")
     loc = doc["locator"]
     status, url, text = post(shell, "/checkout", {"as": "alice", "doc": loc})
-    assert status == 200 and "checked out by" in text and "alice" in text
+    assert status == 200 and "checked out to you" in text and "Checked out by" in text and "alice" in text
     status, url, text = post(shell, "/checkin", {"as": "doc-reviewer", "doc": loc, "note": "edit"}, files=[("file", "sop9.md", b"v2")])
     assert status == 400 and "checked out by alice" in text
     status, url, text = post(shell, "/checkin", {"as": "alice", "doc": loc, "note": "second"}, files=[("file", "sop9.md", b"v2")])
@@ -213,7 +212,7 @@ def test_document_checkout_checkin_over_http(shell):
 
 def test_boards_filters_and_inbox_message(shell):
     status, text = get(shell, "/boards", **{"as": "alice", "type": "bill", "folder": "Finance/Payables", "text": "fixtures"})
-    assert status == 200 and "CNC fixtures" in text and "Saved filter" in text
+    assert status == 200 and "CNC fixtures" in text and "Link to this filter" in text
     status, url, text = post(shell, "/msg", {"as": "alice", "to": "ap-reviewer", "subject": "status", "body": "what is the status?", "channel": "dm"})
     assert status == 200 and "/inbox" in url and "replied" in text.lower() or "Re: status" in text
 
@@ -226,9 +225,9 @@ def test_record_links_and_hold(shell):
     status, url, text = post(shell, "/link", {"as": "alice", "record": loc, "rel": "references", "target": loc})
     assert status == 200 and "references" in text
     status, url, text = post(shell, "/link", {"as": "alice", "record": loc, "rel": "bogus", "target": loc})
-    assert status == 400 and "link-vocabulary" in text
+    assert status == 400 and "not a link relation" in text
     status, url, text = post(shell, "/hold", {"as": "alice", "record": loc, "on": "1", "reason": "audit"})
-    assert status == 403 and "approve permission" in text
+    assert status == 403 and "Only approvers" in text
     status, url, text = post(shell, "/hold", {"as": "bob", "record": loc, "on": "1", "reason": "audit"})
     assert status == 200 and "on hold" in text
     post(shell, "/hold", {"as": "bob", "record": loc, "on": "0", "reason": "done"})
@@ -372,7 +371,7 @@ def test_runs_are_trimmed_to_folders_the_user_may_read(shell):
     status, text = get(shell, "/runs", **{"as": "carol"})  # quality manager: no read rule on Finance
     assert status == 200 and run_id not in text
     status, text = get(shell, "/run/" + run_id, **{"as": "carol"})
-    assert status == 403 and "cannot read run" in text
+    assert status == 403 and "cannot read this run" in text
     status, text = get(shell, "/run/" + run_id, **{"as": "alice"})  # the owner always sees her own run
     assert status == 200
     status, text = get(shell, "/why", **{"as": "bob", "principal": "carol", "action": "read", "object": "*", "folder": "Finance"})
@@ -390,13 +389,13 @@ def test_decide_form_offers_only_allowed_fields_and_refuses_others(shell):
     state = hub.runner.load(run_id)
     assert state["status"] == "waiting", state["status"]
     approver = state["pending"]["assignees"][0]
-    status, text = get(shell, "/inbox", **{"as": approver})
-    card = text.split(f'name="run" value="{run_id}"')[0].rsplit('<div class="card', 1)[1]
+    status, text = get(shell, "/inbox", **{"as": approver, "open": run_id})
+    card = text.split("<article class='card decide'")[1].split("</article>")[0]
     assert 'name="journal"' not in text and 'name="meaning"' in text and "required" in text
-    assert "billed to date" in card and "match result" in card and "4000" in card
+    assert "Billed to date" in card and "Match result" in card and "4,000.00 USD" in card
     status, url, text = post(shell, "/decide", {"as": approver, "run": run_id, "verdict": "approve", "meaning": "x", "journal": "TYPED-BY-BOB",
                                                 "digest": hub.runner.load(run_id)["seen_digest"]})
-    assert status == 400 and "may not set journal" in text and "this Gate accepts" in text
+    assert status == 400 and "may not set journal" in text and "this approval accepts" in text
     assert "TYPED-BY-BOB" not in str(hub.kernel.get(state["record"])["fields"])
     # An NCR: disposition and rationale are required for 'closed', containment is optional; risk and capa are never offered.
     status, url, text = post(shell, "/start", {"as": "alice", "process": "nonconformance", "title": "[shell] scratched housing",
@@ -406,15 +405,15 @@ def test_decide_form_offers_only_allowed_fields_and_refuses_others(shell):
     state = hub.runner.load(ncr_run)
     assert state["status"] == "waiting", state["status"]
     who = state["pending"]["assignees"][0]
-    status, text = get(shell, "/inbox", **{"as": who})
+    status, text = get(shell, "/inbox", **{"as": who, "open": ncr_run})
     card = text.split(f'name="run" value="{ncr_run}"')[1].split("</form>")[0]
     assert '<select name="disposition" required>' in card and 'name="disposition_rationale"' in card and "required" in card
     assert 'name="containment"' in card and 'name="risk"' not in card and 'name="capa"' not in card
-    assert "closed needs: disposition, disposition_rationale" in card
-    status, url, text = post(shell, "/decide", {"as": who, "run": ncr_run, "verdict": "approve", "meaning": "scrap it", "risk": "low",
+    assert "To approve, also give: disposition, disposition_rationale" in card
+    status, url, text = post(shell, "/decide", {"as": who, "run": ncr_run, "verdict": "approve", "meaning": "scrap it", "risk": "low", "confirm": "1",
                                                 "digest": hub.runner.load(ncr_run)["seen_digest"]})
     assert status == 400 and "may not set risk" in text
-    status, url, text = post(shell, "/decide", {"as": who, "run": ncr_run, "verdict": "approve", "meaning": "scrap it", "disposition": "scrap",
+    status, url, text = post(shell, "/decide", {"as": who, "run": ncr_run, "verdict": "approve", "meaning": "scrap it", "disposition": "scrap", "confirm": "1",
                                                 "disposition_rationale": "beyond repair", "digest": hub.runner.load(ncr_run)["seen_digest"]})
     assert status == 200, text[:300]
     rec = hub.kernel.get(state["record"])
@@ -461,17 +460,17 @@ def test_start_with_a_multipart_file_creates_an_attached_document(shell, monkeyp
     assert sch["fields"]["doc_type"] == "schematic" and sch["fields"]["doc_class"] == "controlled"
     assert hub.dms.content(sch["locator"])[0] == SCHEMATIC
     # No worker: the export step warns and the run still reaches review; the card shows the trace and the Guard findings.
-    status, text = get(shell, "/inbox", **{"as": "bob"})
+    status, text = get(shell, "/inbox", **{"as": "bob", "open": run_id})
     assert status == 200 and "worker" in text.lower() and 'name="part"' not in text
-    card = text.split(f'name="run" value="{run_id}"')[0].rsplit("<div class=\"card", 1)[1]
+    card = text.split("<article class='card decide'")[1].split("</article>")[0]
     assert "The sensor node must run 24 hours on battery." in card and "Requirements" in card and "sensor.kicad_sch" in card
     # The Start form never marks a field required and refuses a system field or an unknown one.
     status, text = get(shell, "/", **{"as": "alice"})
     design_form = text.split('value="design-release"')[1].split("</form>")[0]
     assert 'name="kind"' in design_form and 'name="user_needs"' in design_form and 'type="file"' in design_form
-    assert '<input name="title" value="" size="24" required>' in design_form, "the first Gate's state needs title and kind"
+    assert '<input name="title" value="" required>' in design_form, "the first Gate's state needs title and kind"
     assert '<select name="kind" required>' in design_form
-    assert '<textarea name="description"' in design_form and 'name="description" rows="2" cols="50" required' not in design_form
+    assert '<textarea name="description"' in design_form and 'name="description" rows="2" required' not in design_form
     status, url, text = post(shell, "/start", {"as": "alice", "process": "design-release", "title": "x", "json": '{"part": "rec:part:PN-00001"}'})
     assert status == 400 and "set by the system" in text
     status, url, text = post(shell, "/start", {"as": "alice", "process": "design-release", "title": "x", "nonsense": "1"})
@@ -512,12 +511,12 @@ def test_reject_returns_the_design_and_resubmit_restarts_it(shell, monkeypatch):
     status, text = get(shell, "/inbox", **{"as": "bob"})
     assert f'name="run" value="{run_id}"' not in text
     status, text = get(shell, "/inbox", **{"as": "alice"})
-    assert "Returned to you for rework" in text and "needs a drawing" in text and 'action="/resubmit"' in text and "returned" in text
+    assert "Returned for rework" in text and "needs a drawing" in text and 'action="/resubmit"' in text and "returned" in text
     status, text = get(shell, "/record/" + quote(loc, safe=":"), **{"as": "alice"})
-    assert 'action="/resubmit"' in text and ">returned<" in text and ">cancelled<" in text and ">failed<" in text
+    assert 'action="/resubmit"' in text and 'data-state="returned"' in text and 'data-state="cancelled"' in text and 'data-state="failed"' in text
     # Bob may not resubmit; alice resubmits with a changed description and a drawing.
     status, url, text = post(shell, "/resubmit", {"as": "bob", "run": run_id, "note": "no"})
-    assert status == 400 and "not an assignee" in text
+    assert status == 400 and "not assigned to you" in text
     status, url, text = post(shell, "/resubmit", {"as": "alice", "run": run_id, "description": "drawing added", "note": "added the drawing"},
                              files=[("files", "bracket.pdf", b"%PDF-1.4 drawing")])
     assert status == 200, text[:300]
@@ -528,7 +527,7 @@ def test_reject_returns_the_design_and_resubmit_restarts_it(shell, monkeypatch):
     assert any(d["fields"].get("doc_type") == "drawing" and d["fields"].get("filename") == "bracket.pdf" for d in hub.dms.documents_of(loc))
     assert any(e["type"] == "run.resubmitted" and e["note"] == "added the drawing" for e in hub.runner.track(run_id))
     status, text = get(shell, "/inbox", **{"as": "alice"})
-    assert "Returned to you for rework" not in text
+    assert "Returned for rework" not in text
     status, text = get(shell, "/record/" + quote(loc, safe=":"), **{"as": "alice"})
     assert "bracket.pdf" in text or "drawing" in text
 
@@ -551,12 +550,12 @@ def test_failed_run_returns_to_its_owner_who_can_retry(shell):
     rec = hub.kernel.get(state["record"])
     assert rec["state"] == "failed" and rec["assignees"] == ["alice"]
     status, text = get(shell, "/inbox", **{"as": "alice"})
-    card = text.split(f'name="run" value="{run_id}"')[0].rsplit("<div class=\"card", 1)[1]
-    assert "Failed runs of yours" in text and "not open" in card and 'action="/retry"' in text and 'action="/cancel"' in text
+    card = text.split(f'name="run" value="{run_id}"')[0].rsplit("<article class=\"card crit\"", 1)[1]
+    assert "Returned or stopped, mine" in text and "not open" in card and 'action="/retry"' in text and 'action="/cancel"' in text
     status, text = get(shell, "/runs", **{"as": "alice"})
-    assert "failed:" in text and "not open" in text
+    assert "stopped:" in text and "not open" in text
     status, text = get(shell, "/record/" + quote(state["record"], safe=":"), **{"as": "alice"})
-    assert "The run failed at" in text and 'action="/retry"' in text
+    assert "Stopped at" in text and 'action="/retry"' in text
     status, text = get(shell, "/record/" + quote(state["record"], safe=":"), **{"as": "carol"})
     assert status == 403
     status, url, text = post(shell, "/retry", {"as": "carol", "run": run_id, "note": "mine"})
@@ -572,21 +571,21 @@ def test_failed_run_returns_to_its_owner_who_can_retry(shell):
     assert rec["state"] == "failed" and rec["assignees"] == ["alice"]
     assert sum(1 for m in hub.inbox.for_principal("alice") if m["kind"] == "failure" and m["run_id"] == run_id) == 2
     status, text = get(shell, "/inbox", **{"as": "alice"})
-    assert f'name="run" value="{run_id}"' in text and "failure" in text
+    assert f'name="run" value="{run_id}"' in text and "Stopped" in text
 
 
 def test_owner_cancels_a_failed_run(shell):
     hub = shell["hub"]
     run_id, state = _closed_period_bill(shell)
-    status, url, text = post(shell, "/cancel", {"as": "carol", "run": run_id, "reason": "not mine"})
+    status, url, text = post(shell, "/cancel", {"as": "carol", "run": run_id, "reason": "not mine", "confirm": "1"})
     assert status == 400 and "may not cancel" in text
-    status, url, text = post(shell, "/cancel", {"as": "alice", "run": run_id, "reason": "wrong period"})
-    assert status == 200 and ">cancelled<" in text, text[:300]
+    status, url, text = post(shell, "/cancel", {"as": "alice", "run": run_id, "reason": "wrong period", "confirm": "1"})
+    assert status == 200 and 'data-state="cancelled"' in text, text[:300]
     assert hub.runner.load(run_id)["status"] == "cancelled" and hub.kernel.get(state["record"])["state"] == "cancelled"
     status, text = get(shell, "/inbox", **{"as": "alice"})
     assert f'name="run" value="{run_id}"' not in text
     status, url, text = post(shell, "/retry", {"as": "alice", "run": run_id, "note": "again"})
-    assert status == 400 and "not failed" in text
+    assert status == 400 and "this one is cancelled" in text
     status, text = get(shell, "/boards", **{"as": "alice", "type": "bill", "state": "cancelled"})
     assert hub.kernel.get(state["record"])["number"] in text
 
@@ -596,7 +595,7 @@ def test_decisions_table_lists_each_signature_once(shell):
     rec = next(r for r in hub.kernel.query(type_="bill", state="posted") if r["decisions"])
     status, text = get(shell, "/record/" + quote(rec["locator"], safe=":"), **{"as": "bob"})
     assert status == 200
-    section = text.split('<h2 id="decisions">')[1].split('<h2 id="track">')[0]
+    section = text.split('<h2 id="decisions">')[1].split("</main>")[0]
     assert section.count("<tr>") - 1 == len(rec["decisions"]) == 1
     assert section.count(rec["decisions"][0]["signature"]) == 1
     out = run_cli(shell["root"], "record", rec["number"])
@@ -616,7 +615,7 @@ def test_controlled_document_controls_follow_permission_and_state(shell):
     status, text = get(shell, "/document/" + quote(draft["locator"], safe=":"), **{"as": "alice"})
     assert "action='/checkout'" in text
     status, text = get(shell, "/document/" + quote(draft["locator"], safe=":"), **{"as": "bob"})  # reviewer: may read, not create documents
-    assert status == 200 and "action='/checkout'" not in text and "cannot change documents" in text
+    assert status == 200 and "action='/checkout'" not in text and "cannot change this document" in text
 
 
 # ------------------------------------------------------- CLI: pending, resubmit, retry, cancel

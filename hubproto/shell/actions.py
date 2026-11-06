@@ -1,0 +1,413 @@
+"""POST handlers: every action lands on a page that says what happened, and every refusal re-renders the form."""
+
+from __future__ import annotations
+
+import base64
+import json
+from urllib.parse import quote
+
+from .. import authz
+from ..runner import RunError
+from .forms import RESERVED_KEYS, ShellError, coerce, doc_type_for
+from .handler import href, log_line
+from .pages import may_file
+from .text import day, field_label, join_words, type_name, verb_for
+
+
+class ActionsMixin:
+    def _f(self, name: str, default: str = "") -> str:
+        return (self.form.get(name) or default).strip()
+
+    def _file(self) -> tuple[str, bytes]:
+        for _, filename, content in self.files:
+            if filename:
+                return filename, content
+        return "", b""
+
+    def _attachments(self) -> list[dict]:
+        """Every uploaded file as a submission attachment: a controlled document typed by its extension."""
+        return [{"name": filename, "content_b64": base64.b64encode(content).decode("ascii"), "doc_class": "controlled",
+                 "doc_type": doc_type_for(filename)} for _, filename, content in self.files if filename]
+
+    def _json_fields(self) -> dict:
+        raw = self._f("json")
+        if not raw:
+            return {}
+        try:
+            record = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise ShellError(f"The JSON in 'Other fields' does not parse: {e}.", field="json") from None
+        if not isinstance(record, dict):
+            raise ShellError("The JSON in 'Other fields' must be an object, such as {\"lot\": \"L-42\"}.", field="json")
+        return record
+
+    def _collect_fields(self, rt: str, current: dict | None = None) -> dict:
+        """The record fields from a Start, resubmit or retry form: the type's inputs, any other declared field, the JSON box.
+        Unknown and system-owned fields are refused with the list of what is accepted."""
+        td = self.hub.kernel.types.get(rt, {})
+        specs = td.get("fields", {})
+        system = set(td.get("system_fields") or [])
+        declared = {name: (kind, spec) for name, kind, spec in self._start_spec(rt)}
+        settable = [f for f in specs if f not in system]
+        record: dict = {}
+        for k, v in self._json_fields().items():
+            if k == "attachments":
+                record[k] = v
+                continue
+            if k in system and k not in declared:
+                raise ShellError(f"'{k}' is set by the system, not at submission; leave it out of the JSON.", field="json")
+            if k not in specs and k not in declared:
+                raise ShellError(f"A {type_name(rt).lower()} has no field '{k}'; you may set {', '.join(settable)}.", field="json")
+            if isinstance(v, (dict, list)) and not specs.get(k, "text").startswith(("list", "object")):
+                raise ShellError(f"'{k}' must be a single value in the JSON, not a list or an object.", field="json")
+            record[k] = v
+        for k, v in self.form.items():
+            if k in RESERVED_KEYS or not v.strip():
+                continue
+            if k in declared:
+                kind, spec = declared[k]
+            elif k in specs and k not in system:
+                kind, spec = None, specs[k]
+            elif k in system:
+                raise ShellError(f"'{k}' is set by the system, not at submission.", field=k)
+            else:
+                raise ShellError(f"A {type_name(rt).lower()} has no field '{k}'; its fields are {', '.join(settable)}.")
+            value = coerce(k, spec, v, kind)
+            if value is None:
+                continue
+            if current is not None and current.get(k) == value:
+                continue  # unchanged on a rework
+            record[k] = value
+        return record
+
+    def _check_required(self, process: str, rt: str, record: dict, current: dict | None = None) -> None:
+        have = {**(current or {}), **record}
+        missing = [f for f in self._required_at_start(process, rt) if have.get(f) in (None, "", [], {})]
+        if missing:
+            labels = join_words(field_label(f).lower() for f in missing)
+            raise ShellError(f"A {type_name(rt).lower()} needs {labels} before it can be filed.", field=missing[0])
+
+    # ------------------------------------------------------------------ start
+    def post_start(self):
+        user = self.user
+        bundle = self._need_release()
+        done = self._once_done()
+        if done:
+            return self._redirect(done)
+        process = self._f("process")
+        if process not in bundle["ops"]:
+            raise ShellError(f"There is no process '{process}' in the release.", 404)
+        rt = bundle["ops"][process].get("record_type", "")
+        record = self._collect_fields(rt)
+        self._check_required(process, rt, record)
+        attachments = list(record.get("attachments") or []) + self._attachments()
+        if attachments:
+            record["attachments"] = attachments
+        run_id = self.hub.runner.submit(process, {"record": record}, owner=user)
+        state = self.hub.runner.load(run_id)
+        log_line(f"run started run={run_id} process={process} by={user} record={state.get('record')} status={state['status']}")
+        rec = self.hub.kernel.get(state["record"]) if state.get("record") else None
+        number = rec["number"] if rec else self._process_name(process)
+        if state["status"] == "waiting" and state.get("pending"):
+            p = state["pending"]
+            msg = f"Filed {number}; waiting for {', '.join(p['assignees'])} at {p['title']}" + (f" (approval due {day(p['due'])})" if p.get("due") else "") + "."
+        elif state["status"] == "failed":
+            ev = self._failure_of(run_id)
+            msg = f"Filed {number}, but it stopped at {(ev.get('step') or '?').replace('-', ' ')}: {ev.get('reason', '')} Fix it below and retry."
+        elif state["status"] == "completed":
+            msg = f"Filed {number}; it completed" + (f" and is now {rec['state']}" if rec else "") + "."
+        else:
+            msg = f"Filed {number}; the run is {state['status']}."
+        self._redirect(self._once_finish(href("/run/" + run_id, user, done=msg)))
+
+    # ----------------------------------------------------------------- decide
+    def post_decide(self):
+        user = self.user
+        self._need_release()
+        run_id = self._f("run")
+        verdict = self._f("verdict")
+        if not run_id:
+            raise ShellError("No item was named. Go back to your inbox and open the item again.")
+        state = self.hub.runner.load(run_id)
+        rec = self.hub.kernel.get(state["record"]) if state.get("record") else None
+        number = rec["number"] if rec else f"run {run_id[:8]}"
+        if verdict == "reject":
+            meaning = self._f("reason") or self._f("meaning")
+            if not meaning:
+                raise ShellError(f"Say why you are rejecting {number}; the reason goes to {state['owner']}.", field="reason")
+            fields: dict = {}
+        else:
+            verdict = "approve"
+            meaning = self._f("meaning")
+            fields = {}
+            reserved = {"as", "run", "verdict", "meaning", "digest", "confirm", "reason", "once"}
+            given = {k: v for k, v in self.form.items() if k not in reserved and v.strip()}
+            if given and state.get("pending") and state["pending"].get("kind", "decision") == "decision" and rec:
+                td = self.hub.kernel.types.get(rec["type"], {}).get("fields", {})
+                allowed = self.hub.runner.allowed_decision_fields(state)
+                refused = sorted(k for k in given if k not in allowed)
+                if refused:
+                    raise ShellError(f"A decision may not set {', '.join(refused)}; this approval accepts {', '.join(allowed) or 'no fields'}.", field=refused[0])
+                for k, v in given.items():
+                    value = coerce(k, td.get(k), v)
+                    if value is not None:
+                        fields[k] = value
+            if not meaning:
+                raise ShellError("Say what your signature means: in a few words, what you are confirming.", field="meaning")
+            if self._f("confirm") not in ("1", "on", "true", "yes"):
+                raise ShellError(f"Tick “I have read the item and the checks above” to approve {number}.", field="confirm")
+        queue = [r["id"] for r in self._pending(user, "decision")]
+        following = [i for i in queue[queue.index(run_id) + 1:]] if run_id in queue else []
+        result = self.hub.runner.decide(run_id, user, verdict, meaning=meaning, payload_digest=self._f("digest") or None, fields=fields or None)
+        log_line(f"decision run={run_id} record={state.get('record')} by={user} verdict={verdict} fields={sorted(fields)} meaning={meaning!r} status={result['status']}")
+        rec = self.hub.kernel.get(state["record"]) if state.get("record") else None
+        if verdict == "reject":
+            p = result.get("pending") or {}
+            msg = f"Rejected {number}" + (f"; returned to {', '.join(p.get('assignees') or [state['owner']])} for rework." if p.get("kind") == "resubmit"
+                                        else f"; it is now {rec['state'] if rec else result['status']}, and {state['owner']} has been told.")
+        elif result["status"] == "failed":
+            ev = self._failure_of(run_id)
+            msg = f"Your approval of {number} is recorded, but the next step stopped at {(ev.get('step') or '?').replace('-', ' ')}: {ev.get('reason', '')} {state['owner']} has been told."
+        elif result["status"] == "waiting" and result.get("pending"):
+            p = result["pending"]
+            msg = f"Approved {number}; it now waits for {', '.join(p['assignees'])} at {p['title']}."
+        else:
+            msg = f"Approved {number}; it is now {rec['state'] if rec else result['status']}."
+        still = {r["id"] for r in self._pending(user, "decision")}
+        nxt = next((i for i in following if i in still), None)
+        self._redirect(href("/inbox", user, open=nxt, done=msg) + (f"#r-{nxt}" if nxt else "#forme"))
+
+    # ------------------------------------------------------- rework and stops
+    def post_resubmit(self):
+        user = self.user
+        self._need_release()
+        run_id = self._f("run")
+        done = self._once_done()
+        if done:
+            return self._redirect(done)
+        state = self.hub.runner.load(run_id)
+        rec = self.hub.kernel.get(state["record"]) if state.get("record") else None
+        rt = rec["type"] if rec else state["workflow"]["record_type"]
+        fields = self._collect_fields(rt, current=rec["fields"] if rec else {})
+        self._check_required(state["process"], rt, fields, current=rec["fields"] if rec else {})
+        attachments = list(fields.pop("attachments", None) or []) + self._attachments()
+        note = self._f("note")
+        result = self.hub.runner.resubmit(run_id, user, fields=fields or None, attachments=attachments or None, note=note)
+        log_line(f"resubmit run={run_id} record={state.get('record')} by={user} fields={sorted(fields)} attachments={len(attachments)} status={result['status']}")
+        number = rec["number"] if rec else f"run {run_id[:8]}"
+        msg = self._outcome(f"Resubmitted {number}", result)
+        self._redirect(self._once_finish(href("/record/" + quote(state["record"], safe=":"), user, done=msg) if state.get("record") else href("/run/" + run_id, user, done=msg)))
+
+    def _outcome(self, lead: str, result: dict) -> str:
+        if result["status"] == "waiting" and result.get("pending"):
+            p = result["pending"]
+            return f"{lead}; it now waits for {', '.join(p['assignees'])} at {p['title']}" + (f" (approval due {day(p['due'])})" if p.get("due") else "") + "."
+        if result["status"] == "failed":
+            ev = self._failure_of(result["id"])
+            return f"{lead}, but it stopped again at {(ev.get('step') or '?').replace('-', ' ')}: {ev.get('reason', '')}"
+        rec = self.hub.kernel.get(result["record"]) if result.get("record") else None
+        return f"{lead}; it is now {rec['state'] if rec else result['status']}."
+
+    def post_retry(self):
+        user = self.user
+        self._need_release()
+        run_id = self._f("run")
+        done = self._once_done()
+        if done:
+            return self._redirect(done)
+        state = self.hub.runner.load(run_id)
+        rec = self.hub.kernel.get(state["record"]) if state.get("record") else None
+        rt = rec["type"] if rec else self._record_type_of(state)
+        fields = self._collect_fields(rt, current=rec["fields"] if rec else {}) if rt else {}
+        attachments = list(fields.pop("attachments", None) or []) + self._attachments()
+        result = self.hub.runner.retry(run_id, user, note=self._f("note"), fields=fields or None, attachments=attachments or None)
+        log_line(f"retry run={run_id} record={result.get('record')} by={user} fields={sorted(fields)} status={result['status']}")
+        number = rec["number"] if rec else f"run {run_id[:8]}"
+        msg = self._outcome(f"Retried {number}" + (f" with {join_words(field_label(k).lower() for k in fields)} changed" if fields else ""), result)
+        target = href("/record/" + quote(result["record"], safe=":"), user, done=msg) if result.get("record") else href("/run/" + run_id, user, done=msg)
+        self._redirect(self._once_finish(target))
+
+    def post_cancel(self):
+        user = self.user
+        self._need_release()
+        run_id = self._f("run")
+        reason = self._f("reason")
+        state = self.hub.runner.load(run_id)
+        rec = self.hub.kernel.get(state["record"]) if state.get("record") else None
+        word = type_name(rec["type"]).lower() if rec else "run"
+        if not reason:
+            raise ShellError(f"Say why you are cancelling this {word}; the reason stays in its history.", field="reason")
+        if self._f("confirm") not in ("1", "on", "true", "yes"):
+            raise ShellError(f"Tick “I want to cancel this {word}” to confirm; cancelling cannot be undone.", field="confirm")
+        result = self.hub.runner.cancel(run_id, user, reason=reason)
+        log_line(f"cancel run={run_id} record={result.get('record')} by={user} reason={reason!r}")
+        msg = f"Cancelled {rec['number'] if rec else 'the run'}: {reason}"
+        self._redirect(href("/record/" + quote(result["record"], safe=":"), user, done=msg) if result.get("record") else href("/run/" + run_id, user, done=msg))
+
+    # --------------------------------------------------------------- messages
+    def post_msg(self):
+        user = self.user
+        bundle = self._need_release()
+        done = self._once_done()
+        if done:
+            return self._redirect(done)
+        to = self._f("to")
+        if not to:
+            raise ShellError("Choose who the message is for.", field="to")
+        if user not in bundle["members"]:
+            raise ShellError(f"{user} is not a member and cannot send messages.", 403)
+        if to not in bundle["members"]:
+            raise ShellError(f"{to} is not a member; messages go to members only.", 404, field="to")
+        subject = self._f("subject")
+        body = self._f("body")
+        if not subject:
+            raise ShellError("Give the message a subject.", field="subject")
+        if not body:
+            raise ShellError("Write the message; an empty one would tell the reader nothing.", field="body")
+        channel = self._f("channel", "dm") or "dm"
+        if channel not in ("dm", "email"):
+            raise ShellError("Messages go by DM or by email.", field="channel")
+        reply = self.hub.send(user, to, subject[:300], body, channel=channel)
+        is_cog = bundle["members"][to]["type"] == "cog"
+        msg = f"Message sent to {to}" + (f"; it answered: {reply.get('body', '')[:200]}" if is_cog and reply.get("kind") == "reply" else "") + "."
+        self._redirect(self._once_finish(href("/inbox", user, done=msg) + "#messages"))
+
+    # -------------------------------------------------------------- documents
+    def post_upload(self):
+        user = self.user
+        bundle = self._need_release()
+        done = self._once_done()
+        if done:
+            return self._redirect(done)
+        folder = self._f("folder")
+        if folder not in bundle["folders"]:
+            raise ShellError(f"There is no folder '{folder}' in the release.", 404)
+        d = may_file(bundle, user, folder)
+        if not d["allowed"]:
+            raise ShellError(f"You cannot file documents in {folder}. " + self._why_text(d, "create", "document", folder), 403)
+        filename, content = self._file()
+        if not filename:
+            raise ShellError("Choose a file to upload.", field="file")
+        attach_to = self._f("attach_to") or None
+        doc = self.hub.dms.intake(folder=folder, by=user, content=content, filename=filename, channel="shell", sender=user,
+                                  attach_to=attach_to, title=self._f("title"))
+        self._redirect(self._once_finish(href("/files", user, folder=folder, done=f"Uploaded {filename} as {doc['number']}.")))
+
+    def post_attach(self):
+        user = self.user
+        bundle = self._need_release()
+        done = self._once_done()
+        if done:
+            return self._redirect(done)
+        ref = self._f("record")
+        if not ref:
+            raise ShellError("Choose an item to attach to.")
+        rec = self.hub.kernel.require(ref)
+        d = may_file(bundle, user, rec["folder"])
+        if not d["allowed"]:
+            raise ShellError(f"You cannot attach documents in {rec['folder']}. " + self._why_text(d, "create", "document", rec["folder"]), 403)
+        filename, content = self._file()
+        if filename:
+            doc = self.hub.dms.intake(folder=rec["folder"], by=user, content=content, filename=filename, channel="shell", sender=user,
+                                      attach_to=rec["locator"], title=self._f("title"))
+            msg = f"Attached {filename} to {rec['number']} as {doc['number']}."
+        elif self._f("doc"):
+            doc = self.hub.kernel.require(self._f("doc"))
+            self._require_read(doc["folder"])
+            self.hub.dms.attach(rec["locator"], doc["locator"], by=user)
+            msg = f"Attached {doc['number']} to {rec['number']}."
+        else:
+            raise ShellError("Choose a file to upload or an existing document to attach.", field="file")
+        self._redirect(self._once_finish(href("/record/" + quote(rec["locator"], safe=":"), user, done=msg) + "#documents"))
+
+    def _doc_for_change(self) -> dict:
+        self._need_release()
+        rec = self.hub.kernel.require(self._f("doc"))
+        if rec["type"] != "document":
+            raise ShellError(f"{rec['number']} is not a document.")
+        can, why_not = self._may_edit_document(rec)
+        if not can:
+            import re
+
+            raise ShellError(f"You cannot change {rec['number']}: " + re.sub(r"<[^>]+>", "", why_not), 403)
+        return rec
+
+    def post_checkout(self):
+        rec = self._doc_for_change()
+        self.hub.dms.checkout(rec["locator"], by=self.user)
+        self._redirect(href("/document/" + quote(rec["locator"], safe=":"), self.user, done=f"{rec['number']} is checked out to you."))
+
+    def post_checkin(self):
+        rec = self._doc_for_change()
+        done = self._once_done()
+        if done:
+            return self._redirect(done)
+        locked = rec["fields"].get("checked_out_by")
+        if not locked:
+            raise ShellError(f"{rec['number']} is not checked out; check it out first, then check in the new version.", field="file")
+        filename, content = self._file()
+        if not filename:
+            raise ShellError("Choose the file to check in.", field="file")
+        self.hub.dms.checkin(rec["locator"], content, by=self.user, filename=filename, note=self._f("note") or "check-in")
+        versions = self.hub.dms.versions(rec["locator"])
+        self._redirect(self._once_finish(href("/document/" + quote(rec["locator"], safe=":"), self.user, done=f"Checked in {filename} as version {len(versions)} of {rec['number']}.")))
+
+    def post_undo_checkout(self):
+        rec = self._doc_for_change()
+        locked = rec["fields"].get("checked_out_by")
+        if not locked:
+            raise ShellError(f"{rec['number']} is not checked out.")
+        if locked != self.user:
+            raise ShellError(f"{rec['number']} is checked out by {locked}; only they can undo it.", 403)
+        self.hub.kernel.set_fields(rec["locator"], {"checked_out_by": None}, by=self.user)
+        self._redirect(href("/document/" + quote(rec["locator"], safe=":"), self.user, done=f"Check-out of {rec['number']} undone; nothing changed."))
+
+    def post_link(self):
+        user = self.user
+        bundle = self._need_release()
+        done = self._once_done()
+        if done:
+            return self._redirect(done)
+        rec = self.hub.kernel.require(self._f("record"))
+        d = may_file(bundle, user, rec["folder"])
+        if not d["allowed"]:
+            raise ShellError(f"You cannot link items in {rec['folder']}. " + self._why_text(d, "create", "document", rec["folder"]), 403)
+        target = self._f("target")
+        if not target:
+            raise ShellError("Name the item to link to.", field="target")
+        t = self.hub.kernel.get(target)
+        if t is None:
+            raise ShellError(f"There is no item '{target}'.", field="target")
+        rel = self._f("rel")
+        if rel not in self.hub.kernel.link_vocab:
+            raise ShellError(f"'{rel}' is not a link relation; choose one from the list.", field="rel")
+        self.hub.kernel.link(rec["locator"], rel, t["locator"], by=user)
+        self._redirect(self._once_finish(href("/record/" + quote(rec["locator"], safe=":"), user, done=f"Linked {rec['number']} ({rel.replace('-', ' ')}) to {t['number']}.") + "#links"))
+
+    def post_snapshot(self):
+        user = self.user
+        self._need_release()
+        done = self._once_done()
+        if done:
+            return self._redirect(done)
+        rec = self.hub.kernel.require(self._f("record"))
+        self._require_read(rec["folder"])
+        doc = self.hub.dms.render_snapshot(rec["locator"], by=user)
+        self._redirect(self._once_finish(href("/document/" + quote(doc["locator"], safe=":"), user, done=f"Saved a snapshot of {rec['number']} as {doc['number']}.")))
+
+    def post_hold(self):
+        user = self.user
+        bundle = self._need_release()
+        rec = self.hub.kernel.require(self._f("record"))
+        obj = self.hub.kernel.types.get(rec["type"], {}).get("object", rec["type"])
+        d = authz.check(bundle, user, "approve", obj, rec["folder"])
+        if not d["allowed"]:
+            raise ShellError("Only approvers of this item may hold it. " + self._why_text(d, "approve", obj, rec["folder"]), 403)
+        on = self._f("on", "1") in ("1", "true", "on")
+        reason = self._f("reason")
+        if not reason:
+            raise ShellError(f"Say why you are {'putting' if on else 'releasing'} the hold; the reason stays in the history.", field="reason")
+        self.hub.kernel.hold(rec["locator"], on, reason, by=user)
+        log_line(f"hold record={rec['locator']} on={on} by={user} reason={reason!r}")
+        msg = f"{rec['number']} put on hold: {reason}" if on else f"Hold on {rec['number']} released: {reason}"
+        self._redirect(href("/record/" + quote(rec["locator"], safe=":"), user, done=msg))
