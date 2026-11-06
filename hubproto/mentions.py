@@ -126,6 +126,14 @@ def handle(hub, msg: dict, bundle: dict) -> list[dict]:
                 actions.append(f"could not start a process for {record['number']}: {e}")
         else:
             actions.append(f"no process that {sender} may start moves a {record['type']}; ask a policy owner")
+    from .model import cog_availability
+
+    for cog_id in list(cogs):
+        ok, why = cog_availability(bundle, cog_id)
+        if not ok:
+            out.append(hub.inbox.notify(sender, kind="mention", subject=f"{cog_id} is not available", body=why + ". Nothing was done.",
+                                        record=record["locator"] if record else None))
+            cogs.remove(cog_id)
     for cog_id in cogs:
         cog = hub.registry.get(cog_id)
         profile = (bundle.get("cogs") or {}).get(cog_id) or {}

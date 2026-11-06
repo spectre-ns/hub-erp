@@ -510,7 +510,24 @@ class ViewsMixin:
             except KeyError:
                 about, desc = [], ""
                 body += "<div class='card crit'>This cog is a member of the organization but is not installed in this hub.</div>"
-            profile = [("Model", esc(prof.get("model") or "none (stand-in words)")), ("Prompt", esc(prof.get("prompt") or "-")),
+            from ..model import available_models, resolve_model
+
+            res = resolve_model(prof.get("model") or "")
+            if not res["available"]:
+                body += (f"<div class='card crit' role='status'><b>{esc(name)} is not available.</b> It is bundled with {esc(prof.get('model') or 'no model')}, "
+                         f"which this hub cannot use: {esc(res['note'])}. It takes no work until it can; choose an installed model below to propose a change.</div>")
+            avail = available_models()
+            served = (f"<span class='chip {'ok' if res['available'] else 'crit'}'>{'answers' if res['available'] else 'not available'}</span> "
+                      f"served by <b>{esc(res['served'])}</b> ({esc(res['backend'])}; {esc(res['note'])})")
+            options = "".join(f"<option value='{esc(c['value'])}'{' selected' if c['value'] == prof.get('model') else ''}>{esc(c['label'])}</option>" for c in avail["choices"])
+            if prof.get("model") and prof["model"] not in {c["value"] for c in avail["choices"]}:
+                options = f"<option value='{esc(prof['model'])}' selected>{esc(prof['model'])} (as in the profile)</option>" + options
+            picker = ("" if not (self._is_member() and (self.bundle["members"].get(user) or {}).get("type") == "person") else
+                      f"<form method='post' action='/cog-model' class='inline'>{hidden_as(user)}{self._once()}<input type='hidden' name='cog' value='{esc(name)}'>"
+                      f"<label class='vh' for='cogmodel'>Model</label><select id='cogmodel' name='model'>{options}</select> <button class='ghost'>{icon('send')}Propose this model</button></form>"
+                      + (f" <span class='why'>{esc(avail['ollama_error'])}</span>" if avail["ollama_error"] else ""))
+            profile = [("Model", esc(prof.get("model") or "none (stand-in words)") + "<br>" + served + ("<br>" + picker if picker else "")),
+                       ("Prompt", esc(prof.get("prompt") or "-")),
                        ("Follows", ", ".join(f'<a href="{href("/frame/" + fr, user)}">{esc(fr)}</a>' for fr in follows) or "<span class='muted'>no procedure: it is routed no work</span>"),
                        ("Reviews", esc(", ".join(prof.get("reviews") or []) or "-")), ("Written in", self._rule_link(prof.get("source")) if prof.get("source") else "")]
             def pin_html(pin):

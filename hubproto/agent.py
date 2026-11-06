@@ -233,6 +233,11 @@ class Agent:
             raise ValueError(f"{self.cog} is not a cog of the organization")
         if not agents_enabled():
             raise ValueError("agent runs are switched off (HUBPROTO_AGENTS=off)")
+        from .model import cog_availability
+
+        ok, why = cog_availability(bundle, self.cog)
+        if not ok:
+            raise ValueError(why)
         prof = (bundle.get("cogs") or {}).get(self.cog) or {}
         mode = prof.get("autonomy") or "propose"
         actions = int(max_actions or os.environ.get("HUBPROTO_AGENT_ACTIONS") or 5)
@@ -258,9 +263,9 @@ class Agent:
     def conclude(self, prep: dict, out: dict) -> dict:
         tools: AgentTools = prep["tools"]
         summary = tools.finished_summary or (out.get("text") or "").strip() or "the run ended without a summary"
-        status = "proposed" if tools.proposed else ("no-model" if out.get("stand_in") else "done")
-        if out.get("stand_in"):
-            summary = "No model is configured for this cog, so it could not plan; nothing was done. " + summary[:200]
+        status = "proposed" if tools.proposed else ("unavailable" if out.get("unavailable") else "done")
+        if out.get("unavailable"):
+            summary = f"{self.cog} is not available: {out['unavailable']}. Nothing more was done."
         ev = self.store.append(prep["run"], {"type": "finished", "status": status, "summary": summary, "actions": tools.actions,
                                              "proposed": tools.proposed, "model": out.get("served_model"), "rounds_used": len(out.get("tool_calls") or [])})
         if prep["by"] and prep["by"] != self.cog:
@@ -271,7 +276,16 @@ class Agent:
 
     def run(self, goal: str, *, by: str, trigger: str = "task", **budget) -> dict:
         prep = self.prepare(goal, by=by, trigger=trigger, **budget)
-        return self.conclude(prep, self.think(prep))
+        return self.conclude(prep, self.think_safely(prep))
+
+    def think_safely(self, prep: dict, call_tool=None) -> dict:
+        """think(), but a model that goes away mid-run ends the run as unavailable instead of with an error."""
+        from .model import ModelUnavailable
+
+        try:
+            return self.think(prep, call_tool)
+        except ModelUnavailable as e:
+            return {"text": "", "stand_in": False, "unavailable": str(e), "tool_calls": [], "served_model": ""}
 
     def confirm(self, run_id: str, by: str) -> dict:
         """A person confirms a run's proposed actions: they are carried out now, as the cog, through the same paths."""

@@ -361,6 +361,11 @@ class Runner:
                               "reason": "no such cog is a member", "route_rule": rule["source"]})
                 return []
             why = self.cog_follows(bundle, name, state["process"])
+            if not why:
+                from .model import cog_availability
+
+                ok, why = cog_availability(bundle, name)
+                why = "" if ok else why
             if why:
                 track.append({"type": "gate.skipped", "run_id": state["id"], "step": step["id"], "candidate": assignee,
                               "reason": why, "route_rule": rule["source"]})
@@ -440,6 +445,11 @@ class Runner:
         if state["status"] != "waiting" or cog_name not in pending.get("assignees", []):
             raise RunError(f"run {run_id} is not waiting for {cog_name}")
         bundle = self.releases.bundle(state["release"])
+        from .model import cog_availability
+
+        ok, why = cog_availability(bundle, cog_name)
+        if not ok:
+            return self._decline(run_id, cog_name, [why])
         step = next(s for s in state["manifest"]["steps"] if s["id"] == pending["step"])
         track = Track(self._dir(state["id"]))
         cog = self.registry.get(cog_name)

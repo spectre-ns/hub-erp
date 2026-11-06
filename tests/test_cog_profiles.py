@@ -16,7 +16,7 @@ def bundle_of(hub):
 def test_profiles_compile_into_the_release_and_change_as_a_widening(released):
     b = bundle_of(released)
     prof = b["cogs"]["ap-reviewer"]
-    assert prof["model"] == "claude-sonnet-5-5" and "payables reviewer" in prof["prompt"] and prof["follows"] == ["finance-policy"]
+    assert prof["model"] == "ollama/qwen3:14b" and "payables reviewer" in prof["prompt"] and prof["follows"] == ["finance-policy"]
     assert b["cogs"]["quality-assistant"]["follows"] == ["ncr-sop", "capa-sop", "training-sop", "design-control-sop"]
     edit_frame(released, "cog-profiles", "Follows: finance-policy\n", "Follows: finance-policy, purchasing-policy\n", bump="1.1.0")
     proposal = released.compile()
@@ -180,10 +180,13 @@ def test_the_gateway_uses_ollama_when_configured(monkeypatch):
         out = g.complete(model="ollama/qwen2.5", system="You review.", user="Review this.", by="quality-assistant")
         assert out["backend"] == "ollama" and out["stand_in"] is False and "Looks fine" in out["text"]
         assert seen["model"] == "qwen2.5" and seen["messages"][0]["role"] == "system" and seen["stream"] is False
-        # A claude-* profile falls back to the local model when asked to.
-        monkeypatch.setenv("HUBPROTO_OLLAMA_FALLBACK", "1"); monkeypatch.setenv("HUBPROTO_OLLAMA_MODEL", "llama3.1")
-        out = g.complete(model="claude-sonnet-5-5", system="s", user="u")
-        assert out["backend"] == "ollama" and seen["model"] == "llama3.1"
+        # A claude-* cog is never served by a local model: without a key it is unavailable.
+        from hubproto.model import ModelUnavailable
+
+        monkeypatch.delenv("HUBPROTO_ALLOW_STAND_IN", raising=False)
+        with pytest.raises(ModelUnavailable, match="needs an Anthropic key"):
+            g.complete(model="claude-sonnet-5-5", system="s", user="u")
+        monkeypatch.setenv("HUBPROTO_ALLOW_STAND_IN", "1")
         # A model that does not answer never blocks the work.
         monkeypatch.setenv("HUBPROTO_OLLAMA_URL", "http://127.0.0.1:9")
         out = g.complete(model="ollama/nothing", system="s", user="u")
@@ -273,3 +276,31 @@ def test_proposing_an_existing_docx_for_approval_keeps_its_content(released):
     latest = released.dms.versions(doc["locator"])[-1]
     assert latest["filename"] == "wi20.docx" and latest["version"] == 1, "no markdown draft replaced the docx"
     assert "Torque to 2 Nm." in office.extract_text(released.dms.content(doc["locator"])[0], "docx")
+
+
+def test_a_cog_whose_model_is_not_available_is_not_used(released, monkeypatch):
+    """A cog is bundled with its model: without it the cog takes no Gate, no chat, no mention, no task, and nothing stands in."""
+    from conftest import SMALL_BILL, dated
+    from hubproto.agent import Agent
+    from hubproto.model import cog_availability
+
+    hub = released
+    monkeypatch.delenv("HUBPROTO_ALLOW_STAND_IN", raising=False)
+    monkeypatch.delenv("HUBPROTO_OLLAMA_URL", raising=False)
+    b = hub.releases.bundle(hub.releases.current()["digest"])
+    ok, why = cog_availability(b, "ap-reviewer")
+    assert not ok and "needs an Ollama" in why
+    # A small bill would go to ap-reviewer; it is skipped with the reason and the person after it gets the item.
+    run_id = hub.runner.submit("purchase-to-pay", {"record": dated(SMALL_BILL)}, owner="alice")
+    state = hub.runner.load(run_id)
+    skipped = [e for e in hub.runner.track(run_id) if e["type"] == "gate.skipped" and e["candidate"] == "cog:ap-reviewer"]
+    assert skipped and "not available" in skipped[0]["reason"] and state["pending"]["assignees"] == ["dave"]
+    with pytest.raises(ValueError, match="not available"):
+        hub.chat("alice", "ap-reviewer", "hi")
+    with pytest.raises(ValueError, match="not available"):
+        Agent(hub, "quality-assistant").run("anything", by="carol")
+    hub.send("alice", "ap-reviewer", "Review", "@ap-reviewer please review this", record=state["record"])
+    assert any(m["kind"] == "mention" and "ap-reviewer is not available" in m["subject"] for m in hub.inbox.for_principal("alice"))
+    # The compiler warns that the cogs' models cannot be reached here.
+    p = hub.compile(save=False)
+    assert any(f["guard"] == "model" and "ap-reviewer is bundled with ollama/qwen3:14b" in f["detail"] for f in p["findings"])

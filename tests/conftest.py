@@ -1,3 +1,4 @@
+import os
 import shutil
 from pathlib import Path
 
@@ -6,6 +7,9 @@ import pytest
 from hubproto.app import Hub
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# Tests run without models: the deterministic stand-in answers for every cog (never in a real hub).
+os.environ.setdefault("HUBPROTO_ALLOW_STAND_IN", "1")
 
 
 @pytest.fixture

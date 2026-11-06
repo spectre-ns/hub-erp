@@ -20,7 +20,12 @@ class AgentsMixin:
         mode = prof.get("autonomy") or "propose"
         store = AgentStore(self.hub.root / "state" / "agents")
         runs = store.runs(cog, limit=12)
+        from ..model import cog_availability
+
+        ok, why = cog_availability(self.bundle, cog)
         body = f"<h2>{icon('zap')} Working on its own</h2>"
+        if not ok:
+            return body + f"<div class='card crit' role='status'><b>Not available.</b> {esc(why)}. A cog comes with its model; until the model can be reached it takes no work, no chat and no tasks, and Gates route past it.</div>"
         body += (f"<p>Autonomy <span class='chip {'ok' if mode == 'act' else 'warn'}'>{esc(mode)}</span>: {esc(cog)} {esc(MODE_WORDS.get(mode, ''))}. "
                  f"Set in its profile; changing it is a policy change two policy owners approve.</p>")
         if prof.get("duties"):
@@ -95,7 +100,7 @@ class AgentsMixin:
                 return tools.execute(name, args)
 
         with self._unlocked():
-            out = agent.think(prep, call_tool=call_tool)
+            out = agent.think_safely(prep, call_tool=call_tool)
         res = agent.conclude(prep, out)
         log_line(f"agent run={res['run']} cog={cog} by={self.user} status={res['status']} actions={res['actions']}")
         self._redirect(self._once_finish(href("/agent-run/" + res["run"], self.user, done=f"{cog}: {res['status']}, {res['actions']} action(s).")))
@@ -137,7 +142,8 @@ class NewMemberMixin:
                 f"<div class='actions'><button>{icon('send')}Propose</button></div></form></details>"
                 f"<details class='card'><summary><b>A new cog</b></summary><form method='post' action='/new-cog'>{hidden_as(user)}{self._once()}"
                 f"<label class='f'><span>Name <b>*</b></span><input name='name' required pattern='[a-z][a-z0-9-]+' placeholder='calibration-assistant' value='{esc(self._val('name') if self.route == '/new-cog' else '')}'></label>"
-                f"<label class='f'><span>Model</span><input name='model' value='{esc(self._val('model') if self.route == '/new-cog' else 'claude-sonnet-5-5')}'></label>"
+                f"<label class='f'><span>Model</span><input name='model' list='models' value='{esc(self._val('model') if self.route == '/new-cog' else self._default_model())}'></label>"
+                f"<datalist id='models'>{''.join(f'<option value=\'{esc(c[chr(118)+chr(97)+chr(108)+chr(117)+chr(101)])}\'>{esc(c[chr(108)+chr(97)+chr(98)+chr(101)+chr(108)])}</option>' for c in self._model_choices())}</datalist>"
                 f"<label class='f'><span>Prompt: its standing instructions <b>*</b></span><textarea name='prompt' rows='3' required>{esc(self._val('prompt') if self.route == '/new-cog' else '')}</textarea></label>"
                 f"<fieldset><legend>Roles <b>*</b></legend><div class='checks'>{roles}</div></fieldset>"
                 f"<fieldset><legend>Procedures it follows (it is routed work only from these)</legend><div class='checks'>{frames}</div></fieldset>"
@@ -145,6 +151,28 @@ class NewMemberMixin:
                 f"<option value='act'>act: it acts on its own through governed paths</option><option value='read'>read: it only looks and reports</option></select></label>"
                 f"<label class='f'><span>Duties (one per line; taken up daily)</span><textarea name='duties' rows='2'></textarea></label>"
                 f"<div class='actions'><button>{icon('send')}Propose</button></div></form></details>")
+
+    def _model_choices(self) -> list[dict]:
+        from ..model import available_models
+
+        return available_models()["choices"]
+
+    def _default_model(self) -> str:
+        ch = self._model_choices()
+        return ch[0]["value"] if ch else "claude-sonnet-5-5"
+
+    def post_cog_model(self):
+        self._need_release()
+        done = self._once_done()
+        if done:
+            return self._redirect(done)
+        cog, model = self._f("cog"), self._f("model")
+        try:
+            p = self.hub.propose_cog_model(cog, model, by=self.user)
+        except ValueError as e:
+            raise ShellError(str(e)) from None
+        log_line(f"cog model proposed cog={cog} model={model} by={self.user} proposal={p['id']}")
+        self._redirect(self._once_finish(href("/proposal/" + p["id"], self.user, done=f"Proposed {model} for {cog}; the policy owners review it here.")))
 
     def _multi(self, name: str) -> list[str]:
         vals = (getattr(self, "multi", None) or {}).get(name)

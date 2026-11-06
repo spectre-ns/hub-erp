@@ -93,7 +93,14 @@ def review(cog_id: str, profile: dict, ctx, record: dict, question: str = "") ->
             "Answer in the output format.")
     text, model, stand_in = "", profile.get("model") or "stand-in", True
     if ctx.model is not None:
-        out = ctx.model.complete(model=model, system=system, user=user, by=cog_id)
+        from .model import ModelUnavailable
+
+        try:
+            out = ctx.model.complete(model=model, system=system, user=user, by=cog_id)
+        except ModelUnavailable as e:
+            return {"cog": cog_id, "verdict": "declined", "findings": [problem("model", f"{cog_id} is not available: {e}", "warning")],
+                    "summary": f"{cog_id} could not review: its model is not available ({e}).", "model": model, "sops": sorted(sops),
+                    "stand_in": False, "date": date.today().isoformat()}
         text, stand_in = out["text"], out["stand_in"]
         for line in text.splitlines():
             line = line.strip()
@@ -148,6 +155,11 @@ def swarm(cog_ids: list[str], ctx, record: dict, question: str = "", process: st
     for cog_id in cog_ids:
         profile = (ctx.bundle.get("cogs") or {}).get(cog_id) or {}
         why = Runner.cog_follows(ctx.bundle, cog_id, process) if process else ""
+        if not why:
+            from .model import cog_availability
+
+            ok, why = cog_availability(ctx.bundle, cog_id)
+            why = "" if ok else why
         if why:
             out.append({"cog": cog_id, "verdict": "declined", "findings": [problem("scope", why, "warning")], "summary": why,
                         "model": profile.get("model") or "stand-in", "sops": profile.get("follows") or [], "stand_in": True,

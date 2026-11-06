@@ -936,6 +936,24 @@ def cmd_tick(args) -> int:
     return 0
 
 
+def cmd_models(args) -> int:
+    from .model import available_models, resolve_model
+
+    hub = _hub(args)
+    av = available_models(refresh=True)
+    print("installed in Ollama:" if av["ollama"] else f"Ollama: {av['ollama_error'] or 'no models installed'}")
+    for m in av["ollama"]:
+        print(f"  ollama/{m['name']:28s} {m['params']:>7s} {m['family']:10s} {m['quant']:8s} {m['size_gb']} GB")
+    print("Claude:", "Anthropic key set" if av["anthropic_key"] else (f"no key; claude-* names are served by {av['fallback']}" if av["fallback"] else "no key; claude-* names get the stand-in"))
+    meta = hub.releases.current()
+    cogs = (hub.releases.bundle(meta["digest"]).get("cogs") or {}) if meta else {}
+    print("cogs:")
+    for name, prof in sorted(cogs.items()):
+        r = resolve_model(prof.get("model") or "")
+        print(f"  {name:22s} {prof.get('model') or '-':22s} -> {r['served']} ({r['backend']}{'' if r['available'] else ', NOT AVAILABLE: ' + r['note']})")
+    return 0
+
+
 def cmd_agent(args) -> int:
     from .agent import Agent
 
@@ -1274,6 +1292,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("tick", help="escalate overdue Gates as the routing sentences say")
     s.add_argument("--today", type=iso_date, metavar="YYYY-MM-DD", help="treat this date as today (default: today)")
     s.set_defaults(fn=cmd_tick)
+    s = sub.add_parser("models", help="the models a cog can use (installed in Ollama, Claude with a key) and who serves each cog now")
+    s.set_defaults(fn=cmd_models)
     s = sub.add_parser("agent", help="give a cog a task: it plans and acts on its own within its autonomy (read, propose or act)")
     s.add_argument("--cog", required=True, metavar="COG", help="the cog to give the task to")
     s.add_argument("--goal", metavar="TEXT", help="what it should do")

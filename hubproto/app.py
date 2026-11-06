@@ -84,6 +84,17 @@ class Hub:
                                     record_types=self.kernel.types, config_digests=self.kernel.config_digests,
                                     resolve_document=self.resolve_document)
         proposal["overrides"] = {n: {"text": t, "draft": docs.get(n), "path": store.get(n).relpath} for n, t in texts.items()}
+        from .model import resolve_model
+
+        for r in proposal["rules"]:  # a cog is bundled with its model: say now if this hub cannot reach it
+            if r.get("kind") == "cog":
+                res = resolve_model(r.get("model") or "")
+                if not res["available"]:
+                    src = r.get("source") or {}
+                    proposal["findings"].append({"guard": "model", "severity": "warning", "rule_key": "", "frame": src.get("frame", ""),
+                                                 "line": int(src.get("line", 0) or 0),
+                                                 "detail": f"cog {r['name']} is bundled with {r.get('model') or 'no model'}, which this hub cannot use ({res['note']}); "
+                                                           "the cog will be unavailable until it can"})
         if not save:
             return proposal
         proposal["number"] = 1 + max(len(existing), max((int(x.get("number") or 0) for x in existing), default=0))
@@ -175,6 +186,29 @@ class Hub:
                                 fields={"frame_name": name, "frame_path": frame.relpath, "based_on_version": frame.version})
         self.kernel.link(draft["locator"], "references", doc["locator"], by=by)
         return self.kernel.get(draft["locator"])
+
+    def propose_cog_model(self, cog: str, model: str, by: str) -> dict:
+        """Change a cog's model as a policy proposal: the Model line of its profile, drafted and compiled."""
+        import re as _re
+
+        model = (model or "").strip()
+        if not model or "\n" in model:
+            raise ValueError("name a model")
+        frame = next((f for f in self.frames.frames.values() if f"## Cog: {cog}" in f.text), None)
+        if frame is None:
+            raise ValueError(f"{cog} has no profile to change")
+        lines = frame.text.splitlines()
+        start = next(i for i, ln in enumerate(lines) if ln.strip() == f"## Cog: {cog}")
+        end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+        at = next((i for i in range(start + 1, end) if _re.match(r"^Model:", lines[i])), None)
+        if at is None:
+            lines.insert(start + 1, f"Model: {model}")
+        else:
+            lines[at] = f"Model: {model}"
+        text = "\n".join(lines) + ("\n" if frame.text.endswith("\n") else "")
+        d = self.frame_draft(frame.name, by=by)
+        self.dms.add_version(d["locator"], text.encode("utf-8"), by=by, filename=frame.path.name, mime="text/markdown", note=f"{cog} uses {model}")
+        return self.compile(overrides={frame.name: text}, drafts={frame.name: d["locator"]})
 
     def propose_new_person(self, *, name: str, roles: list[str], by: str) -> dict:
         """A new person as a policy proposal: the member and their roles in the organization model. (In production
@@ -317,6 +351,11 @@ class Hub:
             raise ValueError(f"{sender} is not a person in the organization")
         if cog not in self.chat_cogs():
             raise ValueError(f"{cog} is not a cog you can chat with")
+        from .model import cog_availability
+
+        ok, why = cog_availability(bundle, cog)
+        if not ok:
+            raise ValueError(why)
         if not (text or "").strip():
             raise ValueError("say something")
         rec = self.kernel.get(about) if about else None
@@ -339,13 +378,21 @@ class Hub:
         from .cogs import stand_in_chat
         from .tools import RecordTools, tool_specs
 
+        from .model import ModelUnavailable
+
         tools = RecordTools(self, sender)
-        out = self.model.complete_with_tools(model=prep["model"], system=prep["system"], user=text, by=prep["cog"], max_tokens=800,
-                                             history=prep["history"], tools=tool_specs(), call_tool=call_tool or tools.call)
+        try:
+            out = self._chat_call(prep, text, call_tool or tools.call, tool_specs)
+        except ModelUnavailable as e:
+            raise ValueError(f"{prep['cog']} is not available: {e}") from None
         reply = (out["text"] or "").strip()
         if not reply:
             reply = stand_in_chat(prep["cog"], text, prep.get("rec"), prep.get("sops") or [])
         return {"text": reply, "model": out.get("served_model") or prep["model"], "stand_in": out["stand_in"], "tool_calls": out.get("tool_calls") or []}
+
+    def _chat_call(self, prep: dict, text: str, call_tool, tool_specs) -> dict:
+        return self.model.complete_with_tools(model=prep["model"], system=prep["system"], user=text, by=prep["cog"], max_tokens=800,
+                                             history=prep["history"], tools=tool_specs(), call_tool=call_tool)
 
     def chat(self, sender: str, cog: str, text: str, about: str | None = None) -> dict:
         """One informal chat turn with a cog: the person's line and the cog's answer are both kept. Nothing else changes."""

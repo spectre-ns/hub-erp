@@ -26,7 +26,7 @@ var me=root.getAttribute('data-as'),about=root.getAttribute('data-about')||'',th
 var avatars={};try{avatars=JSON.parse(root.getAttribute('data-avatars')||'{}')}catch(e){}
 function store(k,v){try{localStorage.setItem('mx.'+k,v)}catch(e){}}
 function load(k){try{return localStorage.getItem('mx.'+k)}catch(e){return null}}
-var cog=load('cog');if(!cog||!avatars[cog])cog=sel.value;sel.value=cog;
+var cog=load('cog');var opt=cog&&sel.querySelector('option[value="'+cog+'"]');if(!opt||opt.disabled){var first=sel.querySelector('option:not([disabled])');cog=first?first.value:sel.value}sel.value=cog;
 function open(on){panel.hidden=!on;btn.setAttribute('aria-expanded',on?'true':'false');root.classList.toggle('open',on);store('open',on?'1':'0');if(on){refresh();setTimeout(function(){ta.focus()},30)}else{btn.focus()}}
 function li(cls){var x=document.createElement('li');x.className='mx-msg '+cls;return x}
 function bubble(m){var x=li(m.mine?'mine':'theirs');if(!m.mine){var a=document.createElement('span');a.className='mx-av';a.innerHTML=avatars[m.from]||'';x.appendChild(a)}
@@ -90,7 +90,12 @@ class MessengerMixin:
         if not cogs:
             return ""
         about = self._messenger_about()
-        options = "".join(f'<option value="{esc(c)}">{esc(c)}</option>' for c in cogs)
+        from ..model import cog_availability
+
+        status = {c: cog_availability(self.bundle, c) for c in cogs}
+        options = "".join(f'<option value="{esc(c)}"{"" if status[c][0] else " disabled"}>{esc(c)}{"" if status[c][0] else " (not available)"}</option>' for c in cogs)
+        if not any(ok for ok, _ in status.values()):
+            return ""
         avatars = json.dumps({c: self._avatar(c, size="sm") for c in cogs})
         return f"""<aside id="messenger" class="mx" aria-label="Messenger" data-as="{esc(self.user)}" data-about="{esc(about)}"
 data-thread="{esc(href('/chat-thread', self.user, about=about))}" data-post="{esc('/chat')}" data-clear="{esc('/chat-clear')}" data-avatars="{esc(avatars)}">

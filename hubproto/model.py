@@ -29,16 +29,103 @@ def ollama_url() -> str:
     return (os.environ.get("HUBPROTO_OLLAMA_URL") or "").rstrip("/")
 
 
+class ModelUnavailable(Exception):
+    """A cog's model is not reachable: the cog is not available (a cog is bundled with its model; nothing stands in)."""
+
+
+def stand_in_allowed() -> bool:
+    """Development and tests only: a deterministic stand-in answers for any model. Never in a real hub."""
+    return (os.environ.get("HUBPROTO_ALLOW_STAND_IN") or "").lower() in ("1", "true", "yes", "on")
+
+
 def backend_for(model: str) -> str:
-    """Which backend serves a profile's model: 'anthropic' for claude-* with a key, 'ollama' for 'ollama/<name>'
-    (or any other name when an Ollama URL is set), else 'stand-in'."""
-    if not model or model == DEFAULT_MODEL or os.environ.get("HUBPROTO_MODEL_FAKE"):
+    """Which backend serves a profile's model: 'anthropic' for claude-* with a key, 'ollama' for 'ollama/<name>' or a
+    bare name with an Ollama configured, 'stand-in' when allowed, else 'none'. A claude-* model is never served locally."""
+    if os.environ.get("HUBPROTO_MODEL_FAKE"):
         return "stand-in"
-    if model.startswith("ollama/"):
-        return "ollama" if ollama_url() else "stand-in"
+    if not model or model == DEFAULT_MODEL:
+        return "stand-in" if stand_in_allowed() else "none"
     if model.startswith("claude"):
-        return "anthropic" if os.environ.get("ANTHROPIC_API_KEY") else ("ollama" if ollama_url() and os.environ.get("HUBPROTO_OLLAMA_FALLBACK") else "stand-in")
-    return "ollama" if ollama_url() else "stand-in"
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            return "anthropic"
+    elif ollama_url():
+        return "ollama"
+    return "stand-in" if stand_in_allowed() else "none"
+
+
+CLAUDE_MODELS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]
+_TAGS: dict = {"at": 0.0, "models": None, "error": ""}
+
+
+def served_name(model: str) -> str:
+    """The Ollama model a profile names: ``ollama/<name>`` or a bare ``<name>``."""
+    return model.split("/", 1)[1] if model.startswith("ollama/") else model
+
+
+def ollama_models(refresh: bool = False) -> tuple[list[dict], str]:
+    """The models installed in Ollama (cached for a minute): [{name, params, family, quant, size_gb}], and an error."""
+    url = ollama_url()
+    if not url:
+        return [], "no Ollama is configured (HUBPROTO_OLLAMA_URL)"
+    if not refresh and _TAGS["models"] is not None and time.monotonic() - _TAGS["at"] < 60:
+        return _TAGS["models"], _TAGS["error"]
+    try:
+        with urllib.request.urlopen(url + "/api/tags", timeout=4) as r:
+            data = json.load(r)
+        models = [{"name": m["name"], "params": (m.get("details") or {}).get("parameter_size") or "", "family": (m.get("details") or {}).get("family") or "",
+                   "quant": (m.get("details") or {}).get("quantization_level") or "", "size_gb": round((m.get("size") or 0) / 1e9, 1)}
+                  for m in data.get("models") or []]
+        _TAGS.update(at=time.monotonic(), models=sorted(models, key=lambda m: m["name"]), error="")
+    except Exception as e:
+        _TAGS.update(at=time.monotonic(), models=[], error=f"Ollama at {url} did not answer: {e}")
+    return _TAGS["models"], _TAGS["error"]
+
+
+def _installed(name: str, models: list[dict]) -> bool:
+    names = {m["name"] for m in models}
+    return name in names or f"{name}:latest" in names or name.removesuffix(":latest") in names
+
+
+def available_models(refresh: bool = False) -> dict:
+    """What a cog's profile can name: installed Ollama models, Claude models when a key is set, and what a claude-*
+    name falls back to without one."""
+    local, err = ollama_models(refresh)
+    key = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    choices = [{"value": f"ollama/{m['name']}", "label": f"{m['name']} ({m['params']} {m['family']}, local)".replace("( ", "("), "available": True} for m in local]
+    choices += [{"value": c, "label": c + (" (Anthropic)" if key else " (needs an Anthropic key: not available here)"), "available": key} for c in CLAUDE_MODELS]
+    return {"ollama": local, "ollama_error": err, "anthropic_key": key, "choices": choices}
+
+
+def resolve_model(model: str, refresh: bool = False) -> dict:
+    """Who would answer for a profile's model right now, and whether that model is there."""
+    model = model or DEFAULT_MODEL
+    backend = backend_for(model)
+    if backend == "ollama":
+        name = served_name(model)
+        local, err = ollama_models(refresh)
+        ok = _installed(name, local)
+        return {"asked": model, "backend": "ollama", "served": name, "available": ok,
+                "note": "local" if ok else (err or f"{name} is not installed in Ollama (ollama pull {name})")}
+    if backend == "anthropic":
+        return {"asked": model, "backend": "anthropic", "served": model, "available": True, "note": "Anthropic API"}
+    if backend == "stand-in":
+        return {"asked": model, "backend": "stand-in", "served": "stand-in", "available": True, "note": "development stand-in (HUBPROTO_ALLOW_STAND_IN)"}
+    if not model or model == DEFAULT_MODEL:
+        why = "the profile names no model"
+    elif model.startswith("claude"):
+        why = f"{model} needs an Anthropic key (ANTHROPIC_API_KEY)"
+    else:
+        why = f"{model} needs an Ollama (HUBPROTO_OLLAMA_URL)"
+    return {"asked": model, "backend": "none", "served": "", "available": False, "note": why}
+
+
+def cog_availability(bundle: dict, cog: str) -> tuple[bool, str]:
+    """Whether a cog can be used now: it is bundled with its profile's model, and that model must answer."""
+    prof = (bundle.get("cogs") or {}).get(cog)
+    if prof is None:
+        return (True, "") if stand_in_allowed() else (False, f"{cog} has no profile naming its model")
+    r = resolve_model(prof.get("model") or "")
+    return (True, "") if r["available"] else (False, f"{cog} is not available: {r['note']}")
 
 
 class ModelGateway:
@@ -54,6 +141,8 @@ class ModelGateway:
         t0 = time.monotonic()
         model = model or DEFAULT_MODEL
         backend = backend_for(model)
+        if backend == "none":
+            raise ModelUnavailable(resolve_model(model)["note"])
         try:
             if backend == "anthropic":
                 text = self._anthropic(model, system, user, max_tokens, history)
@@ -61,7 +150,9 @@ class ModelGateway:
                 text = self._ollama(model, system, user, max_tokens, history)
             else:
                 text = self._stand_in(system, user)
-        except Exception as e:  # a model that does not answer never blocks the work: the stand-in says so
+        except Exception as e:
+            if not stand_in_allowed():
+                raise ModelUnavailable(f"{model} did not answer: {e}") from None
             text = f"[{backend} model {model} did not answer: {e}]\n" + self._stand_in(system, user)
             backend = "stand-in"
         stand_in = backend == "stand-in"
@@ -92,9 +183,7 @@ class ModelGateway:
 
     def _ollama(self, model: str, system: str, user: str, max_tokens: int, history: list[dict] | None = None) -> str:
         """A local model through Ollama's chat API (``ollama/<name>`` or any name when HUBPROTO_OLLAMA_URL is set)."""
-        name = model.split("/", 1)[1] if model.startswith("ollama/") else (os.environ.get("HUBPROTO_OLLAMA_MODEL") or model)
-        if model.startswith("claude"):
-            name = os.environ.get("HUBPROTO_OLLAMA_MODEL") or "llama3.1"
+        name = served_name(model)
         ceiling = int(os.environ.get("HUBPROTO_MODEL_MAX_CHARS") or 90000)  # ~22k tokens; under the 32k window with room to answer
         if len(system) + len(user) > ceiling:
             keep = max(ceiling - len(user) - 200, 2000)
@@ -134,6 +223,8 @@ class ModelGateway:
         t0 = time.monotonic()
         model = model or DEFAULT_MODEL
         backend = backend_for(model)
+        if backend == "none":
+            raise ModelUnavailable(resolve_model(model)["note"])
         calls: list[dict] = []
 
         def run(name, args):
@@ -150,6 +241,8 @@ class ModelGateway:
             else:
                 text = self._stand_in_tools(user, run)
         except Exception as e:
+            if not stand_in_allowed():
+                raise ModelUnavailable(f"{model} did not answer: {e}") from None
             text = f"[{backend} model {model} did not answer: {e}]\n" + self._stand_in_tools(user, run)
             backend = "stand-in"
         out = {"text": text, "model": model, "served_model": (usage or {}).get("served_model") or (model if backend == "anthropic" else "stand-in"),
@@ -165,9 +258,7 @@ class ModelGateway:
         return out
 
     def _ollama_tools(self, model, system, user, history, tools, run, max_tokens, max_rounds, as_text):
-        name = model.split("/", 1)[1] if model.startswith("ollama/") else (os.environ.get("HUBPROTO_OLLAMA_MODEL") or model)
-        if model.startswith("claude"):
-            name = os.environ.get("HUBPROTO_OLLAMA_MODEL") or "llama3.1"
+        name = served_name(model)
         msgs = [{"role": "system", "content": system}] + [{"role": t["role"], "content": t["content"]} for t in (history or []) if t.get("content")] \
             + [{"role": "user", "content": user}]
         fns = [{"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["parameters"]}} for t in tools]
