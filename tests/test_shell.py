@@ -162,7 +162,7 @@ def test_start_decide_upload_attach_flow(shell):
 
     # Upload files an external document into the folder; it appears on /files.
     content = b"Invoice 4711\nAcme Metals\nTotal 12,000.00 USD\n"
-    status, url, text = post(shell, "/upload", {"as": "alice", "folder": "Finance/Payables", "title": "Acme invoice 4711"},
+    status, url, text = post(shell, "/upload", {"as": "alice", "folder": "Finance/Payables", "title": "Acme invoice 4711", "keep": "1"},
                              files=[("file", "acme-4711.txt", content)])
     assert status == 200 and "/files" in url, text[:500]
     assert "acme-4711.txt" in text or "Acme invoice 4711" in text
