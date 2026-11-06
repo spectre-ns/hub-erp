@@ -39,8 +39,10 @@ EDITABLE_MIMES = {
     "application/vnd.oasis.opendocument.spreadsheet": "ods",
     "application/vnd.oasis.opendocument.presentation": "odp",
     "application/msword": "doc", "application/vnd.ms-excel": "xls", "text/plain": "txt", "text/csv": "csv",
-    "text/markdown": "md", "application/rtf": "rtf",
+    "application/rtf": "rtf",
 }
+# markdown is the hub's own text format: shown and edited by the hub, not opened in the office editor
+HUB_TEXT_EXTENSIONS = {"md"}
 EDITABLE_EXTENSIONS = {v: k for k, v in EDITABLE_MIMES.items()}
 VIEWABLE_EXTENSIONS = {"pdf": "application/pdf"}  # opened in the editor read-only
 TOKEN_TTL = 10 * 60 * 60  # ten hours, the length of a working day
@@ -400,7 +402,7 @@ def blank_document(extension: str) -> tuple[bytes, str]:
     """A minimal, valid empty file for a new document: docx, xlsx, odt, ods, txt or md. Returns (bytes, mime)."""
     ext = extension.lower()
     if ext in ("txt", "md", "csv"):
-        return b"", EDITABLE_EXTENSIONS[ext]
+        return b"", {"txt": "text/plain", "md": "text/markdown", "csv": "text/csv"}[ext]
     buf = io.BytesIO()
     if ext == "docx":
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:

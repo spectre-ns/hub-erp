@@ -51,8 +51,10 @@ function go(){if(!tabs.length)return;var h=location.hash.replace('#','');var t=h
 show(p?p.id:tabs[0].getAttribute('data-tab'));if(t&&t!==p){setTimeout(function(){t.scrollIntoView()},0)}}
 go();addEventListener('hashchange',go);
 var all=document.querySelector('input[data-select-all]');if(all){all.addEventListener('change',function(){document.querySelectorAll('input[name=sel]').forEach(function(c){c.checked=all.checked})})}
+var leader=false,leaderTimer=null;function armLeader(on){leader=on;document.body.classList.toggle('leader',on);clearTimeout(leaderTimer);if(on)leaderTimer=setTimeout(function(){armLeader(false)},2000)}
 addEventListener('keydown',function(ev){if(ev.ctrlKey||ev.metaKey||ev.altKey)return;var t=ev.target;if(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.tagName==='SELECT'||t.isContentEditable))return;
-var k=ev.key.toLowerCase();var el=null;document.querySelectorAll('[data-hotkey]').forEach(function(b){if(!el&&b.getAttribute('data-hotkey').toLowerCase()===k)el=b});if(!el)return;ev.preventDefault();
+var k=ev.key.toLowerCase();if(!leader){if(k==='o'&&document.querySelector('[data-hotkey]')){armLeader(true);ev.preventDefault()}return}
+armLeader(false);var el=null;document.querySelectorAll('[data-hotkey]').forEach(function(b){if(!el&&b.getAttribute('data-hotkey').toLowerCase()===k)el=b});if(!el)return;ev.preventDefault();
 if(el.tagName==='A'&&el.getAttribute('href')&&el.getAttribute('href').charAt(0)==='#'){location.hash=el.getAttribute('href');var h=document.getElementById(el.getAttribute('href').slice(1));if(h){var f=h.querySelector('input,textarea,select,button');if(f)f.focus()}}else{el.click()}});});"""
 ONCE_KEEP = 2000  # one-use tokens remembered (the oldest are forgotten first)
 

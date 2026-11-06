@@ -237,6 +237,12 @@ def insert_paragraphs(content: bytes, extension: str, paragraphs: list[str], pos
     ext = (extension or "").lower()
     if is_sheet(ext):
         return insert_rows(content, ext, rows_from_lines(paragraphs))
+    if ext in ("md", "txt"):
+        text = content.decode("utf-8", "replace")
+        block = "\n".join(paragraphs).strip() + "\n"
+        if position == "replace":
+            return block.encode("utf-8")
+        return (block + "\n" + text).encode("utf-8") if position == "start" else (text.rstrip("\n") + "\n\n" + block).encode("utf-8")
     z = _zip(content)
     if z is None or not paragraphs:
         return None

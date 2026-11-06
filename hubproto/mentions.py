@@ -45,6 +45,9 @@ def intent_of(text: str, *, model=None, model_name: str = "", thread: list[dict]
     fallback = intent_by_keywords(text)
     if fallback == "approve":
         return "approve"  # an explicit approval phrase is not for a model to second-guess
+    t = (text or "").lower()
+    if fallback == "review" and not re.search(r"\b(edit|insert|include|add|write|draft|rewrite|revise|update|change|format|make|put|replace|fix)\b", t):
+        return "review"  # "please review this" means review
     if model is None or not getattr(model, "available", lambda m: False)(model_name):
         return fallback
     context = "\n".join(f"- {t.get('author')}: {t.get('text')}" for t in (thread or [])[-6:])
@@ -213,6 +216,17 @@ def handle(hub, msg: dict, bundle: dict) -> list[dict]:
         subject = f"{sender} asks you to {intent if intent != 'message' else 'look at'} {record['number'] if record else 'a message'}"
         out.append(hub.inbox.notify(person, kind="request", subject=subject, body=(msg.get("body") or "") + ("\n" + "\n".join(actions) if actions else ""),
                                     run_id=run["id"] if run else "", record=record["locator"] if record else None))
+    if record and record["type"] == "document" and cogs:
+        from . import wopi as _wopi
+
+        f = hub.kernel.get(record["locator"])["fields"]
+        machines = set(hub.registry.ids()) | {"hub"}
+        people_editing = f.get("checked_out_via") == "editor" and any(e not in machines for e in (f.get("editors") or [f.get("checked_out_by")]) if e)
+        if not people_editing:  # no live seat will do it: the hub writes the answers into the file now
+            try:
+                _wopi.WopiHost(hub).apply_replies(hub.kernel.get(record["locator"]), sender)
+            except Exception as e:
+                out.append(hub.inbox.notify(sender, kind="mention", subject=f"Could not write into {record['number']}", body=str(e), record=record["locator"]))
     if unknown or (actions and not cogs):
         note = []
         if unknown:

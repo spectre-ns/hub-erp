@@ -474,13 +474,13 @@ def test_a_chatter_message_to_a_cog_about_a_document_is_handled_like_a_mention(s
     loc = doc["locator"]
     reply = hub.send("carol", "quality-assistant", "Revision", "Revise this document with the prescribed document header.", record=loc)
     assert reply["kind"] == "reply" and reply["from"] == "quality-assistant" and reply["record"] == loc
-    pending = wopi.WopiHost(hub).pending_replies(hub.kernel.get(loc))
-    assert pending and pending[0]["edit"]["position"] == "replace", "a revision replaces the body"
-    applied = wopi.WopiHost(hub).apply_replies(hub.kernel.get(loc), "carol")
-    assert len(applied) == 1
+    # Nobody has the editor open, so the revision was written into the file at once (replacing the body).
+    assert wopi.WopiHost(hub).pending_replies(hub.kernel.get(loc)) == []
     from hubproto import office
 
-    text = office.extract_text(hub.dms.content(loc)[0], "docx")
+    content, version = hub.dms.content(loc)
+    assert version["by"] == "hub" and "quality-assistant" in version["note"]
+    text = office.extract_text(content, "docx")
     assert text and "Header test" in text
 
 
@@ -505,3 +505,25 @@ def test_cogs_never_hold_the_editing_lock(shell):
     hub.dms.leave_editing(loc, by="carol")
     f = hub.kernel.get(loc)["fields"]
     assert f["checked_out_by"] is None and f["editors"] == [], "the last person out releases the session even if a cog's seat is still open"
+
+
+def test_hot_keys_need_the_leader_and_a_cogs_answer_lands_in_the_file_when_no_editor_is_open(shell):
+    hub = shell["hub"]
+    from hubproto import office
+
+    content, mime = wopi.blank_document("docx")
+    doc = hub.dms.create(title="Quiet doc", doc_class="working", folder="Quality/Controlled Documents", by="carol", content=content,
+                         filename="quiet.docx", mime=mime, doc_type="document")
+    loc = doc["locator"]
+    status, text = get(shell, "/document/" + quote(loc, safe=":"), **{"as": "carol"})
+    assert "armLeader" in text and "k==='o'" in text, "a bare key never fires an Op; 'o' then the key does"
+    # Nobody has the editor open: the review asked for in the chatter is written into the document at once.
+    reply = hub.send("carol", "quality-assistant", "Review", "@quality-assistant please review this document", record=loc)
+    assert "Review of" in reply["body"], "'please review' is a review, whatever the model would say"
+    assert wopi.WopiHost(hub).pending_replies(hub.kernel.get(loc)) == []
+    # A new markdown document is the hub's own: it lands on the document page, not in the office editor.
+    status, url, text = post(shell, "/new-document", {"as": "carol", "folder": "Quality/Controlled Documents", "title": "Notes", "kind": "md"})
+    assert status == 200 and "/document/" in url and "Markdown is edited by the hub" in text
+    md = next(d for d in hub.kernel.query(type_="document") if d["fields"].get("title") == "Notes")
+    hub.send("carol", "quality-assistant", "Edit", "@quality-assistant please add a short quality header", record=md["locator"])
+    assert hub.dms.content(md["locator"])[0].decode().startswith("# "), "a cog writes markdown as text"

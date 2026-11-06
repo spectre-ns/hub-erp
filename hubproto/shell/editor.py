@@ -217,8 +217,15 @@ setInterval(poll,4000);}})();</script>"""
         except KernelGuardError as e:
             raise ShellError(f"{e.detail}.") from None
         versions = self.hub.dms.versions(rec["locator"])
-        self._redirect(href("/document/" + quote(rec["locator"], safe=":"), self.user,
-                            done=f"Finished editing {rec['number']}; it is at version {versions[-1]['version'] if versions else 0} and released for others."))
+        saved = [v for v in versions if v.get("by") == self.user and v.get("note") == "saved in the editor"]
+        after = self.hub.kernel.get(rec["locator"])["fields"]
+        if saved and saved[-1] is versions[-1]:
+            msg = f"Finished editing {rec['number']}: your changes are version {versions[-1]['version']}."
+        else:
+            msg = f"Closed the editor for {rec['number']}; nothing was changed."
+        if after.get("checked_out_by"):
+            msg += f" {after['checked_out_by']} is still editing it."
+        self._redirect(href("/document/" + quote(rec["locator"], safe=":"), self.user, done=msg))
 
     def post_new_document(self):
         user = self.user
@@ -250,8 +257,10 @@ setInterval(poll,4000);}})();</script>"""
         safe = "".join(c if c.isalnum() or c in " -_" else "_" for c in title).strip() or "document"
         doc = self.hub.dms.create(title=title, doc_class="working", folder=folder, by=user, content=content, filename=f"{safe}.{kind}",
                                   mime=mime, doc_type="document", attach_to=target["locator"] if target else None)
-        where = href("/edit/" + quote(doc["locator"], safe=":"), user) if editor_configured() else \
-            href("/document/" + quote(doc["locator"], safe=":"), user, done=f"Created {doc['number']}; download it to edit, then check it in.")
+        if kind in wopi.HUB_TEXT_EXTENSIONS or not editor_configured():
+            where = href("/document/" + quote(doc["locator"], safe=":"), user, done=f"Created {doc['number']}." + (" Markdown is edited by the hub: check it out, edit, check it in, or ask a cog to write it." if kind in wopi.HUB_TEXT_EXTENSIONS else " Download it to edit, then check it in."))
+        else:
+            where = href("/edit/" + quote(doc["locator"], safe=":"), user)
         self._redirect(self._once_finish(where))
 
     def post_working_copy(self):

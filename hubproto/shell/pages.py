@@ -782,7 +782,7 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
                          f'<button class="button ghost" data-hotkey="{k}" title="asks {esc(n)} for a review in the chatter">{self._avatar(n, size="sm")} Ask {esc(n)} to review<kbd class="hk">{k}</kbd></button></form>')
         if not items:
             return ""
-        return f'<div class="ops" role="group" aria-label="Ops on this item"><span class="lbl">{icon("zap")}Ops</span>{"".join(items)}<span class="lbl">press a key to run one</span></div>'
+        return f'<div class="ops" role="group" aria-label="Ops on this item"><span class="lbl">{icon("zap")}Ops</span>{"".join(items)}<span class="lbl">press <kbd class="hk" style="margin:0"></kbd> then the key</span></div>'
 
     def _self_url(self) -> str:
         return self.path.split("?", 1)[0] + "?as=" + quote(self.user)
