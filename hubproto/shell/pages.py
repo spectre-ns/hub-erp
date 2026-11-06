@@ -276,6 +276,8 @@ class PagesMixin:
         user = self.user
         bundle = self._need_release()
         folder = self.q.get("folder", [""])[0].strip("/")
+        if folder.startswith("Policy"):
+            self.hub.frame_documents()  # every Frame has its document in Policy/Frames
         sort = self.q.get("sort", [""])[0] or "date"
         tree = self._library_tree(folder)
         if not folder:
@@ -758,7 +760,7 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
         items = []
         if not live:
             for name, wf in sorted((bundle.get("workflows") or {}).items()):
-                if wf.get("record_type") != rec["type"]:
+                if wf.get("record_type") != rec["type"] or (rec["fields"].get("doc_type") in ("frame", "frame-draft")):
                     continue
                 op = bundle["ops"].get(name) or {}
                 d = authz.check(bundle, user, "create", op.get("object", rec["type"]), op.get("folder") or rec["folder"])
@@ -843,6 +845,7 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
             btns += f'<a class="button" href="{href("/edit/" + quote(loc, safe=":"), user)}">{icon("edit" if editable_now else "eye")}{label}</a>'
         if versions and wopi.is_editable(rec) and (immutable or rec["state"] not in EDITABLE_DOC_STATES) and may_file(bundle, user, rec["folder"])["allowed"]:
             btns += f"""<form method="post" action="/working-copy" class="inline">{hidden_as(user)}{self._once()}<input type="hidden" name="doc" value="{esc(loc)}"><button class="ghost" title="A new working document with this content, attached to the same items, that you can edit online">{icon("plus")}Make a working copy</button></form>"""
+        btns = self._policy_doc_buttons(rec) + btns
         if versions:
             btns += f'<a class="button ghost" href="{href("/download", user, doc=loc)}">{icon("download")}Download</a>'
         btns += f'<a class="button ghost" href="#checkout">{icon("lock")}Check-out and check-in</a><button type="button" class="ghost" onclick="print()">{icon("printer")}Print</button>'

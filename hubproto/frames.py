@@ -121,7 +121,11 @@ def parse_frontmatter_offset(text: str) -> tuple[dict, str, int]:
 
 
 def load_frame(path: Path) -> Frame:
-    text = path.read_text(encoding="utf-8")
+    return load_frame_text(path.read_text(encoding="utf-8"), path)
+
+
+def load_frame_text(text: str, path: Path) -> Frame:
+    """A Frame from its text (a file's, or a draft's written as a document); ``path`` is where it lives or will live."""
     try:
         data, body, body_start = parse_frontmatter_offset(text)
     except FrameError as e:
@@ -172,6 +176,29 @@ class FrameStore:
                 raise FrameError(f"duplicate Frame name {frame.name!r} ({path} and {self.frames[frame.name].path})")
             self.frames[frame.name] = frame
 
+    def with_overrides(self, texts: dict[str, str]) -> "FrameStore":
+        """A copy of this store in which the named Frames read as the given texts (drafts), for compiling a change
+        before it is written. A draft must keep its Frame's name."""
+        import copy
+
+        clone = copy.copy(self)
+        clone.frames = dict(self.frames)
+        for name, text in (texts or {}).items():
+            if name not in self.frames:
+                raise FrameError(f"there is no Frame {name!r} to change")
+            old = self.frames[name]
+            try:
+                new = load_frame_text(text, old.path)
+            except FrameError:
+                raise
+            except Exception as e:
+                raise FrameError(f"{old.relpath}: {e}") from None
+            if new.name != name:
+                raise FrameError(f"the draft of {name} renames it to {new.name!r}; a Frame keeps its name")
+            new.relpath = old.relpath
+            clone.frames[name] = new
+        return clone
+
     def get(self, name: str) -> Frame:
         try:
             return self.frames[name]
@@ -214,3 +241,13 @@ class FrameStore:
             }
             for f in frames
         ]
+
+
+def bump_version(text: str, current: str) -> str:
+    """A changed Frame gets a new version: when the draft still carries the released version, raise its last part."""
+    m = re.search(r'^version:\s*"?([0-9]+(?:\.[0-9]+)*)"?\s*$', text, re.M)
+    if not m or m.group(1) != current:
+        return text
+    parts = current.split(".")
+    parts[-1] = str(int(parts[-1]) + 1)
+    return text[:m.start(1)] + ".".join(parts) + text[m.end(1):]

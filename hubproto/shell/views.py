@@ -512,6 +512,20 @@ class ViewsMixin:
             profile = [("Model", esc(prof.get("model") or "none (stand-in words)")), ("Prompt", esc(prof.get("prompt") or "-")),
                        ("Follows", ", ".join(f'<a href="{href("/frame/" + fr, user)}">{esc(fr)}</a>' for fr in follows) or "<span class='muted'>no procedure: it is routed no work</span>"),
                        ("Reviews", esc(", ".join(prof.get("reviews") or []) or "-")), ("Written in", self._rule_link(prof.get("source")) if prof.get("source") else "")]
+            def pin_html(pin):
+                d = self.hub.kernel.get(pin["locator"])
+                latest = (self.hub.dms.versions(pin["locator"]) or [{}])[-1].get("version") if d else None
+                newer = f" <span class='chip warn'>version {latest} exists: a recompile pins it, as a reviewed change</span>" if latest and latest != pin.get("version") else ""
+                return f"<a href='{href('/document/' + quote(pin['locator'], safe=':'), user)}'>{esc(pin['number'])}</a> {esc(pin.get('title') or '')} (version {esc(pin.get('version'))}){newer}"
+            if prof.get("prompt_doc"):
+                profile.insert(1, ("Prompt from", pin_html(prof["prompt_doc"])))
+            if prof.get("reference_docs"):
+                profile.insert(3, ("References", "<br>".join(pin_html(x) for x in prof["reference_docs"])))
+            src_frame = (prof.get("source") or {}).get("frame")
+            if src_frame:
+                profile.append(("Change it", f"<a class='button ghost' href='{href('/frame-doc/' + src_frame, user)}'>{icon('edit')}Edit this cog's profile</a> "
+                                             "<span class='why'>model, prompt, documents it reads and the SOPs it follows; roles and permissions are in "
+                                             f"<a href='{href('/frame-doc/org-model', user)}'>the organization model</a></span>"))
             models = (f"{len(calls)} model call{'s' if len(calls) != 1 else ''} since the hub started"
                       + (f" ({sum(1 for c in calls if c.get('stand_in'))} answered by the stand-in, no model key)" if calls else ""))
             body += (f"<div class='card'><h2 style='margin-top:0;border:0'>{icon('robot')} About this cog</h2><p>{esc(desc)}</p>"

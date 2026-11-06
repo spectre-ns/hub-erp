@@ -107,13 +107,13 @@ class DMS:
 
     # -------------------------------------------------------------- versions
     def add_version(self, ref: str, content: bytes, *, by: str, filename: str = "", mime: str = "", note: str = "",
-                    run_id: str = "", release: str = "") -> dict:
+                    run_id: str = "", release: str = "", system: bool = False) -> dict:
         rec = self.kernel.require(ref)
         if rec["type"] != "document":
             raise KernelGuardError("document", f"{rec['number']} is not a document")
         if rec["fields"].get("doc_class") in IMMUTABLE_CLASSES and self.versions(ref):
             raise KernelGuardError("immutable", f"{rec['fields']['doc_class']} documents cannot be changed; file a new one that supersedes it")
-        if rec["fields"].get("doc_class") in ("controlled", "template") and rec["state"] not in ("open", "draft", "returned", "failed"):
+        if not system and rec["fields"].get("doc_class") in ("controlled", "template") and rec["state"] not in ("open", "draft", "returned", "failed"):
             raise KernelGuardError("controlled", f"{rec['number']} is {rec['state']}; a controlled document changes only through a new revision (start document-control with the same title)")
         locked_by = rec["fields"].get("checked_out_by")
         in_session = rec["fields"].get("checked_out_via") == "editor" and by in (rec["fields"].get("editors") or [])

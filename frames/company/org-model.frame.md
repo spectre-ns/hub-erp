@@ -3,7 +3,7 @@ type: frame [0.2]
 name: org-model
 description: Roles, members (people and cogs) and folders of Example Instruments Ltd.
 visibility: internal
-version: "1.2.0"
+version: "1.3.0"
 scope: company
 maintainer: operations
 ---
@@ -53,3 +53,10 @@ messages, and are bound by segregation of duties.
 - Quality/Calibration
 - Quality/Complaints
 - Tasks
+- Policy
+- Policy/Frames
+
+## Permissions
+Staff may read Policy.
+Staff may create documents in Policy.
+Policy owners may approve documents in Policy.

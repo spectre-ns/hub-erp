@@ -117,6 +117,26 @@ names several cogs, `[system] Review the design package (quality-assistant, purc
 each reviews from its own SOPs, the findings merge onto the record and into one evidence document, and the
 Gate that follows sees them.
 
+## Frames and cog settings as documents
+
+Every Frame (the policy prose the release is compiled from) is also a controlled document in **Policy/Frames**.
+"Edit this policy" on it makes a draft, a working Markdown document written in the hub's text editor.
+"Check the change" compiles the draft in place of the Frame and shows the rule changes, the findings and a diff;
+"Propose for release" makes it a proposal, which the policy owners review and release on the proposal page.
+Releasing writes the draft into the Frame file (raising its version) and makes it the effective version of the
+Frame's document. A recompile from the CLI carries an open draft forward instead of dropping it.
+
+Cog settings are Frames too: a cog's model, prompt and the SOPs it follows are its `## Cog:` section in
+`cogs.frame.md`; its roles and the permissions that come with them are in the organization model. A profile may
+also link documents: `Prompt from: DOC-0123` takes the prompt from a document, `References: DOC-0200, DOC-0201`
+adds documents the cog works from. Each release pins the version it compiled, so a cog reads exactly what was
+reviewed; a newer version of a linked document is a change the policy owners approve when they next release.
+The cog's profile page shows the pinned documents and links to its profile and the organization model.
+
+The messenger in the bottom-right corner of every page is an informal chat with a cog: it knows the page you
+are on, the procedures it follows and its queue, remembers the conversation, and changes nothing; reviews,
+edits and approvals go through the item's chatter, comments or Ops.
+
 ## The integrated editor
 
 Documents open in Collabora Online inside the hub: the hub is a WOPI host (`hubproto/wopi.py`; the

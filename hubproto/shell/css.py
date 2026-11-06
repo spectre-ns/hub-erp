@@ -222,4 +222,7 @@ main{{padding:var(--sp-3) var(--sp-4)}}.grid2{{grid-template-columns:1fr}}.sheet
 @media (prefers-reduced-motion:reduce){{.mx-dots i{{animation:none;opacity:.6}}}}
 @media (max-width:600px){{.mx{{right:8px;bottom:8px;left:8px;align-items:stretch}}.mx-panel{{width:auto;height:min(70vh,520px)}}.mx-toggle{{align-self:flex-end}}}}
 @media print{{.mx{{display:none!important}}}}
+
+pre.diff{{font:12px/1.45 ui-monospace,monospace;background:var(--chip);border:1px solid var(--line);border-radius:6px;padding:8px;overflow-x:auto;white-space:pre}}
+pre.diff .add{{color:var(--ok);background:color-mix(in srgb,var(--ok) 12%,transparent);display:inline-block;width:100%}}pre.diff .del{{color:var(--crit);background:color-mix(in srgb,var(--crit) 10%,transparent);display:inline-block;width:100%}}pre.diff .hunk{{color:var(--muted)}}
 """

@@ -7,6 +7,7 @@ from ..compile import CompileError
 from ..frames import FrameError
 from ..rules import rule_key
 from .forms import ShellError
+from .icons import icon
 from .handler import details, hidden_as, href, table
 from .text import chip, esc, join_words, money, role_words, tag, type_name, version_label, when
 
@@ -182,6 +183,8 @@ proposal <code>{esc(meta.get('proposal_id') or '-')}</code>{(' reviewed by ' + e
                 f"visibility {esc(frame.visibility)}; inherits {esc(', '.join(frame.inherits) or 'nothing')}; file {esc(str(frame.path.name))}</span></div>"
                 f"<p class='why'>Line numbers are the file's own, frontmatter included, so a citation such as “line 34” matches an editor.</p>"
                 f"<div class='tbl'><table><thead><tr><th scope='col'>Line</th><th scope='col'>Text</th></tr></thead><tbody>{lines}</tbody></table></div>")
+        body = (f"<p><a class='button' href='{href('/frame-doc/' + frame.name, self.user)}'>{icon('file')}Open as a document</a> "
+                f"<span class='why'>to propose a change: Edit this policy makes a draft the policy owners review and release.</span></p>") + body
         self._page(frame.name, body, crumbs=[("Policies", href("/frames", self.user)), (frame.name, None)])
 
     # ----------------------------------------------------------------- why

@@ -1,0 +1,90 @@
+"""Frames and cog settings as documents: a Frame is a controlled document; a change is a draft written in the hub,
+compiled into a proposal, reviewed by the policy owners and written into the Frame when released. A cog profile links
+documents for its prompt and its references, pinned to a version by each release."""
+
+import pytest
+
+from conftest import edit_frame, release_all
+from hubproto.compile import CompileError
+from hubproto.frames import FrameError
+
+
+def test_a_frame_draft_is_compiled_reviewed_and_released_into_the_frame(released):
+    hub = released
+    doc = hub.frame_document("finance-policy")
+    assert doc["fields"]["doc_class"] == "controlled" and doc["state"] == "effective" and doc["folder"] == "Policy/Frames"
+    draft = hub.frame_draft("finance-policy", by="alice")
+    assert draft["fields"]["doc_type"] == "frame-draft" and hub.frame_draft("finance-policy", by="alice")["locator"] == draft["locator"]
+    text = hub.draft_text(draft).replace("Finance clerks may create bills in Finance/Payables.",
+                                          "Finance clerks may create bills in Finance/Payables.\nStaff may read Finance/Payables.")
+    hub.dms.add_version(draft["locator"], text.encode(), by="alice", filename="finance-policy.frame.md", mime="text/markdown")
+    preview = hub.compile(overrides={"finance-policy": hub.draft_text(hub.kernel.get(draft["locator"]))}, save=False)
+    assert any("Staff" in c["reason"] or "staff" in c["reason"] for c in preview["changes"]) and not hub.proposals.list()[-1].get("overrides")
+    proposal = hub.compile(overrides={"finance-policy": hub.draft_text(hub.kernel.get(draft["locator"]))}, drafts={"finance-policy": draft["locator"]})
+    assert proposal["overrides"]["finance-policy"]["draft"] == draft["locator"]
+    assert hub.kernel.get(draft["locator"])["fields"]["proposal_number"] == proposal["number"]
+    before = hub.frames.get("finance-policy").version
+    with pytest.raises(CompileError):
+        hub.release(proposal["id"], "bob")  # a widening needs two policy owners
+    hub.review(proposal["id"], "bob", approve_all=True, meaning="ok")
+    hub.review(proposal["id"], "carol", approve_all=True, meaning="ok")
+    hub.release(proposal["id"], "bob")
+    frame = hub.frames.get("finance-policy")
+    assert "Staff may read Finance/Payables." in frame.text and frame.version != before, "the file was written and its version raised"
+    doc = hub.kernel.get(doc["locator"])
+    assert hub.dms.content(doc["locator"])[0].decode() == frame.text and doc["fields"]["frame_version"] == frame.version
+    assert hub.kernel.get(draft["locator"])["state"] == "released"
+    bundle = hub.releases.bundle(hub.releases.current()["digest"])
+    assert any(p["subject"] == "role:staff" and p["resource"] == "folder:Finance/Payables" and p["action"] == "read" for p in bundle["permissions"])
+
+
+def test_a_recompile_carries_a_pending_draft_forward(released):
+    hub = released
+    draft = hub.frame_draft("finance-policy", by="alice")
+    text = hub.draft_text(draft) + "\nStaff may read Finance.\n"
+    first = hub.compile(overrides={"finance-policy": text}, drafts={"finance-policy": draft["locator"]})
+    second = hub.compile()  # someone recompiles from the CLI
+    assert hub.proposals.load(first["id"])["status"] == "superseded"
+    assert second["overrides"]["finance-policy"]["draft"] == draft["locator"] and "Staff may read Finance." in second["overrides"]["finance-policy"]["text"]
+
+
+def test_a_draft_may_not_rename_its_frame(released):
+    hub = released
+    text = hub.frames.get("finance-policy").text.replace("name: finance-policy", "name: money-policy")
+    with pytest.raises(FrameError, match="a Frame keeps its name"):
+        hub.compile(overrides={"finance-policy": text}, save=False)
+
+
+def test_a_cog_takes_its_prompt_and_references_from_documents_pinned_by_the_release(released):
+    hub = released
+    prompt = hub.dms.create(title="Quality assistant brief", doc_class="controlled", folder="Policy", by="carol",
+                            content=b"You are the quality assistant of Example Instruments. Be blunt about missing traceability.",
+                            filename="qa-brief.md", mime="text/markdown", doc_type="brief")
+    ref = hub.dms.create(title="Torque table", doc_class="controlled", folder="Policy", by="carol",
+                         content=b"M4: 2 Nm\nM5: 4 Nm", filename="torque.md", mime="text/markdown", doc_type="reference")
+    edit_frame(hub, "cog-profiles", "## Cog: quality-assistant\n",
+               f"## Cog: quality-assistant\nPrompt from: {prompt['number']}\nReferences: {ref['number']}\n", bump="1.1.0")
+    release_all(hub)
+    b = hub.releases.bundle(hub.releases.current()["digest"])
+    prof = b["cogs"]["quality-assistant"]
+    assert prof["prompt_doc"]["number"] == prompt["number"] and prof["prompt_doc"]["version"] == 1
+    assert prof["reference_docs"][0]["number"] == ref["number"]
+    from hubproto.cogs import RunContext, cog_context
+
+    ctx = RunContext(run_id="t", release="", bundle=b, owner="quality-assistant", kernel=hub.kernel, dms=hub.dms,
+                     frames=lambda: hub.frames, extras={"cog_profile": prof})
+    system = cog_context(ctx, None)
+    assert system.startswith("You are the quality assistant of Example Instruments.") and "M5: 4 Nm" in system and "REFERENCE DOCUMENTS" in system
+    # A newer version of the brief is not used until a release pins it, and pinning it is a reviewed change.
+    hub.dms.add_version(prompt["locator"], b"You are the quality assistant. Be gentle.", by="hub", filename="qa-brief.md", mime="text/markdown", system=True)
+    assert cog_context(ctx, None).startswith("You are the quality assistant of Example Instruments.")
+    proposal = hub.compile()
+    change = next(c for c in proposal["changes"] if c["rule"]["kind"] == "cog" and c["rule"]["name"] == "quality-assistant" and c["op"] == "add")
+    assert change["widening"] is True and change["rule"]["prompt_doc"]["version"] == 2
+
+
+def test_a_link_to_a_missing_document_blocks_the_release(released):
+    hub = released
+    edit_frame(hub, "cog-profiles", "## Cog: doc-reviewer\n", "## Cog: doc-reviewer\nPrompt from: DOC-9999\n", bump="1.1.0")
+    proposal = hub.compile()
+    assert any("links document 'DOC-9999', which does not exist" in f["detail"] for f in proposal["findings"] if f["severity"] == "error")

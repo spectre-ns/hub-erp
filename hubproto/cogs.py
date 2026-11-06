@@ -648,6 +648,19 @@ class DocumentClassifier(Cog):
 
 # ---------------------------------------------------------------- reviewer cogs (team members)
 
+def pinned_text(ctx: RunContext, pin: dict | None, limit: int = 20000) -> str:
+    """The text of a document at the version a release pinned (a cog's prompt or reference)."""
+    if not pin or ctx.dms is None:
+        return ""
+    from .dms import extract_text
+
+    try:
+        content, v = ctx.dms.content(pin["locator"], pin.get("version"))
+    except Exception:
+        return ""
+    return extract_text(content, v.get("mime") or "", v.get("filename") or "")[:limit].strip()
+
+
 def cog_context(ctx: RunContext, rec: dict | None, *, sop_chars: int | None = None, doc_chars: int | None = None, task: str = "") -> str:
     """What a cog has in front of it when it works on an item: its standing prompt, the SOPs it follows, the whole
     document (text) and every comment thread in it, with authors and reply structure. Goes in the system prompt
@@ -658,9 +671,16 @@ def cog_context(ctx: RunContext, rec: dict | None, *, sop_chars: int | None = No
     sop_budget = sop_chars or int(_os.environ.get("HUBPROTO_SOP_CHARS") or 14000)
     doc_budget = doc_chars or int(_os.environ.get("HUBPROTO_DOC_CHARS") or 24000)
     per = max(1500, sop_budget // max(1, len(sops)))
-    parts = [ctx.profile.get("prompt") or f"You are {getattr(ctx, 'owner', 'a cog')}, a reviewer on the team."]
+    profile = ctx.profile
+    prompt = pinned_text(ctx, profile.get("prompt_doc"), 8000) or profile.get("prompt") or f"You are {getattr(ctx, 'owner', 'a cog')}, a reviewer on the team."
+    parts = [prompt]
     parts.append("PROCEDURES YOU FOLLOW (review, write and answer strictly against these):\n\n" +
                  ("\n\n".join(f"# {n}\n{t[:per]}" for n, t in sops.items()) or "(none assigned)"))
+    refs = [(pin, pinned_text(ctx, pin, 6000)) for pin in profile.get("reference_docs") or []]
+    refs = [(pin, t) for pin, t in refs if t]
+    if refs:
+        parts.append("REFERENCE DOCUMENTS YOU WORK FROM (as the policy release pinned them):\n\n" +
+                     "\n\n".join(f"# {pin['number']} {pin.get('title') or ''} (version {pin.get('version')})\n{t}" for pin, t in refs))
     if rec:
         f = rec.get("fields") or {}
         head = f"DOCUMENT {rec['number']}: {f.get('title') or ''} (type {rec['type']}; class {f.get('doc_class') or '-'}; revision {f.get('revision', '')}.{f.get('minor', 0)}; state {rec['state']}; owner {f.get('owner') or '-'})"

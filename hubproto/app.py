@@ -11,7 +11,7 @@ from .cogs import CogRegistry
 from .dms import DMS, BlobStore
 from .compile import CompileError, ProposalStore, compile_proposal, decide_change, finalize, readiness
 from .extract import get_extractor
-from .frames import FrameStore
+from .frames import FrameStore, bump_version
 from .inbox import Inbox
 from .model import ModelGateway
 from .kernel import Kernel
@@ -57,11 +57,30 @@ class Hub:
         self._frames = store
 
     # --- policy lifecycle ---------------------------------------------------
-    def compile(self, scopes: list[str] | None = None, extractor=None, now: str | None = None) -> dict:
-        proposal = compile_proposal(self.frames, scopes or default_scopes(self.frames), self.registry.ids(), self.releases,
+    def compile(self, scopes: list[str] | None = None, extractor=None, now: str | None = None,
+                overrides: dict[str, str] | None = None, drafts: dict[str, str] | None = None, save: bool = True) -> dict:
+        """Compile the Frames into a proposal. ``overrides`` are drafts of Frames (name -> text) compiled in place of the
+        files, written only when the proposal is released; ``drafts`` names the draft document of each. Drafts already in
+        an open proposal on the same base carry forward, so a recompile never drops someone's pending policy change."""
+        existing = self.proposals.list() if save else []
+        base = (self.releases.current(now) or {}).get("digest")
+        carried: dict[str, dict] = {}
+        for old in existing:
+            if old.get("status") == "open" and old.get("base") == base:
+                carried.update(old.get("overrides") or {})
+        texts = {n: o["text"] for n, o in carried.items()}
+        docs = {n: o.get("draft") for n, o in carried.items()}
+        for name, text in (overrides or {}).items():
+            texts[name] = bump_version(text, self.frames.get(name).version)
+            docs[name] = (drafts or {}).get(name) or docs.get(name)
+        store = self.frames.with_overrides(texts) if texts else self.frames
+        proposal = compile_proposal(store, scopes or default_scopes(store), self.registry.ids(), self.releases,
                                     extractor=extractor or get_extractor(), now=now,
-                                    record_types=self.kernel.types, config_digests=self.kernel.config_digests)
-        existing = self.proposals.list()
+                                    record_types=self.kernel.types, config_digests=self.kernel.config_digests,
+                                    resolve_document=self.resolve_document)
+        proposal["overrides"] = {n: {"text": t, "draft": docs.get(n), "path": store.get(n).relpath} for n, t in texts.items()}
+        if not save:
+            return proposal
         proposal["number"] = 1 + max(len(existing), max((int(x.get("number") or 0) for x in existing), default=0))
         # An open proposal on the same base is superseded by this one; decisions already given on the same change
         # (same change id, same rule) carry forward, so a recompile does not throw away a policy owner's approval.
@@ -77,7 +96,84 @@ class Hub:
             old["superseded_by"] = proposal["id"]
             self.proposals.save(old)
         self.proposals.save(proposal)
+        for name, o in proposal["overrides"].items():
+            if o.get("draft") and self.kernel.get(o["draft"]):
+                self.kernel.set_fields(o["draft"], {"proposal": proposal["id"], "proposal_number": proposal["number"]}, by="hub")
         return proposal
+
+    # --- Frames and cog settings as documents ----------------------------------
+    FRAME_FOLDER = "Policy/Frames"
+
+    def resolve_document(self, ref: str) -> dict | None:
+        """A document by number or locator, pinned to its current version: what a cog profile links to."""
+        ref = (ref or "").strip()
+        rec = self.kernel.get(ref if ref.startswith("rec:") else f"rec:document:{ref}")
+        if rec is None or rec["type"] != "document":
+            return None
+        versions = self.dms.versions(rec["locator"])
+        if not versions:
+            return None
+        v = versions[-1]
+        return {"locator": rec["locator"], "number": rec["number"], "title": rec["fields"].get("title") or "", "version": v["version"],
+                "sha256": v.get("sha256") or "", "filename": v.get("filename") or ""}
+
+    def pinned_text(self, pin: dict | None, limit: int = 20000) -> str:
+        """The text of a document exactly as a release pinned it."""
+        if not pin:
+            return ""
+        from .dms import extract_text
+
+        try:
+            content, v = self.dms.content(pin["locator"], pin.get("version"))
+        except Exception:
+            return ""
+        return extract_text(content, v.get("mime") or "", v.get("filename") or "")[:limit]
+
+    def frame_document(self, name: str, create: bool = True, by: str = "hub") -> dict | None:
+        """The controlled document that carries a Frame's text: created on first use, versioned on every release."""
+        frame = self.frames.get(name)
+        found = [d for d in self.kernel.query(type_="document")
+                 if d["fields"].get("doc_type") == "frame" and d["fields"].get("frame_name") == name]
+        if found:
+            rec = found[0]
+            content, _ = self.dms.content(rec["locator"])
+            if content.decode("utf-8", "replace") != frame.text:
+                self.dms.add_version(rec["locator"], frame.text.encode("utf-8"), by=by, filename=frame.path.name, mime="text/markdown",
+                                     note=f"version {frame.version} of the Frame", system=True)
+                self.kernel.set_fields(rec["locator"], {"frame_version": frame.version, "revision": frame.version}, by=by)
+            return self.kernel.get(rec["locator"])
+        if not create:
+            return None
+        from datetime import date, timedelta
+
+        doc = self.dms.create(title=f"{name} (policy Frame)", doc_class="controlled", folder=self.FRAME_FOLDER, by=by,
+                              content=frame.text.encode("utf-8"), filename=frame.path.name, mime="text/markdown", doc_type="frame",
+                              fields={"frame_name": name, "frame_path": frame.relpath, "frame_version": frame.version,
+                                      "revision": frame.version, "owner": frame.maintainer or by,
+                                      "review_date": (date.today() + timedelta(days=365)).isoformat(),
+                                      "description": frame.description})
+        return self.kernel.transition(doc["locator"], "effective", by=by, reason=f"the Frame as released (version {frame.version})")
+
+    def frame_documents(self, create: bool = True) -> list[dict]:
+        return [d for d in (self.frame_document(n, create=create) for n in sorted(self.frames.frames)) if d]
+
+    def frame_draft(self, name: str, by: str) -> dict:
+        """A working draft of a Frame: the current text, edited in the hub and proposed for release. One per person."""
+        doc = self.frame_document(name)
+        for d in self.kernel.query(type_="document"):
+            f = d["fields"]
+            if f.get("doc_type") == "frame-draft" and f.get("frame_name") == name and f.get("owner") == by and d["state"] == "open":
+                return d
+        frame = self.frames.get(name)
+        draft = self.dms.create(title=f"Draft change to {name}", doc_class="working", folder=self.FRAME_FOLDER, by=by,
+                                content=frame.text.encode("utf-8"), filename=frame.path.name, mime="text/markdown", doc_type="frame-draft",
+                                fields={"frame_name": name, "frame_path": frame.relpath, "based_on_version": frame.version})
+        self.kernel.link(draft["locator"], "references", doc["locator"], by=by)
+        return self.kernel.get(draft["locator"])
+
+    def draft_text(self, draft: dict) -> str:
+        content, _ = self.dms.content(draft["locator"])
+        return content.decode("utf-8", "replace")
 
     def review(self, proposal_id: str, by: str, decisions: dict[str, str] | None = None, approve_all: bool = False,
                meaning: str = "") -> dict:
@@ -97,6 +193,23 @@ class Hub:
         proposal = self.proposals.load(proposal_id)
         meta = finalize(proposal, self.releases, by=by, effective_from=effective_from, now=now)
         self.proposals.save(proposal)
+        overrides = proposal.get("overrides") or {}
+        if overrides:
+            # The drafts become the Frames: written in place, then every Frame document follows its file.
+            for name, o in overrides.items():
+                path = self.frames.get(name).path
+                tmp = path.with_suffix(path.suffix + ".tmp")
+                tmp.write_text(o["text"], encoding="utf-8")
+                tmp.replace(path)
+            self._frames = None
+            for name, o in overrides.items():
+                self.frame_document(name, by=by)
+                draft = self.kernel.get(o["draft"]) if o.get("draft") else None
+                if draft and draft["state"] == "open":
+                    self.kernel.set_fields(draft["locator"], {"released_in": meta["digest"]}, by=by)
+                    self.kernel.transition(draft["locator"], "released", by=by, reason=f"released in policy {meta['digest'][:12]}")
+        elif any(d["fields"].get("doc_type") == "frame" for d in self.kernel.query(type_="document")):
+            self.frame_documents(create=False)
         return meta
 
     def readiness(self, proposal_id: str) -> list[str]:

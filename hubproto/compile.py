@@ -35,7 +35,7 @@ def _reviewers(rules: list[dict]) -> set[str]:
 
 def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], releases: ReleaseStore,
                      extractor=None, now: str | None = None, record_types: dict | None = None,
-                     config_digests: dict | None = None) -> dict:
+                     config_digests: dict | None = None, resolve_document=None) -> dict:
     extractor = extractor or ConventionExtractor()
     frames = store.resolve(scopes)
     rules: list[dict] = []
@@ -44,6 +44,27 @@ def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], re
         ex = extractor.extract(frame)
         rules.extend(ex.rules)
         notes.extend(ex.notes)
+    # A cog's linked documents (its prompt, its references) are pinned to the version current at compile time, so a
+    # release says exactly what each cog read; a newer version of the document is a change the policy owners review.
+    doc_findings = []
+    for r in rules:
+        if r.get("kind") != "cog":
+            continue
+        src = r.get("source") or {}
+        for field, ref in [("prompt_doc", r.get("prompt_from"))] + [("reference_docs", x) for x in r.get("references") or []]:
+            if not ref:
+                continue
+            pin = resolve_document(ref) if resolve_document else None
+            if pin is None:
+                from .guards import Finding as _F
+
+                doc_findings.append(_F("source-grounding", "error", f"cog {r['name']} links document {ref!r}, which does not exist",
+                                       frame=src.get("frame", ""), line=int(src.get("line", 0) or 0)))
+                continue
+            if field == "prompt_doc":
+                r["prompt_doc"] = pin
+            else:
+                r.setdefault("reference_docs", []).append(pin)
     # Later Frames override earlier ones: a rule with the same key stated twice keeps the last source.
     by_key: dict[str, dict] = {}
     for r in rules:
@@ -53,6 +74,7 @@ def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], re
     from .guards import Finding as _Finding
     findings += [_Finding("grammar", "error", n["note"] + ": " + n["text"], frame=n["frame"], line=n["line"])
                  for n in notes if n.get("severity") == "error"]
+    findings += doc_findings
     findings += schema_guard(rules)
     findings += grounding_guard(rules, store.frames)
     findings += consistency_guard(rules, cog_ids, record_types)
