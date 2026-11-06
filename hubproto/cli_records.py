@@ -280,8 +280,13 @@ def cmd_doc_checkin(args) -> int:
     hub = _hub(args)
     require_member(hub, args.as_user)
     content = _read(args.file)
-    rec = hub.dms.checkin(resolve_record(hub, args.ref)["locator"], content, by=args.as_user, filename=Path(args.file).name,
-                          note=args.note or "check-in")
+    rec = resolve_record(hub, args.ref)
+    holder = rec["fields"].get("checked_out_by")
+    if not holder:
+        fail(f"{rec['number']} is not checked out; run `hubproto doc-checkout {rec['number']} --as {args.as_user}` first", 1)
+    if holder != args.as_user:
+        fail(f"{rec['number']} is checked out by {holder}, not {args.as_user}; only they can check it in", 1)
+    rec = hub.dms.checkin(rec["locator"], content, by=args.as_user, filename=Path(args.file).name, note=args.note or "check-in")
     print(f"{rec['number']} version {len(hub.dms.versions(rec['locator']))} rev {rec['fields'].get('revision')}.{rec['fields'].get('minor', 0)}")
     return 0
 

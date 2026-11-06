@@ -506,3 +506,22 @@ def test_backup_and_restore_refuse_a_partial_set(released, tmp_path):
     assert code == 2 and "--force" in text
     rc, out = run_cli(target, "restore", str(tmp_path / "bk2"), "--force")
     assert rc == 0 and "previous state moved to" in out
+
+
+# ------------------------------------------------------------------ documents (cli-admin-16)
+def test_doc_checkin_needs_the_checkout_by_the_same_person(released, tmp_path):
+    src = tmp_path / "sop.md"
+    src.write_text("# SOP\n")
+    rc, out = run_cli(released, "doc-new", "--title", "[cli] SOP", "--class", "controlled", "--folder", "Quality/Controlled Documents",
+                      "--as", "alice", "--file", str(src))
+    assert rc == 0
+    number = out.split()[0]
+    code, text = refused(released, "doc-checkin", number, "--as", "alice", "--file", str(src))
+    assert code == 1 and "is not checked out" in text and "doc-checkout" in text
+    rc, out = run_cli(released, "doc-checkout", number.lower(), "--as", "alice")
+    assert rc == 0 and "checked out by alice" in out
+    code, text = refused(released, "doc-checkin", number, "--as", "carol", "--file", str(src))
+    assert code == 1 and "checked out by alice, not carol" in text
+    src.write_text("# SOP v2\n")
+    rc, out = run_cli(released, "doc-checkin", number, "--as", "alice", "--file", str(src), "--note", "revised")
+    assert rc == 0 and "version 2" in out
