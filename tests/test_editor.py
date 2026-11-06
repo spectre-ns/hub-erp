@@ -288,17 +288,43 @@ def test_a_comment_asking_the_cog_to_edit_makes_it_write_into_the_document(shell
     token = wopi.issue_token("carol", number, can_write=True, root=shell["root"])
     saved = docx_with_comment("@quality-assistant please edit this document to include a quality header.")
     assert wopi_call(shell, f"/wopi/files/{number}/contents", token, "POST", saved, {"X-WOPI-Override": "PUT"})[0] == 200
+    # The cog drafted the content; it waits as a pending action for the live seat, or for the hub to write it.
+    j = json.loads(get(shell, "/editor-replies/" + quote(loc, safe=":"), **{"as": "carol"})[1])
+    assert j["pending"] == 1 and j["replies"][0]["from"] == "quality-assistant" and j["replies"][0]["edit"]["paragraphs"][0].startswith("# ")
+    assert j["replies"][0]["comment_text"].startswith("@quality-assistant") and j["replies"][0]["comment_author"] == "carol"
+    # A seat for the cog is granted to someone in the session, for a cog with something pending, and nobody else.
+    status, text = get(shell, "/cog-seat/" + quote(loc, safe=":"), **{"as": "carol", "cog": "quality-assistant"})
+    assert status == 200 and "access_token=" in json.loads(text)["frame"] and "quality-assistant" in hub.kernel.get(loc)["fields"]["editors"]
+    assert get(shell, "/cog-seat/" + quote(loc, safe=":"), **{"as": "bob", "cog": "quality-assistant"})[0] == 403
+    assert get(shell, "/cog-seat/" + quote(loc, safe=":"), **{"as": "carol", "cog": "ap-reviewer"})[0] == 403
+    # No editor open: the hub writes the edit and the explanation into the file.
+    status, url, text = post(shell, "/apply-replies", {"as": "carol", "doc": loc})
+    assert json.loads(text)["applied"] == 1
     content, version = hub.dms.content(loc)
-    assert version["by"] == "hub" and "edited by quality-assistant" in version["note"]
+    assert version["by"] == "hub" and "edits and replies from quality-assistant" in version["note"]
     text = office.extract_text(content, "docx")
     assert text.startswith("Test procedure TP-7") and "Inspection plan for the sensor board." in text, "the header was written before the existing text"
     comments = office.extract_comments(content, "docx")
     assert [c["author"] for c in comments] == ["carol", "quality-assistant"] and "I wrote" in comments[1]["text"]
-    chatter = hub.inbox.on_record(loc)
-    reply = next(m for m in chatter if m["kind"] == "reply")
-    assert reply.get("applied_in") == version["version"] and "version" in reply["body"]
     assert hub.kernel.get(loc)["fields"]["checked_out_by"] == "carol", "the editing session survives the cog's edit"
-    status, text = get(shell, "/editor-replies/" + quote(loc, safe=":"), **{"as": "carol"})
-    j = json.loads(text)
+    j = json.loads(get(shell, "/editor-replies/" + quote(loc, safe=":"), **{"as": "carol"})[1])
     assert j["pending"] == 0 and j["version"] == version["version"] and j["machine"] is True
+    hub.dms.undo_checkout(loc, by="carol")
+
+
+def test_a_live_seat_marks_an_answer_as_applied_so_the_hub_does_not_write_it_twice(shell):
+    hub = shell["hub"]
+    content, mime = wopi.blank_document("docx")
+    doc = hub.dms.create(title="Live plan", doc_class="working", folder="Quality/Controlled Documents", by="carol", content=content,
+                         filename="live.docx", mime=mime, doc_type="document")
+    number, loc = doc["number"], doc["locator"]
+    hub.dms.checkout(loc, by="carol", via="editor")
+    token = wopi.issue_token("carol", number, can_write=True, root=shell["root"])
+    wopi_call(shell, f"/wopi/files/{number}/contents", token, "POST", docx_with_comment("@quality-assistant please review this document."), {"X-WOPI-Override": "PUT"})
+    j = json.loads(get(shell, "/editor-replies/" + quote(loc, safe=":"), **{"as": "carol"})[1])
+    assert j["pending"] == 1
+    status, url, text = post(shell, "/mark-applied", {"as": "carol", "doc": loc, "ids": j["replies"][0]["id"]})
+    assert json.loads(text)["applied"] == 1
+    assert json.loads(get(shell, "/editor-replies/" + quote(loc, safe=":"), **{"as": "carol"})[1])["pending"] == 0
+    assert json.loads(post(shell, "/apply-replies", {"as": "carol", "doc": loc})[2])["applied"] == 0
     hub.dms.undo_checkout(loc, by="carol")

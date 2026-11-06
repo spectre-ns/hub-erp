@@ -93,7 +93,34 @@ if(m.MessageId==='Doc_ModifiedStatus'&&m.Values&&m.Values.Modified===true){{clea
 var repliesUrl={json.dumps(href("/editor-replies/" + quote(rec["locator"], safe=":"), user))};var applyUrl={json.dumps(href("/apply-replies", user))};var loc={json.dumps(rec["locator"])};var busy=false;var loadedVersion={len(self.hub.dms.versions(rec["locator"]))};
 function reloadFrame(why){{var s=document.getElementById('editstatus');if(s)s.textContent=why+'; reloading…';loadedVersion=1e9;frame.src=frame.src.replace(/&reload=\d+/,'')+'&reload='+Date.now();setTimeout(function(){{fetch(repliesUrl).then(function(r){{return r.json()}}).then(function(j){{loadedVersion=j.version;busy=false}})}},3000)}}
 function applyReplies(){{var fd=new FormData();fd.append('as',{json.dumps(user)});fd.append('doc',loc);fetch(applyUrl,{{method:'POST',body:fd}}).then(function(r){{return r.json()}}).then(function(j){{busy=false;if(j.applied>0){{var s=document.getElementById('editstatus');if(s)s.textContent='Replies from '+j.by.join(', ')+' written into the document; reloading…';frame.src=frame.src.replace(/&reload=\d+/,'')+'&reload='+Date.now()}}}}).catch(function(){{busy=false}})}}
-function poll(){{if(busy)return;fetch(repliesUrl).then(function(r){{return r.json()}}).then(function(j){{if(j.pending>0&&!busy){{busy=true;window.__applyAfterSave=true;post({{MessageId:'Action_Save',Values:{{DontTerminateEdit:true,DontSaveIfUnmodified:true,Notify:true}}}});setTimeout(function(){{if(window.__applyAfterSave){{window.__applyAfterSave=false;applyReplies()}}}},2500)}}
+var seatUrl={json.dumps(href("/cog-seat/" + quote(rec["locator"], safe=":"), user))};var markUrl={json.dumps(href("/mark-applied", user))};var debugUrl={json.dumps(href("/editor-debug", user))};
+var seats={{}};var inflight={{}};
+function dbg(line){{var fd=new FormData();fd.append('as',{json.dumps(user)});fd.append('line',line);fetch(debugUrl,{{method:'POST',body:fd}}).catch(function(){{}})}}
+function seatPost(cog,o){{var f=seats[cog]&&seats[cog].frame;if(f)try{{f.contentWindow.postMessage(JSON.stringify(o),'*')}}catch(e){{}}}}
+function seat(cog,cb){{var st=seats[cog];if(st&&st.ready){{cb(st);return}}if(st){{st.waiting.push(cb);return}}
+st=seats[cog]={{ready:false,waiting:[cb],frame:null,pendingComments:null}};
+fetch(seatUrl+'&cog='+encodeURIComponent(cog)).then(function(r){{return r.json()}}).then(function(j){{if(!j.frame){{dbg('seat refused for '+cog+': '+(j.error||'?'));delete seats[cog];cb(null);return}}
+var f=document.createElement('iframe');f.setAttribute('aria-hidden','true');f.style.cssText='position:absolute;width:900px;height:600px;left:-10000px;top:0;border:0';f.src=j.frame;f.title=cog+' (seat)';document.body.appendChild(f);st.frame=f;
+st.timer=setTimeout(function(){{if(!st.ready){{dbg('seat for '+cog+' did not load in time');var w=st.waiting;st.waiting=[];w.forEach(function(x){{x(null)}})}}}},25000)}}).catch(function(e){{dbg('seat error '+e);delete seats[cog];cb(null)}})}}
+window.addEventListener('message',function(ev){{if(origin&&ev.origin!==origin)return;var m;try{{m=JSON.parse(ev.data)}}catch(e){{return}}
+var cog=null;for(var k in seats){{if(seats[k].frame&&ev.source===seats[k].frame.contentWindow)cog=k}}if(!cog)return;var st=seats[cog];
+if(m.MessageId==='App_LoadingStatus'&&m.Values&&m.Values.Status==='Document_Loaded'){{seatPost(cog,{{MessageId:'Host_PostmessageReady'}});st.ready=true;clearTimeout(st.timer);dbg('seat ready for '+cog);var w=st.waiting;st.waiting=[];w.forEach(function(x){{x(st)}})}}
+if(m.MessageId==='Get_Comments_Resp'){{var cb=st.onComments;st.onComments=null;if(cb)cb((m.Values&&m.Values.Comments)||[])}}}});
+function norm(t){{return String(t||'').replace(/\s+/g,' ').trim().toLowerCase()}}
+function actLive(reply,done){{seat(reply.from,function(st){{if(!st){{done(false);return}}
+var finish=function(ok){{done(ok)}};
+if(reply.edit&&reply.edit.paragraphs&&reply.edit.paragraphs.length){{seatPost(reply.from,{{MessageId:'Send_UNO_Command',Values:{{Command:reply.edit.position==='end'?'.uno:GoToEndOfDoc':'.uno:GoToStartOfDoc'}}}});
+var lines=reply.edit.paragraphs.slice();var i=0;var step=function(){{if(i>=lines.length){{dbg('seat '+reply.from+' wrote '+lines.length+' line(s) live');replyLive();return}}var line=lines[i++].replace(/^#+\s*/,'');seatPost(reply.from,{{MessageId:'Send_UNO_Command',Values:{{Command:'.uno:InsertText',Args:{{Text:{{type:'string',value:line}}}}}}}});setTimeout(function(){{seatPost(reply.from,{{MessageId:'Send_UNO_Command',Values:{{Command:'.uno:InsertPara'}}}});setTimeout(step,150)}},150)}};setTimeout(step,300)}}else{{replyLive()}}
+function replyLive(){{if(reply.comment_id===null||reply.comment_id===undefined||reply.comment_id===''){{finish(true);return}}
+st.onComments=function(list){{var target=null;for(var i=0;i<list.length;i++){{var c=list[i];if(norm(c.Text)===norm(reply.comment_text)&&(!reply.comment_author||norm(c.Author)===norm(reply.comment_author))){{target=c}}}}
+if(!target){{for(var i=0;i<list.length;i++){{if(norm(list[i].Text).indexOf(norm(reply.comment_text).slice(0,40))===0)target=list[i]}}}}
+if(!target){{dbg('seat '+reply.from+': comment not found among '+list.length+' comment(s): '+JSON.stringify(list.map(function(c){{return [c.Id,c.Author,String(c.Text||'').slice(0,40)]}})));finish(false);return}}
+seatPost(reply.from,{{MessageId:'Send_UNO_Command',Values:{{Command:'.uno:ReplyComment',Args:{{Id:{{type:'string',value:String(target.Id)}},Text:{{type:'string',value:reply.body}}}}}}}});dbg('seat '+reply.from+' replied live to comment '+target.Id);setTimeout(function(){{finish(true)}},800)}};
+seatPost(reply.from,{{MessageId:'Get_Comments'}});setTimeout(function(){{if(st.onComments){{st.onComments=null;dbg('seat '+reply.from+': no Get_Comments_Resp');finish(false)}}}},6000)}}}})}}
+function poll(){{if(busy)return;fetch(repliesUrl).then(function(r){{return r.json()}}).then(function(j){{
+if(j.pending>0&&!busy){{busy=true;var list=j.replies.filter(function(x){{return !inflight[x.id]}});if(!list.length){{busy=false;return}}var r0=list[0];inflight[r0.id]=true;
+actLive(r0,function(ok){{if(ok){{var fd=new FormData();fd.append('as',{json.dumps(user)});fd.append('doc',loc);fd.append('ids',r0.id);fetch(markUrl,{{method:'POST',body:fd}}).then(function(){{busy=false;var s=document.getElementById('editstatus');if(s)s.textContent=r0.from+' answered in the document.';setTimeout(function(){{post({{MessageId:'Action_Save',Values:{{DontTerminateEdit:true,DontSaveIfUnmodified:false,Notify:true}}}})}},1500)}}).catch(function(){{busy=false}})}}
+else{{delete inflight[r0.id];window.__applyAfterSave=true;post({{MessageId:'Action_Save',Values:{{DontTerminateEdit:true,DontSaveIfUnmodified:true,Notify:true}}}});setTimeout(function(){{if(window.__applyAfterSave){{window.__applyAfterSave=false;applyReplies()}}}},2500)}}}})}}
 else if(j.version>loadedVersion&&j.machine&&!busy){{busy=true;reloadFrame(j.version_by+' wrote version '+j.version)}}else if(j.version>loadedVersion){{loadedVersion=j.version}}}}).catch(function(){{}})}}
 setInterval(poll,4000);}})();</script>"""
         self._page(f"Edit {number}", body, head="<style>main#main{padding:0;max-width:none} .editbar{display:flex;gap:.6em;align-items:center;flex-wrap:wrap;padding:.5em .8em;border-bottom:1px solid var(--line);background:var(--panel)} .editbar form{margin-left:auto} .editor{width:100%;height:calc(100vh - 9.5em);border:0;display:block;background:var(--panel)}</style>")
@@ -110,7 +137,48 @@ setInterval(poll,4000);}})();</script>"""
         latest = versions[-1] if versions else {}
         machine = latest.get("by") in set(self.hub.registry.ids()) | {"hub"}
         return self._json({"pending": len(pending), "by": sorted({m["from"] for m in pending}),
+                           "replies": [{"id": m["id"], "from": m["from"], "body": m.get("body") or "", "comment_id": m.get("comment_id"),
+                                        "comment_text": m.get("comment_text") or "", "comment_author": m.get("comment_author") or "",
+                                        "edit": m.get("edit")} for m in pending],
                            "version": latest.get("version") or 0, "version_by": latest.get("by") or "", "machine": machine})
+
+    def page_cog_seat(self):
+        """A seat for a cog in the live editing session: the editor URL with the cog's own token."""
+        self._need_release()
+        rec = self.hub.kernel.get(self.arg)
+        if rec is None or rec["type"] != "document":
+            return self._json({"error": "no such document"}, 404)
+        self._require_read(rec["folder"])
+        cog_id = self.q.get("cog", [""])[0]
+        if cog_id not in self.hub.registry.ids():
+            return self._json({"error": f"{cog_id!r} is not a cog"}, 400)
+        try:
+            token = wopi.WopiHost(self.hub).seat_token(rec, cog_id, self.user)
+        except KernelGuardError as e:
+            return self._json({"error": e.detail}, 403)
+        browser_url, host_url = wopi.collabora_urls()
+        frame = wopi.editor_frame_url(rec, token, browser_url=browser_url, host_url=host_url,
+                                      discovery_url=os.environ.get("HUBPROTO_COLLABORA_DISCOVERY", ""))
+        log_line(f"editor seat doc={rec['number']} cog={cog_id} by={self.user}")
+        return self._json({"frame": frame, "cog": cog_id})
+
+    def post_mark_applied(self):
+        """The cog's seat wrote these answers live; the hub must not write them into the file as well."""
+        self._need_release()
+        rec = self.hub.kernel.require(self._f("doc"))
+        self._require_read(rec["folder"])
+        ids = [x for x in (self._f("ids") or "").split(",") if x]
+        pending = {m["id"] for m in wopi.WopiHost(self.hub).pending_replies(rec)}
+        done = [i for i in ids if i in pending]
+        for i in done:
+            self.hub.inbox.mark(i, applied_in="live", applied_by=self.user)
+        log_line(f"editor live-applied doc={rec['number']} ids={','.join(done)} by={self.user}")
+        return self._json({"applied": len(done)})
+
+    def post_editor_debug(self):
+        """The editor page reports what the cog seat did (for the log; no state changes)."""
+        log_line(f"editor page as={self.user}: {(self._f('line') or '')[:400]}")
+        return self._json({"ok": True})
 
     def post_apply_replies(self):
         """Write the waiting replies into the document as reply comments (a new version by the hub)."""

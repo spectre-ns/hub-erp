@@ -236,13 +236,17 @@ class WopiHost:
         """Chatter replies to comments in this document that are not yet written into it."""
         msgs = self.hub.inbox.on_record(rec["locator"])
         by_id = {m["id"]: m for m in msgs}
+        comments = {str(c.get("id")): c for c in (rec["fields"].get("office_comments") or [])}
         out = []
         for m in msgs:
             if m.get("kind") != "reply" or m.get("applied_in"):
                 continue
             parent = by_id.get(m.get("in_reply_to") or "")
-            if parent and parent.get("comment_id") not in (None, ""):
-                out.append({**m, "comment_id": parent["comment_id"]})
+            if parent and (parent.get("comment_id") not in (None, "") or m.get("edit")):
+                cid = parent.get("comment_id")
+                c = comments.get(str(cid)) if cid not in (None, "") else None
+                out.append({**m, "comment_id": cid, "comment_text": (c or {}).get("text") or parent.get("body") or "",
+                            "comment_author": (c or {}).get("author") or parent.get("from") or ""})
         return out
 
     def apply_replies(self, rec: dict, by: str) -> list[dict]:
@@ -257,8 +261,13 @@ class WopiHost:
         ext = extension_of(latest.get("filename") or rec["fields"].get("filename") or "")
         applied = []
         for m in pending:
-            new = office.add_reply(content, ext, str(m["comment_id"]), m["from"], m.get("body") or "", date=m.get("at") or "")
-            if new is None:
+            new = content
+            edit = m.get("edit") or {}
+            if edit.get("paragraphs"):
+                new = office.insert_paragraphs(new, ext, edit["paragraphs"], edit.get("position") or "start") or new
+            if m.get("comment_id") not in (None, ""):
+                new = office.add_reply(new, ext, str(m["comment_id"]), m["from"], m.get("body") or "", date=m.get("at") or "") or new
+            if new is content:
                 continue
             content = new
             applied.append(m)
@@ -266,7 +275,8 @@ class WopiHost:
             return []
         holder = rec["fields"].get("checked_out_by") or by
         self.hub.dms.add_version(rec["locator"], content, by="hub", filename=latest.get("filename") or "", mime=latest.get("mime") or "",
-                                 note="replies from " + ", ".join(sorted({m["from"] for m in applied})) + " written into the document")
+                                 note=("edits and replies" if any(m.get("edit") for m in applied) else "replies") + " from "
+                                      + ", ".join(sorted({m["from"] for m in applied})) + " written into the document")
         if rec["fields"].get("checked_out_via") == "editor" or rec["fields"].get("checked_out_by"):
             self.hub.dms.checkout(rec["locator"], by=holder, via="editor")
             self.hub.kernel.set_fields(rec["locator"], {"editors": sorted(set(rec["fields"].get("editors") or []) | {holder})}, by=by)
@@ -274,8 +284,22 @@ class WopiHost:
         for m in applied:
             self.hub.inbox.mark(m["id"], applied_in=version.get("version"))
         comments = office.extract_comments(content, ext)
-        self.hub.kernel.set_fields(rec["locator"], {"office_comments": [{k: c[k] for k in ("id", "author", "date", "text", "digest")} for c in comments]}, by=by)
+        self.hub.kernel.set_fields(rec["locator"], {"office_comments": [{k: c[k] for k in ("id", "author", "date", "text", "digest")} for c in comments],
+                                                    "text": office.extract_text(content, ext)}, by=by)
         return applied
+
+    def seat_token(self, rec: dict, cog_id: str, requester: str) -> str:
+        """A seat in the live editing session for a cog that has something to say on this document: the cog's own
+        token, so what it writes is attributed to it. Only someone in the session may seat a cog, and only a cog
+        with a pending answer here."""
+        f = rec["fields"]
+        in_session = f.get("checked_out_via") == "editor" and (requester == f.get("checked_out_by") or requester in (f.get("editors") or []))
+        if not in_session:
+            raise KernelGuardError("seat", f"{requester} is not editing {rec['number']}")
+        if cog_id not in {m["from"] for m in self.pending_replies(rec)}:
+            raise KernelGuardError("seat", f"{cog_id} has nothing pending on {rec['number']}")
+        self.hub.dms.join_editing(rec["locator"], by=cog_id)
+        return issue_token(cog_id, rec["number"], can_write=True, ttl=2 * 3600, root=self.hub.root)
 
     def lock(self, rec: dict, claims: dict, lock_id: str) -> tuple[int, dict]:
         """Lock, RefreshLock and Unlock map onto the check-out; the lock id is remembered on the record."""
