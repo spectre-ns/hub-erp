@@ -12,7 +12,7 @@ single Docker image.
 ## Run it
 
 ```bash
-docker compose up --build        # http://localhost:8080/?as=alice
+docker compose up --build        # http://localhost:8080/ asks who you are; e.g. /?as=alice
 ```
 
 First start seeds the kernel, installs the ISO 9001 profile, and compiles and

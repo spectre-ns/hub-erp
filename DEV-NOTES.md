@@ -26,7 +26,7 @@ reason written in the PR. Tests: `python -m pytest -q` (all must pass).
 | `frames/engineering/design-control-sop.frame.md` | design-release process (submit, export, reconcile BOM, risk, review, release part) | core |
 | `hubproto/app.py` | `Hub` wiring | core |
 | `hubproto/cli.py` | command line: policy, run, message and operations verbs; `main` returns the exit code; shared helpers (`fail`, `clean`, `require_member`, `resolve_*`) | cli agent |
-| `hubproto/shell.py` | the workspace shell (stdlib http.server) | shell agent |
+| `hubproto/shell/` | the workspace shell package (handler, pages, inbox, forms, actions, policy, css, text; stdlib http.server) | shell agent |
 | `hubproto/cli_records.py` | CLI verbs for runs waiting on people, records and documents (`register(sub)`) | cli agent |
 | `docker/entrypoint.sh`, `README.md`, `tests/test_cli.py` | container first start and later-start drift warning; operator docs; the CLI suite | cli agent |
 | `hubproto/profile.py` | seed profiles: install, conformance checklist (`register(sub)`) | profile agent |
@@ -36,7 +36,7 @@ reason written in the PR. Tests: `python -m pytest -q` (all must pass).
 | `tests/test_compile.py`, `tests/test_runtime.py`, `tests/conftest.py` | existing suites | core |
 | `tests/test_records.py`, `tests/test_workflow.py`, `tests/test_dms.py` | new suites | test agent |
 | `tests/test_profile.py` | seed profile suite | profile agent |
-| `tests/test_shell.py` | shell smoke suite | shell agent |
+| `tests/test_shell.py`, `tests/test_shell_ux.py` | shell smoke suite; UX-panel regression suite over HTTP | shell agent |
 
 Do not edit files you do not own. If you need a core change, say exactly
 what in your final report and work around it meanwhile.

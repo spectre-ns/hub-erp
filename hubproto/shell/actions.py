@@ -7,6 +7,7 @@ import json
 from urllib.parse import quote
 
 from .. import authz
+from ..kernel import KernelGuardError
 from .forms import RESERVED_KEYS, ShellError, coerce, doc_type_for
 from .handler import href, log_line
 from .pages import may_file
@@ -353,12 +354,10 @@ class ActionsMixin:
 
     def post_undo_checkout(self):
         rec = self._doc_for_change()
-        locked = rec["fields"].get("checked_out_by")
-        if not locked:
-            raise ShellError(f"{rec['number']} is not checked out.")
-        if locked != self.user:
-            raise ShellError(f"{rec['number']} is checked out by {locked}; only they can undo it.", 403)
-        self.hub.kernel.set_fields(rec["locator"], {"checked_out_by": None}, by=self.user)
+        try:
+            self.hub.dms.undo_checkout(rec["locator"], by=self.user)
+        except KernelGuardError as e:
+            raise ShellError(f"{e.detail}.", 403 if e.guard == "checked-out" else 400) from None
         self._redirect(href("/document/" + quote(rec["locator"], safe=":"), self.user, done=f"Check-out of {rec['number']} undone; nothing changed."))
 
     def post_link(self):

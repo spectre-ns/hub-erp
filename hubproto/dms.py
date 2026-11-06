@@ -140,6 +140,17 @@ class DMS:
         self.kernel.append("document.checked_out", rec["locator"], {"by": by}, run_id=run_id, release=release, by=by)
         return self.kernel.set_fields(rec["locator"], {"checked_out_by": by}, by=by, run_id=run_id, release=release)
 
+    def undo_checkout(self, ref: str, *, by: str, run_id: str = "", release: str = "") -> dict:
+        """Release a check-out without a new version; only the holder may."""
+        rec = self.kernel.require(ref)
+        locked_by = rec["fields"].get("checked_out_by")
+        if not locked_by:
+            raise KernelGuardError("not-checked-out", f"{rec['number']} is not checked out")
+        if locked_by != by:
+            raise KernelGuardError("checked-out", f"{rec['number']} is checked out by {locked_by}; only they can undo it")
+        self.kernel.append("document.checkout_undone", rec["locator"], {"by": by}, run_id=run_id, release=release, by=by)
+        return self.kernel.set_fields(rec["locator"], {"checked_out_by": None}, by=by, run_id=run_id, release=release)
+
     def checkin(self, ref: str, content: bytes, *, by: str, filename: str = "", mime: str = "", note: str = "",
                 run_id: str = "", release: str = "") -> dict:
         rec = self.kernel.require(ref)
