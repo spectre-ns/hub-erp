@@ -25,9 +25,10 @@ reason written in the PR. Tests: `python -m pytest -q` (all must pass).
 | `hubproto/worker.py` | the CAD worker (its own image, docker/cad-worker): /invoke envelope seam over FreeCADCmd and kicad-cli, fake mode | core |
 | `frames/engineering/design-control-sop.frame.md` | design-release process (submit, export, reconcile BOM, risk, review, release part) | core |
 | `hubproto/app.py` | `Hub` wiring | core |
-| `hubproto/cli.py` | command line; registers `register(sub)` from `hubproto.profile` and `hubproto.cli_records` if present | core |
+| `hubproto/cli.py` | command line: policy, run, message and operations verbs; `main` returns the exit code; shared helpers (`fail`, `clean`, `require_member`, `resolve_*`) | cli agent |
 | `hubproto/shell.py` | the workspace shell (stdlib http.server) | shell agent |
-| `hubproto/cli_records.py` | CLI commands for records and documents (`register(sub)`) | shell agent |
+| `hubproto/cli_records.py` | CLI verbs for runs waiting on people, records and documents (`register(sub)`) | cli agent |
+| `docker/entrypoint.sh`, `README.md`, `tests/test_cli.py` | container first start and later-start drift warning; operator docs; the CLI suite | cli agent |
 | `hubproto/profile.py` | seed profiles: install, conformance checklist (`register(sub)`) | profile agent |
 | `profiles/iso9001/**` | the ISO 9001 seed profile | profile agent |
 | `frames/**` | the example company's Frames | core (profile agent may add `frames/iso9001/` via the seed command) |
@@ -39,6 +40,34 @@ reason written in the PR. Tests: `python -m pytest -q` (all must pass).
 
 Do not edit files you do not own. If you need a core change, say exactly
 what in your final report and work around it meanwhile.
+
+## Command line conventions
+
+* `cli.main(argv)` returns the exit code: 0 done, 1 when the hub refused or the outcome is a failure (error
+  findings, `DENIED`, a failed run), 2 for a mistake in the command (unknown id, bad JSON, missing file, bad
+  `--scope`, wrong `--root`). Verbs return their code; `fail(message, code)` prints `error: <message>` to stderr and
+  raises `CliExit` (a `SystemExit` carrying the sentence and the code). `main` turns `CompileError`, `RunError`,
+  `KernelGuardError`, `FrameError`, `ProfileError`, JSON and file errors into such sentences, so nothing prints a
+  traceback. The console script does `sys.exit(main())`; tests call `cli.main` in-process and check the return value
+  or `pytest.raises(SystemExit)` with `e.value.code`.
+* Every verb but `init` and `restore` needs `<root>/state/kernel.db` (checked in `main`); a malformed Frame only
+  stops the verbs in `NEEDS_FRAMES`, the others run with a warning on stderr.
+* `--as`, `--second`, `--to` and a message's sender go through `require_member` (members of the release in force;
+  before the first release, of the proposal or Frames being bootstrapped). Identifiers: `resolve_record` (number
+  in any case or locator), `resolve_run` (id prefix, ambiguity listed), `resolve_proposal` (`#n` or an id prefix;
+  numbers are given once in creation order and kept in `state/proposal-numbers.json`), `resolve_release` (`v<n>`
+  or a digest prefix). Digests print 12 characters (`short`).
+* Anything printed from a record field goes through `clean` (ANSI escapes and C0/C1 controls stripped, line
+  breaks made spaces, `width` truncates with an ellipsis). Listings have a header row.
+* `--effective-from` takes `YYYY-MM-DD` or an ISO timestamp (`iso_timestamp`); `tick --today` takes `YYYY-MM-DD`.
+* `collapse_changes` folds an add/remove pair whose rules differ only in source position (a re-rendered process)
+  into one "re-rendered, no semantic change" line; `describe_change` words a change without `up to None`.
+* `release_diff` compares the sentences two releases' `rules.json` cite, by Frame: added, removed, and changed
+  (a removed and an added sentence on the same file line, or close by `difflib`).
+* `backup <dir>` copies `kernel.db` with `sqlite3.Connection.backup` plus `runs/`, `releases/`, `proposals/`,
+  `blobs/`, `inbox/` and `proposal-numbers.json`, with a `backup.json` manifest; `restore <dir>` refuses a partial
+  set and an existing state without `--force`. `status --check` exits 1 when no release is in force or the Frames
+  on disk differ from the release's bill of materials (the entrypoint prints that on later starts).
 
 ## The model in one paragraph
 

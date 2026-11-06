@@ -17,24 +17,98 @@ docker compose up --build        # http://localhost:8080/?as=alice
 
 First start seeds the kernel, installs the ISO 9001 profile, and compiles and
 releases the first policy release with the two seeded policy owners (bob and
-carol). State lives in the `hub-state` volume. Frames are bind-mounted from
-`./frames`, so you can edit a policy sentence on the host and recompile:
+carol). If that first release fails (for example an org model with nobody in a
+routed role) the container prints the Frame to fix, notes it in
+`state/.bootstrap-failed`, and still serves the shell with no release in
+effect; fix the Frame and run
+`docker compose exec hub hubproto bootstrap-release --as bob --second carol`.
+State lives in the `hub-state` volume. Frames are bind-mounted from `./frames`.
 
-```bash
-docker compose exec hub hubproto compile
-docker compose exec hub hubproto review <proposal> --as bob --approve-all
-docker compose exec hub hubproto review <proposal> --as carol --approve-all   # widenings need two owners
-docker compose exec hub hubproto release <proposal> --as bob
-docker compose run --rm tick                                                  # escalate overdue items
-```
-
-Without Docker:
+Without Docker (`--root` is the directory holding `frames/` and `state/`;
+set `HUBPROTO_ROOT` or pass `--root` when you are not in it):
 
 ```bash
 python -m venv .venv && . .venv/bin/activate && pip install -e ".[test]"
 hubproto init && hubproto seed iso9001 && hubproto bootstrap-release --as bob --second carol
 hubproto shell
 ```
+
+`hubproto --help` lists every verb in the order an operator uses them, and
+`hubproto <verb> --help` explains each flag. Exit codes: 0 done; 1 the hub
+refused or the outcome is a failure (error findings, `DENIED`, a failed run);
+2 a mistake in the command (unknown id, bad JSON, missing file, wrong root).
+A wrong `--root` is refused ("no hub at ..."), never filled with an empty hub.
+
+## After changing Frames
+
+Edit a sentence in `frames/` on the host, then compile, have it reviewed and
+release it. Until the release, the shell and every run keep applying the
+release in force (the Frames as they were released), and on its next start
+the container says so: `hubproto status --check` lists the files that differ
+and prints these commands.
+
+```bash
+docker compose exec hub hubproto compile                                  # exit 1 and no release while there are error findings
+docker compose exec hub hubproto proposals                                # what is waiting, by number
+docker compose exec hub hubproto proposal 3                               # each change with its sentence, file:line and decisions
+docker compose exec hub hubproto review 3 --as bob --approve-all --meaning "..."
+docker compose exec hub hubproto review 3 --as carol --approve-all        # a widening (a new allow, member, cog route) needs two owners
+docker compose exec hub hubproto release 3 --as bob                       # bob or carol: a policy owner of the release in force
+docker compose exec hub hubproto releases                                 # versions v1, v2, ... with the digest after
+docker compose exec hub hubproto release-diff v2                          # sentences added, removed, changed against v1, and who signed
+docker compose run --rm tick                                              # escalate overdue items
+```
+
+`compile` refuses to release a heading or a rule-like sentence it could not
+read (a `grammar` error with the file and line), a stale proposal (compiled
+against an older release than the one in force) is refused with "compile
+again", and a release that only re-renders a process is reported as
+"re-rendered, no semantic change" instead of a pair of add/remove changes.
+
+## Who may do what
+
+`hubproto why --as <person> --action create|read|approve --object <bills|documents|...> --folder <Folder>`
+answers `ALLOWED` or `DENIED` with the policy sentence and its line (exit 1 on
+`DENIED`); the shell's "Why?" link asks the same question. Members, roles and
+folders come from the org model in the release in force: `--as`, `--second`,
+`--to` and a message's sender must be members (an unknown name is refused
+with the member list); only a person may send a message or sign a Gate,
+cogs decide only within their `## Approval criteria`. Only a policy owner
+may review or release; starting a process needs the first step's role and a
+`create` permission; deciding a Gate needs to be an assignee with an
+`approve` permission, a meaning for the signature, and the item as it was
+seen (`inbox-pending` prints the seen digest and the fields the Gate
+accepts). A failed run is the owner's to repair:
+`hubproto retry <run> --field k=v --file path`, or `cancel`.
+
+## Backup and restore
+
+The state is one SQLite file plus directories under `state/`: `kernel.db`,
+`runs/` (one directory per run with its Track), `releases/` (bundles and
+`index.json`), `proposals/`, `blobs/` and `inbox/`. They reference each other
+(a record names its run and release, a run is pinned to a release digest), so
+a backup is only usable as a whole.
+
+```bash
+docker compose exec hub hubproto backup /hub/state/backups/2026-11-06   # a new or empty directory
+docker compose cp hub:/hub/state/backups/2026-11-06 ./backup-2026-11-06
+```
+
+`backup` copies `kernel.db` through the SQLite backup API (a consistent
+snapshot even while the shell is running) and the directories as files. For
+a copy that is consistent across all of them, stop the shell first
+(`docker compose stop hub`) or run the backup when nobody is working.
+
+```bash
+docker compose stop hub
+docker compose run --rm --entrypoint hubproto hub restore /hub/state/backups/2026-11-06 --force
+docker compose start hub
+```
+
+`restore` refuses a partial set (every part must be present) and refuses to
+overwrite a live state without `--force`; with it the previous state is moved
+beside the new one (`state.before-restore-<time>`). `hubproto status` then
+shows the release in force and the run counts.
 
 ## What it demonstrates
 
@@ -53,6 +127,7 @@ hubproto shell
 | SLAs and escalation in prose | "Disposition the nonconformance in nonconformance is due within 5 days." "Overdue items in nonconformance go to the management representative." `hubproto tick` escalates |
 | Every decision is evidence | Track entries carry release digest, manifest digest, Cog versions, Guard problems, Gate verdicts, the delegating sentence for a cog decision, and a signature digest |
 | An ISO 9001 seed profile | `profiles/iso9001/`: quality manual, SOPs, work instructions, templates, clause map; `hubproto conformance` prints the coverage |
+| Policy owners can see what a release changed | `hubproto release-diff v<n>`: sentences added, removed and changed against the parent by Frame and file line, with each owner's decisions; `hubproto proposal <n>`: every change with its sentence and decisions |
 
 ## Layout
 
