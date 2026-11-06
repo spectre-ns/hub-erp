@@ -452,9 +452,20 @@ def refresh_design(kernel, rec: dict, verdict: str) -> None:
             f"requirements not accepted: {', '.join(unaccepted)}" if unaccepted else "it traces to no requirement"))
 
 
+def refresh_designs_of(kernel, req: dict, verdict: str) -> None:
+    """After a requirement is decided: refresh every design that fulfils it, so a waiting review card and its risk
+    reflect the acceptance before the design authority opens it."""
+    for l in kernel.links_of(req["locator"]):
+        if l["direction"] == "in" and l["rel"] == "fulfils":
+            design = kernel.get(l["target"])
+            if design and design["type"] == "design" and design["state"].startswith("awaiting-"):
+                refresh_design(kernel, design, "refresh")
+
+
 def register(registry) -> None:
     from . import runner as _runner
 
     _runner.PRE_DECISION_HOOKS["design"] = refresh_design
+    _runner.POST_DECISION_HOOKS["requirement"] = refresh_designs_of
     for cls in (CADExporter, BOMReconciler, PartReleaser, RequirementsTracer):
         registry.register(cls())

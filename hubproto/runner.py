@@ -37,6 +37,7 @@ FIELD_ROLES = {"assignee": "assignee", "owner": "owner", "author": "author", "re
                "auditor": "auditor", "chair": "chair", "evaluator": "evaluator", "reporter": "reported_by"}
 LIVE_STATUSES = ("submitted", "running", "waiting", "completed")
 PRE_DECISION_HOOKS: dict = {}  # record type -> fn(kernel, record, verdict); raise KernelGuardError to block
+POST_DECISION_HOOKS: dict = {}  # record type -> fn(kernel, record, verdict); runs after the decision took effect
 
 
 class RunError(Exception):
@@ -568,9 +569,11 @@ class Runner:
                               meaning=meaning.strip() or f"{verdict}d {pending['title'].lower()}",
                               payload_digest=pending["payload_digest"], meaning_given=given)
         self._save(state)
-        if verdict == "approve":
-            return self.advance(run_id)
-        return self.load(run_id)
+        result = self.advance(run_id) if verdict == "approve" else self.load(run_id)
+        hook = POST_DECISION_HOOKS.get(rec["type"]) if rec is not None else None
+        if hook:
+            hook(self.kernel, self.kernel.get(rec["locator"]), verdict)
+        return result
 
     def resubmit(self, run_id: str, by: str, fields: dict | None = None, attachments: list[dict] | None = None,
                  note: str = "") -> dict:

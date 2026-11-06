@@ -58,6 +58,11 @@ def test_design_to_order_to_receipt_to_ledger(hub, fake_worker):
                           fields={"acceptance_criteria": "Verified by the acceptance test procedure", "verification_method": "test"})
         assert k.get(r["locator"])["state"] == "accepted"
 
+    # The waiting design is refreshed by the acceptance itself, before anyone opens its review card.
+    design = k.get(design["locator"])
+    assert design["fields"]["requirements_accepted"] is True and design["fields"]["risk"] != "high"
+    assert all(t["state"] == "accepted" for t in design["fields"]["requirement_trace"])
+
     # 3. A second submission (the first is still waiting) now traces to accepted requirements only.
     run2 = hub.runner.submit("design-release", {"record": {"title": "Sensor board rev", "kind": "electrical", "change_class": "3",
                                                            "requirements": [r["locator"] for r in reqs],
