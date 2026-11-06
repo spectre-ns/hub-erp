@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import urllib.error
 import urllib.request
 
 from .release import utcnow
@@ -86,8 +87,12 @@ class ModelGateway:
         body = json.dumps({"model": name, "stream": False, "options": {"num_predict": max_tokens},
                            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}).encode("utf-8")
         req = urllib.request.Request(ollama_url() + "/api/chat", data=body, method="POST", headers={"content-type": "application/json"})
-        with urllib.request.urlopen(req, timeout=float(os.environ.get("HUBPROTO_MODEL_TIMEOUT") or 180)) as r:
-            data = json.load(r)
+        try:
+            with urllib.request.urlopen(req, timeout=float(os.environ.get("HUBPROTO_MODEL_TIMEOUT") or 180)) as r:
+                data = json.load(r)
+        except urllib.error.HTTPError as e:
+            detail = e.read()[:300].decode("utf-8", "replace")
+            raise RuntimeError(f"HTTP {e.code} from Ollama for model {name!r}: {detail}") from None
         return (data.get("message") or {}).get("content", "") or data.get("response", "")
 
     @staticmethod

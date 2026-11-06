@@ -302,9 +302,14 @@ class ActionsMixin:
         if not filename:
             raise ShellError("Choose a file to upload.", field="file")
         attach_to = self._f("attach_to") or None
+        from .. import wopi as _wopi
+
+        keep = self._f("keep") == "1"
+        editable = _wopi.extension_of(filename) in _wopi.EDITABLE_EXTENSIONS and not keep
         doc = self.hub.dms.intake(folder=folder, by=user, content=content, filename=filename, channel="shell", sender=user,
-                                  attach_to=attach_to, title=self._f("title"))
-        self._redirect(self._once_finish(href("/files", user, folder=folder, done=f"Uploaded {filename} as {doc['number']}.")))
+                                  attach_to=attach_to, title=self._f("title"), doc_class="working" if editable else "external")
+        note = "; it is a working document you can edit online" if editable else "; kept as received"
+        self._redirect(self._once_finish(href("/files", user, folder=folder, done=f"Uploaded {filename} as {doc['number']}{note}.")))
 
     def post_attach(self):
         user = self.user

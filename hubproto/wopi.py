@@ -74,6 +74,16 @@ def secret(root: str | os.PathLike | None = None) -> str:
     return value
 
 
+def wopi_time(iso: str | None) -> str:
+    """WOPI clients parse one shape only: 2026-11-06T17:20:35.000000Z."""
+    if not iso:
+        return ""
+    base = iso.replace("Z", "").split("+", 1)[0]
+    if "." not in base:
+        base += ".000000"
+    return base + "Z"
+
+
 def extension_of(filename: str) -> str:
     return filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
 
@@ -157,7 +167,7 @@ class WopiHost:
             "DisableCopy": False,
             "HidePrintOption": False,
             "EnableOwnerTermination": False,
-            "LastModifiedTime": version.get("at"),
+            "LastModifiedTime": wopi_time(version.get("at")),
             "PostMessageOrigin": post_message_origin,
             "HubNumber": rec["number"],
             "HubTitle": f.get("title"),
@@ -182,7 +192,7 @@ class WopiHost:
         # A new version is a check-in for the DMS; the editing session keeps the document until "Finish editing".
         self.hub.dms.checkout(rec["locator"], by=user)
         _, version = self.hub.dms.content(rec["locator"])
-        return {"LastModifiedTime": version.get("at")}
+        return {"LastModifiedTime": wopi_time(version.get("at"))}
 
     def lock(self, rec: dict, claims: dict, lock_id: str) -> tuple[int, dict]:
         """Lock, RefreshLock and Unlock map onto the check-out; the lock id is remembered on the record."""

@@ -196,11 +196,13 @@ class DMS:
         return doc
 
     def intake(self, *, folder: str, by: str, content: bytes, filename: str, channel: str, sender: str,
-               attach_to: str | None = None, run_id: str = "", release: str = "", title: str = "") -> dict:
-        """File a received file as an external document (immutable, with provenance)."""
-        return self.create(title=title or filename, doc_class="external", folder=folder, by=by, content=content,
-                           filename=filename, doc_type="received", run_id=run_id, release=release,
-                           provenance={"channel": channel, "sender": sender, "received_at": utcnow()},
+               attach_to: str | None = None, run_id: str = "", release: str = "", title: str = "",
+               doc_class: str = "external") -> dict:
+        """File a received file: as an external document (immutable, with provenance) by default, or as a
+        working document the uploader goes on editing (``doc_class="working"``)."""
+        return self.create(title=title or filename, doc_class=doc_class, folder=folder, by=by, content=content,
+                           filename=filename, doc_type="received" if doc_class == "external" else "document", run_id=run_id,
+                           release=release, provenance={"channel": channel, "sender": sender, "received_at": utcnow()},
                            attach_to=attach_to)
 
 

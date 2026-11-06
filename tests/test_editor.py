@@ -132,3 +132,20 @@ def test_new_document_needs_a_title_and_a_known_kind(shell):
     assert status == 400 and "Give the document a title" in text
     status, url, text = post(shell, "/new-document", {"as": "alice", "folder": "Finance/Payables", "title": "x", "kind": "exe"})
     assert status == 400 and "cannot create a blank .exe" in text
+
+
+def test_an_uploaded_office_file_is_a_working_document_unless_kept_as_received(shell):
+    hub = shell["hub"]
+    content, _ = wopi.blank_document("docx")
+    status, url, text = post(shell, "/upload", {"as": "alice", "folder": "Finance/Payables", "title": "Plan"}, files=[("file", "plan.docx", content)])
+    assert status == 200 and "working document you can edit online" in text
+    doc = next(d for d in hub.kernel.query(type_="document") if d["fields"].get("title") == "Plan")
+    assert doc["fields"]["doc_class"] == "working" and wopi.WopiHost(hub).can_write(doc, "alice")[0]
+    status, url, text = post(shell, "/upload", {"as": "alice", "folder": "Finance/Payables", "title": "Kept", "keep": "1"}, files=[("file", "kept.docx", content)])
+    kept = next(d for d in hub.kernel.query(type_="document") if d["fields"].get("title") == "Kept")
+    assert kept["fields"]["doc_class"] == "external" and not wopi.WopiHost(hub).can_write(kept, "alice")[0]
+
+
+def test_wopi_times_are_in_the_shape_clients_parse():
+    assert wopi.wopi_time("2026-11-06T17:20:35+00:00") == "2026-11-06T17:20:35.000000Z"
+    assert wopi.wopi_time("2026-11-06T17:20:35.5Z") == "2026-11-06T17:20:35.5Z"

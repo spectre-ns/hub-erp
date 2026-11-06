@@ -323,9 +323,10 @@ class PagesMixin:
                                                                           "No items in this folder.")
         if f["allowed"]:
             err = self._form_error(["file", "title"]) if self.err and self.route == "/upload" else ""
-            body += f"""<h2 id="upload">{icon('upload')} Upload a file</h2><div class="card"><p class="why">Files a received file as an external document (kept as received, with provenance).</p>{err}
+            body += f"""<h2 id="upload">{icon('upload')} Upload a file</h2><div class="card"><p class="why">An office or text file becomes a working document you can edit online; anything else, or a file you tick to keep as received, is filed as an external document (kept as-is, with provenance).</p>{err}
 <form method="post" action="/upload" enctype="multipart/form-data">{hidden_as(user)}{self._once()}<input type="hidden" name="folder" value="{esc(folder)}">
-<div class="fields">{file_input("file", "File", required=True, hint=f"up to {self.max_upload // (1024 * 1024)} MB")}{text_input("title", "Title", self._val("title"), hint="defaults to the file name", error=self._field_error("title"))}</div>
+<div class="fields">{file_input("file", "File", required=True, hint=f"up to {self.max_upload // (1024 * 1024)} MB")}{text_input("title", "Title", self._val("title"), hint="defaults to the file name", error=self._field_error("title"))}
+<label class="f check"><input type="checkbox" name="keep" value="1"> <span>Keep as received (evidence; not editable)</span></label></div>
 <div class="actions"><button>{icon('upload')}Upload</button></div></form></div>"""
             body += new_document_form(user, folder=folder, once=self._once(), error=self._form_error(["title", "kind"]) if self.route == "/new-document" else "")
         else:
