@@ -84,17 +84,26 @@ class ModelGateway:
         name = model.split("/", 1)[1] if model.startswith("ollama/") else (os.environ.get("HUBPROTO_OLLAMA_MODEL") or model)
         if model.startswith("claude"):
             name = os.environ.get("HUBPROTO_OLLAMA_MODEL") or "llama3.1"
-        body = json.dumps({"model": name, "stream": False,
-                           "options": {"num_predict": max_tokens, "num_ctx": int(os.environ.get("HUBPROTO_MODEL_CTX") or 16384)},
-                           "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}).encode("utf-8")
-        req = urllib.request.Request(ollama_url() + "/api/chat", data=body, method="POST", headers={"content-type": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=float(os.environ.get("HUBPROTO_MODEL_TIMEOUT") or 180)) as r:
-                data = json.load(r)
-        except urllib.error.HTTPError as e:
-            detail = e.read()[:300].decode("utf-8", "replace")
-            raise RuntimeError(f"HTTP {e.code} from Ollama for model {name!r}: {detail}") from None
-        return (data.get("message") or {}).get("content", "") or data.get("response", "")
+        payload = {"model": name, "stream": False,
+                   "options": {"num_predict": max_tokens, "num_ctx": int(os.environ.get("HUBPROTO_MODEL_CTX") or 16384)},
+                   "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+        if not os.environ.get("HUBPROTO_MODEL_THINK"):
+            payload["think"] = False  # a thinking model otherwise spends its budget before it answers
+        data = None
+        for attempt in (payload, {k: v for k, v in payload.items() if k != "think"}):
+            body = json.dumps(attempt).encode("utf-8")
+            req = urllib.request.Request(ollama_url() + "/api/chat", data=body, method="POST", headers={"content-type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=float(os.environ.get("HUBPROTO_MODEL_TIMEOUT") or 180)) as r:
+                    data = json.load(r)
+                break
+            except urllib.error.HTTPError as e:
+                detail = e.read()[:300].decode("utf-8", "replace")
+                if "think" in detail.lower() and "think" in attempt:
+                    continue  # this model does not take the flag; ask again without it
+                raise RuntimeError(f"HTTP {e.code} from Ollama for model {name!r}: {detail}") from None
+        msg = (data or {}).get("message") or {}
+        return msg.get("content") or (data or {}).get("response") or msg.get("thinking") or ""
 
     @staticmethod
     def _stand_in(system: str, user: str) -> str:

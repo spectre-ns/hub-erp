@@ -609,7 +609,7 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
     ("owner " + self._avatar(owner_of(rec), size='sm', named=True)) if owner_of(rec) else "",
     ("with " + " ".join(self._avatar(a, size='sm', named=True) for a in rec['assignees'])) if rec['assignees'] else "",
     ("due " + esc(day(typed_due))) if typed_due else "",
-    ("approval due " + self._due_html(approval_due)) if approval_due else "",
+    ("approval " + self._due_html(approval_due)) if approval_due else "",
     esc(self._process_name(process)) if process and self._process_name(process) != tname else "",
     (self._run_link(run, 'run ' + run['id'][:8]) + ' ' + self._state_chip(run['status'])) if run else "",
     labels] if x)}</div>
