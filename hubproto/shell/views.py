@@ -261,7 +261,7 @@ class ViewsMixin:
             aria = f' aria-sort="{"descending" if q["dir"] == "desc" else "ascending"}"' if cur else ""
             return f'<th scope="col"><a{aria} href="{href("/items/" + rt, user, **{**params, "sort": key, "dir": d})}">{esc(label)}{arrow}</a></th>'
 
-        header = '<th scope="col" class="sel"><label><input type="checkbox" data-select-all aria-label="Select all"><span class="vh">Select all</span></label></th>' + "".join(head(k, l) for k, l in cols)
+        header = '<th scope="col"><label><input type="checkbox" data-select-all aria-label="Select all"><span class="vh">Select all</span></label></th>' + "".join(head(k, l) for k, l in cols)
         rows = ""
         last_group = object()
 
@@ -428,11 +428,23 @@ class ViewsMixin:
                     limit = f" up to {money(c['max_amount'], c.get('currency'))}" if c.get("max_amount") is not None else ""
                     out.append(f"{self._process_name(c['process'])}{limit}: {c['source']['text']}")
             return out or ["nothing on its own"]
+        roles = set(m.get("roles", []))
         for pname, wf in bundle.get("workflows", {}).items():
             op = bundle["ops"].get(pname, {})
+            if not authz.check(bundle, name, "approve", op.get("object", ""), op.get("folder", ""))["allowed"]:
+                continue
             for cp in wf["checkpoints"]:
-                if cp["role"] in m.get("roles", []) and authz.check(bundle, name, "approve", op.get("object", ""), op.get("folder", ""))["allowed"]:
+                routes = [r for r in bundle.get("routing", []) if r["process"] == pname and r["step"] == cp["id"] and r["assignee"].partition(":")[2] in roles
+                          and r["assignee"].startswith("role:") and r.get("mode", "assign") == "assign"]
+                if cp["role"] in roles and not routes:
                     out.append(f"{cp['title']} ({self._process_name(pname)})" + (f", due within {cp['sla_days']} days" if cp.get("sla_days") else ""))
+                for r in routes:
+                    c = r.get("condition") or {}
+                    when_ = ""
+                    if c.get("field") == "amount":
+                        word = {"<=": "at or under", "<": "under", ">": "over", ">=": "at or over"}.get(c.get("op"), c.get("op", ""))
+                        when_ = f" for amounts {word} {money(c['value'], c.get('currency'))}"
+                    out.append(f"{cp['title']} ({self._process_name(pname)}){when_}" + (f", due within {cp['sla_days']} days" if cp.get("sla_days") else ""))
         return out or ["nothing: no approval is routed to the roles held"]
 
     def page_people(self):
@@ -531,10 +543,10 @@ class ViewsMixin:
         body += table(["When", "To", "Subject", "Text"], [[esc(when(x["at"])), self._avatar(x["to"], size="sm", named=True), esc(short(x["subject"], 120)),
                                                           esc(short(x["body"], 200))] for x in msgs], "No messages.")
         if name != user and not self._viewing_cog():
-            body += (f"<h2 id='send'>{icon('send')} Send {esc(name)} a message</h2><form method='post' action='/msg' class='card'>{hidden_as(user)}{self._once()}"
-                     f"<input type='hidden' name='to' value='{esc(name)}'><input type='hidden' name='return' value='{esc(href('/user/' + name, user))}'>"
-                     f"<div class='fields'>{text_input('subject', 'Subject', required=True)}{text_input('body', 'Message', required=True, textarea=True)}</div>"
-                     f"<div class='actions'><button>{icon('send')}Send</button>{' <span class=why>' + esc(name) + ' answers with what it filed or found.</span>' if is_cog else ''}</div></form>")
+            body += (f'<h2 id="send">{icon("send")} Send {esc(name)} a message</h2><form method="post" action="/msg" class="card">{hidden_as(user)}{self._once()}'
+                     f'<input type="hidden" name="to" value="{esc(name)}"><input type="hidden" name="return" value="{esc(href("/user/" + name, user))}">'
+                     f'<div class="fields">{text_input("subject", "Subject", required=True)}{text_input("body", "Message", required=True, textarea=True)}</div>'
+                     f'<div class="actions"><button>{icon("send")}Send</button>{(" <span class=why>" + esc(name) + " answers with what it filed or found.</span>") if is_cog else ""}</div></form>')
         self._page(name, body, crumbs=[("People", href("/people", user)), (name, None)])
 
     # ------------------------------------------------------------ suppliers
@@ -653,7 +665,8 @@ class ViewsMixin:
                         f'<div class="fields">{widget("to", "text", self._val("to") if mine else default_to, label="To", required=True, options=people + cogs, hint="", error=self._field_error("to") if mine else None)}'
                         f'{text_input("subject", "Subject", self._val("subject") if mine else "About " + rec["number"], required=True, error=self._field_error("subject") if mine else None)}'
                         f'<label class="f{" bad" if mine and self._field_error("body") else ""}"><span>Message <i>(@name asks a person or a cog; @role asks a committee; "@cog please review" gets a review; "@name please approve" starts or advances the approval)</i></span>'
-                        f'<textarea name="body" rows="3" required>{esc(self._val("body") if mine else "")}</textarea></label>'
+                        f'<textarea name="body" rows="3" required{" aria-invalid=true aria-describedby=err-body" if mine and self._field_error("body") else ""}>{esc(self._val("body") if mine else "")}</textarea>'
+                        f'{("<span class=err id=err-body>" + esc(self._field_error("body")) + "</span>") if mine and self._field_error("body") else ""}</label>'
                         f'<label class="f"><span>Who to mention <i>(pick a name, then write it in the message)</i></span><input name="mention" list="mentions" style="max-width:16em"></label>{datalist}</div>'
                         f'<div class="actions"><button>{icon("send")}Send message</button><span class="why">A cog answers in this chatter with what it reviewed, filed or found.</span></div></form>'
                         f'<details><summary>{icon("note")} Log a note (kept with the item, sent to nobody else)</summary><form method="post" action="/msg">{hidden_as(user)}{self._once()}'

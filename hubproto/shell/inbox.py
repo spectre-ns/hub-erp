@@ -6,8 +6,10 @@ import re
 
 from .. import authz
 from ..runner import RunError
+from .apps import avatars
 from .forms import file_input, text_input, widget
 from .handler import details, hidden_as, href, kv, table
+from .icons import icon, type_icon
 from .pages import next_state_for
 from .text import (BLOB_FIELDS, MEANING_EXAMPLES, NOTIFICATION_KINDS, chip, day, esc, join_words, money, notification_sentence,
                    qty, short, state_name, summary_of_record, tag, type_name, value_text, when)
@@ -197,7 +199,8 @@ class InboxMixin:
                 f"also with {esc(', '.join(others))}" if others else "",
                 f"<span class='chip warn'>duplicate of {esc(', '.join(dups[run['id']]))}?</span>" if run["id"] in dups else ""]
         link = href("/inbox", user, open=run["id"], type=self.q.get("type", [""])[0], page=self.q.get("page", [""])[0]) + f"#r-{run['id']}"
-        return (f'<li id="r-{esc(run["id"])}"><h3><a href="{link}">{esc(self._card_title(run, rec))}</a></h3>'
+        meta.append(avatars([run["owner"]] + others, self.bundle))
+        return (f'<li id="r-{esc(run["id"])}"><span class="ty">{type_icon(rec["type"] if rec else "")}</span><h3><a href="{link}">{esc(self._card_title(run, rec))}</a></h3>'
                 f'<span class="meta">{" ".join(m for m in meta if m)}</span></li>')
 
     def _decision_card(self, r: dict, standalone: bool = False, dups: dict | None = None) -> str:
@@ -234,7 +237,7 @@ class InboxMixin:
         if dups and r["id"] in dups:
             facts.append(f"<span class='chip warn'>duplicate of {esc(', '.join(dups[r['id']]))}?</span>")
         head = f"<h3 id='h-{esc(r['id'])}'>{esc(self._card_title(r, rec))}</h3>" if not standalone else f"<h2 id='h-{esc(r['id'])}' style='margin-top:0;border:0'>{esc(p['title'])}: waiting for you</h2>"
-        meta = f"<p class='why'>{tag(type_name(rt))} started by {esc(r['owner'])} on {esc(when(r['created_at']))} &middot; {self._run_link(r)}</p>"
+        meta = f"<p class='why'>{tag(type_name(rt))} started by {self._avatar(r['owner'], size='sm', named=True)} on {esc(when(r['created_at']))} &middot; {self._run_link(r)}</p>"
         policy = f"<p class='why'>{self._policy_line(r, rec)}</p>" + self._escalation_html(r)
         checks = ""
         if problems:
@@ -255,10 +258,17 @@ class InboxMixin:
 <p class="why">{meaning_hint}</p>
 <div class="actions"><label><input type="checkbox" name="confirm" value="1" required{' checked' if values.get('confirm') else ''}> I have read the item and the checks above</label>
 <button{' disabled' if blocked else ''}>Approve {esc(rec['number'] if rec else '')}</button> <span class="why">{leads}.</span></div></form>"""
-        reject_form = f"""<div class="card quiet"><h4>Reject instead</h4><p class="why">{rej}. {esc(r['owner'])} will see your reason.</p>
+        reject_form = f"""<div class="card quiet" id="reject-{esc(r['id'])}"><h4>Reject instead</h4><p class="why">{rej}. {esc(r['owner'])} will see your reason.</p>
 <form method="post" action="/decide" aria-label="Reject {esc(rec['number'] if rec else '')}">{hidden_as(user)}<input type="hidden" name="run" value="{esc(r['id'])}"><input type="hidden" name="digest" value="{esc(digest)}"><input type="hidden" name="verdict" value="reject">
 <div class="fields">{text_input("reason", "Reason for rejecting", values.get("reason", "") if values.get("verdict") == "reject" else "", required=True, textarea=True, hint="", error=self._field_error("reason") if mine else None)}</div>
 <div class="actions"><button class="reject" formnovalidate>Reject {esc(rec['number'] if rec else '')}</button></div></form></div>"""
+        if self._viewing_cog():  # watching a cog: what it sees, and what it will do, without any form in its name
+            crit = [c for c in (self.bundle or {}).get("approval_criteria", []) if c["approver"] == f"cog:{user}" and c["process"] == r["process"]]
+            will = (f"{esc(user)} decides this on its own, within {self._rule_html(crit[0]['source'])}, or declines it to the next person on the route."
+                    if crit else f"{esc(user)} has no approval criteria for this process: it will decline the item to the next person on the route.")
+            watch = f"<div class='card quiet' role='status'>{icon('eye')} <b>Read-only.</b> {will} Nobody signs in its name from here.</div>"
+            return (f"<article class='card decide' aria-labelledby='h-{esc(r['id'])}'>{head}<div class='facts'>{' '.join(facts)}</div>{meta}{policy}{blocked_html}{checks}"
+                    f"{watch}<h4>The item</h4>{brief}</article>")
         return (f"<article class='card decide' aria-labelledby='h-{esc(r['id'])}'>{head}<div class='facts'>{' '.join(facts)}</div>{meta}{policy}{blocked_html}{checks}"
                 f"{approve_form}<h4>The item</h4>{brief}{reject_form}</article>")
 
@@ -530,16 +540,22 @@ class InboxMixin:
         if not notes:
             body += "<p class='muted'>No escalations, stops, returns or automatic decisions.</p>"
         else:
-            items = "".join(f"<li>{notification_sentence(m, self._number_link)} <span class='muted'>{esc(when(m['at']))}</span>{self._message_links(m)}</li>" for m in notes[:10])
-            more = "".join(f"<li>{notification_sentence(m, self._number_link)} <span class='muted'>{esc(when(m['at']))}</span>{self._message_links(m)}</li>" for m in notes[10:])
+            icons = {"escalation": "alert", "failure": "x-circle", "returned": "retry", "rejection": "x", "auto-decided": "robot", "request": "user", "review": "eye", "mention": "message"}
+
+            def note(m):
+                return (f"<li>{icon(icons.get(m['kind'], 'alert'))}<span>{notification_sentence(m, self._number_link)} <span class='muted'>{esc(when(m['at']))}</span>"
+                        f"{self._message_links(m)}</span></li>")
+
+            items = "".join(note(m) for m in notes[:10])
+            more = "".join(note(m) for m in notes[10:])
             body += f"<ul class='notes'>{items}</ul>" + (details(f"{len(notes) - 10} older notifications", f"<ul class='notes'>{more}</ul>") if more else "")
         body += f"<h2 id='messages'>Messages <span class='muted'>{len(messages)}</span></h2>"
         if not messages:
             body += "<p class='muted'>No messages.</p>"
         for m in messages[:50]:
-            sender = esc(m["from"]) + (" (automatic)" if bundle["members"].get(m["from"], {}).get("type") == "cog" else "")
+            sender = self._avatar(m["from"], size="sm", named=True) + (" (automatic)" if bundle["members"].get(m["from"], {}).get("type") == "cog" else "")
             body += (f"<article class='card quiet'><h3>{esc(short(m['subject'], 160))}</h3><p class='why'>from {sender} on {esc(when(m['at']))}"
-                     f"{' by email' if m['channel'] == 'email' else ''}</p><p class='msg'>{self._human(short(m['body'], 1200))}</p>{self._message_links(m)}")
+                     f"{' by email' if m['channel'] == 'email' else ''}</p><p class='msg'>{self._mentions(short(m['body'], 1200))}</p>{self._message_links(m)}")
             if m.get("attachments"):
                 body += f"<div class='why'>attachments: {esc(', '.join(a.get('name', '') for a in m['attachments']))}</div>"
             body += "</article>"
@@ -595,14 +611,16 @@ class InboxMixin:
     def _message_form(self) -> str:
         user = self.user
         bundle = self.bundle
+        if self._viewing_cog():
+            return f"<h2 id='send'>{icon('send')} Messages to {esc(user)}</h2><p class='why'>Choose your own name under 'Acting as' to write to it; it answers with what it filed or found.</p>"
         people = [(p, p) for p in self._people() if p != user]
         cogs = [(p, f"{p} (automatic reviewer)") for p, m in sorted(bundle["members"].items()) if m["type"] == "cog"]
         mine = self.err is not None and self.route == "/msg"
         err = self._form_error(["to", "subject", "body", "channel"]) if mine else ""
         to = self._val("to") if mine else (people[0][0] if people else "")
-        return f"""<h2 id="send">Send a message</h2><form method="post" action="/msg" class="card">{hidden_as(user)}{self._once()}{err}
+        return f"""<h2 id="send">{icon('send')} Send a message</h2><form method="post" action="/msg" class="card">{hidden_as(user)}{self._once()}{err}
 <div class="fields">{widget("to", "text", to, label="To", required=True, options=people + cogs, hint="people first; automatic reviewers answer with what they filed", error=self._field_error("to") if mine else None)}
 {widget("channel", "enum:dm,email", self._val("channel") if mine else "dm", label="Via", hint="", blank="dm", error=self._field_error("channel") if mine else None)}
 {text_input("subject", "Subject", self._val("subject") if mine else "", required=True, error=self._field_error("subject") if mine else None)}
 {text_input("body", "Message", self._val("body") if mine else "", required=True, textarea=True, error=self._field_error("body") if mine else None)}</div>
-<div class="actions"><button>Send</button></div></form>"""
+<div class="actions"><button>{icon('send')}Send</button></div></form>"""

@@ -11,6 +11,7 @@ from .. import wopi
 from ..kernel import KernelGuardError
 from .forms import ShellError, text_input
 from .handler import hidden_as, href, log_line
+from .icons import icon
 from .text import esc, type_name
 
 NEW_KINDS = [("docx", "Word document (.docx)"), ("xlsx", "Spreadsheet (.xlsx)"), ("odt", "OpenDocument text (.odt)"),
@@ -28,10 +29,10 @@ def new_document_form(user: str, *, folder: str = "", attach_to: str = "", once:
     target = f'<input type="hidden" name="attach_to" value="{esc(attach_to)}">' if attach_to else ""
     where = f'<input type="hidden" name="folder" value="{esc(folder)}">' if folder else ""
     note = "" if editor_configured() else "<p class='why'>No online editor is configured (HUBPROTO_COLLABORA_URL); the document is created and can be downloaded, checked out and checked in.</p>"
-    return f"""<h2 id="new-document">New document</h2><div class="card">{note}{error}
+    return f"""<h2 id="new-document">{icon('plus')} New document</h2><div class="card">{note}{error}
 <form method="post" action="/new-document">{hidden_as(user)}{once}{where}{target}
 <div class="fields">{text_input("title", "Title", required=True)}<label class="f"><span>Kind</span><select name="kind">{kinds}</select></label></div>
-<div class="actions"><button>Create and open</button></div></form></div>"""
+<div class="actions"><button>{icon('edit')}Create and open</button></div></form></div>"""
 
 
 class EditorMixin:
@@ -56,9 +57,9 @@ class EditorMixin:
         back = href("/document/" + quote(rec["locator"], safe=":"), user)
         mode = "editing" if writable else "read-only"
         reason = "" if writable else (why_not or host.can_write(rec, user)[1] or ("the editor shows this kind of file but does not change it" if not wopi.is_editable(rec) else ""))
-        bar = f"""<div class="editbar"><a href="{back}">‹ {esc(number)}</a> <b>{esc(title)}</b> <span class="chip {'ok' if writable else 'warn'}">{mode}</span>
+        bar = f"""<div class="editbar"><a class="button ghost" href="{back}">{icon('chevron-right')}{esc(number)}</a> {icon('edit' if writable else 'eye')} <b>{esc(title)}</b> <span class="chip {'ok' if writable else 'warn'}">{mode}</span>
 {f"<span class='why'>{esc(reason)}</span>" if reason else "<span class='why'>Every save becomes a version; finish to release the document for others.</span>"}
-<form method="post" action="/finish-edit" class="inline">{hidden_as(user)}<input type="hidden" name="doc" value="{esc(rec['locator'])}"><button class="{'primary' if writable else 'secondary'}">{'Finish editing' if writable else 'Close'}</button></form></div>"""
+<form method="post" action="/finish-edit" class="inline">{hidden_as(user)}<input type="hidden" name="doc" value="{esc(rec['locator'])}"><button class="{'primary' if writable else 'secondary'}">{icon('check' if writable else 'x')}{'Finish editing' if writable else 'Close'}</button></form></div>"""
         if not (browser_url and host_url):
             body = bar + ("<div class='card'><b>No online editor is configured.</b> Set <code>HUBPROTO_COLLABORA_URL</code> (the editor's address for the browser, "
                           "e.g. http://localhost:9980) and <code>HUBPROTO_WOPI_BASE</code> (this hub's address as the editor reaches it, e.g. http://hub:8080); "
@@ -68,7 +69,7 @@ class EditorMixin:
         frame = wopi.editor_frame_url(rec, token, browser_url=browser_url, host_url=host_url,
                                       discovery_url=os.environ.get("HUBPROTO_COLLABORA_DISCOVERY", ""))
         body = bar + f'<iframe class="editor" src="{esc(frame)}" title="{esc(title)} in the editor" allow="clipboard-read; clipboard-write"></iframe>'
-        self._page(f"Edit {number}", body, head="<style>main#main{padding:0} .editbar{display:flex;gap:.6em;align-items:center;flex-wrap:wrap;padding:.5em .8em;border-bottom:1px solid var(--line)} .editor{width:100%;height:calc(100vh - 7.5em);border:0;display:block}</style>")
+        self._page(f"Edit {number}", body, head="<style>main#main{padding:0;max-width:none} .editbar{display:flex;gap:.6em;align-items:center;flex-wrap:wrap;padding:.5em .8em;border-bottom:1px solid var(--line);background:var(--panel)} .editbar form{margin-left:auto} .editor{width:100%;height:calc(100vh - 9.5em);border:0;display:block;background:var(--panel)}</style>")
 
     # ------------------------------------------------------------ actions
     def post_finish_edit(self):

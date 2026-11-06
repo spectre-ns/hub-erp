@@ -152,10 +152,10 @@ def chip_class(value) -> str:
                                           "gate-pending", "escalated", "on hold", "submitted", "running"):
         return "warn"
     if s in ("posted", "effective", "closed", "approved", "acknowledged", "completed", "passed", "received", "filed", "released",
-             "active", "ordered", "done", "accepted", "allowed", "readable", "low", "yes", "within tolerance", "ok", "in effect"):
+             "active", "ordered", "done", "accepted", "allowed", "readable", "low", "yes", "within tolerance", "ok", "in effect", "pass", "review pass"):
         return "ok"
     if s in ("failed", "rejected", "obsolete", "fail", "cancelled", "overdue", "denied", "no access", "high", "no", "outside tolerance",
-             "error", "stopped", "blocked", "not received", "supplier not approved", "crit"):
+             "error", "stopped", "blocked", "not received", "supplier not approved", "crit", "review fail"):
         return "crit"
     return ""
 

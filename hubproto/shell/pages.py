@@ -302,7 +302,7 @@ class PagesMixin:
         records = list(reversed([r for r in recs if r["type"] != "document"]))
         docs = [r for r in recs if r["type"] == "document"]
         keyf = {"name": lambda r: str(r["fields"].get("title") or "").lower(), "revision": lambda r: (str(r["fields"].get("revision") or ""), int(r["fields"].get("minor") or 0)),
-                "date": lambda r: r.get("updated_at") or r["created_at"]}.get(sort, lambda r: r.get("updated_at") or r["created_at"])
+                "date": lambda r: (r.get("updated_at") or r["created_at"], r["events"][-1])}.get(sort, lambda r: (r.get("updated_at") or r["created_at"], r["events"][-1]))
         docs.sort(key=keyf, reverse=(sort == "date"))
         f = may_file(bundle, user, folder)
         toolbar = '<div class="toolbar">'
@@ -763,22 +763,36 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
         can, why_not = self._may_edit_document(rec)
         meta = [("Title", esc(f.get("title"))), ("Class", esc(f.get("doc_class"))), ("Type", esc(f.get("doc_type"))),
                 ("Revision", esc(f"{f.get('revision', '')}.{f.get('minor', 0)}")), ("State", self._state_chip(rec["state"])),
-                ("Folder", f'<a href="{href("/files", user, folder=rec["folder"])}">{esc(rec["folder"])}</a>'), ("Owner", esc(f.get("owner"))),
-                ("Author", esc(f.get("author"))), ("Checked out by", esc(locked or "")), ("File", esc(f.get("filename"))), ("Format", esc(f.get("mime"))),
+                ("Folder", f'<a href="{href("/files", user, folder=rec["folder"])}">{esc(rec["folder"])}</a>'), ("Owner", self._avatar(f["owner"], size="sm", named=True) if f.get("owner") else ""),
+                ("Author", self._avatar(f["author"], size="sm", named=True) if f.get("author") else ""), ("Checked out by", (self._avatar(locked, size="sm", named=True) if locked else "")), ("File", esc(f.get("filename"))), ("Format", esc(f.get("mime"))),
                 ("Labels", " ".join(tag(f"{k}: {v}") for k, v in rec["labels"].items())),
                 ("Provenance", esc(fmt(f.get("provenance")))), ("Effective from", esc(day(f.get("effective_from")))), ("Review date", esc(day(f.get("review_date")))),
                 ("Approved by", esc(f.get("approved_by")))]
-        body = f"<h1>{esc(rec['number'])} {tag('Document')} {self._state_chip(rec['state'])}</h1><div class='card'><b>{esc(f.get('title'))}</b>{kv([(k, v) for k, v in meta if v])}</div>"
+        wf = self._wf_for_type("document")
+        attached = [l for l in self.hub.kernel.links_of(loc) if l["direction"] == "in" and l["rel"] == "has-document"]
+        other = [l for l in self.hub.kernel.links_of(loc) if not (l["direction"] == "in" and l["rel"] == "has-document")]
+        btns = ""
+        editable_now = wopi.is_viewable(rec) and versions and can and not immutable and rec["state"] in EDITABLE_DOC_STATES and wopi.is_editable(rec) and (not locked or locked == user)
+        if wopi.is_viewable(rec) and versions:
+            btns += f'<a class="button" href="{href("/edit/" + quote(loc, safe=":"), user)}">{icon("edit" if editable_now else "eye")}{"Edit online" if editable_now else "Open in the viewer"}</a>'
+        if versions:
+            btns += f'<a class="button ghost" href="{href("/download", user, doc=loc)}">{icon("download")}Download</a>'
+        btns += f'<a class="button ghost" href="#checkout">{icon("lock")}Check-out and check-in</a><button type="button" class="ghost" onclick="print()">{icon("printer")}Print</button>'
+        body = f'<div class="formhead"><div class="btns">{btns}</div>{self._statusbar(wf, rec)}</div>'
+        body += self._smart_buttons([("Versions", len(versions), "layers", "versions"), ("Attached to", len(attached), "paperclip", "attached"), ("Links", len(other), "link", "links")])
+        body += (f"<div class='sheet'><h1 class='title'>{esc(rec['number'])} {tag('Document')} {self._state_chip(rec['state'])}</h1>"
+                 f"<div class='subtitle'><b>{file_icon(f.get('filename'))} {esc(f.get('title'))}</b></div><dl class='sheetfields'>"
+                 + "".join(f"<div class='fld'><dt>{esc(k)}</dt><dd>{v}</dd></div>" for k, v in meta if v) + "</dl></div>")
         if wopi.is_viewable(rec) and versions:
             editable = can and not immutable and rec["state"] in EDITABLE_DOC_STATES and wopi.is_editable(rec) and (not locked or locked == user)
             label = "Edit online" if editable else "Open in the viewer"
             body += f'<p><a class="button" href="{href("/edit/" + quote(loc, safe=":"), user)}">{label}</a> <span class="why">{"every save becomes a version; finish editing to release the document" if editable else "read-only"}</span></p>'
-        body += "<h2>Versions</h2>" + table(["Version", "When", "By", "File", "Size", "Note", "Download"],
+        body += "<h2 id='versions'>Versions</h2>" + table(["Version", "When", "By", "File", "Size", "Note", "Download"],
                                              [[esc(v["version"]), esc(when(v["at"])), esc(v["by"]), esc(v.get("filename")), esc(v.get("size")), esc(v.get("note")),
                                                f'<a href="{href("/download", user, doc=loc, v=v["version"])}">Download version {esc(v["version"])}</a>'] for v in versions], "No content yet.")
         if f.get("text"):
             body += f"<h2>Text</h2><pre>{esc(short(f['text'], 20000))}</pre>"
-        body += "<h2>Check-out and check-in</h2><div class='card'>"
+        body += "<h2 id='checkout'>Check-out and check-in</h2><div class='card'>"
         err = self._form_error(["file", "note"]) if self.route in ("/checkout", "/checkin", "/undo-checkout") else ""
         body += err
         if not can:
@@ -800,15 +814,14 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
 <div class="actions"><button>Check in</button></div></form>
 <form method="post" action="/undo-checkout" class="inline">{hidden_as(user)}<input type="hidden" name="doc" value="{esc(loc)}"><button class="secondary">Undo the check-out</button></form>"""
         body += "</div>"
-        attached = [l for l in self.hub.kernel.links_of(loc) if l["direction"] == "in" and l["rel"] == "has-document"]
-        body += "<h2>Attached to</h2>" + table(["Item"], [[self._record_link(l["target"])] for l in attached], "Not attached to any item.")
-        other = [l for l in self.hub.kernel.links_of(loc) if not (l["direction"] == "in" and l["rel"] == "has-document")]
+        body += "<h2 id='attached'>Attached to</h2>" + table(["Item"], [[self._record_link(l["target"])] for l in attached], "Not attached to any item.")
         if other:
-            body += "<h2>Links</h2>" + table(["Relation", "Item", "Direction"], [[esc(l["label"]), self._record_link(l["target"]), esc(l["direction"])] for l in other])
+            body += "<h2 id='links'>Links</h2>" + table(["Relation", "Item", "Direction"], [[esc(l["label"]), self._record_link(l["target"]), esc(l["direction"])] for l in other])
         body += "<h2>History</h2>" + self._history_html(loc, None)
+        body += self._chatter(rec, self.hub.runner.run_for_record(loc))
         parts = rec["folder"].split("/")
         crumbs = [("Files", href("/files", user))] + [(p, href("/files", user, folder="/".join(parts[: i + 1]))) for i, p in enumerate(parts)] + [(rec["number"], None)]
-        self._page(rec["number"], body, status=status, crumbs=crumbs)
+        self._page(rec["number"], body, status=status, crumbs=crumbs, app_type="document")
 
     def _may_edit_document(self, rec: dict) -> tuple[bool, str]:
         """Who may check a document out or in: its author or owner, a document controller, or anyone who may create documents there."""

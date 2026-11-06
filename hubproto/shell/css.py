@@ -74,7 +74,7 @@ h3{{font-size:var(--fs-m);margin:var(--sp-3) 0 var(--sp-1)}}h4{{font-size:var(--
 table{{border-collapse:collapse;width:100%;background:var(--panel);font-size:var(--fs-m)}}
 th,td{{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere}}th{{background:var(--th);font-size:var(--fs-s);text-transform:uppercase;letter-spacing:.03em;color:var(--muted);white-space:nowrap}}
 th a{{color:var(--muted);text-decoration:none}}th a[aria-sort]{{color:var(--accent)}}tr:hover td{{background:var(--bg)}}tbody tr:last-child td{{border-bottom:0}}
-th[scope=row]{{font-weight:600;background:transparent;text-transform:none;letter-spacing:0;color:var(--fg);white-space:nowrap}}td.num{{white-space:nowrap}}td.sel,th.sel{{width:2em}}
+th[scope=row]{{font-weight:600;background:transparent;text-transform:none;letter-spacing:0;color:var(--fg);white-space:nowrap}}td.num{{white-space:nowrap}}td.sel,th:first-child:has(input[data-select-all]){{width:2em}}
 .chip{{display:inline-block;padding:0 var(--sp-2);border-radius:999px;font-size:var(--fs-s);font-weight:600;background:var(--chip);color:var(--fg);max-width:100%;overflow-wrap:anywhere;line-height:1.6}}
 .chip.ok{{background:var(--ok-bg);color:var(--ok)}}.chip.warn{{background:var(--warn-bg);color:var(--warn)}}.chip.crit{{background:var(--crit-bg);color:var(--crit)}}.chip.info{{background:var(--info-bg);color:var(--info)}}
 .tag{{display:inline-block;padding:0 6px;border:1px solid var(--ctl);border-radius:4px;font-size:var(--fs-s);color:var(--muted)}}
