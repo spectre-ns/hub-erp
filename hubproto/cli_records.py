@@ -1,17 +1,20 @@
 """Command line for records and documents; ``hubproto.cli`` calls ``register(sub)``.
 
 Commands: records, record, docs, doc-new, doc-versions, doc-get, doc-checkout,
-doc-checkin, attach, link, snapshot, upload.
+doc-checkin, attach, link, snapshot, upload, inbox-pending, resubmit, retry, cancel.
 """
 
 from __future__ import annotations
 
+import base64
 import json
+import os
 import sys
 from pathlib import Path
 
 from .app import Hub
 from .kernel import KernelGuardError
+from .runner import RunError
 
 
 def _hub(args) -> Hub:
@@ -20,9 +23,9 @@ def _hub(args) -> Hub:
 
 def _summary(rec: dict) -> str:
     f = rec["fields"]
-    for key in ("title", "memo", "description", "name"):
+    for key in ("title", "statement", "memo", "description", "name"):
         if f.get(key):
-            return str(f[key])
+            return str(f[key])[:120]
     if f.get("supplier"):
         return f"{f.get('supplier')} {f.get('amount', '')} {f.get('currency', '')}".strip()
     return ""
@@ -38,7 +41,7 @@ def _guarded(fn):
     def wrapper(args):
         try:
             return fn(args)
-        except KernelGuardError as e:
+        except (KernelGuardError, RunError) as e:
             sys.exit(f"error: {e}")
 
     wrapper.__name__ = fn.__name__
@@ -63,6 +66,8 @@ def cmd_record(args):
     print(f"{rec['number']} ({rec['type']}) state={rec['state']} folder={rec['folder']} locator={rec['locator']}")
     print(f"  created {rec['created_at']} by {rec['created_by']}; run={rec['run_id'] or '-'} release={(rec['release'] or '')[:12] or '-'}")
     print(f"  labels={_fmt(rec['labels'])} hold={rec['hold']} assignees={','.join(rec['assignees']) or '-'} due={rec['due'] or '-'}")
+    if rec["type"] == "requirement":
+        print(f"statement: {rec['fields'].get('statement') or '(none)'}")
     print("fields:")
     for k, v in sorted(rec["fields"].items()):
         if k in ("text", "body") or v in (None, "", [], {}):
@@ -77,7 +82,7 @@ def cmd_record(args):
     for d in docs:
         f = d["fields"]
         print(f"  {d['number']} {f.get('title')!r} {f.get('doc_class')} rev {f.get('revision')}.{f.get('minor', 0)} state={d['state']}")
-    decisions = [e["data"] for e in hub.kernel.events(aggregate=rec["locator"]) if e["type"] == "record.decision"] + rec["decisions"]
+    decisions = rec["decisions"]  # the projection is the single source of signatures
     print("decisions:" if decisions else "decisions: none")
     for d in decisions:
         print(f"  {d.get('at')} {d.get('by')} ({d.get('by_type')}) {d.get('verdict')}: {d.get('meaning')} sig={d.get('signature')}")
@@ -171,6 +176,83 @@ def cmd_upload(args):
     print(f"{doc['number']} {doc['locator']} filed in {args.folder}" + (f" attached to {args.attach_to}" if args.attach_to else ""))
 
 
+def _parse_fields(pairs, specs: dict) -> dict:
+    """``k=v`` pairs coerced by the record type's field specs (lists take JSON or a comma list, objects JSON,
+    numbers are cast, enums checked); an unknown field is kept as text."""
+    from .shell import ShellError, coerce
+
+    out = {}
+    for pair in pairs or []:
+        k, sep, v = pair.partition("=")
+        k = k.strip()
+        if not sep or not k:
+            sys.exit(f"error: --field takes k=v, not {pair!r}")
+        try:
+            value = coerce(k, specs.get(k), v)
+        except ShellError as e:
+            sys.exit(f"error: {e}")
+        if value is not None:
+            out[k] = value
+    return out
+
+
+def _doc_type(filename: str) -> str:
+    return {".kicad_sch": "schematic", ".kicad_pcb": "board", ".fcstd": "model", ".pdf": "drawing"}.get(os.path.splitext(filename)[1].lower(), "document")
+
+
+@_guarded
+def cmd_inbox_pending(args):
+    hub = _hub(args)
+    runs = hub.runner.pending_for(args.as_user)
+    if not runs:
+        print(f"nothing is waiting for {args.as_user}")
+    for s in runs:
+        p = s["pending"]
+        kind = p.get("kind", "decision")
+        due = f" due={p['due']}" if p.get("due") else ""
+        rec = hub.kernel.get(s["record"]) if s.get("record") else None
+        label = f"{rec['number']} {_summary(rec)}".strip() if rec else (s.get("record") or "-")
+        print(f"{s['id']} {kind:9s} {p['title']:40s} {s['process']:22s} {label}{due}")
+        if kind == "decision":
+            print(f"    digest={p['payload_digest']} fields={','.join(hub.runner.allowed_decision_fields(s)) or '-'}")
+        else:
+            print(f"    reason={p.get('reason', '')!r} rework from step {p.get('step')}")
+    failed = [s for s in hub.runner.list() if s["status"] == "failed" and s["owner"] == args.as_user]
+    for s in failed:
+        ev = next((e for e in reversed(hub.runner.track(s["id"])) if e["type"] == "run.failed"), {})
+        print(f"{s['id']} failed    {s['process']:22s} {s.get('record') or '-'} at {ev.get('step')}: {ev.get('reason', '')}  (retry or cancel)")
+
+
+@_guarded
+def cmd_resubmit(args):
+    hub = _hub(args)
+    attachments = []
+    for path in args.file or []:
+        p = Path(path)
+        attachments.append({"name": p.name, "content_b64": base64.b64encode(p.read_bytes()).decode("ascii"),
+                            "doc_class": "controlled", "doc_type": _doc_type(p.name)})
+    state = hub.runner.load(args.run)
+    rec = hub.kernel.get(state["record"]) if state.get("record") else None
+    specs = hub.kernel.types.get(rec["type"], {}).get("fields", {}) if rec else {}
+    fields = _parse_fields(args.field, specs)
+    s = hub.runner.resubmit(args.run, args.as_user, fields=fields or None, attachments=attachments or None, note=args.note or "")
+    print(f"run {s['id']} resubmitted status={s['status']}" + (f" pending={s['pending']['title']} -> {','.join(s['pending']['assignees'])}" if s.get("pending") else ""))
+
+
+@_guarded
+def cmd_retry(args):
+    hub = _hub(args)
+    s = hub.runner.retry(args.run, args.as_user, note=args.note or "")
+    print(f"run {s['id']} retried status={s['status']}" + (f" pending={s['pending']['title']} -> {','.join(s['pending']['assignees'])}" if s.get("pending") else ""))
+
+
+@_guarded
+def cmd_cancel(args):
+    hub = _hub(args)
+    s = hub.runner.cancel(args.run, args.as_user, reason=args.reason)
+    print(f"run {s['id']} cancelled; record {s.get('record') or '-'} state={hub.kernel.get(s['record'])['state'] if s.get('record') and hub.kernel.get(s['record']) else '-'}")
+
+
 def _replace(sub, name: str):
     """argparse refuses a duplicate subparser name; drop an earlier one so this module's wins."""
     if name in sub.choices:
@@ -241,3 +323,23 @@ def register(sub) -> None:
     s.add_argument("--file", required=True)
     s.add_argument("--attach-to", dest="attach_to")
     s.set_defaults(fn=cmd_upload)
+    s = sub.add_parser("inbox-pending", help="runs waiting for a decision or a resubmission by a person, and their failed runs")
+    s.add_argument("--as", dest="as_user", required=True)
+    s.set_defaults(fn=cmd_inbox_pending)
+    s = sub.add_parser("resubmit", help="rework a returned item: set fields, attach files, restart the run")
+    s.add_argument("run")
+    s.add_argument("--as", dest="as_user", required=True)
+    s.add_argument("--field", action="append", metavar="K=V", help="a field to set (JSON values accepted)")
+    s.add_argument("--file", action="append", metavar="PATH", help="a file to attach as a controlled document")
+    s.add_argument("--note", default="")
+    s.set_defaults(fn=cmd_resubmit)
+    s = sub.add_parser("retry", help="retry a failed run from the failed step")
+    s.add_argument("run")
+    s.add_argument("--as", dest="as_user", required=True)
+    s.add_argument("--note", default="")
+    s.set_defaults(fn=cmd_retry)
+    s = sub.add_parser("cancel", help="cancel a run; its record closes as cancelled")
+    s.add_argument("run")
+    s.add_argument("--as", dest="as_user", required=True)
+    s.add_argument("--reason", required=True)
+    s.set_defaults(fn=cmd_cancel)

@@ -145,6 +145,9 @@ class Runner:
             for k, v in (self.kernel.types.get(wf["record_type"], {}).get("defaults") or {}).items():
                 if fields.get(k) in (None, ""):
                     fields[k] = {"$owner": owner_name, "$today": date.today().isoformat()}.get(v, v)
+            missing = [f for f in self.required_at_start(process, at) if fields.get(f) in (None, "", [], {})]
+            if missing:
+                raise RunError(f"{process} needs {', '.join(missing)} before it can start")
             try:
                 rec = self.kernel.create(wf["record_type"], manifest["folder"], fields, by=owner_name, run_id=run_id,
                                          release=release["digest"], state="open")
@@ -495,8 +498,30 @@ class Runner:
             return []
         td = self.kernel.types.get(rec["type"], {})
         nxt, _ = self._next_state(state, state["pending"]["checkpoint"])
-        required = td.get("required_by_state", {}).get(nxt, [])
-        return sorted((set(required) | set(td.get("decision_fields") or [])) - set(td.get("system_fields") or []))
+        missing = self._missing_for_person(state, nxt)  # a signer supplies what is still missing, never rewrites what is there
+        return sorted((set(missing) | set(td.get("decision_fields") or [])) - set(td.get("system_fields") or []))
+
+    def required_at_start(self, process: str, at: str | None = None) -> list[str]:
+        """Fields the submitter must supply: what the first Gate's state requires, minus system fields and defaults."""
+        release = self.releases.current(at)
+        if release is None:
+            return []
+        bundle = self.releases.bundle(release["digest"])
+        wf = (bundle.get("workflows") or {}).get(process)
+        if not wf or not wf.get("checkpoints"):
+            return []
+        td = self.kernel.types.get(wf["record_type"], {})
+        first = wf["checkpoints"][0]["state"]
+        skip = set(td.get("system_fields") or []) | set((td.get("defaults") or {}).keys())
+        steps = (bundle["ops"].get(process) or {}).get("steps", [])
+        for step in steps:  # cogs that run before the first Gate may fill fields the submitter leaves blank
+            try:
+                skip |= set(self.registry.get(step["cog"]["id"]).provides)
+            except Exception:
+                pass
+            if step.get("gate", {}).get("type") == "human":
+                break
+        return [f for f in td.get("required_by_state", {}).get(first, []) if f not in skip]
 
     def decide(self, run_id: str, by: str, verdict: str, meaning: str = "", payload_digest: str | None = None,
                fields: dict | None = None) -> dict:

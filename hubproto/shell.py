@@ -7,17 +7,29 @@ to plain HTML without it. Identity is chosen with ``?as=<principal>``
 because the prototype has no SSO; a Nebari deployment puts Keycloak in
 front. Every page is permission-trimmed with the release in effect and shows
 the policy sentence ("why") behind a denial.
+
+Request handling: ``/healthz`` is answered without the hub lock; a POST body
+is validated (``Content-Length`` present, non-negative, at most
+``HUBPROTO_MAX_UPLOAD`` bytes) and read before the lock is taken, so one
+stalled or malformed client never freezes the shell for everyone. One log
+line per request and one per decision go to stdout.
 """
 
 from __future__ import annotations
 
+import base64
 import email.policy
 import html
 import json
+import os
 import socket
 import sqlite3
+import sys
 import threading
+import time
 import traceback
+import uuid
+from datetime import date
 from email.parser import BytesParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, urlencode, urlparse
@@ -30,13 +42,46 @@ from .runner import RunError
 
 MERMAID_URL = "https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.4.1/mermaid.min.js"
 DEFAULT_USER = "alice"
+DEFAULT_MAX_UPLOAD = 25 * 1024 * 1024
 BLOB_FIELDS = ("text", "body", "citations", "text_excerpt")
 RAIL = [("Home", "/"), ("Inbox", "/inbox"), ("Boards", "/boards"), ("Files", "/files"), ("Runs", "/runs"),
         ("Releases", "/releases"), ("Frames", "/frames"), ("Why", "/why"), ("Conformance", "/conformance"),
         ("Admin", "/admin")]
-COMMON_INPUTS = [("title", "text"), ("description", "text"), ("amount", "number"), ("currency", "text"), ("date", "date"),
-                 ("po_ref", "text"), ("supplier", "text"), ("change_type", "enum:minor,major"),
-                 ("severity", "enum:low,medium,high"), ("training_roles", "list")]
+RESERVED_KEYS = {"as", "process", "json", "run", "verdict", "meaning", "digest", "note", "reason", "record", "doc", "folder",
+                 "title_", "files"}
+EDITABLE_DOC_STATES = ("draft", "open", "returned", "failed")
+NOTIFICATION_KINDS = ("escalation", "failure", "returned", "rejection")
+TEXTAREA_FIELDS = {"description", "statement", "body", "rationale", "root_cause", "disposition_rationale", "effectiveness_result",
+                   "summary", "impact", "plan", "verification", "response", "acceptance_criteria", "containment", "reason", "notes",
+                   "effectiveness_criteria", "scope"}
+DOC_TYPES = {".kicad_sch": "schematic", ".kicad_pcb": "board", ".fcstd": "model", ".pdf": "drawing"}
+MAX_SHOWN = 300  # characters of a value shown on a card or a table cell
+
+# Start-form inputs per record type: (field, widget kind, type spec override). The widget kind is None (from the
+# field's type spec), "textarea", "lines" (one list element per line) or "lines:locator,qty" (one {item, quantity}
+# per line). Anything else goes in the JSON textarea. Fields the first Gate's state requires are marked required, the rest
+# submission; the first waiting state's needs are checked by the runner.
+START_INPUTS: dict[str, list[tuple]] = {
+    "bill": [("supplier",), ("amount",), ("currency",), ("date",), ("po_ref",), ("description", "textarea")],
+    "design": [("title",), ("description", "textarea"), ("kind",), ("change_class",), ("user_needs", "lines")],
+    "purchase-request": [("title",), ("item",), ("mpn",), ("quantity",), ("unit_cost",), ("supplier",), ("needed_by",), ("reason", "textarea")],
+    "receipt": [("po",), ("lines", "lines:locator,qty"), ("location",), ("notes", "textarea")],
+    "ncr": [("title",), ("description", "textarea"), ("severity", None, "enum:low,medium,high"), ("source",), ("lot",), ("quantity",),
+            ("containment", "textarea")],
+    "calibration": [("asset",), ("result",), ("standard",), ("procedure",)],
+    "document": [("title",), ("doc_type",), ("change_type",), ("training_roles",), ("body", "textarea")],
+    "task": [("title",), ("description", "textarea"), ("assignee",), ("due",), ("priority",)],
+    "requirement": [("statement", "textarea"), ("kind",), ("source",), ("priority",)],
+    "journal-reversal": [("journal",), ("reason", "textarea")],
+    "item": [("name",), ("mpn",), ("manufacturer",), ("supplier",), ("unit_cost",), ("currency",), ("stock",), ("lead_time_days",)],
+    "capa": [("title",), ("ncrs",), ("root_cause_method",)],
+    "complaint": [("title",), ("customer",), ("description", "textarea"), ("product",), ("severity",)],
+    "change-request": [("title",), ("description", "textarea"), ("impact", "textarea"), ("affected_documents",)],
+    "audit": [("title",), ("scope_clauses",), ("processes",), ("planned",)],
+    "management-review": [("title",), ("date",), ("inputs",)],
+    "supplier-evaluation": [("supplier",), ("scope", "textarea")],
+}
+DEFAULT_START_INPUTS: list[tuple] = [("title",), ("description", "textarea")]
 
 _CSS = """
 :root{--bg:#f3f5f7;--panel:#fff;--line:#d9dee3;--fg:#1c2730;--muted:#5f6f7c;--accent:#0b5f8a;--accent-fg:#fff;
@@ -58,11 +103,12 @@ th,td{text-align:left;padding:6px 9px;border-bottom:1px solid var(--line);vertic
 .chip{display:inline-block;padding:0 8px;border-radius:999px;font-size:12px;font-weight:600;background:var(--chip);white-space:nowrap}
 .ok{background:var(--ok-bg);color:var(--ok)}.warn{background:var(--warn-bg);color:var(--warn)}.crit{background:var(--crit-bg);color:var(--crit)}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin:10px 0}
-.card.crit{border-color:var(--crit)}.why{font-size:12.5px;color:var(--muted)}code{font-size:12.5px;background:var(--th);padding:1px 4px;border-radius:4px}
+.card.crit{border-color:var(--crit)}.card.warn{border-color:var(--warn)}.why{font-size:12.5px;color:var(--muted)}code{font-size:12.5px;background:var(--th);padding:1px 4px;border-radius:4px}
 pre{background:var(--th);padding:10px;border-radius:6px;font-size:12.5px;overflow:auto;white-space:pre-wrap}
 button{background:var(--accent);color:#fff;border:0;border-radius:6px;padding:5px 12px;cursor:pointer}
-button.secondary{background:#6c7a86}input,select,textarea{padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--fg);font:inherit}
-form.inline{display:inline}label.f{display:inline-block;margin:3px 10px 3px 0;font-size:13px}label.f span{display:block;color:var(--muted);font-size:12px}
+button.secondary{background:#6c7a86}button.danger{background:var(--crit)}input,select,textarea{padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--fg);font:inherit}
+form.inline{display:inline}label.f{display:inline-block;margin:3px 10px 3px 0;font-size:13px;vertical-align:top}label.f span{display:block;color:var(--muted);font-size:12px}
+label.f span b{color:var(--crit)}
 .kv{display:grid;grid-template-columns:max-content 1fr;gap:3px 14px;font-size:13.5px}.kv dt{color:var(--muted)}.kv dd{margin:0;word-break:break-word}
 .board{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(210px,1fr);gap:12px;overflow-x:auto;padding-bottom:8px}
 .col{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px;min-height:120px}.col h3{margin:2px 0 8px}
@@ -70,6 +116,7 @@ form.inline{display:inline}label.f{display:inline-block;margin:3px 10px 3px 0;fo
 .tabs{display:flex;gap:4px;flex-wrap:wrap;margin:8px 0 14px}.tabs a{padding:3px 10px;border:1px solid var(--line);border-radius:999px;text-decoration:none;color:var(--fg);font-size:13px}
 .counts{display:flex;gap:12px;flex-wrap:wrap}.counts .card{min-width:160px;margin:0}.counts b{font-size:22px;display:block}
 .muted{color:var(--muted)}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}@media(max-width:900px){.layout{grid-template-columns:1fr}nav{border-right:0;border-bottom:1px solid var(--line)}.grid2{grid-template-columns:1fr}}
+.brief table{margin:6px 0}.brief h4{margin:10px 0 2px;font-size:13px}details summary{cursor:pointer;color:var(--muted);font-size:12.5px}
 """
 
 
@@ -91,11 +138,12 @@ def hidden_as(user: str) -> str:
 def chip(state: str) -> str:
     s = str(state or "")
     cls = ""
-    if s.startswith("awaiting") or s in ("waiting", "draft", "open", "in-review"):
+    if s.startswith("awaiting") or s in ("waiting", "draft", "open", "in-review", "returned"):
         cls = "warn"
-    if s in ("posted", "effective", "closed", "approved", "acknowledged", "completed", "passed", "received", "filed"):
+    if s in ("posted", "effective", "closed", "approved", "acknowledged", "completed", "passed", "received", "filed", "released",
+             "active", "ordered", "done", "accepted", "allowed", "readable"):
         cls = "ok"
-    if s in ("failed", "rejected", "obsolete", "fail"):
+    if s in ("failed", "rejected", "obsolete", "fail", "cancelled", "overdue", "denied", "no access"):
         cls = "crit"
     return f'<span class="chip {cls}">{esc(s)}</span>'
 
@@ -108,11 +156,16 @@ def fmt(v) -> str:
     return str(v)
 
 
+def short(v, n: int = MAX_SHOWN) -> str:
+    s = fmt(v)
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
 def summary_of(rec: dict) -> str:
     f = rec.get("fields", rec)
-    for key in ("title", "memo", "description", "name"):
+    for key in ("title", "statement", "memo", "description", "name"):
         if f.get(key):
-            return str(f[key])
+            return short(f[key], 120)
     if f.get("supplier"):
         return f"{f.get('supplier')} {f.get('amount', '')} {f.get('currency', '')}".strip()
     return rec.get("number", "")
@@ -136,6 +189,8 @@ def table(headers: list[str], rows: list[list[str]], empty: str = "Nothing here.
 
 
 def kv(items: list[tuple[str, str]]) -> str:
+    if not items:
+        return ""
     return '<dl class="kv">' + "".join(f"<dt>{esc(k)}</dt><dd>{v}</dd>" for k, v in items) + "</dl>"
 
 
@@ -158,42 +213,120 @@ def render_tree(node: dict, prefix: str, user: str, current: str) -> str:
     return out + "</ul>"
 
 
-def coerce(spec: str | None, value: str):
-    """A form string to the record-type field type."""
+class ShellError(Exception):
+    """A user-facing error with an HTTP status."""
+
+    def __init__(self, message: str, status: int = 400):
+        super().__init__(message)
+        self.status = status
+
+
+def coerce(name: str, spec: str | None, value: str, kind: str | None = None):
+    """A form string to the record-type field type. Lists take JSON when the text starts with ``[``, else a comma
+    list; objects take JSON; numbers are cast; enums are checked. A value that does not fit is a readable error."""
     value = value.strip()
     if value == "":
         return None
+    if kind == "lines":
+        return [line.strip() for line in value.splitlines() if line.strip()]
+    if kind == "lines:locator,qty":
+        out = []
+        for line in value.splitlines():
+            if not line.strip():
+                continue
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) != 2 or not parts[0]:
+                raise ShellError(f"{name}: each line is 'locator,quantity', not {line.strip()!r}.")
+            try:
+                qty = float(parts[1])
+            except ValueError:
+                raise ShellError(f"{name}: the quantity in {line.strip()!r} is not a number.") from None
+            out.append({"item": parts[0], "quantity": qty})
+        return out
     spec = spec or "text"
+    if spec.startswith("enum:"):
+        opts = spec[5:].split(",")
+        if value not in opts:
+            raise ShellError(f"{name} must be one of {', '.join(opts)}, not {value!r}.")
+        return value
     try:
         if spec == "int":
             return int(float(value))
         if spec in ("number", "money"):
             return float(value)
-        if spec == "bool":
-            return value.lower() in ("1", "true", "yes", "on")
-        if spec == "list":
-            return [x.strip() for x in value.split(",") if x.strip()]
-        if spec == "object":
-            return json.loads(value)
-    except (ValueError, json.JSONDecodeError):
-        return value
+    except ValueError:
+        raise ShellError(f"{name} must be a number, not {value!r}.") from None
+    if spec == "bool":
+        return value.lower() in ("1", "true", "yes", "on")
+    if spec == "list":
+        if value.startswith("["):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError as e:
+                raise ShellError(f"{name} looks like JSON but does not parse: {e}.") from None
+            if not isinstance(parsed, list):
+                raise ShellError(f"{name} must be a JSON list.")
+            return parsed
+        return [x.strip() for x in value.split(",") if x.strip()]
+    if spec == "object":
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError as e:
+            raise ShellError(f"{name} must be a JSON object: {e}.") from None
+        if not isinstance(parsed, dict):
+            raise ShellError(f"{name} must be a JSON object.")
+        return parsed
     return value
 
 
-def field_input(name: str, spec: str | None, value="", required: bool = False) -> str:
+def prefill(v) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, list):
+        return ", ".join(str(x) for x in v) if all(isinstance(x, str) for x in v) else json.dumps(v, default=str)
+    if isinstance(v, dict):
+        return json.dumps(v, sort_keys=True, default=str)
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    return str(v)
+
+
+def widget(name: str, spec: str | None, value="", required: bool = False, kind: str | None = None, label: str | None = None,
+           people: list[str] | None = None) -> str:
+    """One labelled form control for a record field. ``required`` only when the server requires it."""
     req = " required" if required else ""
     spec = spec or "text"
+    lab = f"<span>{esc(label or name)}{' <b>*</b>' if required else ''}</span>"
+    val = prefill(value)
+    if kind == "lines":
+        return f'<label class="f">{lab}<textarea name="{esc(name)}" rows="3" cols="50" placeholder="one per line"{req}>{esc(val if isinstance(value, str) else chr(10).join(map(str, value or [])))}</textarea></label>'
+    if kind == "lines:locator,qty":
+        shown = "\n".join(f"{l.get('item', '')},{l.get('quantity', '')}" for l in (value or []) if isinstance(l, dict)) if isinstance(value, list) else val
+        return f'<label class="f">{lab}<textarea name="{esc(name)}" rows="3" cols="50" placeholder="locator,quantity per line, e.g. rec:item:ITEM-00001,4"{req}>{esc(shown)}</textarea></label>'
     if spec.startswith("enum:"):
-        opts = "".join(f'<option value="{esc(o)}"{" selected" if o == value else ""}>{esc(o)}</option>' for o in spec[5:].split(","))
-        return f'<label class="f"><span>{esc(name)}</span><select name="{esc(name)}"{req}><option value=""></option>{opts}</select></label>'
+        opts = "".join(f'<option value="{esc(o)}"{" selected" if o == val else ""}>{esc(o)}</option>' for o in spec[5:].split(","))
+        return f'<label class="f">{lab}<select name="{esc(name)}"{req}><option value=""></option>{opts}</select></label>'
+    if spec == "principal" and people:
+        opts = "".join(f'<option value="{esc(p)}"{" selected" if p == val else ""}>{esc(p)}</option>' for p in people)
+        return f'<label class="f">{lab}<select name="{esc(name)}"{req}><option value=""></option>{opts}</select></label>'
     if spec == "date":
-        return f'<label class="f"><span>{esc(name)}</span><input type="date" name="{esc(name)}" value="{esc(value)}"{req}></label>'
+        return f'<label class="f">{lab}<input type="date" name="{esc(name)}" value="{esc(val)}"{req}></label>'
     if spec in ("int", "number", "money"):
-        return f'<label class="f"><span>{esc(name)}</span><input type="number" step="any" name="{esc(name)}" value="{esc(value)}"{req}></label>'
+        return f'<label class="f">{lab}<input type="number" step="any" name="{esc(name)}" value="{esc(val)}"{req}></label>'
     if spec == "bool":
-        return f'<label class="f"><span>{esc(name)}</span><select name="{esc(name)}"><option value="">-</option><option value="true">true</option><option value="false">false</option></select></label>'
-    hint = " (comma list)" if spec == "list" else (" (JSON)" if spec == "object" else "")
-    return f'<label class="f"><span>{esc(name)}{hint}</span><input name="{esc(name)}" value="{esc(value)}" size="22"{req}></label>'
+        return (f'<label class="f">{lab}<select name="{esc(name)}"><option value="">-</option><option value="true"{" selected" if val == "true" else ""}>true</option>'
+                f'<option value="false"{" selected" if val == "false" else ""}>false</option></select></label>')
+    if spec == "object":
+        return f'<label class="f">{lab} <span class="why">JSON object</span><textarea name="{esc(name)}" rows="2" cols="50"{req}>{esc(val)}</textarea></label>'
+    if kind == "textarea" or (spec == "text" and name in TEXTAREA_FIELDS):
+        return f'<label class="f">{lab}<textarea name="{esc(name)}" rows="2" cols="50"{req}>{esc(val)}</textarea></label>'
+    hint = " (comma list or JSON)" if spec == "list" else (" (record number or locator)" if spec == "ref" else "")
+    return f'<label class="f"><span>{esc(label or name)}{" <b>*</b>" if required else ""}{esc(hint)}</span><input name="{esc(name)}" value="{esc(val)}" size="24"{req}></label>'
+
+
+def doc_type_for(filename: str) -> str:
+    ext = os.path.splitext(filename)[1].lower()
+    return DOC_TYPES.get(ext, "document")
 
 
 def mermaid_for(wf: dict, current: str | None) -> str:
@@ -222,6 +355,8 @@ def mermaid_for(wf: dict, current: str | None) -> str:
 
 def workflow_for(bundle: dict, rec: dict, run: dict | None) -> tuple[str | None, dict | None]:
     """The process and workflow a record follows: the run's, else the first whose record type matches."""
+    if run and run.get("workflow"):
+        return run["process"], run["workflow"]
     if run and run.get("process") in bundle.get("workflows", {}):
         return run["process"], bundle["workflows"][run["process"]]
     for name, wf in bundle.get("workflows", {}).items():
@@ -268,12 +403,9 @@ def render_conformance(result) -> str:
     return f"<pre>{esc(json.dumps(result, indent=1, default=str))}</pre>"
 
 
-class ShellError(Exception):
-    """A user-facing error with an HTTP status."""
-
-    def __init__(self, message: str, status: int = 400):
-        super().__init__(message)
-        self.status = status
+def log_line(text: str) -> None:
+    sys.stdout.write(text + "\n")
+    sys.stdout.flush()
 
 
 # ---------------------------------------------------------------- handler
@@ -281,45 +413,73 @@ class Handler(BaseHTTPRequestHandler):
     hub: Hub = None  # set by serve()
     lock = threading.RLock()
     server_version = "hubproto-shell/0.1"
+    max_upload = DEFAULT_MAX_UPLOAD
+    timeout = 120  # a stalled client gives up its thread, never the lock
 
-    def log_message(self, *a):  # quiet
+    def version_string(self) -> str:  # no Python version in the Server header
+        return self.server_version
+
+    def log_message(self, *a):  # the request log is written by _handle
         pass
+
+    def send_response(self, code, message=None):
+        self._status = code
+        super().send_response(code, message)
 
     # --- request plumbing --------------------------------------------------
     def do_GET(self):
-        with self.lock:
-            self._dispatch("GET")
+        self._handle("GET")
 
     def do_POST(self):
-        with self.lock:
-            self._dispatch("POST")
+        self._handle("POST")
 
-    def _dispatch(self, method: str) -> None:
+    def _handle(self, method: str) -> None:
+        t0 = time.monotonic()
+        self._status = 0
         url = urlparse(self.path)
         self.q = parse_qs(url.query, keep_blank_values=True)
         self.form: dict[str, str] = {}
         self.files: list[tuple[str, str, bytes]] = []
-        if method == "POST":
-            self._read_body()
-        self.user = (self.form.get("as") or self.q.get("as", [""])[0] or DEFAULT_USER).strip() or DEFAULT_USER
+        self.user = (self.q.get("as", [""])[0] or "").strip() or DEFAULT_USER
         self.route = url.path.rstrip("/") or "/"
-        self.meta = self.hub.releases.current()
-        self.bundle = self.hub.releases.bundle(self.meta["digest"]) if self.meta else None
+        self.arg = ""
+        self.meta = None
+        self.bundle = None
         try:
             if self.route == "/healthz":
                 return self._text("ok")
+            if method == "POST":
+                self._read_body()  # validated and read outside the lock
+                self.user = (self.form.get("as") or self.q.get("as", [""])[0] or "").strip()
+                if not self.user:
+                    raise ShellError("Say who you are: a POST needs the 'as' field.", 400)
+            with self.lock:
+                self.meta = self.hub.releases.current()
+                self.bundle = self.hub.releases.bundle(self.meta["digest"]) if self.meta else None
+                self._dispatch(method)
+        except ShellError as e:
+            self._page("Not done", f'<div class="card crit"><b>Not done.</b> {esc(e)}</div>' + self._back_link(), status=e.status)
+        finally:
+            ms = int((time.monotonic() - t0) * 1000)
+            log_line(f"request method={method} path={url.path} as={self.user} status={self._status} ms={ms}")
+
+    def _dispatch(self, method: str) -> None:
+        try:
             handler = self._route(method)
             if handler is None:
                 raise ShellError("No such page." if method == "GET" else "No such action.", 404)
             return handler()
-        except ShellError as e:
-            return self._page("Not done", f'<div class="card crit"><b>Not done.</b> {esc(e)}</div>', status=e.status)
         except (RunError, KernelGuardError) as e:
             return self._page("Not done", f'<div class="card crit"><b>Not done.</b> {esc(e)}<div class="why">{esc(type(e).__name__)}</div></div>'
                               + self._back_link(), status=400)
-        except Exception as e:  # readable, never a blank 500
-            tb = traceback.format_exc()
-            return self._page("Error", f'<div class="card crit"><b>{esc(type(e).__name__)}:</b> {esc(e)}</div><pre>{esc(tb)}</pre>', status=500)
+        except ShellError:
+            raise
+        except Exception as e:  # readable, never a blank 500; the traceback goes to the log, not the browser
+            err_id = uuid.uuid4().hex[:8]
+            log_line(f"error id={err_id} {type(e).__name__}: {e}\n{traceback.format_exc()}")
+            detail = f"<pre>{esc(traceback.format_exc())}</pre>" if os.environ.get("HUBPROTO_DEBUG") else ""
+            return self._page("Error", f'<div class="card crit"><b>{esc(type(e).__name__)}:</b> {esc(e)}<div class="why">error id {err_id} (in the server log)</div></div>{detail}',
+                              status=500)
 
     def _route(self, method: str):
         r = self.route
@@ -337,11 +497,26 @@ class Handler(BaseHTTPRequestHandler):
             return None
         posts = {"/start": self.post_start, "/decide": self.post_decide, "/msg": self.post_msg, "/attach": self.post_attach,
                  "/upload": self.post_upload, "/checkout": self.post_checkout, "/checkin": self.post_checkin, "/link": self.post_link,
-                 "/snapshot": self.post_snapshot, "/hold": self.post_hold}
+                 "/snapshot": self.post_snapshot, "/hold": self.post_hold, "/resubmit": self.post_resubmit, "/retry": self.post_retry,
+                 "/cancel": self.post_cancel}
         return posts.get(r)
 
     def _read_body(self) -> None:
-        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.headers.get("Content-Length")
+        if raw is None:
+            self.close_connection = True
+            raise ShellError("A POST needs a Content-Length header.", 411)
+        try:
+            length = int(raw)
+        except ValueError:
+            self.close_connection = True
+            raise ShellError(f"Content-Length {raw!r} is not a number.", 400) from None
+        if length < 0:
+            self.close_connection = True
+            raise ShellError("Content-Length cannot be negative.", 400)
+        if length > self.max_upload:
+            self.close_connection = True
+            raise ShellError(f"The request body ({length:,} bytes) is over the limit of {self.max_upload:,} bytes (HUBPROTO_MAX_UPLOAD).", 413)
         body = self.rfile.read(length) if length else b""
         ctype = self.headers.get("Content-Type", "") or ""
         if ctype.startswith("multipart/form-data"):
@@ -352,7 +527,7 @@ class Handler(BaseHTTPRequestHandler):
                 filename = part.get_filename()
                 payload = part.get_payload(decode=True) or b""
                 if filename:
-                    self.files.append((name, filename, payload))
+                    self.files.append((name, os.path.basename(filename), payload))
                 else:
                     self.form[name] = payload.decode("utf-8", "replace")
         else:
@@ -374,22 +549,25 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _back_link(self) -> str:
-        ref = self.headers.get("Referer")
-        return f'<p><a href="{esc(ref)}">Back</a></p>' if ref else ""
+        ref = self.headers.get("Referer") or ""
+        scheme = urlparse(ref).scheme
+        if ref and scheme in ("", "http", "https"):
+            return f'<p><a href="{esc(ref)}">Back</a></p>'
+        return ""
 
     # --- page frame --------------------------------------------------------
     def _page(self, title: str, body: str, status: int = 200, head: str = "") -> None:
         user = self.user
         bundle = self.bundle
         members = dict(bundle["members"]) if bundle else {}
-        if user not in members:
-            members[user] = {"type": "?", "roles": []}
         options = "".join(f'<option value="{esc(m)}"{" selected" if m == user else ""}>{esc(m)}{" (cog)" if members[m]["type"] == "cog" else ""}</option>'
                           for m in sorted(members))
+        if user not in members:
+            options = f'<option value="{esc(user)}" selected>{esc(user)} (not a member)</option>' + options
         keep = "".join(f'<input type="hidden" name="{esc(k)}" value="{esc(v[0])}">' for k, v in self.q.items() if k != "as" and v)
         rail = "".join(f'<a{" class=cur" if self.route == p or (p != "/" and self.route.startswith(p)) else ""} href="{href(p, user)}">{esc(n)}</a>' for n, p in RAIL)
         cur_folder = self.q.get("folder", [""])[0]
-        tree = render_tree(folder_tree(bundle["folders"]), "", user, cur_folder) if bundle else '<p class="muted">no release</p>'
+        tree = render_tree(folder_tree(bundle["folders"]), "", user, cur_folder) if bundle and user in members else '<p class="muted">no folders</p>'
         page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{esc(title)} - Hub</title><style>{_CSS}</style>{head}</head>
 <body><div class="top"><a href="{href("/", user)}">Hub</a><span class="crumb">{esc(title)}</span>
@@ -407,6 +585,12 @@ class Handler(BaseHTTPRequestHandler):
             raise ShellError("No policy release is in effect. Compile and release Frames first (hubproto bootstrap-release).", 409)
         return self.bundle
 
+    def _is_member(self) -> bool:
+        return bool(self.bundle) and self.user in self.bundle["members"]
+
+    def _people(self) -> list[str]:
+        return sorted(p for p, m in (self.bundle or {"members": {}})["members"].items() if m["type"] == "person")
+
     def _can_read(self, folder: str) -> dict:
         return authz.check(self._need_release(), self.user, "read", "*", folder)
 
@@ -416,15 +600,52 @@ class Handler(BaseHTTPRequestHandler):
             raise ShellError(f"You cannot read {folder}: {d['why']}", 403)
         return d
 
-    def _record_link(self, ref: str) -> str:
+    def _record_link(self, ref) -> str:
+        if not ref or not isinstance(ref, str):
+            return esc(fmt(ref))
         rec = self.hub.kernel.get(ref)
         if rec is None:
             return f"<code>{esc(ref)}</code>"
         page = "/document/" if rec["type"] == "document" else "/record/"
         return f'<a href="{href(page + quote(rec["locator"], safe=":"), self.user)}">{esc(rec["number"])}</a> <span class="muted">{esc(summary_of(rec))}</span>'
 
-    def _waiting_for(self, user: str) -> list[dict]:
-        return [r for r in self.hub.runner.list() if r.get("pending") and user in r["pending"]["assignees"]]
+    def _run_visible(self, run: dict) -> bool:
+        """A run is shown to a member who may read its record's folder, owns it, or is asked to act on it."""
+        if not self._is_member():
+            return False
+        folder = (run.get("manifest") or {}).get("folder", "")
+        if folder and self._can_read(folder)["allowed"]:
+            return True
+        if run.get("owner") == self.user:
+            return True
+        pending = run.get("pending") or {}
+        return self.user in (pending.get("assignees") or [])
+
+    def _visible_runs(self) -> list[dict]:
+        if not self._is_member():
+            return []
+        cache: dict[str, bool] = {}
+        out = []
+        for r in self.hub.runner.list():
+            folder = (r.get("manifest") or {}).get("folder", "")
+            if folder not in cache:
+                cache[folder] = bool(folder) and self._can_read(folder)["allowed"]
+            if cache[folder] or r.get("owner") == self.user or self.user in ((r.get("pending") or {}).get("assignees") or []):
+                out.append(r)
+        return out
+
+    def _pending(self, user: str, kind: str | None = None) -> list[dict]:
+        runs = self.hub.runner.pending_for(user)
+        return [r for r in runs if kind is None or r["pending"].get("kind", "decision") == kind]
+
+    def _failed_for(self, user: str) -> list[dict]:
+        return [r for r in self.hub.runner.list() if r["status"] == "failed" and r["owner"] == user]
+
+    def _failure_of(self, run_id: str) -> dict:
+        for ev in reversed(self.hub.runner.track(run_id)):
+            if ev["type"] == "run.failed":
+                return ev
+        return {}
 
     # --- pages --------------------------------------------------------------
     def page_home(self):
@@ -433,14 +654,20 @@ class Handler(BaseHTTPRequestHandler):
             return self._page("Home", "<div class='card'>No policy release is in effect. Compile and release Frames first "
                                       "(<code>hubproto bootstrap-release --as bob --second carol</code>).</div>")
         bundle, meta = self.bundle, self.meta
-        m = bundle["members"].get(user, {"type": "not a member", "roles": []})
+        if not self._is_member():
+            return self._page("Home", f"<h1>Welcome, {esc(user)}</h1><div class='card crit'><b>{esc(user)} is not a member of the organization</b> under the "
+                                      "policy release in effect, so nothing here is available. Ask a policy owner to add you to the org model.</div>")
+        m = bundle["members"][user]
         runs = [r for r in self.hub.runner.list() if r["owner"] == user]
-        waiting = self._waiting_for(user)
+        waiting = self._pending(user, "decision")
+        returned = self._pending(user, "resubmit")
+        failed = self._failed_for(user)
         roles = ", ".join(f'<span class="chip">{esc(r)}</span>' for r in m["roles"]) or "none"
         body = f"""<h1>Welcome, {esc(user)} <span class="chip">{esc(m['type'])}</span></h1>
 <div class="card">Roles: {roles}<br><span class="why">Policy release in effect: <code>{esc(meta['digest'][:16])}</code> effective from {esc(meta['effective_from'])},
 released by {esc(meta['released_by'])} (<a href="{href('/releases', user)}">releases</a>)</span></div>
 <div class="counts"><div class="card"><b>{len(waiting)}</b><a href="{href('/inbox', user)}">approvals waiting for me</a></div>
+<div class="card"><b>{len(returned) + len(failed)}</b><a href="{href('/inbox', user)}">of mine returned or failed</a></div>
 <div class="card"><b>{len([r for r in runs if r['status'] == 'waiting'])}</b>of my runs waiting</div>
 <div class="card"><b>{len(runs)}</b><a href="{href('/runs', user)}">runs I started</a></div></div>
 <h2>Processes you can start</h2>"""
@@ -458,12 +685,12 @@ released by {esc(meta['released_by'])} (<a href="{href('/releases', user)}">rele
             body += "<p class='muted'>None under the release in effect.</p>"
         for name, op, d in startable:
             rt = op.get("record_type", "")
-            td = self.hub.kernel.types.get(rt, {})
-            inputs = "".join(field_input(n, td.get("fields", {}).get(n) or spec) for n, spec in COMMON_INPUTS)
             body += f"""<div class="card"><b>{esc(name)}</b> <span class="chip">{esc(rt)}</span> filed in {esc(op['folder'])}
 <div class="why">{esc(d['why'])}</div>
-<form method="post" action="/start">{hidden_as(user)}<input type="hidden" name="process" value="{esc(name)}">
-<div>{inputs}</div><label class="f"><span>other fields (JSON object)</span><textarea name="json" rows="2" cols="60" placeholder='{{"lot": "L-42"}}'></textarea></label>
+<form method="post" action="/start" enctype="multipart/form-data">{hidden_as(user)}<input type="hidden" name="process" value="{esc(name)}">
+<div>{self._start_inputs(rt, required=self.hub.runner.required_at_start(name))}</div>
+<label class="f"><span>files to attach</span><input type="file" name="files" multiple></label>
+<label class="f"><span>other fields (JSON object)</span><textarea name="json" rows="2" cols="50" placeholder='{{"lot": "L-42"}}'></textarea></label>
 <div><button>Start {esc(name)}</button></div></form></div>"""
         if others:
             body += "<h3>Not available to you</h3>" + table(["Process", "Filed in", "Why"], [[esc(n), esc(op["folder"]), f'<span class="why">{esc(w)}</span>'] for n, op, w in others])
@@ -471,6 +698,23 @@ released by {esc(meta['released_by'])} (<a href="{href('/releases', user)}">rele
         for f in meta["frames"]:
             body += f"<li><a href='{href('/frame/' + f['name'], user)}'>{esc(f['name'])}</a> v{esc(f['version'])} ({esc(f['scope'])}, maintained by {esc(f['maintainer'])})</li>"
         self._page("Home", body + "</ul>")
+
+    def _start_spec(self, rt: str) -> list[tuple[str, str | None, str | None]]:
+        """(field, widget kind, type spec) for the Start form of a record type."""
+        td = self.hub.kernel.types.get(rt, {}).get("fields", {})
+        out = []
+        for entry in START_INPUTS.get(rt, DEFAULT_START_INPUTS):
+            name = entry[0]
+            kind = entry[1] if len(entry) > 1 else None
+            spec = entry[2] if len(entry) > 2 and entry[2] else td.get(name)
+            out.append((name, kind, spec))
+        return out
+
+    def _start_inputs(self, rt: str, values: dict | None = None, required: list[str] | None = None) -> str:
+        values = values or {}
+        req = set(required or [])
+        return "".join(widget(name, spec, values.get(name, ""), required=name in req, kind=kind, people=self._people())
+                       for name, kind, spec in self._start_spec(rt))
 
     def page_files(self):
         user = self.user
@@ -518,6 +762,8 @@ released by {esc(meta['released_by'])} (<a href="{href('/releases', user)}">rele
         workflows = bundle.get("workflows", {})
         default_type = next(iter(workflows.values()))["record_type"] if workflows else "task"
         type_ = self.q.get("type", [default_type])[0] or default_type
+        if type_ not in self.hub.kernel.types:
+            raise ShellError(f"No record type {type_!r}.", 404)
         state, folder, assignee, text = (self.q.get(k, [""])[0] for k in ("state", "folder", "assignee", "text"))
         columns: list[str] = []
         for name, wf in workflows.items():
@@ -525,7 +771,9 @@ released by {esc(meta['released_by'])} (<a href="{href('/releases', user)}">rele
                 for s in wf["states"]:
                     if s not in columns:
                         columns.append(s)
-        for s in ("failed", "rejected"):
+        if not columns:
+            columns.append("open")
+        for s in ("returned", "failed", "rejected", "cancelled"):
             if s not in columns:
                 columns.append(s)
         recs = self.hub.kernel.query(type_=type_, folder=folder or None, state=state or None, assignee=assignee or None, text=text or None)
@@ -537,6 +785,7 @@ released by {esc(meta['released_by'])} (<a href="{href('/releases', user)}">rele
         grouped: dict[str, list[dict]] = {c: [] for c in columns}
         for r in recs:
             grouped.setdefault(r["state"], []).append(r)
+        today = date.today().isoformat()
         types = "".join(f'<option value="{esc(t)}"{" selected" if t == type_ else ""}>{esc(t)}</option>' for t in self.hub.kernel.types)
         folders = "".join(f'<option value="{esc(f)}"{" selected" if f == folder else ""}>{esc(f)}</option>' for f in bundle["folders"])
         people = "".join(f'<option value="{esc(p)}"{" selected" if p == assignee else ""}>{esc(p)}</option>' for p in bundle["members"])
@@ -553,13 +802,15 @@ released by {esc(meta['released_by'])} (<a href="{href('/releases', user)}">rele
         for col, items in grouped.items():
             body += f"<div class='col'><h3>{chip(col)} <span class='muted'>{len(items)}</span></h3>"
             for r in items:
-                body += f"""<div class="kcard"><a href="{href('/record/' + quote(r['locator'], safe=':'), user)}">{esc(r['number'])}</a> {esc(summary_of(r))}
+                overdue = " " + chip("overdue") if r["due"] and r["due"] < today and r["state"].startswith("awaiting") else ""
+                body += f"""<div class="kcard"><a href="{href('/record/' + quote(r['locator'], safe=':'), user)}">{esc(r['number'])}</a> {esc(summary_of(r))}{overdue}
 <div class="why">{esc(r['folder'])} &middot; {esc(owner_of(r))}{' &middot; ' + esc(', '.join(r['assignees'])) if r['assignees'] else ''}{' &middot; due ' + esc(r['due']) if r['due'] else ''}</div></div>"""
             body += "</div>"
         self._page("Boards", body + "</div>")
 
-    def _payload_summary(self, run: dict) -> dict:
-        step = run["steps"].get(run["pending"]["step"], {})
+    # --- inbox cards ---------------------------------------------------------
+    def _payload_of(self, run: dict) -> dict:
+        step = run["steps"].get((run.get("pending") or {}).get("step", ""), {})
         payload = (step.get("envelope") or {}).get("payload") or {}
         return {k: v for k, v in payload.items() if k not in BLOB_FIELDS}
 
@@ -572,49 +823,244 @@ released by {esc(meta['released_by'])} (<a href="{href('/releases', user)}">rele
                 out.append(f"{sid}: error {env['error'].get('code', '')}: {env['error'].get('detail', '')}")
         return out
 
+    def _brief(self, rec: dict, payload: dict) -> str:
+        """A readable summary of a record for the person deciding on it: key fields by type, small tables for the rest."""
+        f = {k: v for k, v in payload.items() if k not in ("id", "folder", "locator", "state")}
+        f.update(rec["fields"])
+        t = rec["type"]
+        rows: list[tuple[str, str]] = []
+        extra = ""
+
+        def add(label, key=None, value=None, link=False):
+            v = f.get(key) if key else value
+            if v in (None, "", [], {}):
+                return
+            rows.append((label, self._record_link(v) if link else esc(short(v))))
+
+        def risk():
+            if f.get("risk"):
+                reasons = f.get("risk_reasons") or []
+                rows.append(("risk", chip(f["risk"]) + (" " + esc("; ".join(map(str, reasons))) if reasons else "")))
+
+        if t == "bill":
+            add("supplier", "supplier")
+            add("amount", value=f"{f.get('amount', '')} {f.get('currency', '')}".strip() if f.get("amount") is not None else None)
+            add("date", "date")
+            add("purchase order", "po_ref")
+            add("description", "description")
+            m = f.get("match") or {}
+            if m:
+                verdict = "within tolerance" if m.get("within_tolerance") else "outside tolerance"
+                parts = [verdict, f"variance {m.get('variance_percent')}%" if m.get("variance_percent") is not None else "",
+                         "PO found" if m.get("po_found") else "no PO", "received" if m.get("received") else "not received",
+                         "supplier approved" if m.get("supplier_approved") else "supplier not approved"]
+                rows.append(("match result", chip(verdict) + " " + esc(", ".join(p for p in parts[1:] if p))))
+                add("billed to date", value=f"{m.get('billed_to_date', 0):.2f} {f.get('currency', '')}" if m.get("billed_to_date") is not None else None)
+            risk()
+        elif t == "purchase-request":
+            add("title", "title")
+            add("item", "item", link=True)
+            add("mpn", "mpn")
+            add("quantity", value=f"{f.get('quantity', '')} {f.get('unit', '')}".strip() if f.get("quantity") is not None else None)
+            add("unit cost", "unit_cost")
+            add("amount", value=f"{f.get('amount', '')} {f.get('currency', '')}".strip() if f.get("amount") is not None else None)
+            add("supplier", "supplier")
+            if "supplier_approved" in f:
+                rows.append(("supplier approved", chip("yes" if f.get("supplier_approved") else "no") + " " + esc(f.get("supplier_note") or "")))
+            add("needed by", "needed_by")
+            add("reason", "reason")
+            add("design", "design", link=True)
+            risk()
+        elif t == "design":
+            add("title", "title")
+            add("kind", "kind")
+            add("change class", "change_class")
+            add("description", "description")
+            add("designer", "designer")
+            risk()
+            trace = f.get("requirement_trace") or []
+            if trace:
+                extra += "<h4>Requirements</h4>" + table(["Requirement", "Kind", "Statement", "State"],
+                                                         [[self._record_link(x.get("requirement")), esc(x.get("kind")), esc(short(x.get("statement"))), chip(x.get("state"))]
+                                                          for x in trace])
+            elif f.get("user_needs"):
+                extra += "<h4>User needs</h4><ul>" + "".join(f"<li>{esc(short(n))}</li>" for n in f["user_needs"]) + "</ul>"
+            if any(k in f for k in ("bom_resolved", "bom_unresolved", "bom_lines")):
+                rows.append(("BOM", esc(f"{len(f.get('bom_lines') or [])} lines: {len(f.get('bom_resolved') or [])} resolved, "
+                                        f"{len(f.get('bom_unresolved') or [])} unresolved, {len(f.get('bom_unapproved') or [])} from unapproved manufacturers")))
+            checks = f.get("checks") or {}
+            if checks:
+                rows.append(("checks", " ".join(f"{esc(name.upper())} " + (chip(f"{c.get('errors')} errors") if c.get("ran") else chip("not run"))
+                                                 + (f" {esc(c.get('warnings'))} warnings" if c.get("ran") and c.get("warnings") else "") for name, c in checks.items())))
+            exports = f.get("exports") or []
+            if exports:
+                extra += "<h4>Exports</h4><ul>" + "".join(f"<li>{esc(x.get('doc_type'))}: {self._record_link(x.get('document'))}</li>" for x in exports) + "</ul>"
+            if f.get("part"):
+                add("part", "part", link=True)
+        elif t == "requirement":
+            rows.append(("statement", f"<b>{esc(short(f.get('statement') or '', 600))}</b>"))
+            add("kind", "kind")
+            add("source", "source")
+            add("priority", "priority")
+            add("design", "design", link=True)
+            add("acceptance criteria", "acceptance_criteria")
+            add("verification method", "verification_method")
+            risk()
+        elif t == "ncr":
+            add("title", "title")
+            add("description", "description")
+            add("source", "source")
+            add("severity", "severity")
+            add("containment", "containment")
+            add("lot", "lot")
+            add("quantity", "quantity")
+            add("part", "part", link=True)
+            risk()
+        elif t == "receipt":
+            add("purchase order", "po", link=True)
+            add("supplier", "supplier")
+            lines = f.get("lines") or []
+            if lines:
+                extra += "<h4>Lines</h4>" + table(["Item", "Quantity"], [[self._record_link(l.get("item")), esc(l.get("quantity"))] for l in lines if isinstance(l, dict)])
+            add("location", "location")
+            add("notes", "notes")
+        elif t == "document":
+            add("title", "title")
+            add("type", "doc_type")
+            add("change type", "change_type")
+            add("revision", value=f"{f.get('revision', '')}.{f.get('minor', 0)}")
+            rows.append(("document", self._record_link(rec["locator"])))
+            add("training roles", "training_roles")
+            risk()
+        else:
+            for k, v in sorted(f.items()):
+                if k in BLOB_FIELDS or k in ("conditions",) or isinstance(v, (dict, list)) or v in (None, ""):
+                    continue
+                rows.append((k, esc(short(v))))
+            risk()
+        return f'<div class="brief">{kv(rows)}{extra}</div>'
+
+    def _decision_inputs(self, run: dict, rec: dict | None) -> tuple[str, list[str], list[str]]:
+        """Form controls for a decision: the next state's required-but-missing fields (required) and the type's
+        other decision fields (optional); never a system field."""
+        if rec is None:
+            return "", [], []
+        allowed = self.hub.runner.allowed_decision_fields(run)
+        td = self.hub.kernel.types.get(rec["type"], {})
+        system = set(td.get("system_fields") or [])
+        nxt = next_state_for(run.get("workflow"), run["pending"]["checkpoint"])
+        missing = [x for x in self.hub.kernel.required_missing(rec, nxt) if x not in system] if nxt else []
+        optional = [x for x in allowed if x not in missing]
+        people = self._people()
+        html_ = "".join(widget(x, td.get("fields", {}).get(x), required=True, people=people) for x in missing)
+        html_ += "".join(widget(x, td.get("fields", {}).get(x), rec["fields"].get(x, ""), people=people) for x in optional)
+        return html_, missing, optional
+
+    def _rule_html(self, rule: dict | None) -> str:
+        rule = rule or {}
+        frame, line, text = rule.get("frame", ""), rule.get("line", 0), rule.get("text", "")
+        if frame and not frame.startswith("(") and frame in self.hub.frames.frames:
+            return f'<a href="{href("/frame/" + frame, self.user)}#L{line}">{esc(frame)} line {esc(line)}</a>: "{esc(text)}"'
+        return f'{esc(frame)}{" line " + esc(line) if line else ""}: "{esc(text)}"'
+
+    def _decision_card(self, r: dict, today: str) -> str:
+        user = self.user
+        p = r["pending"]
+        rec = self.hub.kernel.get(r["record"]) if r.get("record") else None
+        nxt = next_state_for(r.get("workflow"), p["checkpoint"])
+        inputs, missing, optional = self._decision_inputs(r, rec)
+        problems = self._guard_problems(r)
+        brief = self._brief(rec, self._payload_of(r)) if rec else "<span class='muted'>no record</span>"
+        overdue = p.get("due") and p["due"] < today
+        due = (f" &middot; due <b>{esc(p['due'])}</b> " + (chip("overdue") if overdue else "")) if p.get("due") else ""
+        esc_note = f" &middot; <span class='chip warn'>escalated {esc(p['escalated'])}</span>" if p.get("escalated") else ""
+        needs = ""
+        if missing:
+            needs = f'<div class="why">{esc(nxt)} needs: {esc(", ".join(missing))}</div>'
+        elif optional:
+            needs = '<div class="why">You may also set: ' + esc(", ".join(optional)) + "</div>"
+        hold = f"<div class='chip crit'>on hold: {esc(rec.get('hold_reason', ''))}; lift the hold first</div>" if rec and rec["hold"] else ""
+        return f"""<div class="card{' crit' if overdue else ''}"><b>{esc(p['title'])}</b> &middot; {esc(r['process'])} &middot; {self._record_link(r['record']) if rec else ''} &middot;
+run <a href="{href('/run/' + r['id'], user)}">{esc(r['id'])}</a> started by {esc(r['owner'])}{due}{esc_note}
+<div class="why">Routed to you by {self._rule_html(p.get('route_rule'))}{' &middot; approval leads to ' + chip(nxt) if nxt else ''}</div>
+{brief}
+{'<div class="why"><b>Guard findings:</b><br>' + '<br>'.join(esc(x) for x in problems) + '</div>' if problems else ''}
+{hold}
+<form method="post" action="/decide">{hidden_as(user)}<input type="hidden" name="run" value="{esc(r['id'])}"><input type="hidden" name="digest" value="{esc(p['payload_digest'])}">
+{needs}<div>{inputs}</div>
+<div><label class="f"><span>meaning of your signature <b>*</b></span><input name="meaning" placeholder="e.g. approved for posting" size="40" required></label>
+<button name="verdict" value="approve">Approve</button> <button class="secondary" name="verdict" value="reject">Reject</button></div></form></div>"""
+
+    def _resubmit_form(self, r: dict, rec: dict | None) -> str:
+        user = self.user
+        p = r["pending"]
+        rt = rec["type"] if rec else r["workflow"]["record_type"]
+        values = rec["fields"] if rec else {}
+        return f"""<form method="post" action="/resubmit" enctype="multipart/form-data">{hidden_as(user)}<input type="hidden" name="run" value="{esc(r['id'])}">
+<div class="why">Rework from step <b>{esc(p.get('step'))}</b>: change what needs changing (unchanged fields are left alone), add files, and resubmit.</div>
+<div>{self._start_inputs(rt, values)}</div>
+<label class="f"><span>files to attach</span><input type="file" name="files" multiple></label>
+<label class="f"><span>other fields (JSON object)</span><textarea name="json" rows="2" cols="50"></textarea></label>
+<div><label class="f"><span>note</span><input name="note" size="40" placeholder="what changed"></label> <button>Resubmit</button></div></form>"""
+
+    def _retry_cancel_forms(self, r: dict) -> str:
+        user = self.user
+        return f"""<form method="post" action="/retry" class="inline">{hidden_as(user)}<input type="hidden" name="run" value="{esc(r['id'])}">
+<input name="note" placeholder="what was fixed" size="28"> <button>Retry</button></form>
+<form method="post" action="/cancel" class="inline">{hidden_as(user)}<input type="hidden" name="run" value="{esc(r['id'])}">
+<input name="reason" placeholder="reason" size="20"> <button class="danger">Cancel the run</button></form>"""
+
     def page_inbox(self):
         user = self.user
         bundle = self._need_release()
-        body = "<h1>Inbox</h1><h2>Waiting for your decision</h2>"
-        waiting = self._waiting_for(user)
+        body = "<h1>Inbox</h1>"
+        if not self._is_member():
+            return self._page("Inbox", body + f"<div class='card'><b>{esc(user)} is not a member</b> of the organization under the release in effect; "
+                                              "there is nothing in this inbox. Ask a policy owner to add you to the org model.</div>")
+        today = date.today().isoformat()
+        waiting = self._pending(user, "decision")
+        waiting.sort(key=lambda r: (0 if (r["pending"].get("due") and r["pending"]["due"] < today) else 1, r["pending"].get("due") or "9999", r["created_at"]))
+        body += f"<h2>Waiting for your decision <span class='muted'>{len(waiting)}</span></h2>"
         if not waiting:
             body += "<p class='muted'>Nothing is waiting for you.</p>"
         for r in waiting:
-            p = r["pending"]
-            rec = self.hub.kernel.get(r["record"]) if r.get("record") else None
-            wf = r.get("workflow") or bundle["workflows"].get(r["process"])
-            nxt = next_state_for(wf, p["checkpoint"])
-            missing = self.hub.kernel.required_missing(rec, nxt) if rec and nxt else []
-            td = self.hub.kernel.types.get(rec["type"], {}) if rec else {}
-            extra = "".join(field_input(f, td.get("fields", {}).get(f), required=True) for f in missing)
-            problems = self._guard_problems(r)
-            summary = kv([(k, esc(fmt(v))) for k, v in self._payload_summary(r).items()]) or "<span class='muted'>no payload</span>"
-            rule = p.get("route_rule") or {}
-            due = f" &middot; due <b>{esc(p['due'])}</b>" if p.get("due") else ""
-            esc_note = f" &middot; <span class='chip warn'>escalated {esc(p['escalated'])}</span>" if p.get("escalated") else ""
-            body += f"""<div class="card"><b>{esc(p['title'])}</b> &middot; {esc(r['process'])} &middot; {self._record_link(r['record']) if rec else ''} &middot;
-run <a href="{href('/run/' + r['id'], user)}">{esc(r['id'])}</a> started by {esc(r['owner'])}{due}{esc_note}
-<div class="why">Routed to you by {esc(rule.get('frame'))} line {esc(rule.get('line'))}: "{esc(rule.get('text'))}"{' &middot; next state ' + esc(nxt) if nxt else ''}</div>
-{summary}
-{'<div class="why"><b>Guard findings:</b><br>' + '<br>'.join(esc(x) for x in problems) + '</div>' if problems else ''}
-<form method="post" action="/decide">{hidden_as(user)}<input type="hidden" name="run" value="{esc(r['id'])}"><input type="hidden" name="digest" value="{esc(p['payload_digest'])}">
-{('<div class="why">' + esc(nxt) + ' needs: </div>' + extra) if missing else ''}
-<div><input name="meaning" placeholder="meaning of your signature" size="40">
-<button name="verdict" value="approve">Approve</button> <button class="secondary" name="verdict" value="reject">Reject</button></div></form></div>"""
+            body += self._decision_card(r, today)
+        returned = self._pending(user, "resubmit")
+        if returned:
+            body += f"<h2>Returned to you for rework <span class='muted'>{len(returned)}</span></h2>"
+            for r in returned:
+                p = r["pending"]
+                rec = self.hub.kernel.get(r["record"]) if r.get("record") else None
+                body += f"""<div class="card warn"><b>{esc(p['title'])}</b> &middot; {esc(r['process'])} &middot; {self._record_link(r['record']) if rec else ''} &middot;
+run <a href="{href('/run/' + r['id'], user)}">{esc(r['id'])}</a><div class="why">{esc(p.get('route_rule', {}).get('text', ''))}</div>
+<div><b>Reason:</b> {esc(p.get('reason') or '-')}</div>{self._resubmit_form(r, rec)}
+<form method="post" action="/cancel" class="inline">{hidden_as(user)}<input type="hidden" name="run" value="{esc(r['id'])}"><input name="reason" placeholder="reason" size="20"> <button class="danger">Withdraw</button></form></div>"""
+        failed = self._failed_for(user)
+        if failed:
+            body += f"<h2>Failed runs of yours <span class='muted'>{len(failed)}</span></h2>"
+            for r in failed:
+                ev = self._failure_of(r["id"])
+                rec = self.hub.kernel.get(r["record"]) if r.get("record") else None
+                body += f"""<div class="card crit"><b>{esc(r['process'])}</b> &middot; {self._record_link(r['record']) if rec else ''} &middot; run <a href="{href('/run/' + r['id'], user)}">{esc(r['id'])}</a>
+failed at <b>{esc(ev.get('step', '?'))}</b>: {esc(ev.get('reason', 'no reason recorded'))}
+<div class="why">Fix the record (its page has the details) and retry, or cancel the run.</div>{self._retry_cancel_forms(r)}</div>"""
         msgs = list(reversed(self.hub.inbox.for_principal(user)))
-        escalations = [m for m in msgs if m["kind"] == "escalation"]
-        others = [m for m in msgs if m["kind"] != "escalation"]
-        if escalations:
-            body += "<h2>Escalations</h2>"
-            for m in escalations:
-                body += f"<div class='card crit'><b>{esc(m['subject'])}</b> at {esc(m['at'])}<br>{esc(m['body'])} <a href='{href('/run/' + m['run_id'], user)}'>open run</a></div>"
-        body += "<h2>Messages</h2>"
+        still_pending = {r["id"] for r in waiting} | {r["id"] for r in returned}
+        notes = [m for m in msgs if m["kind"] in NOTIFICATION_KINDS]
+        others = [m for m in msgs if m["kind"] not in NOTIFICATION_KINDS and (m["kind"] != "approval" or m.get("run_id") in still_pending)]
+        body += f"<h2>Notifications <span class='muted'>{len(notes)}</span></h2>"
+        if not notes:
+            body += "<p class='muted'>No escalations, failures, returns or rejections.</p>"
+        for m in notes:
+            cls = "crit" if m["kind"] in ("escalation", "failure") else "warn"
+            body += f"<div class='card {cls}'><span class='chip {cls}'>{esc(m['kind'])}</span> <b>{esc(m['subject'])}</b> at {esc(m['at'][:19])}<br>{esc(short(m['body'], 600))}"
+            body += self._message_links(m) + "</div>"
+        body += f"<h2>Messages <span class='muted'>{len(others)}</span></h2>"
         if not others:
             body += "<p class='muted'>No messages.</p>"
         for m in others:
-            body += f"<div class='card'><span class='chip'>{esc(m['channel'])}/{esc(m['kind'])}</span> <b>{esc(m['subject'])}</b> from {esc(m['from'])} at {esc(m['at'])}<br>{esc(m['body'])}"
-            if m.get("run_id"):
-                body += f" <a href='{href('/run/' + m['run_id'], user)}'>open run</a>"
+            body += f"<div class='card'><span class='chip'>{esc(m['channel'])}/{esc(m['kind'])}</span> <b>{esc(m['subject'])}</b> from {esc(m['from'])} at {esc(m['at'][:19])}<br>{esc(short(m['body'], 600))}"
+            body += self._message_links(m)
             if m.get("attachments"):
                 body += f"<div class='why'>attachments: {esc(', '.join(a.get('name', '') for a in m['attachments']))}</div>"
             body += "</div>"
@@ -624,6 +1070,19 @@ run <a href="{href('/run/' + r['id'], user)}">{esc(r['id'])}</a> started by {esc
 <label class="f"><span>subject</span><input name="subject" size="30" required></label><br><label class="f"><span>message</span><textarea name="body" rows="2" cols="60"></textarea></label><br><button>Send</button></form>"""
         self._page("Inbox", body)
 
+    def _message_links(self, m: dict) -> str:
+        out = ""
+        if m.get("run_id"):
+            out += f" <a href='{href('/run/' + m['run_id'], self.user)}'>open run</a>"
+            try:
+                run = self.hub.runner.load(m["run_id"])
+            except RunError:
+                run = None
+            if run and run.get("record") and self.hub.kernel.get(run["record"]):
+                out += f" &middot; <a href='{href('/record/' + quote(run['record'], safe=':'), self.user)}'>open record</a>"
+        return out
+
+    # --- record and document pages --------------------------------------------
     def page_record(self):
         user = self.user
         bundle = self._need_release()
@@ -640,15 +1099,32 @@ run <a href="{href('/run/' + r['id'], user)}">{esc(r['id'])}</a> started by {esc
         why = self.hub.why(user, "approve", obj, rec["folder"])
         labels = " ".join(f'<span class="chip">{esc(k)}: {esc(v)}</span>' for k, v in rec["labels"].items())
         hold = f' <span class="chip crit">on hold: {esc(rec.get("hold_reason", ""))}</span>' if rec["hold"] else ""
+        today = date.today().isoformat()
+        overdue = " " + chip("overdue") if rec["due"] and rec["due"] < today and rec["state"].startswith("awaiting") else ""
         tabs = "".join(f'<a href="#{t.lower()}">{t}</a>' for t in ("Details", "Workflow", "Documents", "Links", "Activity", "Decisions", "Track"))
-        body = f"""<h1>{esc(rec['number'])} <span class="chip">{esc(rec['type'])}</span> {chip(rec['state'])}{hold}</h1>
-<div class="card">{esc(summary_of(rec))}<div class="why">folder <a href="{href('/files', user, folder=rec['folder'])}">{esc(rec['folder'])}</a> &middot; {labels} &middot; owner {esc(owner_of(rec))}
+        headline = rec["fields"].get("statement") if rec["type"] == "requirement" else summary_of(rec)
+        body = f"""<h1>{esc(rec['number'])} <span class="chip">{esc(rec['type'])}</span> {chip(rec['state'])}{hold}{overdue}</h1>
+<div class="card"><b>{esc(headline)}</b><div class="why">folder <a href="{href('/files', user, folder=rec['folder'])}">{esc(rec['folder'])}</a> &middot; {labels} &middot; owner {esc(owner_of(rec))}
 &middot; assignees {esc(', '.join(rec['assignees']) or '-')} &middot; due {esc(rec['due'] or '-')} &middot; process {esc(process or '-')}
 &middot; run {f'<a href="{href("/run/" + run["id"], user)}">{esc(run["id"])}</a> ' + chip(run["status"]) if run else '-'}</div>
 <div class="why"><b>Why:</b> may {esc(user)} approve {esc(obj)} in {esc(rec['folder'])}? {chip('allowed' if why['allowed'] else 'denied')} {esc(why['why'])}</div></div>
 <div class="tabs">{tabs}</div>"""
+        # Run controls: failed runs go back to their owner; returned items are reworked and resubmitted.
+        if run and run["status"] == "failed" and rec["state"] == "failed":
+            ev = self._failure_of(run["id"])
+            if user == run["owner"] or why["allowed"]:
+                body += f"""<div class="card crit"><b>The run failed at {esc(ev.get('step', '?'))}:</b> {esc(ev.get('reason', ''))}
+<div class="why">Fix the record and retry the run from the failed step, or cancel it.</div>{self._retry_cancel_forms(run)}</div>"""
+            else:
+                body += f"<div class='card crit'><b>The run failed at {esc(ev.get('step', '?'))}:</b> {esc(ev.get('reason', ''))} <span class='why'>Its owner {esc(run['owner'])} may retry or cancel it.</span></div>"
+        if run and run.get("pending") and run["pending"].get("kind") == "resubmit":
+            p = run["pending"]
+            if user in p["assignees"]:
+                body += f"<div class='card warn'><b>{esc(p['title'])}</b>: {esc(p.get('reason') or '')}{self._resubmit_form(run, rec)}</div>"
+            else:
+                body += f"<div class='card warn'><b>{esc(p['title'])}</b>: {esc(p.get('reason') or '')} <span class='why'>Waiting for {esc(', '.join(p['assignees']))} to resubmit.</span></div>"
         # Details
-        rows = [[esc(k), esc(fmt(v))] for k, v in sorted(rec["fields"].items()) if k not in BLOB_FIELDS and v not in (None, "", [], {})]
+        rows = [[esc(k), esc(short(v, 600))] for k, v in sorted(rec["fields"].items()) if k not in BLOB_FIELDS and v not in (None, "", [], {})]
         body += '<h2 id="details">Details</h2>' + table(["Field", "Value"], rows, "No fields.")
         can_control = why["allowed"]
         body += f"""<div class="card"><form method="post" action="/snapshot" class="inline">{hidden_as(user)}<input type="hidden" name="record" value="{esc(loc)}"><button class="secondary">Render snapshot</button></form>
@@ -659,7 +1135,9 @@ run <a href="{href('/run/' + r['id'], user)}">{esc(r['id'])}</a> started by {esc
         body += '<h2 id="workflow">Workflow</h2>'
         if wf:
             diagram = mermaid_for(wf, rec["state"])
-            body += f'<div class="card"><pre class="mermaid" id="wf-diagram">{esc(diagram)}</pre><p class="why">States: ' + " &rarr; ".join(chip(s) + (" (current)" if s == rec["state"] else "") for s in wf["states"]) + "</p>"
+            states = list(wf["states"]) + [s for s in ("returned", "failed", "cancelled") if s not in wf["states"]]
+            body += f'<div class="card"><pre class="mermaid" id="wf-diagram">{esc(diagram)}</pre><p class="why">States: ' + " &middot; ".join(chip(s) + (" (current)" if s == rec["state"] else "") for s in states) \
+                + "<br>returned, failed and cancelled are side exits: a rejection that returns the item to its owner, a failed step, a cancelled run.</p>"
             trows = []
             for t in wf["transitions"]:
                 if t["kind"] == "automatic":
@@ -680,13 +1158,14 @@ run <a href="{href('/run/' + r['id'], user)}">{esc(r['id'])}</a> started by {esc
             body += "<p class='muted'>No workflow in the release covers this record type.</p>"
         # Documents
         docs = self.hub.dms.documents_of(loc)
-        body += '<h2 id="documents">Documents</h2>' + table(["Number", "Title", "Class", "Rev", "State", "Size"],
+        body += '<h2 id="documents">Documents</h2>' + table(["Number", "Title", "Class", "Type", "Rev", "State", "Size"],
                                                                [[f'<a href="{href("/document/" + quote(d["locator"], safe=":"), user)}">{esc(d["number"])}</a>', esc(d["fields"].get("title")),
-                                                                 esc(d["fields"].get("doc_class")), esc(f"{d['fields'].get('revision', '')}.{d['fields'].get('minor', 0)}"), chip(d["state"]),
+                                                                 esc(d["fields"].get("doc_class")), esc(d["fields"].get("doc_type")), esc(f"{d['fields'].get('revision', '')}.{d['fields'].get('minor', 0)}"), chip(d["state"]),
                                                                  esc(d["fields"].get("size", ""))] for d in docs], "No documents attached.")
         f = may_file(bundle, user, rec["folder"])
         if f["allowed"]:
-            in_folder = [d for d in self.hub.kernel.query(type_="document", folder=rec["folder"]) if d["locator"] not in {x["locator"] for x in docs}]
+            in_folder = [d for d in self.hub.kernel.query(type_="document", folder=rec["folder"]) if d["folder"] == rec["folder"]
+                         and d["locator"] not in {x["locator"] for x in docs}]
             opts = "".join(f'<option value="{esc(d["locator"])}">{esc(d["number"])} {esc(d["fields"].get("title"))}</option>' for d in in_folder)
             body += f"""<div class="card"><form method="post" action="/attach" enctype="multipart/form-data">{hidden_as(user)}<input type="hidden" name="record" value="{esc(loc)}">
 Upload and attach <input type="file" name="file"> <input name="title" placeholder="title" size="20">{' or attach existing <select name="doc"><option value=""></option>' + opts + '</select>' if opts else ''} <button>Attach</button></form></div>"""
@@ -705,8 +1184,8 @@ Link as <select name="rel">{rels}</select> to <input name="target" placeholder="
                                                            [[esc(e["seq"]), esc(e["at"][:19]), f"<code>{esc(e['type'])}</code>", esc(e["by"]),
                                                              f'<a href="{href("/run/" + e["run_id"], user)}">{esc(e["run_id"][:8])}</a>' if e["run_id"] else "",
                                                              esc(fmt({k: v for k, v in e["data"].items() if k not in BLOB_FIELDS}))[:300]] for e in evs])
-        # Decisions
-        decisions = [e["data"] for e in evs if e["type"] == "record.decision"] + list(rec["decisions"])
+        # Decisions: the record's projection is the single source of signatures.
+        decisions = list(rec["decisions"])
         body += '<h2 id="decisions">Decisions</h2>' + table(["At", "By", "Verdict", "Meaning", "Step", "Signature", "Payload", "Delegating rule"],
                                                              [[esc(d.get("at", "")[:19]), f"{esc(d.get('by'))} ({esc(d.get('by_type'))})", chip(d.get("verdict")), esc(d.get("meaning")),
                                                                esc(d.get("step")), f"<code>{esc(d.get('signature'))}</code>", f"<code>{esc(str(d.get('payload_digest', ''))[:12])}</code>",
@@ -723,12 +1202,12 @@ Link as <select name="rel">{rels}</select> to <input name="target" placeholder="
         rows = []
         for ev in self.hub.runner.track(run_id):
             detail = {k: v for k, v in ev.items() if k not in ("seq", "at", "type", "run_id", "record_digest")}
-            rows.append([esc(ev["seq"]), esc(ev["at"][:19]), f"<code>{esc(ev['type'])}</code>", f"<pre style='margin:0'>{esc(json.dumps(detail, indent=1, default=str))}</pre>"])
+            rows.append([esc(ev["seq"]), esc(ev["at"][:19]), f"<code>{esc(ev['type'])}</code>", f"<pre style='margin:0'>{esc(short(json.dumps(detail, indent=1, default=str), 4000))}</pre>"])
         return table(["#", "At", "Event", "Detail"], rows)
 
     def page_document(self):
         user = self.user
-        self._need_release()
+        bundle = self._need_release()
         rec = self.hub.kernel.get(self.arg)
         if rec is None or rec["type"] != "document":
             raise ShellError(f"No document {self.arg!r}.", 404)
@@ -737,7 +1216,7 @@ Link as <select name="rel">{rels}</select> to <input name="target" placeholder="
         versions = self.hub.dms.versions(loc)
         locked = f.get("checked_out_by")
         immutable = f.get("doc_class") in ("evidence", "external")
-        can = may_file(self._need_release(), user, rec["folder"])
+        can = authz.check(bundle, user, "create", "document", rec["folder"])
         meta = [("title", esc(f.get("title"))), ("class", esc(f.get("doc_class"))), ("type", esc(f.get("doc_type"))),
                 ("revision", esc(f"{f.get('revision', '')}.{f.get('minor', 0)}")), ("state", chip(rec["state"])),
                 ("folder", f'<a href="{href("/files", user, folder=rec["folder"])}">{esc(rec["folder"])}</a>'), ("owner", esc(f.get("owner"))),
@@ -750,12 +1229,15 @@ Link as <select name="rel">{rels}</select> to <input name="target" placeholder="
                                              [[esc(v["version"]), esc(v["at"][:19]), esc(v["by"]), esc(v.get("filename")), esc(v.get("size")), f"<code>{esc(v['sha256'][:16])}</code>", esc(v.get("note")),
                                                f'<a href="{href("/download", user, doc=loc, v=v["version"])}">download</a>'] for v in versions], "No content yet.")
         if f.get("text"):
-            body += f"<h2>Text</h2><pre>{esc(f['text'])}</pre>"
+            body += f"<h2>Text</h2><pre>{esc(short(f['text'], 20000))}</pre>"
         body += "<h2>Check-out / check-in</h2><div class='card'>"
         if not can["allowed"]:
             body += f"<span class='why'>You cannot change documents here: {esc(can['why'])}</span>"
         elif immutable:
             body += f"<span class='why'>{esc(f.get('doc_class'))} documents are never edited; file a new one that supersedes it.</span>"
+        elif rec["state"] not in EDITABLE_DOC_STATES:
+            body += (f"<span class='why'>{esc(rec['number'])} is {esc(rec['state'])}; a controlled document changes only through a new revision "
+                     f"(start document-control with the same title).</span>")
         else:
             if locked and locked != user:
                 body += f"<span class='chip warn'>checked out by {esc(locked)}</span> "
@@ -787,27 +1269,51 @@ Link as <select name="rel">{rels}</select> to <input name="target" placeholder="
         self.send_response(200)
         self.send_header("Content-Type", version.get("mime") or "application/octet-stream")
         self.send_header("Content-Length", str(len(content)))
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Content-Disposition", f'attachment; filename="{quote(version.get("filename") or rec["number"])}"')
         self.end_headers()
         self.wfile.write(content)
 
     def page_runs(self):
         user = self.user
+        self._need_release()
+        if not self._is_member():
+            return self._page("Runs", f"<h1>Runs</h1><div class='card'><b>{esc(user)} is not a member</b> of the organization; no runs are visible.</div>")
         rows = []
-        for r in reversed(self.hub.runner.list()):
+        for r in reversed(self._visible_runs()):
+            if r.get("pending"):
+                waiting = esc(", ".join(r["pending"]["assignees"])) + (f" (due {esc(r['pending']['due'])})" if r["pending"].get("due") else "")
+                if r["pending"].get("kind") == "resubmit":
+                    waiting = "rework by " + waiting
+            elif r["status"] == "failed":
+                waiting = f"<span class='why'>failed: {esc(short(self._failure_of(r['id']).get('reason', ''), 120))}</span>"
+            else:
+                waiting = ""
             rows.append([f'<a href="{href("/run/" + r["id"], user)}">{esc(r["id"])}</a>', esc(r["process"]), self._record_link(r["record"]) if r.get("record") else "",
-                         esc(r["owner"]), chip(r["status"]), f"<code>{esc(r['release'][:12])}</code>",
-                         esc(", ".join(r["pending"]["assignees"])) + (f" (due {esc(r['pending']['due'])})" if r.get("pending") and r["pending"].get("due") else "") if r.get("pending") else ""])
-        self._page("Runs", "<h1>Runs</h1>" + table(["Run", "Process", "Record", "Owner", "Status", "Release", "Waiting for"], rows, "No runs yet."))
+                         esc(r["owner"]), chip(r["status"]), f"<code>{esc(r['release'][:12])}</code>", waiting])
+        self._page("Runs", "<h1>Runs</h1><p class='why'>Runs whose record folder you may read, plus your own and those waiting for you.</p>"
+                   + table(["Run", "Process", "Record", "Owner", "Status", "Release", "Waiting for"], rows, "No runs visible to you."))
 
     def page_run(self):
         user = self.user
+        self._need_release()
         s = self.hub.runner.load(self.arg)
+        if not self._run_visible(s):
+            folder = (s.get("manifest") or {}).get("folder", "")
+            why = self._can_read(folder)["why"] if folder else "no folder"
+            raise ShellError(f"You cannot read run {s['id']}: {why}", 403)
         body = f"""<h1>Run {esc(s['id'])} {chip(s['status'])}</h1><div class="card">{esc(s['process'])} started by {esc(s['owner'])} at {esc(s['created_at'])};
 record {self._record_link(s['record']) if s.get('record') else '-'}; pinned to release <code>{esc(s['release'])}</code>{'; parent run ' + esc(s['parent_run']) if s.get('parent_run') else ''}</div>"""
         if s.get("pending"):
             p = s["pending"]
-            body += f"<div class='card warn'>Waiting at <b>{esc(p['title'])}</b> for {esc(', '.join(p['assignees']))}{' until ' + esc(p['due']) if p.get('due') else ''}<div class='why'>{esc(p['route_rule']['text'])}</div></div>"
+            what = "Waiting for rework by" if p.get("kind") == "resubmit" else f"Waiting at <b>{esc(p['title'])}</b> for"
+            body += f"<div class='card warn'>{what} {esc(', '.join(p['assignees']))}{' until ' + esc(p['due']) if p.get('due') else ''}<div class='why'>{esc(p['route_rule']['text'])}</div></div>"
+        if s["status"] == "failed":
+            ev = self._failure_of(s["id"])
+            body += f"<div class='card crit'><b>Failed at {esc(ev.get('step', '?'))}:</b> {esc(ev.get('reason', ''))}"
+            if user == s["owner"]:
+                body += self._retry_cancel_forms(s)
+            body += "</div>"
         if s.get("grant"):
             g = s["grant"]
             body += f"<div class='card'>Grant <code>{esc(g['id'])}</code> decided by {esc(g['decided_by'])} ({esc(g['by_type'])}) at {esc(g['issued_at'])}</div>"
@@ -840,6 +1346,8 @@ record {self._record_link(s['record']) if s.get('record') else '-'}; pinned to r
             mark = "&#9679;" if cur and cur["digest"] == m["digest"] else ""
             frames = ", ".join(f"{f['name']}@{f['version']}" for f in m["frames"])
             rows.append([mark, f"<code>{esc(m['digest'][:20])}</code>", esc(m["effective_from"]), esc(m["released_by"]), f"<code>{esc((m['parent'] or '-')[:12])}</code>", esc(frames)])
+        if not self._is_member():
+            return self._page("Releases", f"<h1>Policy releases</h1><div class='card'><b>{esc(user)} is not a member</b> of the organization; the release is not shown.</div>")
         body = "<h1>Policy releases</h1>" + table(["", "Digest", "Effective from", "Released by", "Parent", "Frames"], rows, "No release yet.")
         if self.bundle:
             bundle = self.bundle
@@ -879,17 +1387,22 @@ record {self._record_link(s['record']) if s.get('record') else '-'}; pinned to r
 
     def page_why(self):
         user = self.user
+        principal = (self.q.get("principal", [""])[0] or "").strip() or user
         action = self.q.get("action", ["create"])[0] or "create"
         obj = self.q.get("object", ["bill"])[0] or "bill"
         folder = self.q.get("folder", ["Finance/Payables"])[0] or "Finance/Payables"
-        d = self.hub.why(user, action, obj, folder)
+        d = self.hub.why(principal, action, obj, folder)
         objects = sorted({t.get("object", n) for n, t in self.hub.kernel.types.items()} | {"*"})
         folders = self.bundle["folders"] if self.bundle else [folder]
+        members = sorted(self.bundle["members"]) if self.bundle else []
+        if principal not in members:
+            members = [principal] + members
         body = f"""<h1>Why?</h1><form method="get" action="/why" class="card">{hidden_as(user)}
-May <b>{esc(user)}</b> <select name="action">{''.join(f'<option{" selected" if a == action else ""}>{a}</option>' for a in ("create", "read", "approve", "update", "delete"))}</select>
+May <select name="principal">{''.join(f'<option value="{esc(m)}"{" selected" if m == principal else ""}>{esc(m)}</option>' for m in members)}</select>
+<select name="action">{''.join(f'<option{" selected" if a == action else ""}>{a}</option>' for a in ("create", "read", "approve", "update", "delete"))}</select>
 <select name="object">{''.join(f'<option value="{esc(o)}"{" selected" if o == obj else ""}>{esc(o)}</option>' for o in objects)}</select> in
 <select name="folder">{''.join(f'<option value="{esc(f)}"{" selected" if f == folder else ""}>{esc(f)}</option>' for f in folders)}</select> <button>Ask</button></form>
-<div class="card">{chip('allowed' if d['allowed'] else 'denied')} {esc(d['why'])}</div>"""
+<div class="card">May <b>{esc(principal)}</b> {esc(action)} {esc(obj)} in {esc(folder)}? {chip('allowed' if d['allowed'] else 'denied')} {esc(d['why'])}</div>"""
         if d.get("rule"):
             src = d["rule"]["source"]
             body += f"<p><a href='{href('/frame/' + src['frame'], user)}#L{src['line']}'>Open {esc(src['frame'])} at line {src['line']}</a></p>"
@@ -904,9 +1417,10 @@ May <b>{esc(user)}</b> <select name="action">{''.join(f'<option{" selected" if a
                                             [[esc(p), esc(m["type"]), " ".join(f'<span class="chip">{esc(r)}</span>' for r in m["roles"]),
                                               f"<span class='why'>{esc(m.get('source', {}).get('frame', ''))}:{esc(m.get('source', {}).get('line', ''))}</span>"] for p, m in bundle["members"].items()],
                                             "No release in effect.")
-        body += "<h2>Record types</h2>" + table(["Type", "Prefix", "Object", "Fields", "Required by state", "Retention", "Sensitivity"],
+        body += "<h2>Record types</h2>" + table(["Type", "Prefix", "Object", "Fields", "Required by state", "System fields", "Decision fields", "Retention"],
                                                  [[esc(n), esc(t["prefix"]) + ("-YYYY" if t.get("yearly") else ""), esc(t["object"]), esc(", ".join(t["fields"])),
-                                                   esc("; ".join(f"{s}: {', '.join(v)}" for s, v in t.get("required_by_state", {}).items()) or "-"), esc(t.get("retention")), esc(t.get("sensitivity"))]
+                                                   esc("; ".join(f"{s}: {', '.join(v)}" for s, v in t.get("required_by_state", {}).items()) or "-"),
+                                                   esc(", ".join(t.get("system_fields") or []) or "-"), esc(", ".join(t.get("decision_fields") or []) or "-"), esc(t.get("retention"))]
                                                   for n, t in self.hub.kernel.types.items()])
         body += "<h2>Retention classes</h2>" + table(["Class", "Years", "Evidence a Track must hold"], [[esc(n), esc(r["years"]), esc(", ".join(r["evidence"]))] for n, r in self.hub.kernel.retention.items()])
         body += "<h2>Link vocabulary</h2>" + table(["Relation", "Inverse"], [[esc(k), esc(v)] for k, v in self.hub.kernel.link_vocab.items()])
@@ -933,59 +1447,143 @@ May <b>{esc(user)}</b> <select name="action">{''.join(f'<option{" selected" if a
                 return filename, content
         return "", b""
 
+    def _attachments(self) -> list[dict]:
+        """Every uploaded file as a submission attachment: a controlled document typed by its extension."""
+        return [{"name": filename, "content_b64": base64.b64encode(content).decode("ascii"), "doc_class": "controlled",
+                 "doc_type": doc_type_for(filename)} for _, filename, content in self.files if filename]
+
+    def _json_fields(self) -> dict:
+        raw = self._f("json")
+        if not raw:
+            return {}
+        try:
+            record = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise ShellError(f"The JSON fields do not parse: {e}") from None
+        if not isinstance(record, dict):
+            raise ShellError("The JSON fields must be an object.")
+        return record
+
+    def _collect_fields(self, rt: str, current: dict | None = None) -> dict:
+        """The record fields from a Start or resubmit form: the type's inputs, any other declared field, the JSON box.
+        Unknown and system-owned fields are refused with the list of what is accepted."""
+        td = self.hub.kernel.types.get(rt, {})
+        specs = td.get("fields", {})
+        system = set(td.get("system_fields") or [])
+        declared = {name: (kind, spec) for name, kind, spec in self._start_spec(rt)}
+        record: dict = {}
+        for k, v in self._json_fields().items():
+            if k == "attachments":
+                record[k] = v
+                continue
+            if k in system and k not in declared:
+                raise ShellError(f"{k} is set by the system, not at submission; leave it out of the JSON.")
+            if k not in specs and k not in declared:
+                raise ShellError(f"{rt} has no field {k!r}; its fields are {', '.join(specs)}.")
+            record[k] = v
+        for k, v in self.form.items():
+            if k in RESERVED_KEYS or not v.strip():
+                continue
+            if k in declared:
+                kind, spec = declared[k]
+            elif k in specs and k not in system:
+                kind, spec = None, specs[k]
+            elif k in system:
+                raise ShellError(f"{k} is set by the system, not at submission.")
+            else:
+                raise ShellError(f"{rt} has no field {k!r}; its fields are {', '.join(specs)}.")
+            value = coerce(k, spec, v, kind)
+            if value is None:
+                continue
+            if current is not None and current.get(k) == value:
+                continue  # unchanged on a resubmit
+            record[k] = value
+        return record
+
     def post_start(self):
         user = self.user
         bundle = self._need_release()
         process = self._f("process")
         if process not in bundle["ops"]:
             raise ShellError(f"No process {process!r} in the release.", 404)
-        raw = self._f("json")
-        try:
-            record = json.loads(raw) if raw else {}
-        except json.JSONDecodeError as e:
-            raise ShellError(f"The JSON fields do not parse: {e}") from None
-        if not isinstance(record, dict):
-            raise ShellError("The JSON fields must be an object.")
         rt = bundle["ops"][process].get("record_type", "")
-        td = self.hub.kernel.types.get(rt, {}).get("fields", {})
-        for name, spec in COMMON_INPUTS:
-            v = coerce(td.get(name) or spec, self._f(name))
-            if v is not None:
-                record[name] = v
+        record = self._collect_fields(rt)
+        attachments = list(record.get("attachments") or []) + self._attachments()
+        if attachments:
+            record["attachments"] = attachments
         run_id = self.hub.runner.submit(process, {"record": record}, owner=user)
+        state = self.hub.runner.load(run_id)
+        log_line(f"run started run={run_id} process={process} by={user} record={state.get('record')} status={state['status']}")
         self._redirect(href("/run/" + run_id, user))
 
     def post_decide(self):
         user = self.user
-        bundle = self._need_release()
+        self._need_release()
         run_id = self._f("run")
         verdict = self._f("verdict")
+        meaning = self._f("meaning")
         state = self.hub.runner.load(run_id)
         fields: dict = {}
-        if state.get("pending") and state.get("record"):
+        reserved = {"as", "run", "verdict", "meaning", "digest"}
+        given = {k: v for k, v in self.form.items() if k not in reserved and v.strip()}
+        if given and state.get("pending") and state["pending"].get("kind", "decision") == "decision" and state.get("record"):
             rec = self.hub.kernel.get(state["record"])
             td = self.hub.kernel.types.get(rec["type"], {}).get("fields", {}) if rec else {}
-            wf = state.get("workflow") or bundle["workflows"].get(state["process"])
-            nxt = next_state_for(wf, state["pending"]["checkpoint"])
-            missing = set(self.hub.kernel.required_missing(rec, nxt)) if rec and nxt else set()
-            reserved = {"as", "run", "verdict", "meaning", "digest"}
-            for k, v in self.form.items():
-                if k in reserved or not v.strip():
-                    continue
-                if k in missing or k in td:
-                    value = coerce(td.get(k), v)
-                    if value is not None:
-                        fields[k] = value
-        self.hub.runner.decide(run_id, user, verdict, meaning=self._f("meaning"), payload_digest=self._f("digest") or None,
-                               fields=fields or None)
+            allowed = self.hub.runner.allowed_decision_fields(state)
+            refused = sorted(k for k in given if k not in allowed)
+            if refused:
+                raise ShellError(f"A decision may not set {', '.join(refused)}; this Gate accepts {', '.join(allowed) or 'no fields'}.")
+            for k, v in given.items():
+                value = coerce(k, td.get(k), v)
+                if value is not None:
+                    fields[k] = value
+        result = self.hub.runner.decide(run_id, user, verdict, meaning=meaning, payload_digest=self._f("digest") or None,
+                                        fields=fields or None)
+        log_line(f"decision run={run_id} record={state.get('record')} by={user} verdict={verdict} fields={sorted(fields)} "
+                 f"meaning={meaning!r} status={result['status']}")
         rec_loc = state.get("record")
         self._redirect(href("/record/" + quote(rec_loc, safe=":"), user) if rec_loc else href("/run/" + run_id, user))
 
+    def post_resubmit(self):
+        user = self.user
+        self._need_release()
+        run_id = self._f("run")
+        state = self.hub.runner.load(run_id)
+        rec = self.hub.kernel.get(state["record"]) if state.get("record") else None
+        rt = rec["type"] if rec else state["workflow"]["record_type"]
+        fields = self._collect_fields(rt, current=rec["fields"] if rec else {})
+        attachments = list(fields.pop("attachments", None) or []) + self._attachments()
+        note = self._f("note")
+        result = self.hub.runner.resubmit(run_id, user, fields=fields or None, attachments=attachments or None, note=note)
+        log_line(f"resubmit run={run_id} record={state.get('record')} by={user} fields={sorted(fields)} attachments={len(attachments)} status={result['status']}")
+        self._redirect(href("/record/" + quote(state["record"], safe=":"), user) if state.get("record") else href("/run/" + run_id, user))
+
+    def post_retry(self):
+        user = self.user
+        self._need_release()
+        run_id = self._f("run")
+        result = self.hub.runner.retry(run_id, user, note=self._f("note"))
+        log_line(f"retry run={run_id} record={result.get('record')} by={user} status={result['status']}")
+        self._redirect(href("/record/" + quote(result["record"], safe=":"), user) if result.get("record") else href("/run/" + run_id, user))
+
+    def post_cancel(self):
+        user = self.user
+        self._need_release()
+        run_id = self._f("run")
+        result = self.hub.runner.cancel(run_id, user, reason=self._f("reason"))
+        log_line(f"cancel run={run_id} record={result.get('record')} by={user} reason={self._f('reason')!r}")
+        self._redirect(href("/record/" + quote(result["record"], safe=":"), user) if result.get("record") else href("/run/" + run_id, user))
+
     def post_msg(self):
         user = self.user
+        bundle = self._need_release()
         to = self._f("to")
         if not to:
             raise ShellError("Choose a recipient.")
+        if user not in bundle["members"]:
+            raise ShellError(f"{user} is not a member and cannot send messages.", 403)
+        if to not in bundle["members"]:
+            raise ShellError(f"{to} is not a member; messages go to members only.", 404)
         self.hub.send(user, to, self._f("subject") or "(no subject)", self._f("body"), channel=self._f("channel", "dm") or "dm")
         self._redirect(href("/inbox", user))
 
@@ -1019,6 +1617,7 @@ May <b>{esc(user)}</b> <select name="action">{''.join(f'<option{" selected" if a
                                 attach_to=rec["locator"], title=self._f("title"))
         elif self._f("doc"):
             doc = self.hub.kernel.require(self._f("doc"))
+            self._require_read(doc["folder"])
             self.hub.dms.attach(rec["locator"], doc["locator"], by=user)
         else:
             raise ShellError("Choose a file to upload or an existing document to attach.")
@@ -1029,7 +1628,7 @@ May <b>{esc(user)}</b> <select name="action">{''.join(f'<option{" selected" if a
         rec = self.hub.kernel.require(self._f("doc"))
         if rec["type"] != "document":
             raise ShellError(f"{rec['number']} is not a document.")
-        d = may_file(bundle, self.user, rec["folder"])
+        d = authz.check(bundle, self.user, "create", "document", rec["folder"])
         if not d["allowed"]:
             raise ShellError(f"You cannot change documents in {rec['folder']}: {d['why']}", 403)
         return rec
@@ -1075,13 +1674,14 @@ May <b>{esc(user)}</b> <select name="action">{''.join(f'<option{" selected" if a
             raise ShellError(f"A hold needs an approve permission: {d['why']}", 403)
         on = self._f("on", "1") in ("1", "true", "on")
         self.hub.kernel.hold(rec["locator"], on, self._f("reason"), by=user)
+        log_line(f"hold record={rec['locator']} on={on} by={user} reason={self._f('reason')!r}")
         self._redirect(href("/record/" + quote(rec["locator"], safe=":"), user))
 
 
 # ---------------------------------------------------------------- serving
 def _prepare(hub: Hub) -> None:
     """Handlers run on server threads: reopen the kernel's SQLite connection so any thread may use it
-    (requests are serialized by Handler.lock)."""
+    (hub access is serialized by Handler.lock; body reads and /healthz happen outside it)."""
     try:
         hub.kernel.db.close()
     except Exception:
@@ -1090,17 +1690,24 @@ def _prepare(hub: Hub) -> None:
     hub.kernel._cache = None
 
 
-def make_server(hub: Hub, host: str = "127.0.0.1", port: int = 8080) -> ThreadingHTTPServer:
+def max_upload_from_env() -> int:
+    try:
+        return int(os.environ.get("HUBPROTO_MAX_UPLOAD") or DEFAULT_MAX_UPLOAD)
+    except ValueError:
+        return DEFAULT_MAX_UPLOAD
+
+
+def make_server(hub: Hub, host: str = "127.0.0.1", port: int = 8080, max_upload: int | None = None) -> ThreadingHTTPServer:
     _prepare(hub)
-    handler = type("HubHandler", (Handler,), {"hub": hub})
+    handler = type("HubHandler", (Handler,), {"hub": hub, "max_upload": max_upload or max_upload_from_env()})
     server = ThreadingHTTPServer((host, port), handler)
     server.daemon_threads = True
     return server
 
 
-def serve_in_thread(hub: Hub, host: str = "127.0.0.1", port: int = 0) -> ThreadingHTTPServer:
+def serve_in_thread(hub: Hub, host: str = "127.0.0.1", port: int = 0, max_upload: int | None = None) -> ThreadingHTTPServer:
     """Start the shell on a daemon thread (port 0 picks a free port); returns the server (``server.server_address``)."""
-    server = make_server(hub, host, port)
+    server = make_server(hub, host, port, max_upload=max_upload)
     thread = threading.Thread(target=server.serve_forever, name="hub-shell", daemon=True)
     thread.start()
     return server
@@ -1114,7 +1721,7 @@ def free_port(host: str = "127.0.0.1") -> int:
 
 def serve(hub: Hub, host: str = "127.0.0.1", port: int = 8080) -> None:
     server = make_server(hub, host, port)
-    print(f"workspace shell at http://{host}:{server.server_address[1]}/?as={DEFAULT_USER}")
+    log_line(f"workspace shell at http://{host}:{server.server_address[1]}/?as={DEFAULT_USER} (max upload {server.RequestHandlerClass.max_upload:,} bytes)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

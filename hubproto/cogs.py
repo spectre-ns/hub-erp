@@ -49,6 +49,7 @@ class Cog:
     reaches: list[str] = []
     tasks: list[str] = ["run"]
     description = ""
+    provides: list[str] = []  # record fields this cog fills in before the first Gate, so the submitter need not
 
     def invoke(self, task: str, input: dict, ctx: RunContext) -> dict:
         if task not in self.tasks:
@@ -540,6 +541,7 @@ class NCROpener(Cog):
 class CAPADrafter(Cog):
     id = "capa-drafter"
     kind = "context"
+    provides = ["root_cause_method", "actions", "due"]
     description = "Drafts a root-cause skeleton and action list for the owner to complete (stand-in)."
 
     def task_run(self, input: dict, ctx: RunContext) -> dict:
