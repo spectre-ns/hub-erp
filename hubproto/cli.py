@@ -26,6 +26,7 @@ import re
 import shutil
 import sqlite3
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -926,6 +927,25 @@ def cmd_tick(args) -> int:
     return 0
 
 
+def cmd_cog_users(args) -> int:
+    """Cogs as users: each cog takes its turn on the items assigned to it, deciding through the same path as a
+    person. The shell does this inline unless HUBPROTO_COG_USERS=service, in which case this verb (or the
+    cog-users service) does it."""
+    hub = _hub(args)
+    hub.runner.cog_users_inline = False
+    while True:
+        touched = hub.runner.cog_users_work(cogs=args.cogs)
+        for state in touched:
+            last = next((e for e in reversed(hub.runner.track(state["id"])) if e["type"] in ("gate.decided", "gate.declined")), None)
+            who = (last or {}).get("by", "?")
+            what = "decided" if last and last["type"] == "gate.decided" else "declined"
+            print(f"{who} {what} run {state['id']} ({state.get('record') or state['process']}): now {state['status']}")
+        if not args.loop:
+            print(f"cog-users done: {len(touched)} item(s) taken")
+            return 0
+        time.sleep(args.loop)
+
+
 def cmd_bootstrap_release(args) -> int:
     """First release on a fresh hub: compile, approve with two policy owners, release."""
     hub = _hub(args)
@@ -1202,6 +1222,10 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("tick", help="escalate overdue Gates as the routing sentences say")
     s.add_argument("--today", type=iso_date, metavar="YYYY-MM-DD", help="treat this date as today (default: today)")
     s.set_defaults(fn=cmd_tick)
+    s = sub.add_parser("cog-users", help="let the cogs take the items waiting for them (service mode: HUBPROTO_COG_USERS=service)")
+    s.add_argument("--as", dest="cogs", action="append", metavar="COG", help="only this cog (repeatable); default: every cog")
+    s.add_argument("--loop", type=int, metavar="SECONDS", help="keep working every SECONDS until stopped")
+    s.set_defaults(fn=cmd_cog_users)
     from . import cli_records
 
     cli_records.register(sub)  # inbox-pending, retry, resubmit, cancel, records, record, link, snapshot, documents

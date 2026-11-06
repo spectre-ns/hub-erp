@@ -3,6 +3,7 @@ the inbox and the runner for a hub rooted at a directory."""
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from . import authz
@@ -36,6 +37,9 @@ class Hub:
         self.inbox = Inbox(state / "inbox")
         self.dms = DMS(self.kernel, BlobStore(state / "blobs"))
         self.runner = Runner(state / "runs", self.kernel, self.releases, self.registry, self.inbox, self.dms)
+        # Cogs are users: a Gate pends for a cog, and the cog takes its turn either at once (inline) or from the
+        # cog-users service (`hubproto cog-users --loop 5`, HUBPROTO_COG_USERS=service).
+        self.runner.cog_users_inline = os.environ.get("HUBPROTO_COG_USERS", "inline") != "service"
 
     @property
     def frames(self) -> FrameStore:

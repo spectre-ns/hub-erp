@@ -525,3 +525,18 @@ def test_doc_checkin_needs_the_checkout_by_the_same_person(released, tmp_path):
     src.write_text("# SOP v2\n")
     rc, out = run_cli(released, "doc-checkin", number, "--as", "alice", "--file", str(src), "--note", "revised")
     assert rc == 0 and "version 2" in out
+
+
+def test_cog_users_verb_takes_the_items_waiting_for_cogs(fresh, monkeypatch):
+    from hubproto.app import Hub
+    from conftest import dated, SMALL_BILL
+
+    hub = Hub(fresh)
+    release_all(hub)
+    monkeypatch.setenv("HUBPROTO_COG_USERS", "service")
+    hub = Hub(fresh)
+    run_id = hub.runner.submit("purchase-to-pay", {"record": dated(SMALL_BILL)}, owner="alice")
+    assert hub.runner.load(run_id)["pending"]["assignees"] == ["ap-reviewer"]
+    rc, out = run_cli(fresh, "cog-users")
+    assert rc == 0 and "ap-reviewer decided run" in out and "1 item(s) taken" in out
+    assert Hub(fresh).runner.load(run_id)["status"] == "completed"

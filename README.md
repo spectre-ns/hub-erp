@@ -81,6 +81,21 @@ seen (`inbox-pending` prints the seen digest and the fields the Gate
 accepts). A failed run is the owner's to repair:
 `hubproto retry <run> --field k=v --file path`, or `cancel`.
 
+## Cogs are users
+
+A cog is a member of the organization like a person: it holds roles from the org model, is routed work by the
+same sentences, is assigned and notified, and signs its decisions through the same path (seen digest, meaning,
+signature) with the approval-criteria sentence that let it decide recorded as the delegating rule. The Track of
+a bill under the cog's limit reads: assigned to ap-reviewer, reviewed, decided by ap-reviewer (cog); one outside
+its criteria reads: assigned to ap-reviewer, reviewed, declined, assigned to dave. Segregation of duties applies
+to cogs; a cog supplies no fields at a Gate and may not take an item whose next state needs a person's input.
+
+By default the cog takes its turn at once, in the same process (deterministic for tests and the shell). With
+`HUBPROTO_COG_USERS=service` the item stays waiting for the cog and `hubproto cog-users --loop 5` (the
+`cog-users` compose profile) takes it, which is the production shape: cogs run as their own service accounts
+against the same API as people. `hubproto inbox-pending --as ap-reviewer` shows a cog's queue; the shell shows
+each cog's profile, queue and decisions under People.
+
 ## The integrated editor
 
 Documents open in Collabora Online inside the hub: the hub is a WOPI host (`hubproto/wopi.py`; the

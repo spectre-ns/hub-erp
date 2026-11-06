@@ -28,6 +28,25 @@ services:
       - collabora
     restart: unless-stopped
 
+  # Cogs as users, as a service: the shell leaves items assigned to a cog waiting and this worker takes them
+  # through the same decide path. Default is inline (the shell lets a cog take its turn at once); to use the
+  # service, set HUBPROTO_COG_USERS=service on the hub and run: docker compose --profile cog-users up -d
+  cog-users:
+    image: hub-erp-proto:local
+    container_name: hub-erp-cog-users
+    command: ["hubproto", "cog-users", "--loop", "5"]
+    volumes:
+      - hub-state:/hub/state
+      - ./frames:/hub/frames
+      - ./profiles:/hub/profiles
+    environment:
+      HUBPROTO_ROOT: /hub
+      HUBPROTO_CAD_WORKER_URL: http://cad-worker:9000
+    profiles: ["cog-users"]
+    depends_on:
+      - hub
+    restart: unless-stopped
+
   # Collabora Online: the office editor documents open in. It fetches files from the hub over WOPI
   # (http://hub:8080/wopi/...) and the browser loads its pages from localhost:9980.
   collabora:
