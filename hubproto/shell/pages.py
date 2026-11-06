@@ -828,7 +828,8 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
         immutable = f.get("doc_class") in ("evidence", "external")
         can, why_not = self._may_edit_document(rec)
         meta = [("Title", esc(f.get("title"))), ("Class", esc(f.get("doc_class"))), ("Type", esc(f.get("doc_type"))),
-                ("Revision", esc(f"{f.get('revision', '')}.{f.get('minor', 0)}")), ("State", self._state_chip(rec["state"])),
+                ("Revision", esc(f"version {f.get('frame_version')}" if f.get("doc_type") in ("frame", "frame-draft") and f.get("frame_version")
+                                 else f"{f.get('revision', '')}.{f.get('minor', 0)}")), ("State", self._state_chip(rec["state"])),
                 ("Folder", f'<a href="{href("/files", user, folder=rec["folder"])}">{esc(rec["folder"])}</a>'), ("Owner", self._avatar(f["owner"], size="sm", named=True) if f.get("owner") else ""),
                 ("Author", self._avatar(f["author"], size="sm", named=True) if f.get("author") else ""), ("Checked out by", (self._avatar(locked, size="sm", named=True) if locked else "")), ("File", esc(f.get("filename"))), ("Format", esc(f.get("mime"))),
                 ("Labels", " ".join(tag(f"{k}: {v}") for k, v in rec["labels"].items())),
