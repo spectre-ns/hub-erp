@@ -282,6 +282,14 @@ class ActionsMixin:
         replies = reply.get("replies") or ([reply] if reply.get("kind") == "reply" else [])
         answered = "; ".join(f"{r['from']} answered: {r.get('body', '')[:160]}" for r in replies[:3])
         msg = ("Note logged" if note else f"Message sent to {to}") + (f"; {answered}" if answered else "") + "."
+        waiting = [t for t in (reply.get("queued") or []) if t.get("status") in ("queued", "working")]
+        if waiting:
+            from .queue import ordinal
+
+            def where(t):
+                pos = self.hub.queue.position(self.hub.queue.get(t["id"]) or t)
+                return "working on it now" if pos == 0 else "next in its queue" if pos == 1 else f"{ordinal(pos)} in its queue"
+            msg += " " + "; ".join(f"{t['cog']}: {where(t)}" for t in waiting) + ". The answer appears here when it is ready; you can carry on."
         back = self._f("return")
         if back.startswith(("/record/", "/document/", "/user/")):  # sent from a chatter or a profile: land back there
             return self._redirect(self._once_finish(back + ("&" if "?" in back else "?") + "done=" + quote(msg) + "#chatter"))

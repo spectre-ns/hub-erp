@@ -257,8 +257,8 @@ class Runner:
                 if outcome == "waiting":
                     state["steps"][sid]["status"] = "gate-pending"
                     self._save(state)
-                    if self.cog_users_inline and (state.get("pending") or {}).get("assignee_type") == "cog":
-                        return self.cog_decide(run_id, state["pending"]["assignees"][0])
+                    if (state.get("pending") or {}).get("assignee_type") == "cog":
+                        return self.give_to_cog(state)
                     return state
                 if outcome == "failed":
                     self._save(state)
@@ -434,7 +434,22 @@ class Runner:
         return "failed"
 
     # ------------------------------------------------------------ cogs as users
-    cog_users_inline = True  # the shell and tests let a cog take its turn at once; a service may do it instead
+    cog_users_inline = True  # False: an item waiting for a cog is not put in its queue (a sweep gives it later)
+    queue = None  # the cogs' work queue (hubproto.workqueue.CogQueue), set by the Hub
+
+    def give_to_cog(self, state: dict) -> dict:
+        """An item now waits for a cog: it goes in that cog's queue, like a task in a person's tray. In inline mode the
+        cog takes its turn before this returns; otherwise the item waits until the cog gets to it."""
+        pending = state.get("pending") or {}
+        cog = (pending.get("assignees") or [None])[0]
+        if not cog or not self.cog_users_inline:
+            return state
+        if self.queue is None:
+            return self.cog_decide(state["id"], cog)
+        self.queue.submit(cog, "gate", by=state.get("owner") or "hub", title=f"{pending.get('title') or 'Approval'}: {state.get('record') or state['process']}",
+                          record=state.get("record"), payload={"run": state["id"], "step": pending.get("step")},
+                          key=f"gate:{state['id']}:{pending.get('step')}:{cog}")
+        return self.load(state["id"])
 
     def cog_decide(self, run_id: str, cog_name: str) -> dict:
         """A cog takes an item waiting for it: it reviews the payload against its approval criteria and decides
@@ -485,6 +500,8 @@ class Runner:
         if outcome == "waiting":
             state["steps"][step["id"]]["status"] = "gate-pending"
         self._save(state)
+        if outcome == "waiting" and (state.get("pending") or {}).get("assignee_type") == "cog" and cog_name not in state["pending"].get("assignees", []):
+            return self.give_to_cog(self.load(run_id))
         return self.load(run_id)
 
     def cog_users_work(self, run_id: str | None = None, cogs: list[str] | None = None) -> list[dict]:

@@ -998,20 +998,32 @@ def cmd_agent_duties(args) -> int:
 
 
 def cmd_cog_users(args) -> int:
-    """Cogs as users: each cog takes its turn on the items assigned to it, deciding through the same path as a
-    person. The shell does this inline unless HUBPROTO_COG_USERS=service, in which case this verb (or the
-    cog-users service) does it."""
+    """Cogs as users, as a service: work the cogs' queues (mentions, messages, Gates, tasks) in this process. Items
+    waiting for a cog that have no task yet are put in its queue first. The shell works the queues itself unless
+    HUBPROTO_COG_QUEUE=service, in which case this verb (or the cog-users service) does."""
     hub = _hub(args)
-    hub.runner.cog_users_inline = False
+    hub.queue.mode = "service"  # tasks asked while working are queued and taken in turn below
+    if args.loop:
+        n = hub.queue.recover()
+        if n:
+            print(f"{n} task(s) left working by a stopped worker went back in the queue")
     while True:
-        touched = hub.runner.cog_users_work(cogs=args.cogs)
-        for state in touched:
-            last = next((e for e in reversed(hub.runner.track(state["id"])) if e["type"] in ("gate.decided", "gate.declined")), None)
-            who = (last or {}).get("by", "?")
-            what = "decided" if last and last["type"] == "gate.decided" else "declined"
-            print(f"{who} {what} run {state['id']} ({state.get('record') or state['process']}): now {state['status']}")
+        for state in hub.runner.list():
+            pending = state.get("pending") or {}
+            if state["status"] == "waiting" and pending.get("assignee_type") == "cog" and pending.get("kind", "decision") == "decision" \
+                    and (not args.cogs or pending["assignees"][0] in args.cogs):
+                hub.runner.give_to_cog(state)
+        done = hub.queue.drain(cogs=args.cogs)
+        taken = 0
+        for t in done:
+            res = t.get("result") or {}
+            if t["kind"] == "gate" and res.get("outcome"):
+                taken += 1
+                print(f"{t['cog']} {res['outcome']} run {res['run']} ({t.get('record') or ''}): now {res['status']}")
+            else:
+                print(f"{t['cog']} {t['kind']} {t['status']}: {t['title'][:80]}" + (f" ({t['error']})" if t.get("error") else ""))
         if not args.loop:
-            print(f"cog-users done: {len(touched)} item(s) taken")
+            print(f"cog-users done: {len(done)} task(s) worked, {taken} item(s) taken")
             return 0
         time.sleep(args.loop)
 
@@ -1305,7 +1317,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--cog", metavar="COG", help="only this cog")
     s.add_argument("--loop", type=int, metavar="SECONDS", help="keep checking every SECONDS")
     s.set_defaults(fn=cmd_agent_duties)
-    s = sub.add_parser("cog-users", help="let the cogs take the items waiting for them (service mode: HUBPROTO_COG_USERS=service)")
+    s = sub.add_parser("cog-users", help="work the cogs' queues: mentions, messages, Gates and tasks (service mode: HUBPROTO_COG_QUEUE=service)")
     s.add_argument("--as", dest="cogs", action="append", metavar="COG", help="only this cog (repeatable); default: every cog")
     s.add_argument("--loop", type=int, metavar="SECONDS", help="keep working every SECONDS until stopped")
     s.set_defaults(fn=cmd_cog_users)

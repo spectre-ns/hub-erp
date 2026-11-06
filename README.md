@@ -90,11 +90,30 @@ a bill under the cog's limit reads: assigned to ap-reviewer, reviewed, decided b
 its criteria reads: assigned to ap-reviewer, reviewed, declined, assigned to dave. Segregation of duties applies
 to cogs; a cog supplies no fields at a Gate and may not take an item whose next state needs a person's input.
 
-By default the cog takes its turn at once, in the same process (deterministic for tests and the shell). With
-`HUBPROTO_COG_USERS=service` the item stays waiting for the cog and `hubproto cog-users --loop 5` (the
-`cog-users` compose profile) takes it, which is the production shape: cogs run as their own service accounts
-against the same API as people. `hubproto inbox-pending --as ap-reviewer` shows a cog's queue; the shell shows
-each cog's profile, queue and decisions under People.
+### Cogs work from queues
+
+Everything asked of a cog lands in its queue, like a task in a person's tray: a comment or chatter message that
+mentions it, a message sent to it, an item waiting for it at a Gate, a task given on its profile, a standing duty.
+Asking never waits for the cog: the page comes back at once, saying where the request is ("next in its queue",
+"3rd in line"), and the chatter shows a "working on it" entry that turns into the answer when it lands, without
+a reload (the page polls `/queue-status` and swaps in the parts that changed, so a half-typed message stays put).
+A comment saved in the editor is queued the same way, so the save returns at once, and the editor shows which
+cog is on it until its reply is written into the comment thread.
+
+Each cog takes one task at a time, oldest first; different cogs work side by side. The queue is a SQLite table
+(`state/queue.db`); its modes are set by `HUBPROTO_COG_QUEUE`:
+
+* `worker` (what `hubproto shell` and the compose hub use): a thread in the hub works the queues. It holds the
+  hub lock while it reads and writes and gives it up while the model thinks, so pages keep loading during a
+  70-second qwen answer. `HUBPROTO_COG_WORKERS` (default 1) sets how many tasks run at once across cogs.
+* `service`: the hub only queues; `hubproto cog-users --loop 3` (the `cog-users` compose profile) works the
+  queues in its own process, the production shape of cogs as service accounts.
+* `inline` (library, CLI verbs and tests): a task is worked the moment it is asked, so callers see the result.
+
+A task left "working" by a worker that stopped goes back in the queue when a worker starts (failed after three
+tries). A failed task tells the person who asked why. The person who asked, or a policy owner, may withdraw a
+task still waiting. Each cog's profile shows its queue (working on, waiting with positions, recently finished);
+`/queue` shows every cog's queue on one page, and People shows each cog as free or working.
 
 ## Cog profiles, @mentions, committees and swarms
 

@@ -61,7 +61,7 @@ class EditorMixin:
         if writable and others:
             reason = "also editing: " + ", ".join(others) + "; everyone's changes merge in the editor"
         bar = f"""<div class="editbar"><a class="button ghost" href="{back}">{icon('chevron-right')}{esc(number)}</a> {icon('edit' if writable else 'eye')} <b>{esc(title)}</b> <span class="chip {'ok' if writable else 'warn'}">{mode}</span>
-{f"<span class='why'>{esc(reason)}</span>" if reason else "<span class='why'>Every save becomes a version; others may join and edit with you; the last to finish releases the document.</span>"} <span class='why' id='editstatus' role='status'></span>
+{f"<span class='why'>{esc(reason)}</span>" if reason else "<span class='why'>Every save becomes a version; others may join and edit with you; the last to finish releases the document.</span>"} <span class='why' id='editstatus' role='status'></span> <span class='why' id='cogwork' role='status' aria-live='polite'></span>
 <form method="post" action="/finish-edit" class="inline">{hidden_as(user)}<input type="hidden" name="doc" value="{esc(rec['locator'])}"><button class="{'primary' if writable else 'secondary'}">{icon('check' if writable else 'x')}{'Finish editing' if writable else 'Close'}</button></form></div>"""
         if not (browser_url and host_url):
             body = bar + ("<div class='card'><b>No online editor is configured.</b> Set <code>HUBPROTO_COLLABORA_URL</code> (the editor's address for the browser, "
@@ -132,6 +132,7 @@ seatPost(reply.from,{{MessageId:'Send_UNO_Command',Values:{{Command:'.uno:ReplyC
 seatPost(reply.from,{{MessageId:'Get_Comments'}});setTimeout(function(){{if(st.onComments&&attempts>=8){{st.onComments=null;dbg('seat '+reply.from+': no Get_Comments_Resp');finish(false)}}}},6000)}};
 setTimeout(ask,2500)}}}})}}
 function poll(){{if(busy)return;fetch(repliesUrl).then(function(r){{return r.json()}}).then(function(j){{
+var cw=document.getElementById('cogwork');if(cw){{var t=(j.queue||[]).join('; ');cw.textContent=t?'⏳ '+t+'…':''}}
 if(j.pending>0&&!busy){{busy=true;var list=j.replies.filter(function(x){{return !inflight[x.id]}});if(!list.length){{busy=false;return}}var r0=list[0];inflight[r0.id]=true;
 actLive(r0,function(ok){{if(ok){{var fd=new FormData();fd.append('as',{json.dumps(user)});fd.append('doc',loc);fd.append('ids',r0.id);fetch(markUrl,{{method:'POST',body:fd}}).then(function(){{busy=false;var s=document.getElementById('editstatus');if(s)s.textContent=r0.from+' answered in the document.';setTimeout(function(){{post({{MessageId:'Action_Save',Values:{{DontTerminateEdit:true,DontSaveIfUnmodified:false,Notify:true}}}})}},1500)}}).catch(function(){{busy=false}})}}
 else{{delete inflight[r0.id];window.__applyAfterSave=true;post({{MessageId:'Action_Save',Values:{{DontTerminateEdit:true,DontSaveIfUnmodified:true,Notify:true}}}});setTimeout(function(){{if(window.__applyAfterSave){{window.__applyAfterSave=false;applyReplies()}}}},2500)}}}})}}
@@ -150,7 +151,14 @@ setInterval(poll,4000);}})();</script>"""
         versions = self.hub.dms.versions(rec["locator"])
         latest = versions[-1] if versions else {}
         machine = latest.get("by") in set(self.hub.registry.ids()) | {"hub"}
-        return self._json({"pending": len(pending), "by": sorted({m["from"] for m in pending}),
+        from .queue import ordinal
+
+        work = []
+        for t in self.hub.queue.open_tasks(record=rec["locator"]):
+            pos = self.hub.queue.position(t)
+            work.append(f"{t['cog']} is " + ("working on " + ("your comment" if t["kind"] == "mention" else "it") if pos == 0 else
+                                             ("next to look at it" if pos == 1 else f"{ordinal(pos)} in line to look at it")))
+        return self._json({"pending": len(pending), "by": sorted({m["from"] for m in pending}), "queue": work,
                            "replies": [{"id": m["id"], "from": m["from"], "body": m.get("body") or "", "comment_id": m.get("comment_id"),
                                         "comment_text": m.get("comment_text") or "", "comment_author": m.get("comment_author") or "",
                                         "edit": m.get("edit")} for m in pending],

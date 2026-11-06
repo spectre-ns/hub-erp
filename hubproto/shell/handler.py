@@ -218,7 +218,7 @@ class BaseHandler(BaseHTTPRequestHandler):
     def _route(self, method: str):
         r = self.route
         if method == "GET":
-            fixed = {"/chat-thread": self.page_chat_thread, "/": self.page_home, "/files": self.page_files, "/documents": self.page_files, "/boards": self.page_boards, "/inbox": self.page_inbox,
+            fixed = {"/chat-thread": self.page_chat_thread, "/queue-status": self.page_queue_status, "/queue": self.page_queue, "/": self.page_home, "/files": self.page_files, "/documents": self.page_files, "/boards": self.page_boards, "/inbox": self.page_inbox,
                      "/runs": self.page_runs, "/releases": self.page_releases, "/frames": self.page_frames, "/why": self.page_why,
                      "/admin": self.page_admin, "/conformance": self.page_conformance, "/download": self.page_download,
                      "/start": self.page_start, "/people": self.page_people, "/suppliers": self.page_suppliers}
@@ -236,7 +236,7 @@ class BaseHandler(BaseHTTPRequestHandler):
         posts = {"/start": self.post_start, "/decide": self.post_decide, "/msg": self.post_msg, "/attach": self.post_attach,
                  "/finish-edit": self.post_finish_edit, "/new-document": self.post_new_document, "/working-copy": self.post_working_copy, "/apply-replies": self.post_apply_replies, "/start-on": self.post_start_on, "/chat": self.post_chat, "/chat-clear": self.post_chat_clear, "/frame-draft": self.post_frame_draft, "/text-save": self.post_text_save,
                  "/frame-propose": self.post_frame_propose, "/proposal-review": self.post_proposal_review, "/proposal-release": self.post_proposal_release,
-                 "/agent-task": self.post_agent_task, "/agent-confirm": self.post_agent_confirm, "/new-person": self.post_new_person, "/new-cog": self.post_new_cog, "/cog-model": self.post_cog_model, "/restart": self.post_restart, "/mark-applied": self.post_mark_applied, "/editor-debug": self.post_editor_debug,
+                 "/agent-task": self.post_agent_task, "/queue-withdraw": self.post_queue_withdraw, "/agent-confirm": self.post_agent_confirm, "/new-person": self.post_new_person, "/new-cog": self.post_new_cog, "/cog-model": self.post_cog_model, "/restart": self.post_restart, "/mark-applied": self.post_mark_applied, "/editor-debug": self.post_editor_debug,
                  "/upload": self.post_upload, "/checkout": self.post_checkout, "/checkin": self.post_checkin, "/link": self.post_link,
                  "/snapshot": self.post_snapshot, "/hold": self.post_hold, "/resubmit": self.post_resubmit, "/retry": self.post_retry,
                  "/cancel": self.post_cancel, "/undo-checkout": self.post_undo_checkout, "/bulk-hold": self.post_bulk_hold}

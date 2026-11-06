@@ -826,8 +826,10 @@ class ReviewerCog(Cog):
         thread = input.get("thread") or []
         sops = ctx.sop_texts()
         system = cog_context(ctx, rec, task="answer")
-        user = ("This thread so far:\n" + "\n".join(f"- {t.get('author')}: {t.get('text')}" for t in thread) + "\n\n" if thread else "") + \
-            f"Reply to this comment in that thread:\n{question}\n\nAnswer in a few sentences a colleague can act on, from the procedures and the document above."
+        where = "comment in that thread" if input.get("place") != "chatter" else "message on the item's chatter"
+        user = (("This thread so far:\n" if input.get("place") != "chatter" else "The conversation on the item so far:\n")
+                + "\n".join(f"- {t.get('author')}: {t.get('text')}" for t in thread) + "\n\n" if thread else "") + \
+            f"Reply to this {where}:\n{question}\n\nAnswer in a few sentences a colleague can act on, from the procedures and the {'document' if rec and rec['type'] == 'document' else 'item'} above."
         text, model, stand_in = "", ctx.profile.get("model") or "stand-in", True
         if ctx.model is not None:
             out = ctx.model.complete(model=model, system=system, user=user, by=self.id, max_tokens=500)

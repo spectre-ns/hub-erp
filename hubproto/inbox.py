@@ -113,35 +113,54 @@ class Inbox:
                "kind": "message", "subject": subject, "body": body, "run_id": "", "record": record, "attachments": attachments or []}
         if comment_id is not None:
             msg["comment_id"] = str(comment_id)
-        self._append(msg)
         member = (bundle or {}).get("members", {}).get(to)
-        if channel == "email":
-            self._write_eml(msg)
         if hub is not None and bundle and record and member and member["type"] == "cog" and "@" + to not in (body or "") and "@" + to not in (subject or ""):
             msg["subject"] = f"@{to} {subject}"  # addressed to the cog on an item: the same as mentioning it there
+        self._append(msg)
+        if channel == "email":
+            self._write_eml(msg)
         if hub is not None and bundle and ("@" in (msg.get("body") or "") or "@" in (msg.get("subject") or "")):
             from . import mentions
 
             replies = mentions.handle(hub, msg, bundle)
             if replies and (not member or member["type"] != "cog" or to in {r["from"] for r in replies}):
                 return replies[0] if len(replies) == 1 else {**msg, "replies": replies}
-        if member and member["type"] == "cog" and registry is not None:
-            cog = registry.get(to)
-            ctx = RunContext(run_id="inbox-" + msg["id"], release=release, bundle=bundle, owner=to, kernel=kernel,
-                             runner=runner, inbox=self)
-            env = cog.invoke("inbox", {"message": msg}, ctx)
-            payload = env.get("payload") or {}
-            reply_body = payload.get("reply") or f"{to} could not handle the message: {(env.get('error') or {}).get('detail')}"
-            reply = {"id": uuid.uuid4().hex[:8], "at": utcnow(), "from": to, "to": sender, "channel": channel,
-                     "kind": "reply", "subject": "Re: " + subject, "body": reply_body, "in_reply_to": msg["id"],
-                     "run_id": (payload.get("actions") or [{}])[0].get("run_id", ""), "attachments": [],
-                     "cog_envelope": {"ok": env["ok"], "problems": env["problems"], "error": env["error"],
-                                      "cog": env["cog"], "timing": env["timing"]}}
-            self._append(reply)
-            if channel == "email":
-                self._write_eml(reply)
-            return reply
+            if member and member["type"] == "cog" and (record or to in {t["cog"] for t in msg.get("queued") or []}):
+                return msg  # the cog has it in its queue (or was told it is not available)
+        if member and member["type"] == "cog" and (hub is not None or registry is not None):
+            if hub is None:  # a bare inbox (tests, tools): answered here and now
+                return self._answer_with(msg, to, registry.get(to), RunContext(run_id="inbox-" + msg["id"], release=release, bundle=bundle,
+                                                                                owner=to, kernel=kernel, runner=runner, inbox=self))
+            task = hub.queue.submit(to, "message", by=sender, title=subject, record=record, payload={"msg": msg["id"]})
+            msg["queued"] = [task]
+            if task["status"] == "done" and (task.get("result") or {}).get("replies"):
+                return task["result"]["replies"][0]
         return msg
+
+    def find(self, msg_id: str) -> dict | None:
+        return next((m for m in self.all() if m["id"] == msg_id), None)
+
+    def answer_as_cog(self, msg: dict, cog_id: str, hub) -> dict:
+        """A cog answers a message sent to it (worked from its queue)."""
+        meta = hub.releases.current()
+        bundle = hub.releases.bundle(meta["digest"]) if meta else {"members": {}}
+        ctx = RunContext(run_id="inbox-" + msg["id"], release=meta["digest"] if meta else "", bundle=bundle, owner=cog_id,
+                         kernel=hub.kernel, runner=hub.runner, inbox=self)
+        return self._answer_with(msg, cog_id, hub.registry.get(cog_id), ctx)
+
+    def _answer_with(self, msg: dict, to: str, cog, ctx) -> dict:
+        env = cog.invoke("inbox", {"message": msg}, ctx)
+        payload = env.get("payload") or {}
+        reply_body = payload.get("reply") or f"{to} could not handle the message: {(env.get('error') or {}).get('detail')}"
+        reply = {"id": uuid.uuid4().hex[:8], "at": utcnow(), "from": to, "to": msg["from"], "channel": msg.get("channel", "dm"),
+                 "kind": "reply", "subject": "Re: " + (msg.get("subject") or ""), "body": reply_body, "in_reply_to": msg["id"],
+                 "run_id": (payload.get("actions") or [{}])[0].get("run_id", ""), "attachments": [], "record": msg.get("record"),
+                 "cog_envelope": {"ok": env["ok"], "problems": env["problems"], "error": env["error"],
+                                  "cog": env["cog"], "timing": env["timing"]}}
+        self._append(reply)
+        if reply["channel"] == "email":
+            self._write_eml(reply)
+        return reply
 
     def _write_eml(self, msg: dict) -> Path:
         path = self.outbox / f"{msg['at'].replace(':', '')}-{msg['id']}.eml"

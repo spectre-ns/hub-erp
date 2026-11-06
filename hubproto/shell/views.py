@@ -465,13 +465,18 @@ class ViewsMixin:
                 if str(d.get("at", ""))[:10] >= month:
                     dec_counts[d.get("by", "")] = dec_counts.get(d.get("by", ""), 0) + 1
 
+        qcounts = self.hub.queue.counts()
+
         def card(name: str, m: dict) -> str:
             roles = " ".join(tag(role_words(r)) for r in m["roles"]) or "<span class='muted'>no role</span>"
             kind = "cog" if m["type"] == "cog" else "person"
             prof = (bundle.get("cogs") or {}).get(name) or {}
             extra = ""
             if m["type"] == "cog":
-                extra = (f"<div class='why'>{icon('cpu')} {esc(prof.get('model') or 'stand-in')} &middot; follows "
+                qn = qcounts.get(name, {})
+                busy = (f"<span class='chip work'>{icon('activity')}working</span> " if qn.get("working") else "<span class='chip ok'>free</span> ")
+                busy += f"<a href='{href('/user/' + name, user)}#cog-work'>{qn.get('queued', 0)} in its queue</a>"
+                extra = (f"<div class='why'>{busy}</div><div class='why'>{icon('cpu')} {esc(prof.get('model') or 'stand-in')} &middot; follows "
                          + (", ".join(f'<a href="{href("/frame/" + fr, user)}">{esc(fr)}</a>' for fr in prof.get("follows") or []) or "no procedure") + "</div>")
             return (f'<div class="card">{avatar(name, bundle, size="lg")}<div><h3><a href="{href("/user/" + name, user)}">{esc(name)}</a> <span class="muted">{kind}</span></h3>'
                     f'<div>{roles}</div>{extra}<div class="why">{pend_counts.get(name, 0)} waiting &middot; {dec_counts.get(name, 0)} decisions in 30 days</div></div></div>')
@@ -481,7 +486,8 @@ class ViewsMixin:
         body = f"<h1>{icon('users', cls='lg')} People</h1><p class='why'>Members of the organization under the policy in effect: people and cogs, with what waits for each and what each decided lately.</p>"
         body += f"<h2>People <span class='muted'>{len(people)}</span></h2><div class='people'>{''.join(card(n, members[n]) for n in people)}</div>"
         body += (f"<h2>Cogs <span class='muted'>{len(cogs)}</span></h2><p class='why'>Cogs are team members that review, approve within fixed criteria, answer messages and file records. "
-                 f"Open one to see what it is doing.</p><div class='people'>{''.join(card(n, members[n]) for n in cogs)}</div>")
+                 f"Each works from its own queue, one task at a time: <a href='{href('/queue', user)}'>see all the cogs' queues</a>.</p>"
+                 f"<div class='people' id='cog-cards' data-live>{''.join(card(n, members[n]) for n in cogs)}</div>{self._live_meta()}")
         body += self._new_member_forms()
         self._page("People", body, crumbs=[("People", None)])
 
@@ -563,6 +569,7 @@ class ViewsMixin:
                      f"<p class='why'>A cog is routed work only from the procedures it follows; a model drafts its words and never signs.</p>"
                      + kv(profile + about + [("Models", esc(models))]) + "</div>")
         if m.get("type") == "cog" and name in self.hub.registry.ids():
+            body += self._cog_queue_section(name) + self._live_meta(cog=name)
             body += self._agent_section(name, prof if 'prof' in locals() else ((self.bundle.get("cogs") or {}).get(name) or {}))
         body += f"<h2>{icon('check-circle')} May approve</h2><ul>" + "".join(f"<li>{esc(s)}</li>" for s in self._may_approve_words(name)) + "</ul>"
         waiting = [r for r in self.hub.runner.pending_for(name)]
@@ -643,7 +650,7 @@ class ViewsMixin:
                 cls += " exit"
             aria = ' aria-current="step"' if i == idx else ""
             items += f'<li class="{cls}" data-state="{esc(s)}"{aria}>{esc(state_name(s, wf))}</li>'
-        return f'<ol class="statusbar" aria-label="Workflow">{items}</ol>'
+        return f'<ol class="statusbar" id="statusbar" data-live aria-label="Workflow">{items}</ol>'
 
     def _smart_buttons(self, counts: list[tuple[str, int, str, str]]) -> str:
         """(label, count, icon, tab id) as the strip under the form head; each jumps to its tab."""
@@ -719,5 +726,8 @@ class ViewsMixin:
                         f'<details><summary>{icon("note")} Log a note (kept with the item, sent to nobody else)</summary><form method="post" action="/msg">{hidden_as(user)}{self._once()}'
                         f'<input type="hidden" name="return" value="{esc(back)}"><input type="hidden" name="record" value="{esc(loc)}"><input type="hidden" name="to" value="{esc(user)}"><input type="hidden" name="subject" value="Note on {esc(rec["number"])}">'
                         f'<div class="fields">{text_input("body", "Note", "", required=True, textarea=True)}</div><div class="actions"><button class="secondary">{icon("note")}Log note</button></div></form></details></div>')
-        return (f'<section class="chatter" id="chatter" aria-labelledby="chatter-h"><h2 id="chatter-h">{icon("message")} Chatter <span class="muted">{len(entries)}</span></h2>{composer}'
-                f'<ol class="timeline">{items}</ol>{"" if entries else "<p class=muted>Nothing yet.</p>"}</section>')
+        page_back = href(("/document/" if rec["type"] == "document" else "/record/") + quote(loc, safe=":"), user)
+        working = self._queue_entries(loc, page_back) if hasattr(self, "_queue_entries") else ""
+        return (f'<section class="chatter" id="chatter" aria-labelledby="chatter-h"><h2 id="chatter-h">{icon("message")} Chatter <span class="muted" id="chatter-count" data-live>{len(entries)}</span></h2>{composer}'
+                f'<div id="chatter-log" data-live><ol class="timeline">{working}{items}</ol>{"" if entries or working else "<p class=muted>Nothing yet.</p>"}</div>'
+                f'{self._live_meta(record=loc) if hasattr(self, "_live_meta") else ""}</section>')

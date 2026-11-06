@@ -25,6 +25,9 @@ services:
       # Local models for the cogs: Ollama on the host, reached through the ollama-relay service. A cog is bundled
       # with the model its profile names (ollama/<name> or claude-*); if that model cannot be reached the cog is unavailable.
       HUBPROTO_OLLAMA_URL: ${HUBPROTO_OLLAMA_URL:-http://host.docker.internal:11434}
+      # Cogs work from queues: asking one returns at once and its answer lands where it was asked. "worker" works the
+      # queues on a thread in this process; "service" leaves them to the cog-users service below.
+      HUBPROTO_COG_QUEUE: ${HUBPROTO_COG_QUEUE:-worker}
       # Optional: HUBPROTO_EXTRACTOR=claude and ANTHROPIC_API_KEY for guided-mode extraction
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -48,13 +51,12 @@ services:
         exec socat TCP-LISTEN:11434,bind=$$IP,fork,reuseaddr TCP:127.0.0.1:11434
     restart: unless-stopped
 
-  # Cogs as users, as a service: the shell leaves items assigned to a cog waiting and this worker takes them
-  # through the same decide path. Default is inline (the shell lets a cog take its turn at once); to use the
-  # service, set HUBPROTO_COG_USERS=service on the hub and run: docker compose --profile cog-users up -d
+  # The cogs' queues worked in a process of their own (instead of the hub's worker thread): set
+  # HUBPROTO_COG_QUEUE=service for the hub and run: docker compose --profile cog-users up -d
   cog-users:
     image: hub-erp-proto:local
     container_name: hub-erp-cog-users
-    command: ["hubproto", "cog-users", "--loop", "5"]
+    command: ["hubproto", "cog-users", "--loop", "3"]
     volumes:
       - hub-state:/hub/state
       - ./frames:/hub/frames
@@ -62,6 +64,9 @@ services:
     environment:
       HUBPROTO_ROOT: /hub
       HUBPROTO_CAD_WORKER_URL: http://cad-worker:9000
+      HUBPROTO_OLLAMA_URL: ${HUBPROTO_OLLAMA_URL:-http://host.docker.internal:11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     profiles: ["cog-users"]
     depends_on:
       - hub

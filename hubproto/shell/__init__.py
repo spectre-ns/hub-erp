@@ -34,7 +34,9 @@ from .handler import DEFAULT_MAX_UPLOAD, BaseHandler, href, log_line, table  # n
 from .inbox import InboxMixin
 from .pages import PagesMixin
 from .policy import PolicyMixin, sentence_diff  # noqa: F401
+from .queue import QueueMixin
 from .views import ViewsMixin
+from ..workqueue import CogWorker
 from .text import TYPE_NAMES, VERBS, chip, esc, friendly, money, day, when, why_sentence  # noqa: F401
 
 __all__ = ["Handler", "ShellError", "coerce", "make_server", "serve", "serve_in_thread", "free_port", "max_upload_from_env",
@@ -42,7 +44,7 @@ __all__ = ["Handler", "ShellError", "coerce", "make_server", "serve", "serve_in_
            "when", "why_sentence", "sentence_diff", "widget", "prefill", "chip", "esc", "href", "table"]
 
 
-class Handler(PagesMixin, ViewsMixin, InboxMixin, PolicyMixin, ActionsMixin, EditorMixin, MessengerMixin, PolicyDocsMixin, McpMixin, AgentsMixin, NewMemberMixin, BaseHandler):
+class Handler(QueueMixin, PagesMixin, ViewsMixin, InboxMixin, PolicyMixin, ActionsMixin, EditorMixin, MessengerMixin, PolicyDocsMixin, McpMixin, AgentsMixin, NewMemberMixin, BaseHandler):
     """The request handler: the plumbing in BaseHandler, the pages and actions in the mixins."""
 
 
@@ -67,15 +69,20 @@ def max_upload_from_env() -> int:
 
 def make_server(hub: Hub, host: str = "127.0.0.1", port: int = 8080, max_upload: int | None = None) -> ThreadingHTTPServer:
     _prepare(hub)
-    handler = type("HubHandler", (Handler,), {"hub": hub, "max_upload": max_upload or max_upload_from_env(), "_once_used": {}, "_frames_stamp": -1.0})
+    handler = type("HubHandler", (Handler,), {"hub": hub, "lock": hub.lock, "max_upload": max_upload or max_upload_from_env(), "_once_used": {}, "_frames_stamp": -1.0})
     server = ThreadingHTTPServer((host, port), handler)
     server.daemon_threads = True
     return server
 
 
-def serve_in_thread(hub: Hub, host: str = "127.0.0.1", port: int = 0, max_upload: int | None = None) -> ThreadingHTTPServer:
-    """Start the shell on a daemon thread (port 0 picks a free port); returns the server (``server.server_address``)."""
+def serve_in_thread(hub: Hub, host: str = "127.0.0.1", port: int = 0, max_upload: int | None = None,
+                    cog_worker: bool = False) -> ThreadingHTTPServer:
+    """Start the shell on a daemon thread (port 0 picks a free port); returns the server (``server.server_address``).
+    ``cog_worker``: the cogs work their queues on a background thread, as under ``hubproto shell``."""
     server = make_server(hub, host, port, max_upload=max_upload)
+    if cog_worker:
+        hub.queue.mode = "worker"
+        server.cog_worker = CogWorker(hub, hub.lock).start()
     thread = threading.Thread(target=server.serve_forever, name="hub-shell", daemon=True)
     thread.start()
     return server
@@ -89,6 +96,14 @@ def free_port(host: str = "127.0.0.1") -> int:
 
 def serve(hub: Hub, host: str = "127.0.0.1", port: int = 8080) -> None:
     server = make_server(hub, host, port)
+    # Served, the cogs work their queues in the background (unless HUBPROTO_COG_QUEUE says inline or service): asking
+    # a cog returns at once and its answer lands where it was asked.
+    if not os.environ.get("HUBPROTO_COG_QUEUE") and hub.queue.mode == "inline":
+        hub.queue.mode = "worker"
+    if hub.queue.mode == "worker":
+        CogWorker(hub, hub.lock).start()
+    else:
+        log_line(f"cog queue: {hub.queue.mode} (" + ("worked by the cog-users service" if hub.queue.mode == "service" else "worked as each task is asked") + ")")
     log_line(f"workspace shell at http://{host}:{server.server_address[1]}/ (choose who you are on the first page; max upload {server.RequestHandlerClass.max_upload:,} bytes)")
     try:
         server.serve_forever()

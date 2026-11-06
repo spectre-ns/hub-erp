@@ -12,15 +12,46 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 
 from .release import utcnow
 from .rules import sha256_of
 
 DEFAULT_MODEL = "stand-in"
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+
+# ---------------------------------------------------------------- letting go of the hub lock while a model thinks
+_held = threading.local()
+
+
+@contextmanager
+def thinking_releases(lock):
+    """While a cog works under the hub lock (the queue worker), every wait on a model gives the lock up, so pages and
+    saves are served meanwhile; the cog takes the lock back before it reads or writes anything."""
+    prev = getattr(_held, "lock", None)
+    _held.lock = lock
+    try:
+        yield
+    finally:
+        _held.lock = prev
+
+
+def _fetch_json(req, timeout: float):
+    lock = getattr(_held, "lock", None)
+    saved = None
+    if lock is not None and getattr(lock, "_is_owned", lambda: False)():
+        saved = lock._release_save()  # all the way out of the re-entrant lock
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.load(r)
+    finally:
+        if saved is not None:
+            lock._acquire_restore(saved)
+
 PROMISE = __import__("re").compile(r"\b(let me (check|look|search|find|see)|i'?ll (check|look|search|find)|checking|looking (that|it) up|one moment)\b", __import__("re").I)
 
 
@@ -177,8 +208,7 @@ class ModelGateway:
                            "messages": turns + [{"role": "user", "content": user}]}).encode("utf-8")
         req = urllib.request.Request(ANTHROPIC_URL, data=body, method="POST", headers={
             "content-type": "application/json", "x-api-key": os.environ["ANTHROPIC_API_KEY"], "anthropic-version": "2023-06-01"})
-        with urllib.request.urlopen(req, timeout=60) as r:
-            data = json.load(r)
+        data = _fetch_json(req, 60)
         return "".join(part.get("text", "") for part in data.get("content", []) if part.get("type") == "text")
 
     def _ollama(self, model: str, system: str, user: str, max_tokens: int, history: list[dict] | None = None) -> str:
@@ -200,8 +230,7 @@ class ModelGateway:
             body = json.dumps(attempt).encode("utf-8")
             req = urllib.request.Request(ollama_url() + "/api/chat", data=body, method="POST", headers={"content-type": "application/json"})
             try:
-                with urllib.request.urlopen(req, timeout=float(os.environ.get("HUBPROTO_MODEL_TIMEOUT") or 180)) as r:
-                    data = json.load(r)
+                data = _fetch_json(req, float(os.environ.get("HUBPROTO_MODEL_TIMEOUT") or 180))
                 break
             except urllib.error.HTTPError as e:
                 detail = e.read()[:300].decode("utf-8", "replace")
@@ -271,8 +300,7 @@ class ModelGateway:
             req = urllib.request.Request(ollama_url() + "/api/chat", data=json.dumps(payload).encode("utf-8"), method="POST",
                                          headers={"content-type": "application/json"})
             try:
-                with urllib.request.urlopen(req, timeout=float(os.environ.get("HUBPROTO_MODEL_TIMEOUT") or 240)) as r:
-                    data = json.load(r)
+                data = _fetch_json(req, float(os.environ.get("HUBPROTO_MODEL_TIMEOUT") or 240))
             except urllib.error.HTTPError as e:
                 raise RuntimeError(f"HTTP {e.code} from Ollama for model {name!r}: {e.read()[:300].decode('utf-8', 'replace')}") from None
             usage["prompt_tokens"] += data.get("prompt_eval_count") or 0
@@ -304,8 +332,7 @@ class ModelGateway:
                 body["tools"] = specs
             req = urllib.request.Request(ANTHROPIC_URL, data=json.dumps(body).encode("utf-8"), method="POST", headers={
                 "content-type": "application/json", "x-api-key": os.environ["ANTHROPIC_API_KEY"], "anthropic-version": "2023-06-01"})
-            with urllib.request.urlopen(req, timeout=120) as r:
-                data = json.load(r)
+            data = _fetch_json(req, 120)
             content = data.get("content") or []
             uses = [b for b in content if b.get("type") == "tool_use"]
             if not uses:

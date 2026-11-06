@@ -134,97 +134,152 @@ def handle(hub, msg: dict, bundle: dict) -> list[dict]:
             out.append(hub.inbox.notify(sender, kind="mention", subject=f"{cog_id} is not available", body=why + ". Nothing was done.",
                                         record=record["locator"] if record else None))
             cogs.remove(cog_id)
+    msg["queued"] = []
     for cog_id in cogs:
-        cog = hub.registry.get(cog_id)
-        profile = (bundle.get("cogs") or {}).get(cog_id) or {}
-        if record:
-            from . import office
-
-            comments = record["fields"].get("office_comments") or []
-            thread_ctx = office.thread_of(comments, str(msg["comment_id"])) if msg.get("comment_id") not in (None, "") else []
-            intent = intent_of(msg.get("body") or msg.get("subject") or "", model=hub.model, model_name=profile.get("model") or "",
-                               thread=[t for t in thread_ctx if str(t.get("id")) != str(msg.get("comment_id"))], cog_id=cog_id)
-        ctx = RunContext(run_id="inbox-" + msg["id"], release=release, bundle=bundle, owner=cog_id, kernel=hub.kernel,
-                         runner=hub.runner, inbox=hub.inbox, record=record["locator"] if record else None, dms=hub.dms,
-                         frames=lambda: hub.frames, model=hub.model, extras={"cog_profile": profile, "process": run["process"] if run else ""})
-        if record and intent == "approve":
-            # Asked to approve: a cog takes its turn only where the Gate is assigned to it; otherwise it just reports.
-            run = hub.runner.run_for_record(record["locator"])
-            if run and run["status"] == "waiting" and cog_id in (run.get("pending") or {}).get("assignees", []):
-                after = hub.runner.cog_decide(run["id"], cog_id)
-                last = next((e for e in reversed(hub.runner.track(run["id"])) if e["type"] in ("gate.decided", "gate.declined")), {})
-                body = f"I took my turn at the Gate: {last.get('type', '').split('.')[-1]}; {record['number']} is now {after['status']}" + \
-                    (f", waiting for {', '.join(after['pending']['assignees'])}" if after.get("pending") else "") + "."
-            elif run and run["status"] == "waiting":
-                body = f"{record['number']} is waiting for {', '.join(run['pending']['assignees'])} at {run['pending'].get('title', 'approval')}; it is not mine to sign."
-            else:
-                body = "; ".join(actions) or f"{record['number']} has nothing in flight and no process I can start for it."
-            out.append(hub.inbox.reply(msg, sender=cog_id, body=body, record=record["locator"]))
-            continue
-        if record and record["type"] == "document" and intent == "edit" and "edit-document" in cog.tasks:
-            env = cog.invoke("edit-document", {"record": record["locator"], "request": msg.get("body") or msg.get("subject")}, ctx)
-            r = env.get("payload") or {}
-            if not r.get("paragraphs"):
-                body = f"I cannot write into {record['number']}: " + ((env.get("error") or {}).get("detail") or "nothing to write")
-                out.append(hub.inbox.reply(msg, sender=cog_id, body=body, record=record["locator"], envelope=env))
-                continue
-            explanation = (r.get("explanation") or "Written as asked.") + ("" if not r.get("stand_in") else " (drafted with the stand-in: configure a model for real wording)")
-            reply = hub.inbox.reply(msg, sender=cog_id, body=explanation, record=record["locator"], envelope=env)
-            # The content is written by the cog's seat in the live editor, or by the hub into the file when no editor is open.
-            edit = {"paragraphs": r["paragraphs"], "position": r.get("position") or "start"}
-            if r.get("kind") == "sheet":
-                edit.update({"kind": "sheet", "rows": r.get("rows") or [], "start_row": r.get("start_row") or 1})
-            hub.inbox.mark(reply["id"], edit=edit)
-            out.append(reply)
-            continue
-        if record and record["type"] == "document" and intent == "message" and msg.get("comment_id") not in (None, "") and "answer" in cog.tasks:
-            from . import office
-
-            comments = record["fields"].get("office_comments") or []
-            thread = [t for t in office.thread_of(comments, str(msg["comment_id"])) if t["id"] != str(msg["comment_id"])]
-            env = cog.invoke("answer", {"record": record["locator"], "question": msg.get("body") or "", "thread": thread}, ctx)
-            body = (env.get("payload") or {}).get("text") or f"{cog_id} could not answer."
-            out.append(hub.inbox.reply(msg, sender=cog_id, body=body, record=record["locator"], envelope=env))
-            continue
-        if record and "review-document" in cog.tasks:
-            env = cog.invoke("review-document", {"record": record["locator"], "question": msg.get("body") or msg.get("subject")}, ctx)
-            r = env.get("payload") or {}
-            verdict = r.get("verdict", "fail")
-            lines = [f"Review of {record['number']} by {cog_id}: {verdict}."]
-            for p in r.get("findings") or []:
-                lines.append(f"- [{p['severity']}] {p['check']}: {p['detail']}")
-            if r.get("summary") and r["summary"] not in "\n".join(lines):
-                lines.append(r["summary"])
-            if r.get("evidence"):
-                lines.append(f"Filed as evidence {r['evidence']}.")
-            # Progress the workflow only where policy already lets this cog decide.
-            run = hub.runner.run_for_record(record["locator"])
-            if run and run["status"] == "waiting" and cog_id in (run.get("pending") or {}).get("assignees", []):
-                if verdict == "pass":
-                    after = hub.runner.cog_decide(run["id"], cog_id)
-                    last = next((e for e in reversed(hub.runner.track(run["id"])) if e["type"] in ("gate.decided", "gate.declined")), {})
-                    lines.append(f"Then I took my turn at the Gate: {last.get('type', '').split('.')[-1]}; the item is now {after['status']}"
-                                 + (f", waiting for {', '.join(after['pending']['assignees'])}" if after.get("pending") else "") + ".")
-                else:
-                    lines.append("The item is waiting for me at the Gate, but the review did not pass, so I have not signed it.")
-            elif run and run["status"] == "waiting":
-                lines.append(f"The item is waiting for {', '.join(run['pending']['assignees'])}; this review is attached for them.")
-                hub.inbox.notify_all(run["pending"]["assignees"], kind="review", subject=f"{cog_id} reviewed {record['number']}: {verdict}",
-                                     body="\n".join(lines), run_id=run["id"], record=record["locator"]) if hasattr(hub.inbox, "notify_all") else None
-            body = "\n".join(lines + actions)
-        else:
-            env = cog.invoke("inbox", {"message": msg}, ctx)
-            body = (env.get("payload") or {}).get("reply") or f"{cog_id} could not handle the message."
-            if actions:
-                body += "\n" + "\n".join(actions)
-        out.append(hub.inbox.reply(msg, sender=cog_id, body=body, record=record["locator"] if record else None, envelope=env))
+        task = hub.queue.submit(cog_id, "mention", by=sender, title=(msg.get("body") or msg.get("subject") or "")[:200],
+                                record=record["locator"] if record else None, payload={"msg": msg["id"], "actions": actions})
+        msg["queued"].append(task)
+        if task["status"] == "done":
+            out.extend((task.get("result") or {}).get("replies") or [])
     for person in people:
         if person == sender:
             continue
         subject = f"{sender} asks you to {intent if intent != 'message' else 'look at'} {record['number'] if record else 'a message'}"
         out.append(hub.inbox.notify(person, kind="request", subject=subject, body=(msg.get("body") or "") + ("\n" + "\n".join(actions) if actions else ""),
                                     run_id=run["id"] if run else "", record=record["locator"] if record else None))
-    if record and record["type"] == "document" and cogs:
+    if unknown or (actions and not cogs):
+        note = []
+        if unknown:
+            note.append("No member or role is called " + ", ".join("@" + u for u in unknown) + ".")
+        note += actions
+        out.append(hub.inbox.notify(sender, kind="mention", subject=f"About your message on {record['number'] if record else 'the hub'}", body="\n".join(note),
+                                    run_id=run["id"] if run else "", record=record["locator"] if record else None))
+    return out
+
+
+def answer(hub, msg: dict, cog_id: str, actions: list[str] | None = None) -> list[dict]:
+    """One cog answers a message that mentions it, worked from its queue: it reads the item as it is now, decides
+    what was asked (review, edit, answer, approve), and replies where it was asked. Returns the replies written."""
+    meta = hub.releases.current()
+    bundle = hub.releases.bundle(meta["digest"]) if meta else {"members": {}}
+    release = meta["digest"] if meta else ""
+    record = hub.kernel.get(msg.get("record")) if msg.get("record") else None
+    sender = msg["from"]
+    actions = list(actions or [])
+    intent = intent_by_keywords(msg.get("body") or msg.get("subject") or "")
+    run = hub.runner.run_for_record(record["locator"]) if record else None
+    out: list[dict] = []
+    from .model import cog_availability
+
+    ok, why = cog_availability(bundle, cog_id)
+    if not ok:
+        return [hub.inbox.notify(sender, kind="mention", subject=f"{cog_id} is not available", body=why + ". Nothing was done.",
+                                 record=record["locator"] if record else None)]
+    try:
+        _answer(hub, msg, cog_id, bundle, release, record, sender, actions, intent, run, out)
+    finally:
+        if record and out:
+            _apply_into_file(hub, record, sender, out)
+    return out
+
+
+def _answer(hub, msg, cog_id, bundle, release, record, sender, actions, intent, run, out) -> None:
+    from .cogs import RunContext
+
+    cog = hub.registry.get(cog_id)
+    profile = (bundle.get("cogs") or {}).get(cog_id) or {}
+    if record:
+        from . import office
+
+        comments = record["fields"].get("office_comments") or []
+        thread_ctx = office.thread_of(comments, str(msg["comment_id"])) if msg.get("comment_id") not in (None, "") else []
+        intent = intent_of(msg.get("body") or msg.get("subject") or "", model=hub.model, model_name=profile.get("model") or "",
+                           thread=[t for t in thread_ctx if str(t.get("id")) != str(msg.get("comment_id"))], cog_id=cog_id)
+    ctx = RunContext(run_id="inbox-" + msg["id"], release=release, bundle=bundle, owner=cog_id, kernel=hub.kernel,
+                     runner=hub.runner, inbox=hub.inbox, record=record["locator"] if record else None, dms=hub.dms,
+                     frames=lambda: hub.frames, model=hub.model, extras={"cog_profile": profile, "process": run["process"] if run else ""})
+    if record and intent == "approve":
+        # Asked to approve: a cog takes its turn only where the Gate is assigned to it; otherwise it just reports.
+        run = hub.runner.run_for_record(record["locator"])
+        if run and run["status"] == "waiting" and cog_id in (run.get("pending") or {}).get("assignees", []):
+            after = hub.runner.cog_decide(run["id"], cog_id)
+            last = next((e for e in reversed(hub.runner.track(run["id"])) if e["type"] in ("gate.decided", "gate.declined")), {})
+            body = f"I took my turn at the Gate: {last.get('type', '').split('.')[-1]}; {record['number']} is now {after['status']}" + \
+                (f", waiting for {', '.join(after['pending']['assignees'])}" if after.get("pending") else "") + "."
+        elif run and run["status"] == "waiting":
+            body = f"{record['number']} is waiting for {', '.join(run['pending']['assignees'])} at {run['pending'].get('title', 'approval')}; it is not mine to sign."
+        else:
+            body = "; ".join(actions) or f"{record['number']} has nothing in flight and no process I can start for it."
+        out.append(hub.inbox.reply(msg, sender=cog_id, body=body, record=record["locator"]))
+        return
+    if record and record["type"] == "document" and intent == "edit" and "edit-document" in cog.tasks:
+        env = cog.invoke("edit-document", {"record": record["locator"], "request": msg.get("body") or msg.get("subject")}, ctx)
+        r = env.get("payload") or {}
+        if not r.get("paragraphs"):
+            body = f"I cannot write into {record['number']}: " + ((env.get("error") or {}).get("detail") or "nothing to write")
+            out.append(hub.inbox.reply(msg, sender=cog_id, body=body, record=record["locator"], envelope=env))
+            return
+        explanation = (r.get("explanation") or "Written as asked.") + ("" if not r.get("stand_in") else " (drafted with the stand-in: configure a model for real wording)")
+        reply = hub.inbox.reply(msg, sender=cog_id, body=explanation, record=record["locator"], envelope=env)
+        # The content is written by the cog's seat in the live editor, or by the hub into the file when no editor is open.
+        edit = {"paragraphs": r["paragraphs"], "position": r.get("position") or "start"}
+        if r.get("kind") == "sheet":
+            edit.update({"kind": "sheet", "rows": r.get("rows") or [], "start_row": r.get("start_row") or 1})
+        hub.inbox.mark(reply["id"], edit=edit)
+        out.append(reply)
+        return
+    if record and intent == "message" and "answer" in cog.tasks and (record["type"] == "document" or msg.get("comment_id") in (None, "")):
+        # A question gets an answer, like a person would give: in the comment thread when asked in the document, in
+        # the chatter (with the recent conversation there) when asked there.
+        from . import office
+
+        if msg.get("comment_id") not in (None, ""):
+            comments = record["fields"].get("office_comments") or []
+            thread = [t for t in office.thread_of(comments, str(msg["comment_id"])) if t["id"] != str(msg["comment_id"])]
+        else:
+            thread = [{"id": m["id"], "author": m["from"], "text": m.get("body") or ""} for m in hub.inbox.on_record(record["locator"])
+                      if m["id"] != msg["id"] and m.get("kind") in ("message", "reply")][-6:]
+        env = cog.invoke("answer", {"record": record["locator"], "question": msg.get("body") or "", "thread": thread,
+                                     "place": "comment" if msg.get("comment_id") not in (None, "") else "chatter"}, ctx)
+        body = (env.get("payload") or {}).get("text") or f"{cog_id} could not answer."
+        out.append(hub.inbox.reply(msg, sender=cog_id, body=body, record=record["locator"], envelope=env))
+        return
+    if record and "review-document" in cog.tasks:
+        env = cog.invoke("review-document", {"record": record["locator"], "question": msg.get("body") or msg.get("subject")}, ctx)
+        r = env.get("payload") or {}
+        verdict = r.get("verdict", "fail")
+        lines = [f"Review of {record['number']} by {cog_id}: {verdict}."]
+        for p in r.get("findings") or []:
+            lines.append(f"- [{p['severity']}] {p['check']}: {p['detail']}")
+        if r.get("summary") and r["summary"] not in "\n".join(lines):
+            lines.append(r["summary"])
+        if r.get("evidence"):
+            lines.append(f"Filed as evidence {r['evidence']}.")
+        # Progress the workflow only where policy already lets this cog decide.
+        run = hub.runner.run_for_record(record["locator"])
+        if run and run["status"] == "waiting" and cog_id in (run.get("pending") or {}).get("assignees", []):
+            if verdict == "pass":
+                after = hub.runner.cog_decide(run["id"], cog_id)
+                last = next((e for e in reversed(hub.runner.track(run["id"])) if e["type"] in ("gate.decided", "gate.declined")), {})
+                lines.append(f"Then I took my turn at the Gate: {last.get('type', '').split('.')[-1]}; the item is now {after['status']}"
+                             + (f", waiting for {', '.join(after['pending']['assignees'])}" if after.get("pending") else "") + ".")
+            else:
+                lines.append("The item is waiting for me at the Gate, but the review did not pass, so I have not signed it.")
+        elif run and run["status"] == "waiting":
+            lines.append(f"The item is waiting for {', '.join(run['pending']['assignees'])}; this review is attached for them.")
+            hub.inbox.notify_all(run["pending"]["assignees"], kind="review", subject=f"{cog_id} reviewed {record['number']}: {verdict}",
+                                 body="\n".join(lines), run_id=run["id"], record=record["locator"]) if hasattr(hub.inbox, "notify_all") else None
+        body = "\n".join(lines + actions)
+    else:
+        env = cog.invoke("inbox", {"message": msg}, ctx)
+        body = (env.get("payload") or {}).get("reply") or f"{cog_id} could not handle the message."
+        if actions:
+            body += "\n" + "\n".join(actions)
+    out.append(hub.inbox.reply(msg, sender=cog_id, body=body, record=record["locator"] if record else None, envelope=env))
+
+
+def _apply_into_file(hub, record: dict, sender: str, out: list[dict]) -> None:
+    if record["type"] == "document":
         from . import wopi as _wopi
 
         f = hub.kernel.get(record["locator"])["fields"]
@@ -235,11 +290,3 @@ def handle(hub, msg: dict, bundle: dict) -> list[dict]:
                 _wopi.WopiHost(hub).apply_replies(hub.kernel.get(record["locator"]), sender)
             except Exception as e:
                 out.append(hub.inbox.notify(sender, kind="mention", subject=f"Could not write into {record['number']}", body=str(e), record=record["locator"]))
-    if unknown or (actions and not cogs):
-        note = []
-        if unknown:
-            note.append("No member or role is called " + ", ".join("@" + u for u in unknown) + ".")
-        note += actions
-        out.append(hub.inbox.notify(sender, kind="mention", subject=f"About your message on {record['number'] if record else 'the hub'}", body="\n".join(note),
-                                    run_id=run["id"] if run else "", record=record["locator"] if record else None))
-    return out

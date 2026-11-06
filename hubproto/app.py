@@ -4,6 +4,7 @@ the inbox and the runner for a hub rooted at a directory."""
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 
 from . import authz
@@ -14,6 +15,7 @@ from .extract import get_extractor
 from .frames import FrameStore, bump_version
 from .inbox import Inbox
 from .model import ModelGateway
+from .workqueue import CogQueue
 from .kernel import Kernel
 from .release import ReleaseStore
 from .runner import Runner
@@ -43,9 +45,11 @@ class Hub:
         self.inbox = Inbox(state / "inbox")
         self.dms = DMS(self.kernel, BlobStore(state / "blobs"))
         self.runner = Runner(state / "runs", self.kernel, self.releases, self.registry, self.inbox, self.dms)
-        # Cogs are users: a Gate pends for a cog, and the cog takes its turn either at once (inline) or from the
-        # cog-users service (`hubproto cog-users --loop 5`, HUBPROTO_COG_USERS=service).
-        self.runner.cog_users_inline = os.environ.get("HUBPROTO_COG_USERS", "inline") != "service"
+        # Cogs are users who work from a queue: a Gate that pends for a cog, a mention, a message or a task lands in the
+        # cog's queue (see hubproto.workqueue); HUBPROTO_COG_QUEUE says who works it (inline, a worker thread, a service).
+        self.lock = threading.RLock()  # the shell serializes on it; the queue worker holds it except while a model thinks
+        self.queue = CogQueue(state / "queue.db", hub=self)
+        self.runner.queue = self.queue
         self.runner.frames_store = lambda: self.frames
         self.dms.machine_names = lambda: set(self.registry.ids()) | {"hub"}
         self.model = ModelGateway()

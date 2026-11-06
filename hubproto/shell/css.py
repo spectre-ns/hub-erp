@@ -237,4 +237,9 @@ label.mopt:has(input:checked){{border-color:var(--accent);box-shadow:0 0 0 1px v
 
 details.restart{{display:inline-block;position:relative}}details.restart>summary{{list-style:none;cursor:pointer}}details.restart>summary::-webkit-details-marker{{display:none}}
 details.restart[open]>form{{position:absolute;z-index:20;top:110%;left:0;width:min(420px,80vw);box-shadow:0 8px 24px rgba(0,0,0,.18)}}
+.chip.work{{background:color-mix(in srgb,var(--accent) 18%,var(--chip));color:var(--fg)}}.chip.work svg.i{{animation:pulse 1.4s ease-in-out infinite}}@keyframes pulse{{50%{{opacity:.35}}}}
+.timeline>li.kind-working{{background:color-mix(in srgb,var(--accent) 7%,transparent);border-radius:6px}}.timeline>li.kind-working .tl-body form.inline{{margin:0 0 0 var(--sp-1)}}
+ol.cogq{{list-style:none;padding:0;margin:var(--sp-2) 0;display:grid;gap:var(--sp-1)}}ol.cogq>li{{display:grid;grid-template-columns:minmax(10em,auto) 1fr;gap:var(--sp-2);align-items:baseline;padding:var(--sp-2);border:1px solid var(--line);border-radius:6px;background:var(--panel)}}
+ol.cogq>li.working{{border-left:4px solid var(--accent)}}ol.cogq form.inline{{margin:0}}@media (max-width:640px){{ol.cogq>li{{grid-template-columns:1fr}}}}
+@media (prefers-reduced-motion:reduce){{.chip.work svg.i{{animation:none}}}}
 """

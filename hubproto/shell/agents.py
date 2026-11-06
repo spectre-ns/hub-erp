@@ -37,7 +37,7 @@ class AgentsMixin:
             body += (f"<form method='post' action='/agent-task' class='card'>{hidden_as(user)}{self._once()}<input type='hidden' name='cog' value='{esc(cog)}'>{err}"
                      f"<label class='f'><span>Give {esc(cog)} a task <b>*</b></span><textarea name='goal' rows='2' required "
                      f"placeholder='e.g. find nonconformances older than a week and remind their owners'>{esc(self._val('goal') if self.route == '/agent-task' else '')}</textarea></label>"
-                     f"<div class='actions'><button>{icon('play')}Start</button><span class='why'>It looks things up, then acts within its autonomy and a budget of 5 actions; "
+                     f"<div class='actions'><button>{icon('play')}Add to its queue</button><span class='why'>It takes it when it gets to it, looks things up, then acts within its autonomy and a budget of 5 actions; "
                      f"you are told what it did.</span></div></form>")
         if runs:
             body += "<h3>Recent runs</h3>" + table(["When", "Goal", "By", "Status", "Actions"], [
@@ -88,22 +88,27 @@ class AgentsMixin:
         cog, goal = self._f("cog"), self._f("goal")
         if not goal:
             raise ShellError("Say what the cog should do.", field="goal")
-        agent = Agent(self.hub, cog)
-        try:
-            prep = agent.prepare(goal, by=self.user, trigger="task")
-        except ValueError as e:
-            raise ShellError(str(e)) from None
-        tools = prep["tools"]
+        from ..model import cog_availability
 
-        def call_tool(name, args):
-            with self.lock:
-                return tools.execute(name, args)
+        if (self.bundle["members"].get(cog) or {}).get("type") != "cog":
+            raise ShellError(f"{cog} is not a cog of the organization.", 404)
+        if not agents_enabled():
+            raise ShellError("Agent runs are switched off in this hub (HUBPROTO_AGENTS=off).")
+        ok, why = cog_availability(self.bundle, cog)
+        if not ok:
+            raise ShellError(f"{cog} is not available: {why}.")
+        task = self.hub.queue.submit(cog, "task", by=self.user, title=goal, payload={"goal": goal})
+        log_line(f"cog task {task['id']} queued for {cog} by {self.user}: {task['status']}")
+        res = task.get("result") or {}
+        if task["status"] == "done" and res.get("run"):
+            return self._redirect(self._once_finish(href("/agent-run/" + res["run"], self.user, done=f"{cog}: {res['status']}, {res['actions']} action(s).")))
+        if task["status"] == "failed":
+            raise ShellError(f"{cog} could not take the task: {task.get('error')}")
+        from .queue import ordinal
 
-        with self._unlocked():
-            out = agent.think_safely(prep, call_tool=call_tool)
-        res = agent.conclude(prep, out)
-        log_line(f"agent run={res['run']} cog={cog} by={self.user} status={res['status']} actions={res['actions']}")
-        self._redirect(self._once_finish(href("/agent-run/" + res["run"], self.user, done=f"{cog}: {res['status']}, {res['actions']} action(s).")))
+        pos = self.hub.queue.position(task)
+        where = "it is working on it now" if pos == 0 else "it is next" if pos == 1 else f"it is {ordinal(pos)} in line"
+        self._redirect(self._once_finish(href("/user/" + cog, self.user, done=f"Given to {cog}: {where}. You are told when it has finished.") + "#cog-work"))
 
     def post_agent_confirm(self):
         self._need_release()
