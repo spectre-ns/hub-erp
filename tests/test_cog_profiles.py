@@ -237,3 +237,16 @@ def test_an_explicit_approval_phrase_is_not_second_guessed_by_the_model(monkeypa
 
     assert intent_of("Please move this document to approval", model=Model(), model_name="x") == "approve"
     assert intent_of("Please make it a table", model=Model(), model_name="x") == "review", "otherwise the model decides"
+
+
+def test_an_approval_request_files_a_working_document_into_the_process_folder_and_starts_it(released):
+    doc = released.dms.create(title="Draft WI from Tasks", doc_class="working", folder="Tasks", by="carol", content=b"# WI\nbody",
+                              filename="wi.md", mime="text/markdown", doc_type="wi")
+    reply = released.send("carol", "ap-reviewer", "Approval", "Please move this document to approval", record=doc["locator"])
+    assert reply["kind"] == "reply" and reply["from"] == "ap-reviewer" and "Review of" not in reply["body"], "an approval ask is not a review"
+    run = released.runner.run_for_record(doc["locator"])
+    assert run is not None and run["process"] == "document-control"
+    rec = released.kernel.get(doc["locator"])
+    assert rec["folder"] == "Quality/Controlled Documents", "filed where document-control files its records"
+    assert "started document-control" in reply["body"]
+    assert any(e["type"] == "record.moved" for e in released.kernel.events(aggregate=doc["locator"]))

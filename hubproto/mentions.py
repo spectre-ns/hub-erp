@@ -89,8 +89,9 @@ def process_for(bundle: dict, record: dict, sender: str) -> str | None:
     for name, wf in (bundle.get("workflows") or {}).items():
         if wf.get("record_type") == record["type"]:
             op = bundle["ops"].get(name) or {}
-            if authz.check(bundle, sender, "create", op.get("object", record["type"]), record["folder"])["allowed"]:
-                return name
+            for folder in (record["folder"], op.get("folder") or record["folder"]):
+                if authz.check(bundle, sender, "create", op.get("object", record["type"]), folder)["allowed"]:
+                    return name
     return None
 
 
@@ -135,6 +136,20 @@ def handle(hub, msg: dict, bundle: dict) -> list[dict]:
         ctx = RunContext(run_id="inbox-" + msg["id"], release=release, bundle=bundle, owner=cog_id, kernel=hub.kernel,
                          runner=hub.runner, inbox=hub.inbox, record=record["locator"] if record else None, dms=hub.dms,
                          frames=lambda: hub.frames, model=hub.model, extras={"cog_profile": profile, "process": run["process"] if run else ""})
+        if record and intent == "approve":
+            # Asked to approve: a cog takes its turn only where the Gate is assigned to it; otherwise it just reports.
+            run = hub.runner.run_for_record(record["locator"])
+            if run and run["status"] == "waiting" and cog_id in (run.get("pending") or {}).get("assignees", []):
+                after = hub.runner.cog_decide(run["id"], cog_id)
+                last = next((e for e in reversed(hub.runner.track(run["id"])) if e["type"] in ("gate.decided", "gate.declined")), {})
+                body = f"I took my turn at the Gate: {last.get('type', '').split('.')[-1]}; {record['number']} is now {after['status']}" + \
+                    (f", waiting for {', '.join(after['pending']['assignees'])}" if after.get("pending") else "") + "."
+            elif run and run["status"] == "waiting":
+                body = f"{record['number']} is waiting for {', '.join(run['pending']['assignees'])} at {run['pending'].get('title', 'approval')}; it is not mine to sign."
+            else:
+                body = "; ".join(actions) or f"{record['number']} has nothing in flight and no process I can start for it."
+            out.append(hub.inbox.reply(msg, sender=cog_id, body=body, record=record["locator"]))
+            continue
         if record and record["type"] == "document" and intent == "edit" and "edit-document" in cog.tasks:
             env = cog.invoke("edit-document", {"record": record["locator"], "request": msg.get("body") or msg.get("subject")}, ctx)
             r = env.get("payload") or {}

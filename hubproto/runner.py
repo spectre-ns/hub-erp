@@ -163,6 +163,9 @@ class Runner:
         run_id = uuid.uuid4().hex[:10]
         if record:
             rec = self.kernel.require(record)
+            if rec["folder"] != manifest["folder"]:
+                rec = self.kernel.move(record, manifest["folder"], by=owner_name, run_id=run_id, release=release["digest"],
+                                       reason=f"filed by {process}")
         else:
             fields = dict(inputs.get("record") or {})
             fields.pop("locator", None)

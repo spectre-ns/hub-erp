@@ -142,6 +142,8 @@ class Kernel:
             if t == "record.fields_set":
                 rec["fields"].update(d["fields"])
                 rec.setdefault("setters", {}).update({k: ev["by"] for k in d["fields"]})
+            elif t == "record.moved":
+                rec["folder"] = d["to"]
             elif t == "record.transitioned":
                 rec["state"] = d["to"]
                 rec["transitions"].append({"from": d["from"], "to": d["to"], "at": ev["at"], "by": ev["by"],
@@ -315,6 +317,16 @@ class Kernel:
             raise KernelGuardError("hold", f"{rec['number']} is on hold")
         self._check_fields(rec["type"], fields)
         self.append("record.fields_set", rec["locator"], {"fields": fields}, run_id=run_id, release=release, by=by)
+        return self.get(rec["locator"])
+
+    def move(self, ref: str, folder: str, *, by: str, run_id: str = "", release: str = "", reason: str = "") -> dict:
+        """File a record in another folder (for example a working document proposed as a controlled one)."""
+        rec = self.require(ref)
+        if rec["hold"]:
+            raise KernelGuardError("hold", f"{rec['number']} is on hold")
+        if folder == rec["folder"]:
+            return rec
+        self.append("record.moved", rec["locator"], {"from": rec["folder"], "to": folder, "reason": reason}, run_id=run_id, release=release, by=by)
         return self.get(rec["locator"])
 
     def required_missing(self, rec: dict, state: str) -> list[str]:
