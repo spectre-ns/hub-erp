@@ -25,6 +25,11 @@ def check(cond, msg):
     ok = ok and bool(cond)
 
 
+def seen(run_id):
+    """What the card shows now: a person's decision must quote it."""
+    return hub.runner.load(run_id).get("seen_digest")
+
+
 def events(run_id, *types):
     return [e for e in hub.runner.track(run_id) if e["type"] in types]
 
@@ -63,18 +68,18 @@ print("2. design authority accepts both requirements at the Gate")
 for r in reqs:
     rr = hub.runner.run_for_record(r["locator"])
     try:
-        hub.runner.decide(rr["id"], "alice", "approve")
+        hub.runner.decide(rr["id"], "alice", "approve", meaning="smoke", payload_digest=seen(rr["id"]))
         check(False, "owner must not accept their own requirement")
     except RunError as e:
         check("not an assignee" in str(e) or "segregation" in str(e), f"owner refused: {e}")
     hub.runner.decide(rr["id"], "bob", "approve", meaning="requirement accepted",
-                      fields={"acceptance_criteria": "Verified by the acceptance test procedure", "verification_method": "test"})
+                      fields={"acceptance_criteria": "Verified by the acceptance test procedure", "verification_method": "test"}, payload_digest=seen(rr["id"]))
     check(k.get(r["locator"])["state"] == "accepted", f"{r['number']} accepted")
 design = k.get(design["locator"])
 check(design["fields"].get("requirements_accepted") is True, "acceptance refreshed the waiting design's trace")
 
 print("3. design authority approves the review: part released, items created, shortages requested")
-hub.runner.decide(run1, "bob", "approve", meaning="design package reviewed and released")
+hub.runner.decide(run1, "bob", "approve", meaning="design package reviewed and released", payload_digest=seen(run1))
 design = k.get(design["locator"])
 check(design["state"] == "released", f"design {design['number']} state {design['state']} {[e.get('reason') for e in events(run1, 'run.failed')]}")
 part = design["fields"].get("part")
@@ -98,7 +103,7 @@ check(unknown, "unknown-supplier requests escalated to the buyer")
 for u in unknown:
     u_run = hub.runner.run_for_record(u["locator"])
     try:
-        hub.runner.decide(u_run["id"], "dave", "approve", meaning="ordered from NoSuchCo", fields={"supplier": "nosuchco", "unit_cost": 1.0})
+        hub.runner.decide(u_run["id"], "dave", "approve", meaning="ordered from NoSuchCo", fields={"supplier": "nosuchco", "unit_cost": 1.0}, payload_digest=seen(u_run["id"]))
         check(hub.runner.load(u_run["id"])["status"] == "failed", "unapproved supplier named at the Gate: run failed back to the owner")
         hub.runner.cancel(u_run["id"], "alice", reason="smoke: unapproved supplier")
     except RunError as e:
@@ -110,11 +115,11 @@ gr = hub.runner.submit("goods-receipt", {"record": {"po": po["locator"], "lines"
 g = hub.runner.load(gr)
 check(g["status"] == "waiting" and "dave" in g["pending"]["assignees"], "receipt waits for the buyer")
 try:
-    hub.runner.decide(gr, "alice", "approve")
+    hub.runner.decide(gr, "alice", "approve", meaning="smoke", payload_digest=seen(gr))
     check(False, "receiver must not confirm their own receipt")
 except RunError as e:
     check(True, f"segregation of duties on receipt: {str(e)[:60]}")
-hub.runner.decide(gr, "dave", "approve", meaning="goods checked and received")
+hub.runner.decide(gr, "dave", "approve", meaning="goods checked and received", payload_digest=seen(gr))
 check(k.get(g["record"])["state"] == "received" and k.get(known_item["locator"])["fields"]["stock"] == 2, "stock booked 1 -> 2")
 check(k.get(po["locator"])["state"] == "received", "PO received")
 
