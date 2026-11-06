@@ -66,13 +66,13 @@ class ModelGateway:
         stand_in = backend == "stand-in"
         usage = getattr(self, "_last_usage", None) if backend == "ollama" else None
         self._last_usage = None
-        out = {"text": text, "model": model, "backend": backend, "stand_in": stand_in, "by": by, "at": utcnow(),
-               "prompt_chars": len(system) + len(user), "usage": usage,
+        out = {"text": text, "model": model, "served_model": (usage or {}).get("served_model") or (model if backend == "anthropic" else "stand-in"),
+               "backend": backend, "stand_in": stand_in, "by": by, "at": utcnow(), "prompt_chars": len(system) + len(user), "usage": usage,
                "prompt_digest": sha256_of({"system": system, "user": user})[:16], "response_digest": sha256_of(text)[:16],
                "ms": int((time.monotonic() - t0) * 1000)}
         self.calls.append(out)
         u = usage or {}
-        sys.stdout.write(f"model call by={by or '-'} model={model} backend={backend} prompt_chars={out['prompt_chars']}"
+        sys.stdout.write(f"model call by={by or '-'} model={model} served_by={out['served_model']} backend={backend} prompt_chars={out['prompt_chars']}"
                          + (f" prompt_tokens={u.get('prompt_tokens')} output_tokens={u.get('output_tokens')} done={u.get('done_reason')}" if u else "")
                          + f" ms={out['ms']}\n")
         sys.stdout.flush()
@@ -117,7 +117,7 @@ class ModelGateway:
                 raise RuntimeError(f"HTTP {e.code} from Ollama for model {name!r}: {detail}") from None
         msg = (data or {}).get("message") or {}
         self._last_usage = {"prompt_tokens": (data or {}).get("prompt_eval_count"), "output_tokens": (data or {}).get("eval_count"),
-                            "done_reason": (data or {}).get("done_reason")}
+                            "done_reason": (data or {}).get("done_reason"), "served_model": name}
         return msg.get("content") or (data or {}).get("response") or msg.get("thinking") or ""
 
     @staticmethod
