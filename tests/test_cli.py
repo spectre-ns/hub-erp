@@ -540,3 +540,9 @@ def test_cog_users_verb_takes_the_items_waiting_for_cogs(fresh, monkeypatch):
     rc, out = run_cli(fresh, "cog-users")
     assert rc == 0 and "ap-reviewer decided run" in out and "1 item(s) taken" in out
     assert Hub(fresh).runner.load(run_id)["status"] == "completed"
+
+
+def test_models_lists_what_each_cog_is_bundled_with(fresh):
+    release_all(Hub(fresh))
+    rc, out = run_cli(fresh, "models")
+    assert rc == 0 and "cogs:" in out and "quality-assistant" in out and "ollama/qwen3:14b" in out

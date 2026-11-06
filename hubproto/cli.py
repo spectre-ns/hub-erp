@@ -944,13 +944,13 @@ def cmd_models(args) -> int:
     print("installed in Ollama:" if av["ollama"] else f"Ollama: {av['ollama_error'] or 'no models installed'}")
     for m in av["ollama"]:
         print(f"  ollama/{m['name']:28s} {m['params']:>7s} {m['family']:10s} {m['quant']:8s} {m['size_gb']} GB")
-    print("Claude:", "Anthropic key set" if av["anthropic_key"] else (f"no key; claude-* names are served by {av['fallback']}" if av["fallback"] else "no key; claude-* names get the stand-in"))
+    print("Claude:", "Anthropic key set" if av["anthropic_key"] else "no Anthropic key: a cog bundled with a claude-* model is not available here")
     meta = hub.releases.current()
     cogs = (hub.releases.bundle(meta["digest"]).get("cogs") or {}) if meta else {}
     print("cogs:")
     for name, prof in sorted(cogs.items()):
         r = resolve_model(prof.get("model") or "")
-        print(f"  {name:22s} {prof.get('model') or '-':22s} -> {r['served']} ({r['backend']}{'' if r['available'] else ', NOT AVAILABLE: ' + r['note']})")
+        print(f"  {name:22s} {prof.get('model') or '-':22s} " + (f"-> {r['served']} ({r['backend']})" if r["available"] else f"NOT AVAILABLE: {r['note']}"))
     return 0
 
 
