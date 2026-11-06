@@ -21,6 +21,7 @@ from .rules import sha256_of
 
 DEFAULT_MODEL = "stand-in"
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+PROMISE = __import__("re").compile(r"\b(let me (check|look|search|find|see)|i'?ll (check|look|search|find)|checking|looking (that|it) up|one moment)\b", __import__("re").I)
 
 
 def ollama_url() -> str:
@@ -188,7 +189,13 @@ class ModelGateway:
             msg = data.get("message") or {}
             tcs = msg.get("tool_calls") or []
             if not tcs:
-                return (msg.get("content") or msg.get("thinking") or "").strip(), usage
+                text = (msg.get("content") or msg.get("thinking") or "").strip()
+                if round_ < max_rounds and PROMISE.search(text) and len(text) < 240:
+                    # It said it would look but did not call a tool: once, tell it to go ahead.
+                    msgs.append({"role": "assistant", "content": text})
+                    msgs.append({"role": "user", "content": "Go ahead: call the tools now, then answer with what you found."})
+                    continue
+                return text, usage
             msgs.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": tcs})
             for tc in tcs:
                 fn = tc.get("function") or {}

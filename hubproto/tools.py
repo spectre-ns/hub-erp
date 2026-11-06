@@ -127,7 +127,12 @@ class RecordTools:
             out.append(self._brief(r))
             if len(out) >= limit:
                 break
-        return {"count": len(out), "records": out}
+        hidden = sum(1 for f in {r["folder"] for r in recs} if not self.may_read(f))
+        res = {"count": len(out), "records": out}
+        if hidden:
+            res["note"] = (f"only records in folders {self.principal} may read are searched; {hidden} folder(s) with matching types are "
+                           "closed to them, so say 'none that you can see' rather than 'none'")
+        return res
 
     def get_record(self, number: str) -> dict:
         rec = self._find(number)
