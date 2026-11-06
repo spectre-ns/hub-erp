@@ -24,15 +24,41 @@ def slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
 
 
-def intent_of(text: str) -> str:
+INTENTS = ("edit", "review", "approve", "message")
+
+
+def intent_by_keywords(text: str) -> str:
     t = (text or "").lower()
-    if re.search(r"\b(edit|insert|include|add|write|draft|rewrite|update|change) (this|the|a|an|it|some)?\b", t) and not re.search(r"\b(approve|approval)\b", t):
+    negated = lambda word: re.search(r"\b(not|don't|didn't|do not|did not|never|no)\b[^.]{0,25}\b" + word, t) is not None
+    if re.search(r"\b(edit|insert|include|add|write|draft|rewrite|revise|update|change|format|reformat|make|put|replace|fix|correct|clean)\b", t) and not re.search(r"\b(approve|approval)\b", t):
         return "edit"
-    if re.search(r"\b(approve|approval|sign off|sign-off|release)\b", t):
+    if re.search(r"\b(approve|approval|sign off|sign-off|release|move .{0,20}approval)\b", t) and not negated("approv"):
         return "approve"
-    if re.search(r"\b(review|check|look at|assess|inspect|comments?)\b", t):
+    if re.search(r"\b(review|check|look at|assess|inspect)\b", t) and not negated("review"):
         return "review"
     return "message"
+
+
+def intent_of(text: str, *, model=None, model_name: str = "", thread: list[dict] | None = None, cog_id: str = "") -> str:
+    """What the writer wants: edit (write or change content), review, approve (move the item on), or an answer.
+    The cog's model decides when one is configured, with the thread in view; keywords otherwise."""
+    fallback = intent_by_keywords(text)
+    if model is None or not getattr(model, "available", lambda m: False)(model_name):
+        return fallback
+    context = "\n".join(f"- {t.get('author')}: {t.get('text')}" for t in (thread or [])[-6:])
+    user = ((f"Thread so far:\n{context}\n\n" if context else "") +
+            f"Latest comment to {cog_id or 'you'}:\n{text}\n\n"
+            "Which ONE does the latest comment ask of you? Answer with a single word:\n"
+            "EDIT (write, add, change, format or revise content in the document)\n"
+            "REVIEW (assess the document and give findings)\n"
+            "APPROVE (sign off, release, or move the item to approval)\n"
+            "ANSWER (a question or remark to reply to in words)")
+    try:
+        out = model.complete(model=model_name, system="You classify requests. Reply with exactly one word.", user=user, max_tokens=5, by=cog_id)
+        word = (out.get("text") or "").strip().upper().split()[0] if (out.get("text") or "").strip() else ""
+    except Exception:
+        return fallback
+    return {"EDIT": "edit", "REVIEW": "review", "APPROVE": "approve", "ANSWER": "message"}.get(word.strip(".,:!"), fallback)
 
 
 def resolve(bundle: dict, text: str) -> tuple[list[str], list[str], list[str]]:
@@ -76,7 +102,7 @@ def handle(hub, msg: dict, bundle: dict) -> list[dict]:
     if not (cogs or people or unknown):
         return out
     sender = msg["from"]
-    intent = intent_of(msg.get("body") or msg.get("subject") or "")
+    intent = intent_by_keywords(msg.get("body") or msg.get("subject") or "")
     release = (hub.releases.current() or {}).get("digest", "")
     actions: list[str] = []
     run = hub.runner.run_for_record(record["locator"]) if record else None
@@ -97,6 +123,13 @@ def handle(hub, msg: dict, bundle: dict) -> list[dict]:
     for cog_id in cogs:
         cog = hub.registry.get(cog_id)
         profile = (bundle.get("cogs") or {}).get(cog_id) or {}
+        if record:
+            from . import office
+
+            comments = record["fields"].get("office_comments") or []
+            thread_ctx = office.thread_of(comments, str(msg["comment_id"])) if msg.get("comment_id") not in (None, "") else []
+            intent = intent_of(msg.get("body") or msg.get("subject") or "", model=hub.model, model_name=profile.get("model") or "",
+                               thread=[t for t in thread_ctx if str(t.get("id")) != str(msg.get("comment_id"))], cog_id=cog_id)
         ctx = RunContext(run_id="inbox-" + msg["id"], release=release, bundle=bundle, owner=cog_id, kernel=hub.kernel,
                          runner=hub.runner, inbox=hub.inbox, record=record["locator"] if record else None, dms=hub.dms,
                          frames=lambda: hub.frames, model=hub.model, extras={"cog_profile": profile, "process": run["process"] if run else ""})

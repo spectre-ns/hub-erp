@@ -245,7 +245,13 @@ def insert_paragraphs(content: bytes, extension: str, paragraphs: list[str], pos
     if ext == "docx" and "word/document.xml" in files:
         xml = files["word/document.xml"].decode("utf-8")
         block = "".join(docx_blocks(paragraphs))
-        if position == "start":
+        if position == "replace":
+            # Keep the section properties and the comment anchors (a paragraph holding the comment references), drop the rest.
+            refs = "".join(f'<w:r><w:commentReference w:id="{i}"/></w:r>' for i in re.findall(r'<w:commentReference w:id="(\d+)"/>', xml))
+            sect = re.search(r"<w:sectPr[ >/].*?</w:sectPr>|<w:sectPr/>", xml, re.S)
+            tail = (f"<w:p>{refs}</w:p>" if refs else "") + (sect.group(0) if sect else "")
+            xml = re.sub(r"(<w:body[^>]*>).*(</w:body>)", lambda m: m.group(1) + block + tail + m.group(2), xml, count=1, flags=re.S)
+        elif position == "start":
             xml = re.sub(r"(<w:body[^>]*>)", lambda m: m.group(1) + block, xml, count=1)
         else:
             xml = re.sub(r"(<w:sectPr[ >/].*?</w:sectPr>|<w:sectPr/>)?\s*</w:body>", lambda m: block + (m.group(1) or "") + "</w:body>", xml, count=1, flags=re.S)
@@ -261,7 +267,10 @@ def insert_paragraphs(content: bytes, extension: str, paragraphs: list[str], pos
             else:
                 out.append(f"<text:p>{_escape(line)}</text:p>")
         block = "".join(out)
-        if position == "start":
+        if position == "replace":
+            anns = "".join(re.findall(r"<office:annotation[ >].*?</office:annotation>", xml, re.S))
+            xml = re.sub(r"(<office:text[^>]*>).*(</office:text>)", lambda m: m.group(1) + block + (f"<text:p>{anns}</text:p>" if anns else "") + m.group(2), xml, count=1, flags=re.S)
+        elif position == "start":
             xml = re.sub(r"(<office:text[^>]*>)", lambda m: m.group(1) + block, xml, count=1)
         else:
             xml = xml.replace("</office:text>", block + "</office:text>", 1)

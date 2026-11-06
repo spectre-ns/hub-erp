@@ -91,7 +91,9 @@ class Inbox:
         member = (bundle or {}).get("members", {}).get(to)
         if channel == "email":
             self._write_eml(msg)
-        if hub is not None and bundle and ("@" in (body or "") or "@" in (subject or "")):
+        if hub is not None and bundle and record and member and member["type"] == "cog" and "@" + to not in (body or "") and "@" + to not in (subject or ""):
+            msg["subject"] = f"@{to} {subject}"  # addressed to the cog on an item: the same as mentioning it there
+        if hub is not None and bundle and ("@" in (msg.get("body") or "") or "@" in (msg.get("subject") or "")):
             from . import mentions
 
             replies = mentions.handle(hub, msg, bundle)

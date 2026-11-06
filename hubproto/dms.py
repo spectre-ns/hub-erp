@@ -147,6 +147,8 @@ class DMS:
         return self.kernel.set_fields(rec["locator"], {"checked_out_by": by, "checked_out_via": via, "editors": editors}, by=by,
                                       run_id=run_id, release=release)
 
+    machine_names = staticmethod(lambda: set())  # set by the Hub: cog ids, which never hold a document's lock
+
     def join_editing(self, ref: str, *, by: str, run_id: str = "", release: str = "") -> dict:
         """Join an open editing session: the editor merges everyone's changes; the session's lock stays with whoever opened it."""
         rec = self.kernel.require(ref)
@@ -161,11 +163,12 @@ class DMS:
         rec = self.kernel.require(ref)
         f = rec["fields"]
         editors = [e for e in (f.get("editors") or []) if e != by]
-        if not editors or f.get("checked_out_via") != "editor":
+        people = [e for e in editors if e not in self.machine_names()]
+        if not people or f.get("checked_out_via") != "editor":
             self.kernel.append("document.checkout_undone", rec["locator"], {"by": by}, run_id=run_id, release=release, by=by)
             return self.kernel.set_fields(rec["locator"], {"checked_out_by": None, "checked_out_via": None, "editors": [], "wopi_lock": None},
                                           by=by, run_id=run_id, release=release)
-        holder = f.get("checked_out_by") if f.get("checked_out_by") in editors else editors[0]
+        holder = f.get("checked_out_by") if f.get("checked_out_by") in people else people[0]
         self.kernel.append("document.editing_left", rec["locator"], {"by": by, "holder": holder}, run_id=run_id, release=release, by=by)
         return self.kernel.set_fields(rec["locator"], {"checked_out_by": holder, "editors": editors}, by=by, run_id=run_id, release=release)
 

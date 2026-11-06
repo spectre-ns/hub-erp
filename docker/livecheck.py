@@ -4,9 +4,9 @@ from hubproto.app import Hub
 from hubproto import wopi, office
 
 hub = Hub("/hub")
-content, mime = wopi.blank_document("xlsx")
+content, mime = wopi.blank_document("docx")
 doc = hub.dms.create(title="Live seat check", doc_class="working", folder="Quality/Controlled Documents", by="carol", content=content,
-                     filename="live-seat.xlsx", mime=mime, doc_type="document")
+                     filename="live-seat.docx", mime=mime, doc_type="document")
 loc = doc["locator"]
 hub.dms.checkout(loc, by="carol", via="editor")
 buf = io.BytesIO()

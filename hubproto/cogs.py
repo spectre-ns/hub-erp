@@ -711,6 +711,10 @@ class ReviewerCog(Cog):
                 next_row = 1
             user = (f"A colleague wrote this comment in the spreadsheet above:\n{request}\n\n"
                     f"Your rows will be written starting at row {next_row}. Write the rows now, in the output format.")
+        elif re.search(r"\b(revise|rewrite|reformat|format|replace|clean up|tidy|restructure|rework|redo|duplicate)\b", request.lower()):
+            user = (f"A colleague wrote this comment in the document above:\n{request}\n\n"
+                    "Write the WHOLE document as it should now read, in the output format: keep what is right, remove duplicates, "
+                    "add what is asked. Your text replaces the current body.")
         else:
             user = (f"A colleague wrote this comment in the document above:\n{request}\n\n"
                     "Write the content to insert now, in the output format.")
@@ -724,11 +728,20 @@ class ReviewerCog(Cog):
             lines = [f"# {title}", f"Document {rec['number']}, revision {f.get('revision', 'A')}.{f.get('minor', 0)}; owner {f.get('owner') or '-'}; "
                      f"class {f.get('doc_class') or '-'}; state {rec['state']}.",
                      "Prepared under the procedures " + (", ".join(sorted(sops)) or "of the quality system") + ". Review and approval are recorded on the item."]
-        position = "end" if sheet or re.search(r"\b(end|bottom|append|footer|conclusion)\b", request.lower()) else "start"
+        rq = request.lower()
+        if sheet:
+            position = "end"
+        elif re.search(r"\b(revise|rewrite|reformat|format|replace|clean up|tidy|restructure|rework|redo|duplicate)\b", rq):
+            position = "replace"
+        elif re.search(r"\b(end|bottom|append|footer|conclusion)\b", rq):
+            position = "end"
+        else:
+            position = "start"
         if sheet and (stand_in or not any("|" in ln for ln in lines)):
             lines = ["| Item | Requirement | Result |", f"| {f.get('title') or rec['number']} | per " + (", ".join(sorted(sops)) or "the quality procedures") + " | |"] if stand_in else lines
-        out = {"paragraphs": lines[:60], "position": position, "model": model, "stand_in": stand_in,
-               "explanation": f"I wrote {len(lines[:60])} {'row' if sheet else 'line'}(s) at the {position} of the {'sheet' if sheet else 'document'} as asked."}
+        where = {"replace": "replacing the body of", "start": "at the start of", "end": "at the end of"}[position]
+        out = {"paragraphs": lines[:120], "position": position, "model": model, "stand_in": stand_in,
+               "explanation": f"I wrote {len(lines[:120])} {'row' if sheet else 'line'}(s) {where} the {'sheet' if sheet else 'document'} as asked."}
         if sheet:
             out["kind"] = "sheet"
             out["rows"] = _office.rows_from_lines(lines[:60])

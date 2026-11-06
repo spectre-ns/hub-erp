@@ -464,3 +464,44 @@ def test_sheets_store_numbers_and_formulas_and_the_prompt_states_the_writing_int
     rec["fields"]["filename"] = "wi.docx"
     assert "OUTPUT FORMAT when you write into a text document" in cog_context(ctx, rec, task="edit") and "page break" in cog_context(ctx, rec, task="edit")
     assert "Verdict: pass" in cog_context(ctx, rec, task="review") and "comment thread" in cog_context(ctx, rec, task="answer")
+
+
+def test_a_chatter_message_to_a_cog_about_a_document_is_handled_like_a_mention(shell):
+    hub = shell["hub"]
+    content, mime = wopi.blank_document("docx")
+    doc = hub.dms.create(title="Header test", doc_class="working", folder="Quality/Controlled Documents", by="carol", content=content,
+                         filename="header.docx", mime=mime, doc_type="document")
+    loc = doc["locator"]
+    reply = hub.send("carol", "quality-assistant", "Revision", "Revise this document with the prescribed document header.", record=loc)
+    assert reply["kind"] == "reply" and reply["from"] == "quality-assistant" and reply["record"] == loc
+    pending = wopi.WopiHost(hub).pending_replies(hub.kernel.get(loc))
+    assert pending and pending[0]["edit"]["position"] == "replace", "a revision replaces the body"
+    applied = wopi.WopiHost(hub).apply_replies(hub.kernel.get(loc), "carol")
+    assert len(applied) == 1
+    from hubproto import office
+
+    text = office.extract_text(hub.dms.content(loc)[0], "docx")
+    assert text and "Header test" in text
+
+
+def test_keyword_intents_understand_negation_and_formatting_requests():
+    from hubproto.mentions import intent_by_keywords
+
+    assert intent_by_keywords("@quality-assistant I didn't ask for a review") == "message"
+    assert intent_by_keywords("Please make it a table") == "edit"
+    assert intent_by_keywords("Format the content of the document. You now have a duplicate text as well.") == "edit"
+    assert intent_by_keywords("Please move this document to approval") == "approve"
+    assert intent_by_keywords("please review this drawing") == "review"
+
+
+def test_cogs_never_hold_the_editing_lock(shell):
+    hub = shell["hub"]
+    content, mime = wopi.blank_document("docx")
+    doc = hub.dms.create(title="Lock test", doc_class="working", folder="Quality/Controlled Documents", by="carol", content=content,
+                         filename="lock.docx", mime=mime, doc_type="document")
+    loc = doc["locator"]
+    hub.dms.checkout(loc, by="carol", via="editor")
+    hub.dms.join_editing(loc, by="quality-assistant")
+    hub.dms.leave_editing(loc, by="carol")
+    f = hub.kernel.get(loc)["fields"]
+    assert f["checked_out_by"] is None and f["editors"] == [], "the last person out releases the session even if a cog's seat is still open"

@@ -42,6 +42,7 @@ class Hub:
         # cog-users service (`hubproto cog-users --loop 5`, HUBPROTO_COG_USERS=service).
         self.runner.cog_users_inline = os.environ.get("HUBPROTO_COG_USERS", "inline") != "service"
         self.runner.frames_store = lambda: self.frames
+        self.dms.machine_names = lambda: set(self.registry.ids()) | {"hub"}
         self.model = ModelGateway()
         self.runner.model = self.model
 
