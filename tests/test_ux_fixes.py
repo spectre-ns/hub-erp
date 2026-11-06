@@ -110,7 +110,7 @@ def test_only_a_policy_owner_releases_and_only_against_the_release_in_force(hub)
     for r in ("bob", "carol"):
         hub.review(newer["id"], r, approve_all=True)
     hub.release(newer["id"], "bob")
-    with pytest.raises(CompileError, match="is in force; compile again"):
+    with pytest.raises(CompileError, match="superseded|is in force; compile again"):
         hub.release(stale["id"], "bob")
     with pytest.raises(CompileError, match="is released"):
         hub.release(newer["id"], "bob")
@@ -157,3 +157,39 @@ def test_a_broken_frame_names_its_file(tmp_path):
 def test_why_accepts_the_plural_noun(released):
     assert released.why("alice", "create", "bills", "Finance/Payables")["allowed"]
     assert released.why("alice", "create", "bill", "Finance/Payables")["allowed"]
+
+
+# ------------------------------------------------------------------ proposals: review gate, carry-forward, supersession
+def test_review_needs_a_policy_owner_and_an_open_proposal(hub):
+    release_all(hub)
+    edit_frame(hub, "finance-policy", "Finance clerks may create bills in Finance/Payables.",
+               "Finance clerks may create bills in Finance/Payables.\nStaff may create bills in Finance/Payables.", bump="1.1")
+    proposal = hub.compile()
+    with pytest.raises(CompileError, match="not a policy owner"):
+        hub.review(proposal["id"], "dave", approve_all=True)
+    hub.review(proposal["id"], "bob", approve_all=True)
+    newer = hub.compile()  # same base: supersedes, carries bob's approvals forward
+    assert hub.proposals.load(proposal["id"])["status"] == "superseded"
+    assert newer["number"] == proposal["number"] + 1
+    carried = [c for c in newer["changes"] if c["decisions"]]
+    assert carried and all(d["by"] == "bob" and d.get("carried_from") == proposal["id"] for c in carried for d in c["decisions"])
+    with pytest.raises(CompileError, match="is superseded"):
+        hub.review(proposal["id"], "carol", approve_all=True)
+    hub.review(newer["id"], "carol", approve_all=True)
+    hub.release(newer["id"], "bob")
+
+
+def test_citations_name_the_file(released):
+    d = released.why("alice", "create", "bill", "Finance/Payables")
+    assert "(" in d["why"] and ".frame.md)" in d["why"]
+
+
+def test_a_broken_frame_stops_only_the_verbs_that_read_frames(tmp_path):
+    from hubproto.app import Hub
+
+    (tmp_path / "frames").mkdir()
+    (tmp_path / "frames" / "bad.frame.md").write_text("name: no fence\n")
+    hub = Hub(tmp_path)
+    assert hub.kernel.query() == []  # the kernel works
+    with pytest.raises(FrameError, match="bad.frame.md"):
+        hub.frames

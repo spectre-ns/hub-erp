@@ -138,7 +138,7 @@ class ConventionExtractor:
         process: dict | None = None
 
         def src(n: int, text: str) -> dict:
-            return {"frame": frame.name, "version": frame.version, "line": n, "text": text}
+            return {"frame": frame.name, "version": frame.version, "line": n, "text": text, "path": frame.relpath}
 
         def add(kind: str, n: int, text: str, **fields):
             out.rules.append({"kind": kind, **fields, "source": src(n, text)})

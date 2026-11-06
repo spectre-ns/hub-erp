@@ -50,10 +50,10 @@ def check(bundle: dict, principal: str, action: str, obj: str, folder: str) -> d
     allows = [r for r in applicable if r["effect"] == "allow"]
     if denies:
         r = denies[0]
-        return {"allowed": False, "rule": r, "why": f"denied by {r['source']['frame']} line {r['source']['line']}: {r['source']['text']}"}
+        return {"allowed": False, "rule": r, "why": f"denied by {r['source']['frame']} line {r['source']['line']} ({r['source'].get('path') or r['source']['frame']}): {r['source']['text']}"}
     if allows:
         r = allows[0]
-        return {"allowed": True, "rule": r, "why": f"allowed by {r['source']['frame']} line {r['source']['line']}: {r['source']['text']}"}
+        return {"allowed": True, "rule": r, "why": f"allowed by {r['source']['frame']} line {r['source']['line']} ({r['source'].get('path') or r['source']['frame']}): {r['source']['text']}"}
     return {"allowed": False, "rule": None,
             "why": f"no rule in the release lets any of {sorted(roles)} {action} {obj} in {folder}"}
 

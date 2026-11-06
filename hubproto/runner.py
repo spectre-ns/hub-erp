@@ -574,6 +574,9 @@ class Runner:
             raise RunError("a decision must quote what you saw: pass the run's seen_digest (shown on the card and by inbox-pending)")
         if payload_digest != self.seen_digest(state):
             raise RunError("the item changed since you opened it (its fields, links or documents differ); open it again and decide on what it is now")
+        if not meaning.strip():
+            raise RunError("a signature needs its meaning: say in a few words what you are confirming "
+                           "(for example 'invoice matches the order and goods were received')")
         step = next(s for s in state["manifest"]["steps"] if s["id"] == pending["step"])
         track = Track(self._dir(state["id"]))
         rec = self.kernel.get(state["record"]) if state.get("record") else None
@@ -602,9 +605,6 @@ class Runner:
                     hook(self.kernel, rec, verdict)
                 except KernelGuardError as e:
                     raise RunError(str(e)) from None
-        if not meaning.strip():
-            raise RunError("a signature needs its meaning: say in a few words what you are confirming "
-                           "(for example 'invoice matches the order and goods were received')")
         self._record_decision(state, step, track, by=by, by_type="person", verdict=verdict,
                               meaning=meaning.strip(), payload_digest=pending["payload_digest"], meaning_given=True)
         self._save(state)

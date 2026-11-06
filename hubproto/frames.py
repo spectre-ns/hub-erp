@@ -40,6 +40,7 @@ class Frame:
     body: str
     frontmatter: dict
     body_start: int = 1  # file line of the first body line
+    relpath: str = ""  # path relative to the store root, for citations an editor can open
     text: str = ""  # the whole file, for display with file line numbers
     version: str = "0"
     scope: str = ""
@@ -166,6 +167,7 @@ class FrameStore:
                 raise
             except Exception as e:  # a bad YAML value, an odd encoding: still name the file
                 raise FrameError(f"{path}: {e}") from None
+            frame.relpath = str(path.relative_to(self.root))
             if frame.name in self.frames:
                 raise FrameError(f"duplicate Frame name {frame.name!r} ({path} and {self.frames[frame.name].path})")
             self.frames[frame.name] = frame

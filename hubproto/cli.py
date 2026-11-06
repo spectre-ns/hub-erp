@@ -26,7 +26,6 @@ import re
 import shutil
 import sqlite3
 import sys
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -107,23 +106,19 @@ def iso_timestamp(text: str) -> str:
 
 
 # ------------------------------------------------------------------ the hub and its identifiers
-_EMPTY_FRAMES: str | None = None
 
 
 def _hub(args) -> Hub:
     """The hub at ``--root``. A malformed Frame only stops the verbs that read Frames; the others carry on with a
     warning, so an operator can still list runs and records while a colleague's editor has a Frame half saved."""
-    global _EMPTY_FRAMES
     root = Path(args.root)
-    try:
-        return Hub(root)
-    except FrameError as e:
-        if getattr(args, "cmd", None) in NEEDS_FRAMES:
+    hub = Hub(root)  # Frames load on first use
+    if getattr(args, "cmd", None) in NEEDS_FRAMES:
+        try:
+            hub.frames
+        except FrameError as e:
             fail(f"{e}; fix the Frame and run again", 2)
-        print(f"warning: the Frames on disk could not be read ({e}); this verb does not need them", file=sys.stderr)
-        if _EMPTY_FRAMES is None:
-            _EMPTY_FRAMES = tempfile.mkdtemp(prefix="hubproto-noframes-")
-        return Hub(root, frames_dir=Path(_EMPTY_FRAMES))
+    return hub
 
 
 def frame_file(hub: Hub, name: str) -> str:

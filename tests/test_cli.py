@@ -231,15 +231,16 @@ def test_releasing_a_stale_or_released_proposal_is_one_sentence(fresh):
     second, _ = compile_id(fresh)
     for who in ("bob", "carol"):
         run_cli(fresh, "review", second, "--as", who, "--approve-all")
-        run_cli(fresh, "review", first, "--as", who, "--approve-all")
+    code, text = refused(fresh, "review", first, "--as", "bob", "--approve-all")
+    assert code in (1, 2) and "superseded" in text, "the second compile on the same base superseded the first"
     rc, out = run_cli(fresh, "release", second, "--as", "bob")
     assert rc == 0 and "release v2 (" in out and "in effect since" in out
     code, text = refused(fresh, "release", first, "--as", "bob")
-    assert code == 1 and "is in force; compile again" in text and "\n" not in text.strip()
+    assert code == 1 and "superseded" in text and "\n" not in text.strip()
     code, text = refused(fresh, "release", second, "--as", "bob")
     assert code == 1 and "is released" in text
     rc, out = run_cli(fresh, "proposals")
-    assert "stale (based on v1" in out
+    assert "superseded" in out
 
 
 def test_releases_show_versions_and_release_diff_shows_sentences_by_file_line(fresh):
@@ -424,9 +425,8 @@ def test_a_broken_frame_stops_only_the_verbs_that_read_frames(fresh):
     path = fresh / "frames" / FINANCE
     text = path.read_text()
     path.write_text("—-" + text[3:])
-    err = io.StringIO()
-    rc, out = run_cli(fresh, "runs", err=err)
-    assert rc == 0 and "run " in out and "could not be read" in err.getvalue() and "finance-policy.frame.md" in err.getvalue()
+    rc, out = run_cli(fresh, "runs")
+    assert rc == 0 and "run " in out, "a verb that does not read Frames still works"
     rc, out = run_cli(fresh, "records")
     assert rc == 0
     code, text_ = refused(fresh, "compile")

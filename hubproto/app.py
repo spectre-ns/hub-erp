@@ -8,7 +8,7 @@ from pathlib import Path
 from . import authz
 from .cogs import CogRegistry
 from .dms import DMS, BlobStore
-from .compile import ProposalStore, compile_proposal, decide_change, finalize, readiness
+from .compile import CompileError, ProposalStore, compile_proposal, decide_change, finalize, readiness
 from .extract import get_extractor
 from .frames import FrameStore
 from .inbox import Inbox
@@ -27,7 +27,8 @@ class Hub:
     def __init__(self, root: Path, frames_dir: Path | None = None):
         self.root = Path(root)
         state = self.root / "state"
-        self.frames = FrameStore(frames_dir or self.root / "frames")
+        self._frames_dir = frames_dir or self.root / "frames"
+        self._frames: FrameStore | None = None  # loaded on first use, so a broken Frame stops only the verbs that read Frames
         self.releases = ReleaseStore(state / "releases")
         self.proposals = ProposalStore(state / "proposals")
         self.kernel = Kernel(state / "kernel.db")
@@ -36,17 +37,46 @@ class Hub:
         self.dms = DMS(self.kernel, BlobStore(state / "blobs"))
         self.runner = Runner(state / "runs", self.kernel, self.releases, self.registry, self.inbox, self.dms)
 
+    @property
+    def frames(self) -> FrameStore:
+        if self._frames is None:
+            self._frames = FrameStore(self._frames_dir)
+        return self._frames
+
+    @frames.setter
+    def frames(self, store: FrameStore) -> None:
+        self._frames = store
+
     # --- policy lifecycle ---------------------------------------------------
     def compile(self, scopes: list[str] | None = None, extractor=None, now: str | None = None) -> dict:
         proposal = compile_proposal(self.frames, scopes or default_scopes(self.frames), self.registry.ids(), self.releases,
                                     extractor=extractor or get_extractor(), now=now,
                                     record_types=self.kernel.types, config_digests=self.kernel.config_digests)
+        existing = self.proposals.list()
+        proposal["number"] = 1 + max((int(x.get("number") or 0) for x in existing), default=0)
+        # An open proposal on the same base is superseded by this one; decisions already given on the same change
+        # (same change id, same rule) carry forward, so a recompile does not throw away a policy owner's approval.
+        for old in existing:
+            if old.get("status") != "open" or old.get("base") != proposal["base"]:
+                continue
+            by_id = {c["id"]: c for c in old["changes"]}
+            for c in proposal["changes"]:
+                prior = by_id.get(c["id"])
+                if prior and prior.get("rule") == c["rule"] and prior.get("decisions"):
+                    c["decisions"] = [dict(d, carried_from=old["id"]) for d in prior["decisions"]]
+            old["status"] = "superseded"
+            old["superseded_by"] = proposal["id"]
+            self.proposals.save(old)
         self.proposals.save(proposal)
         return proposal
 
     def review(self, proposal_id: str, by: str, decisions: dict[str, str] | None = None, approve_all: bool = False,
                meaning: str = "") -> dict:
         proposal = self.proposals.load(proposal_id)
+        if proposal.get("status") != "open":
+            raise CompileError(f"proposal {proposal_id} is {proposal.get('status')}; compile a new one")
+        if by not in proposal["reviewers"]:
+            raise CompileError(f"{by} is not a policy owner and cannot review changes (policy owners: {', '.join(proposal['reviewers']) or 'none'})")
         if approve_all:
             decisions = {c["id"]: "approve" for c in proposal["changes"]}
         for change_id, verdict in (decisions or {}).items():
