@@ -167,3 +167,52 @@ def test_a_received_document_gets_a_working_copy_that_opens_in_the_editor(shell,
     assert copy["fields"]["doc_class"] == "working" and hub.dms.content(copy["locator"])[0] == content
     assert any(l["rel"] == "references" and l["target"] == received["locator"] for l in copy["links"])
     assert hub.kernel.get(copy["locator"])["fields"]["checked_out_by"] == "alice"
+
+
+def docx_with_comment(text: str, author: str = "carol") -> bytes:
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/comments.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"/></Types>')
+        z.writestr("_rels/.rels", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>')
+        z.writestr("word/_rels/document.xml.rels", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="comments.xml"/></Relationships>')
+        z.writestr("word/document.xml", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Inspection plan for the sensor board.</w:t></w:r><w:commentRangeStart w:id="0"/><w:r><w:t>Torque 2 Nm.</w:t></w:r><w:commentRangeEnd w:id="0"/></w:p><w:sectPr/></w:body></w:document>')
+        z.writestr("word/comments.xml", f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:comment w:id="0" w:author="{author}" w:date="2026-11-06T18:43:00Z"><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:comment></w:comments>')
+    return buf.getvalue()
+
+
+def test_a_comment_in_the_document_that_mentions_a_cog_reaches_the_chatter_and_is_answered(shell):
+    hub = shell["hub"]
+    content, mime = wopi.blank_document("docx")
+    doc = hub.dms.create(title="Inspection plan", doc_class="working", folder="Quality/Controlled Documents", by="carol", content=content,
+                         filename="Inspection plan.docx", mime=mime, doc_type="document")
+    number, loc = doc["number"], doc["locator"]
+    token = wopi.issue_token("carol", number, can_write=True, root=shell["root"])
+    saved = docx_with_comment("@quality-assistant can you review this document?")
+    status, body, _ = wopi_call(shell, f"/wopi/files/{number}/contents", token, "POST", saved, {"X-WOPI-Override": "PUT"})
+    assert status == 200
+    rec = hub.kernel.get(loc)
+    assert "Inspection plan for the sensor board." in rec["fields"]["text"], "reviews can read the document"
+    assert rec["fields"]["office_comments"][0]["text"].startswith("@quality-assistant") and rec["fields"]["office_comments"][0]["author"] == "carol"
+    chatter = hub.inbox.on_record(loc)
+    kinds = [(m["kind"], m["from"]) for m in chatter]
+    assert ("message", "carol") in kinds and ("reply", "quality-assistant") in kinds
+    reply = next(m for m in chatter if m["kind"] == "reply")
+    assert f"Review of {number} by quality-assistant" in reply["body"]
+    # Saving again with the same comment does not ask twice.
+    wopi_call(shell, f"/wopi/files/{number}/contents", token, "POST", saved, {"X-WOPI-Override": "PUT"})
+    assert len([m for m in hub.inbox.on_record(loc) if m["kind"] == "message"]) == 1
+    hub.dms.undo_checkout(loc, by="carol")
+
+
+def test_the_editor_page_offers_members_and_roles_as_mentions(shell, working_doc, monkeypatch):
+    monkeypatch.setenv("HUBPROTO_COLLABORA_URL", "http://editor.test:9980")
+    monkeypatch.setenv("HUBPROTO_WOPI_BASE", "http://hub.test:8080")
+    monkeypatch.setenv("HUBPROTO_COLLABORA_URLSRC", "http://editor.test:9980/browser/dist/cool.html?")
+    status, text = get(shell, "/edit/" + quote(working_doc["locator"], safe=":"), **{"as": "alice"})
+    assert status == 200 and "Action_Mention" in text and "UI_Mention" in text and "Host_PostmessageReady" in text
+    assert '"username": "quality-assistant"' in text and '"username": "design-review-committee"' in text and '"username": "bob"' in text
+    assert 'var origin="http://editor.test:9980"' in text
+    shell["hub"].dms.undo_checkout(working_doc["locator"], by="alice")

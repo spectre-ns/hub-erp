@@ -68,7 +68,23 @@ class EditorMixin:
         token = wopi.issue_token(user, number, can_write=writable, root=self.hub.root)
         frame = wopi.editor_frame_url(rec, token, browser_url=browser_url, host_url=host_url,
                                       discovery_url=os.environ.get("HUBPROTO_COLLABORA_DISCOVERY", ""))
-        body = bar + f'<iframe class="editor" src="{esc(frame)}" title="{esc(title)} in the editor" allow="clipboard-read; clipboard-write"></iframe>'
+        body = bar + f'<iframe class="editor" id="editor" src="{esc(frame)}" title="{esc(title)} in the editor" allow="clipboard-read; clipboard-write"></iframe>'
+        # @mentions inside the editor: Collabora asks the host page for suggestions (UI_Mention) and the page answers
+        # (Action_Mention) with the members and roles of the release; a chosen name is inserted as "@name".
+        bundle = self.bundle or {}
+        public = (os.environ.get("HUBPROTO_PUBLIC_URL") or "").rstrip("/")
+        people = [{"username": n, "profile": f"{public}/user/{n}", "kind": m.get("type", "person")} for n, m in sorted((bundle.get("members") or {}).items())]
+        roles = [{"username": r, "profile": f"{public}/people", "kind": "role"} for r in sorted(bundle.get("roles") or [])]
+        mentions = json.dumps(people + roles)
+        parts = browser_url.split("/")
+        origin = parts[0] + "//" + parts[2] if len(parts) > 2 and "//" in browser_url else browser_url
+        body += f"""<script>(function(){{var frame=document.getElementById('editor');var list={mentions};var origin={json.dumps(origin)};
+function post(o){{try{{frame.contentWindow.postMessage(JSON.stringify(o),'*')}}catch(e){{}}}}
+window.addEventListener('message',function(ev){{if(origin&&ev.origin!==origin)return;var m;try{{m=JSON.parse(ev.data)}}catch(e){{return}}
+if(m.MessageId==='App_LoadingStatus'&&m.Values&&m.Values.Status==='Document_Loaded'){{post({{MessageId:'Host_PostmessageReady'}})}}
+if(m.MessageId==='UI_Mention'){{var v=m.Values||{{}};if(v.type==='autocomplete'){{var q=String(v.text||'').replace(/^@/,'').toLowerCase();
+var out=list.filter(function(x){{return x.username.toLowerCase().indexOf(q)===0}}).slice(0,10).map(function(x){{return {{username:x.username,profile:x.profile}}}});
+post({{MessageId:'Action_Mention',SendTime:Date.now(),Values:{{list:out}}}})}}}}}});}})();</script>"""
         self._page(f"Edit {number}", body, head="<style>main#main{padding:0;max-width:none} .editbar{display:flex;gap:.6em;align-items:center;flex-wrap:wrap;padding:.5em .8em;border-bottom:1px solid var(--line);background:var(--panel)} .editbar form{margin-left:auto} .editor{width:100%;height:calc(100vh - 9.5em);border:0;display:block;background:var(--panel)}</style>")
 
     # ------------------------------------------------------------ actions

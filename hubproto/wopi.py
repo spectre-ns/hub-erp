@@ -192,7 +192,36 @@ class WopiHost:
         # A new version is a check-in for the DMS; the editing session keeps the document until "Finish editing".
         self.hub.dms.checkout(rec["locator"], by=user)
         _, version = self.hub.dms.content(rec["locator"])
+        self.index(rec, content, user)
         return {"LastModifiedTime": wopi_time(version.get("at"))}
+
+    def index(self, rec: dict, content: bytes, user: str) -> list[dict]:
+        """After a save: the document's text goes on the record (so reviews read it) and a comment written in the
+        editor that mentions someone becomes a message on the item's chatter from the person who saved it."""
+        from . import office
+
+        ext = extension_of(rec["fields"].get("filename") or "")
+        text = office.extract_text(content, ext)
+        comments = office.extract_comments(content, ext)
+        seen = {c.get("digest") for c in (rec["fields"].get("office_comments") or [])}
+        fields = {"office_comments": [{k: c[k] for k in ("id", "author", "date", "text", "digest")} for c in comments]}
+        if text:
+            fields["text"] = text
+        try:
+            self.hub.kernel.set_fields(rec["locator"], fields, by=user)
+        except KernelGuardError:
+            pass
+        posted = []
+        members = (self.hub.releases.bundle(self.hub.releases.current()["digest"]) if self.hub.releases.current() else {}).get("members", {})
+        for c in comments:
+            if c["digest"] in seen or not office.mentions_in(c["text"]):
+                continue
+            author = c["author"].strip().lower() if c["author"] and c["author"].strip().lower() in members else user
+            try:
+                posted.append(self.hub.send(author, author, f"Comment in {rec['number']}", c["text"], record=rec["locator"]))
+            except Exception as e:  # a comment that cannot be routed never breaks the save
+                posted.append({"error": str(e)})
+        return posted
 
     def lock(self, rec: dict, claims: dict, lock_id: str) -> tuple[int, dict]:
         """Lock, RefreshLock and Unlock map onto the check-out; the lock id is remembered on the record."""
