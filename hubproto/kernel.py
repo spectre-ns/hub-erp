@@ -72,6 +72,13 @@ class Kernel:
         self.retention: dict[str, dict] = _load(cfg / "retention.json")
         self.config_digests = {p.name: sha256_of(_load(p)) for p in sorted(cfg.glob("*.json"))}
         self._cache: dict[str, dict] | None = None
+        self._cache_version: tuple | None = None
+
+    def _data_version(self) -> tuple:
+        """Changes whenever any connection (this or another process) commits to the file."""
+        dv = self.db.execute("PRAGMA data_version").fetchone()[0]
+        seq = self.db.execute("SELECT COALESCE(MAX(seq), 0) FROM events").fetchone()[0]
+        return (dv, seq)
 
     # ------------------------------------------------------------------ events
     def append(self, type_: str, aggregate: str, data: dict, *, run_id: str = "", release: str = "",
@@ -101,8 +108,9 @@ class Kernel:
 
     # ------------------------------------------------------------- projections
     def _records(self) -> dict[str, dict]:
-        """All records keyed by locator, rebuilt from the event stream."""
-        if self._cache is not None:
+        """All records keyed by locator, rebuilt from the event stream when the file changed."""
+        version = self._data_version()
+        if self._cache is not None and self._cache_version == version:
             return self._cache
         recs: dict[str, dict] = {}
         for ev in self.events(prefix="rec:"):
@@ -153,6 +161,7 @@ class Kernel:
             elif t == "record.archived":
                 rec["archived"] = True
         self._cache = recs
+        self._cache_version = version
         return recs
 
     def get(self, ref: str) -> dict | None:
@@ -228,13 +237,19 @@ class Kernel:
 
     # ---------------------------------------------------------------- commands
     def next_number(self, type_: str) -> str:
+        """Next number for a type, counted in the database (not the cache), so two processes never share one."""
         td = self.type_def(type_)
-        existing = [r for r in self._records().values() if r["type"] == type_]
         year = date.today().year
-        if td.get("yearly"):
-            existing = [r for r in existing if r["number"].split("-")[1] == str(year)]
-            return f"{td['prefix']}-{year}-{len(existing) + 1:0{td['digits']}d}"
-        return f"{td['prefix']}-{len(existing) + 1:0{td['digits']}d}"
+        like = f"rec:{type_}:{td['prefix']}-{year}-%" if td.get("yearly") else f"rec:{type_}:{td['prefix']}-%"
+        count = self.db.execute("SELECT COUNT(*) FROM events WHERE type = 'record.created' AND aggregate LIKE ?", (like,)).fetchone()[0]
+        n = count + 1
+        while True:
+            number = f"{td['prefix']}-{year}-{n:0{td['digits']}d}" if td.get("yearly") else f"{td['prefix']}-{n:0{td['digits']}d}"
+            taken = self.db.execute("SELECT 1 FROM events WHERE type = 'record.created' AND aggregate = ? LIMIT 1",
+                                    (locator(type_, number),)).fetchone()
+            if not taken:
+                return number
+            n += 1
 
     def _check_fields(self, type_: str, fields: dict) -> None:
         td = self.type_def(type_)
@@ -250,12 +265,27 @@ class Kernel:
         td = self.type_def(type_)
         fields = dict(fields or {})
         self._check_fields(type_, fields)
-        number = self.next_number(type_)
-        loc = locator(type_, number)
         lab = {"sensitivity": td.get("sensitivity", "internal"), "retention": td.get("retention", "standard")}
         lab.update(labels or {})
-        self.append("record.created", loc, {"type": type_, "number": number, "folder": folder, "fields": fields,
-                                            "state": state, "labels": lab}, run_id=run_id, release=release, by=by)
+        # Number and insert in one immediate transaction so concurrent processes cannot take the same number.
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            number = self.next_number(type_)
+            loc = locator(type_, number)
+            self.db.execute(
+                "INSERT INTO events (at, type, aggregate, data, run_id, release_digest, by) VALUES (?,?,?,?,?,?,?)",
+                (utcnow(), "record.created", loc, json.dumps({"type": type_, "number": number, "folder": folder, "fields": fields,
+                                                              "state": state, "labels": lab}, sort_keys=True, default=str),
+                 run_id, release, by))
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+        self._cache = None
+        missing = self.required_missing(self.get(loc), state)
+        if missing and state not in ("open", "draft", "received", "filed", "captured"):
+            self.append("record.transitioned", loc, {"from": state, "to": "open", "reason": f"missing {', '.join(missing)} for {state}"},
+                        run_id=run_id, release=release, by=by)
         return self.get(loc)
 
     def set_fields(self, ref: str, fields: dict, *, by: str, run_id: str = "", release: str = "") -> dict:
@@ -402,10 +432,14 @@ class Kernel:
         if not grant or grant.get("run_id") != run_id:
             raise KernelGuardError("grant", "no grant for this run; posting requires an approved change")
         lines = journal.get("lines", [])
+        if not lines:
+            raise KernelGuardError("balanced-journal", "a journal needs at least two lines")
+        if any(float(x.get("debit", 0)) < 0 or float(x.get("credit", 0)) < 0 for x in lines):
+            raise KernelGuardError("balanced-journal", "journal lines cannot carry negative amounts; post a reversal instead")
         debit = round(sum(float(x.get("debit", 0)) for x in lines), 2)
         credit = round(sum(float(x.get("credit", 0)) for x in lines), 2)
-        if debit != credit or debit == 0:
-            raise KernelGuardError("balanced-journal", f"debits {debit} do not equal credits {credit}")
+        if debit != credit or debit <= 0:
+            raise KernelGuardError("balanced-journal", f"debits {debit} do not equal credits {credit}, or the journal is empty")
         period = str(journal.get("date", ""))[:7]
         p = self.periods().get(f"period:{period}")
         if not p or not p.get("open"):
@@ -449,3 +483,77 @@ class Kernel:
                 self.transition(other["locator"], "obsolete", by=by, run_id=run_id, release=release,
                                 reason=f"superseded by {rec['number']}")
                 self.link(rec["locator"], "supersedes", other["locator"], by=by, run_id=run_id, release=release)
+
+
+WRITE_REACHES = {"kernel:records", "kernel:documents", "kernel:journals", "kernel:links", "kernel:bills", "kernel:write"}
+MUTATORS = ("create", "set_fields", "transition", "assign", "link", "unlink", "set_labels", "hold", "archive", "append",
+            "file_bill", "mark_bill", "post_journal", "file_document", "publish_document")
+
+
+class ScopedKernel:
+    """The kernel as a Cog sees it: reads pass through; writes need a declared write reach, and
+    writes to anything other than the run's own record (or records this Cog created in this
+    run) need the run's grant. The kernel stays the authority; the Cog's declaration is the key."""
+
+    def __init__(self, kernel: Kernel, *, cog_id: str, reaches: list[str], run_id: str, record: str | None,
+                 grant: dict | None):
+        self._k = kernel
+        self.cog_id = cog_id
+        self.reaches = set(reaches or [])
+        self.run_id = run_id
+        self.own = {record} if record else set()
+        self.grant = grant
+
+    def __getattr__(self, name):
+        if name in MUTATORS:
+            return self._guarded(name)
+        return getattr(self._k, name)
+
+    @property
+    def types(self):
+        return self._k.types
+
+    @property
+    def link_vocab(self):
+        return self._k.link_vocab
+
+    def _can_write(self) -> bool:
+        return bool(self.reaches & WRITE_REACHES)
+
+    def _is_own(self, target: str | None) -> bool:
+        if target is None or target in self.own:
+            return True
+        for owned in list(self.own):
+            rec = self._k.get(owned)
+            if rec and any(l["rel"] == "has-document" and l["target"] == target for l in rec["links"]):
+                return True
+        return False
+
+    def _target_of(self, name: str, args, kwargs):
+        if name in ("create", "append", "post_journal", "file_bill", "file_document"):
+            return None  # creates a new aggregate
+        ref = args[0] if args else kwargs.get("ref") or kwargs.get("bill_id") or kwargs.get("doc_id")
+        if name in ("mark_bill",):
+            return f"rec:bill:{ref}"
+        if name == "publish_document":
+            return f"rec:document:{ref}"
+        rec = self._k.get(str(ref)) if ref else None
+        return rec["locator"] if rec else str(ref)
+
+    def _guarded(self, name: str):
+        def call(*args, **kwargs):
+            if not self._can_write():
+                raise KernelGuardError("reach", f"{self.cog_id} declares no write reach ({sorted(self.reaches) or 'none'}) and may not {name}")
+            target = self._target_of(name, args, kwargs)
+            if name == "append" and args and str(args[1]).startswith("rec:"):
+                target = str(args[1])
+            needs_grant = name in ("post_journal", "publish_document") or not self._is_own(target)
+            if needs_grant and not (self.grant and self.grant.get("run_id") == self.run_id):
+                raise KernelGuardError("grant", f"{self.cog_id} may not {name} {target or ''} without this run's grant")
+            result = getattr(self._k, name)(*args, **kwargs)
+            if name in ("create",) and isinstance(result, dict):
+                self.own.add(result["locator"])
+            elif name in ("file_bill", "file_document") and isinstance(result, str):
+                self.own.add(f"rec:{'bill' if name == 'file_bill' else 'document'}:{result}")
+            return result
+        return call

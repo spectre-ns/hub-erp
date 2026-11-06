@@ -110,8 +110,14 @@ def render_workflow(process: dict, slas: dict[str, int], record_type: str) -> di
     terminal = process.get("terminal") or "closed"
     states.append(terminal)
     reject_to = process.get("reject_to")
-    on_reject = f"awaiting-{reject_to}" if reject_to else "rejected"
-    if not reject_to:
+    cp_ids = {cp["id"] for cp in checkpoints}
+    if reject_to and reject_to in cp_ids:
+        on_reject = f"awaiting-{reject_to}"
+    elif reject_to:
+        on_reject = "returned"  # rejection returns the item to its owner for rework at that step
+        states.append("returned")
+    else:
+        on_reject = "rejected"
         states.append("rejected")
     # Close the human transitions: each checkpoint approves into the next waiting state or the terminal.
     human = []
@@ -152,7 +158,7 @@ def render(rules: list[dict], record_types: dict | None = None) -> dict:
         elif kind == "threshold":
             thresholds[r["name"]] = {"value": r["value"], "unit": r["unit"], "source": r["source"]}
         elif kind == "routing":
-            routing.append(dict(body))
+            routing.append({**body, "mode": r.get("mode", "assign")})
         elif kind == "sla":
             slas.append(dict(body))
         elif kind == "approval_criteria":
@@ -211,7 +217,7 @@ def strip_sources(obj):
     the runtime acts on, so a no-op edit yields the same release.
     """
     if isinstance(obj, dict):
-        return {k: strip_sources(v) for k, v in obj.items() if k != "source"}
+        return {k: strip_sources(v) for k, v in obj.items() if k not in ("source", "sources", "line", "n")}
     if isinstance(obj, list):
         return [strip_sources(x) for x in obj]
     return obj

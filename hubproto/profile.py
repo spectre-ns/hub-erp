@@ -167,6 +167,8 @@ def cmd_seed(args) -> None:
 
 
 def cmd_conformance(args) -> None:
+    if getattr(args, 'profile_pos', None):
+        args.profile = args.profile_pos
     from .app import Hub
 
     hub = Hub(Path(args.root))
@@ -189,4 +191,5 @@ def register(sub) -> None:
     s.set_defaults(fn=cmd_seed)
     s = sub.add_parser("conformance", help="print the clause conformance checklist of a profile")
     s.add_argument("--profile", default="iso9001")
+    s.add_argument("profile_pos", nargs="?", help="profile name (same as --profile)")
     s.set_defaults(fn=cmd_conformance)

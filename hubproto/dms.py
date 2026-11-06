@@ -99,10 +99,12 @@ class DMS:
             raise KernelGuardError("document", f"{rec['number']} is not a document")
         if rec["fields"].get("doc_class") in IMMUTABLE_CLASSES and self.versions(ref):
             raise KernelGuardError("immutable", f"{rec['fields']['doc_class']} documents cannot be changed; file a new one that supersedes it")
+        if rec["fields"].get("doc_class") in ("controlled", "template") and rec["state"] not in ("open", "draft", "returned", "failed"):
+            raise KernelGuardError("controlled", f"{rec['number']} is {rec['state']}; a controlled document changes only through a new revision (start document-control with the same title)")
         locked_by = rec["fields"].get("checked_out_by")
         if locked_by and locked_by != by:
             raise KernelGuardError("checked-out", f"{rec['number']} is checked out by {locked_by}")
-        mime = mime or (mimetypes.guess_type(filename)[0] if filename else "") or "application/octet-stream"
+        mime = mime or (mimetypes.guess_type(filename)[0] if filename else "") or (rec["fields"].get("mime") if self.versions(ref) else "") or "application/octet-stream"
         sha = self.blobs.put(content)
         n = len(self.versions(ref)) + 1
         text = extract_text(content, mime)
@@ -130,6 +132,8 @@ class DMS:
         rec = self.kernel.require(ref)
         if rec["fields"].get("doc_class") in IMMUTABLE_CLASSES:
             raise KernelGuardError("immutable", "evidence and external documents are never edited")
+        if rec["fields"].get("doc_class") in ("controlled", "template") and rec["state"] not in ("open", "draft", "returned", "failed"):
+            raise KernelGuardError("controlled", f"{rec['number']} is {rec['state']} and cannot be checked out; revise it through document-control")
         locked_by = rec["fields"].get("checked_out_by")
         if locked_by and locked_by != by:
             raise KernelGuardError("checked-out", f"{rec['number']} is checked out by {locked_by}")
@@ -206,7 +210,7 @@ def render_markdown(kernel: Kernel, rec: dict) -> str:
         lines += ["", "## Requirements", ""]
         for r in reqs:
             f = r["fields"]
-            lines.append(f"- {r['number']} [{f.get('kind')}] {f.get('text')} (state {r['state']}; acceptance: {f.get('acceptance_criteria') or 'n/a'}; "
+            lines.append(f"- {r['number']} [{f.get('kind')}] {f.get('statement')} (state {r['state']}; acceptance: {f.get('acceptance_criteria') or 'n/a'}; "
                          f"verification: {f.get('verification_method') or 'n/a'}; verified: {bool(f.get('verified'))})")
     if links:
         lines += ["", "## Links", ""] + [f"- {l['label']}: {l['target']}" for l in links]

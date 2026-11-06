@@ -16,7 +16,7 @@ KINDS = {
     "folder": {"path"},
     "permission": {"subject", "action", "object", "resource", "effect"},
     "threshold": {"name", "value", "unit"},
-    "routing": {"process", "step", "condition", "assignee"},
+    "routing": {"process", "step", "condition", "assignee", "mode"},
     "sla": {"process", "step", "days"},
     "approval_criteria": {"approver", "process", "max_amount", "currency", "conditions"},
     "sod": {"object", "roles"},

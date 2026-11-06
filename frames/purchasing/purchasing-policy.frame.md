@@ -44,6 +44,8 @@ Buyers may read Inventory.
 Controllers may approve purchase requests in Purchasing/Requests.
 Controllers may read Purchasing.
 Staff may create receipts in Inventory/Receipts.
+Staff may create items in Inventory/Items.
+Buyers may approve items in Inventory/Items.
 Staff may read Inventory.
 Buyers may approve receipts in Inventory/Receipts.
 Design engineers may create items in Inventory/Items.
@@ -59,12 +61,14 @@ Approvals in purchase-request go to the buyer.
 Approve the purchase in purchase-request is due within 3 days.
 Overdue items in purchase-request go to the controller.
 At Confirm the receipt in goods-receipt go to the buyer.
+Approvals in item-request go to the buyer.
 
 ## Approval criteria
 The purchasing-assistant cog may approve purchase-request purchase requests under 500 USD when the supplier is approved and the item is known.
 
 ## Segregation of duties
 The requester and the approver of a purchase-request must be different people.
+The received-by and the approver of a receipt must be different people.
 
 ## Process: purchase-request
 Records are filed in Purchasing/Requests.
@@ -83,3 +87,10 @@ Closes as received.
 2. [system] Check the order (receipt-checker)
 3. [buyer] Confirm the receipt
 4. [system] Book the stock (stock-booker)
+
+## Process: item-request
+Records are filed in Inventory/Items.
+The record type is item.
+Closes as active.
+1. [staff] Request the item (record-filer)
+2. [buyer] Approve the item

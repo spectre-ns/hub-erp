@@ -72,7 +72,8 @@ def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], re
         "findings": [f.as_dict() for f in findings],
         "changes": changes,
         "base": base["digest"] if base else None,
-        "reviewers": sorted(_reviewers(rules) | (_reviewers(old_rules) if old_rules else set())),
+        # Policy owners are those of the release in force; a proposal cannot appoint its own reviewers.
+        "reviewers": sorted(_reviewers(old_rules) if old_rules else _reviewers(rules)),
         "status": "open",
         "release": None,
     }

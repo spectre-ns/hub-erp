@@ -289,9 +289,10 @@ def test_release_revision_keeps_a_for_the_first_effectiveness_and_bumps_after(d,
     rec = hub.kernel.get(doc["locator"])
     assert rec["fields"]["revision"] == "A" and rec["fields"]["minor"] == 0, "first effectiveness keeps revision A"
     hub.kernel.transition(doc["locator"], "effective", by="hub")
-    d.add_version(doc["locator"], b"v2 draft", by="alice")
-    assert hub.kernel.get(doc["locator"])["fields"]["minor"] == 1
+    with pytest.raises(KernelGuardError, match="controlled"):
+        d.add_version(doc["locator"], b"v2 draft", by="alice")  # an effective controlled document is immutable
+    with pytest.raises(KernelGuardError, match="controlled"):
+        d.checkout(doc["locator"], by="alice")
     rec = d.release_revision(doc["locator"], by="hub")
     assert rec["fields"]["revision"] == "B" and rec["fields"]["minor"] == 0
-    hub.kernel.transition(doc["locator"], "effective", by="hub")
     assert d.release_revision(doc["locator"], by="hub")["fields"]["revision"] == "C"

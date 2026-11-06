@@ -114,8 +114,10 @@ def test_run_keeps_its_release_across_a_cutover(released):
     state = released.runner.decide(run_id, "bob", "approve")
     assert state["status"] == "completed" and state["release"] == first
     assert next(iter(released.kernel.journals().values()))["release"] == first
-    # A new run uses the new routing: the big bill now goes to dave.
-    run2 = released.runner.submit("purchase-to-pay", {"record": dated(BIG_BILL)}, owner="alice")
+    # A new run uses the new routing: the big bill now goes to dave (against a fresh order; PO-1002 is fully billed).
+    released.kernel.append("po.issued", "po:PO-1004", {"supplier": "acme-metals", "amount": 12000.0, "currency": "USD",
+                                                       "description": "More fixtures", "received": True}, by="seed")
+    run2 = released.runner.submit("purchase-to-pay", {"record": dated({**BIG_BILL, "po_ref": "PO-1004"})}, owner="alice")
     assert released.runner.load(run2)["pending"]["assignees"] == ["dave"]
 
 
@@ -156,7 +158,7 @@ def test_document_control_minor_change_approved_by_doc_reviewer(released):
 
 def test_cog_answers_dm_and_files_from_an_attachment(released):
     reply = released.send("alice", "ap-reviewer", "status", "what is the status?")
-    assert reply["kind"] == "reply" and "waiting at a Gate" in reply["body"]
+    assert reply["kind"] == "reply" and "Waiting for you" in reply["body"]
     reply = released.send("alice", "ap-reviewer", "invoice", "please file this",
                           attachments=[{"name": "acme.json", "content": dated(SMALL_BILL)}], channel="email")
     assert reply["kind"] == "reply" and reply["run_id"]

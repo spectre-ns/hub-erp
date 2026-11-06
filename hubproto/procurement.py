@@ -14,6 +14,7 @@ from datetime import date, timedelta
 
 from .cogs import Cog, ReviewerCog, RunContext
 from .envelope import make_envelope, problem
+from .routing import threshold
 
 
 def supplier_approved(kernel, supplier: str | None) -> tuple[bool, str]:
@@ -32,7 +33,7 @@ def supplier_approved(kernel, supplier: str | None) -> tuple[bool, str]:
 
 class SupplierChecker(Cog):
     id = "supplier-checker"
-    reaches = ["kernel:read"]
+    reaches = ["kernel:records"]
     description = "Checks the request's supplier against the approved list and computes the amount."
 
     def task_run(self, input: dict, ctx: RunContext) -> dict:
@@ -46,6 +47,8 @@ class SupplierChecker(Cog):
         if not ok:
             problems.append(problem("supplier", why, "warning"))
         qty = float(prior.get("quantity") or 0)
+        if qty <= 0:
+            problems.append(problem("quantity", f"quantity must be positive, not {qty:g}"))
         unit_cost = prior.get("unit_cost")
         if unit_cost in (None, "") and item is not None:
             unit_cost = item["fields"].get("unit_cost")
@@ -78,6 +81,16 @@ class POIssuer(Cog):
         rec = ctx.rec()
         if prior.get("unit_cost") not in (None, "") and prior.get("quantity") not in (None, ""):
             prior["amount"] = round(float(prior["quantity"]) * float(prior["unit_cost"]), 2)
+        # The Gate may have named the supplier or the price: re-check both before anything is issued.
+        ok, why = supplier_approved(ctx.kernel, prior.get("supplier"))
+        if not ok:
+            return make_envelope(self.id, self.version, "run", error={"code": "supplier-not-approved", "detail": f"no purchase order: {why}"})
+        if float(prior.get("amount") or 0) <= 0 or float(prior.get("quantity") or 0) <= 0:
+            return make_envelope(self.id, self.version, "run", error={"code": "amount", "detail": "no purchase order: the request has no positive quantity and price"})
+        big = float(threshold(ctx.bundle, "purchase-approval-threshold", 10000) or 10000)
+        decider = ctx.grant.get("decided_by", "")
+        if float(prior["amount"]) > big and ctx.grant.get("by_type") == "cog":
+            return make_envelope(self.id, self.version, "run", error={"code": "threshold", "detail": f"a cog may not approve {prior['amount']} above {big:g}"})
         line = {"item": prior.get("item"), "mpn": prior.get("mpn"), "quantity": prior.get("quantity"), "unit": prior.get("unit", "ea"),
                 "unit_cost": prior.get("unit_cost"), "amount": prior.get("amount")}
         po = ctx.kernel.create("purchase-order", "Purchasing/Orders",
@@ -130,11 +143,18 @@ class ShortageRequester(Cog):
         if ctx.runner is None or "purchase-request" not in ctx.bundle.get("ops", {}):
             return self.ok("run", {**prior, "items_created": created_items, "purchase_requests": []},
                            [problem("purchasing", "no purchase-request process in the release", "warning")])
+        available: dict[str, float] = {}
         for line in lines:
-            short = int(line.get("short") or 0)
+            item = ctx.kernel.get(f"item:{line['item']}") if line.get("item") else None
+            key = item["locator"] if item else str(line.get("item"))
+            available.setdefault(key, float((item or {}).get("fields", {}).get("stock") or 0))
+            need = float(line.get("quantity") or 1)
+            take = min(need, max(0.0, available[key]))
+            available[key] -= take
+            short = int(round(need - take))
+            line["short"] = short
             if short <= 0:
                 continue
-            item = ctx.kernel.get(f"item:{line['item']}")
             run_id = ctx.runner.submit("purchase-request", {"record": {
                 "title": f"{short} x {line.get('mpn') or line.get('value')} for {rec['number']}",
                 "item": item["locator"] if item else None, "mpn": line.get("mpn"), "manufacturer": line.get("manufacturer"),
@@ -153,7 +173,7 @@ class ShortageRequester(Cog):
 
 class ReceiptChecker(Cog):
     id = "receipt-checker"
-    reaches = ["kernel:read"]
+    reaches = ["kernel:records"]
     description = "Checks a goods receipt against its purchase order: lines, quantities, supplier."
 
     def task_run(self, input: dict, ctx: RunContext) -> dict:
@@ -163,15 +183,34 @@ class ReceiptChecker(Cog):
         po = ctx.kernel.get(po_ref) if po_ref else None
         if po is None:
             return make_envelope(self.id, self.version, "run", error={"code": "po-missing", "detail": f"no purchase order {po_ref!r}"})
-        ordered = {str(l.get("item")): l for l in po["fields"].get("lines", [])}
-        lines = prior.get("lines") or [{"item": l.get("item"), "quantity": l.get("quantity")} for l in po["fields"].get("lines", [])]
+        def norm(ref):
+            r = ctx.kernel.get(str(ref)) if ref else None
+            return r["locator"] if r else str(ref)
+        ordered = {norm(l.get("item")): float(l.get("quantity") or 0) for l in po["fields"].get("lines", [])}
+        received_before: dict[str, float] = {k: 0.0 for k in ordered}
+        for other in ctx.kernel.query(type_="receipt", state="received"):
+            if other["fields"].get("po") == po["locator"] and other["locator"] != ctx.record:
+                for l in other["fields"].get("lines", []):
+                    received_before[norm(l.get("item"))] = received_before.get(norm(l.get("item")), 0.0) + float(l.get("quantity") or 0)
+        if po["state"] == "received":
+            problems.append(problem("po-received", f"{po['number']} is already fully received"))
+        lines = prior.get("lines") or [{"item": k, "quantity": ordered[k] - received_before.get(k, 0.0)} for k in ordered]
         for l in lines:
-            o = ordered.get(str(l.get("item")))
-            if o is None:
-                problems.append(problem("receipt-line", f"line {l.get('item')} is not on {po['number']}"))
-            elif float(l.get("quantity") or 0) > float(o.get("quantity") or 0):
-                problems.append(problem("over-receipt", f"received {l.get('quantity')} of {l.get('item')}, ordered {o.get('quantity')}", "warning"))
-        fields = {"lines": lines, "supplier": po["fields"].get("supplier"), "po_number": po["number"]}
+            l["item"] = norm(l.get("item"))
+            qty = float(l.get("quantity") or 0)
+            if qty <= 0:
+                problems.append(problem("quantity", f"received quantity for {l['item']} must be positive, not {qty:g}"))
+                continue
+            if l["item"] not in ordered:
+                problems.append(problem("receipt-line", f"line {l['item']} is not on {po['number']}"))
+                continue
+            outstanding = ordered[l["item"]] - received_before.get(l["item"], 0.0)
+            if qty > outstanding + 1e-9:
+                problems.append(problem("over-receipt", f"received {qty:g} of {l['item']}, outstanding {outstanding:g} on {po['number']}"))
+        outstanding_after = {k: ordered[k] - received_before.get(k, 0.0) - sum(float(l.get("quantity") or 0) for l in lines if l.get("item") == k)
+                             for k in ordered}
+        fields = {"lines": lines, "supplier": po["fields"].get("supplier"), "po_number": po["number"],
+                  "outstanding_after": outstanding_after, "completes_order": all(v <= 1e-9 for v in outstanding_after.values())}
         if ctx.record:
             ctx.kernel.set_fields(ctx.record, fields, by=self.id, run_id=ctx.run_id, release=ctx.release)
             ctx.kernel.link(ctx.record, "fulfils", po["locator"], by=self.id, run_id=ctx.run_id, release=ctx.release)
@@ -191,7 +230,7 @@ class StockBooker(Cog):
         booked = []
         for l in prior.get("lines") or []:
             item = ctx.kernel.get(l["item"]) if l.get("item") else None
-            if item is None:
+            if item is None or float(l.get("quantity") or 0) <= 0:
                 continue
             new_stock = float(item["fields"].get("stock") or 0) + float(l.get("quantity") or 0)
             ctx.kernel.set_fields(item["locator"], {"stock": new_stock}, by=self.id, run_id=ctx.run_id, release=ctx.release)
@@ -199,10 +238,13 @@ class StockBooker(Cog):
                               run_id=ctx.run_id, release=ctx.release, by=self.id)
             booked.append({"item": item["number"], "quantity": l.get("quantity"), "stock": new_stock})
         po = ctx.kernel.get(prior["po"]) if prior.get("po") else None
-        if po is not None:
+        if po is not None and prior.get("completes_order", True):
             ctx.kernel.set_fields(po["locator"], {"received": True}, by=self.id, run_id=ctx.run_id, release=ctx.release)
             ctx.kernel.transition(po["locator"], "received", by=self.id, run_id=ctx.run_id, release=ctx.release)
             ctx.kernel.append("po.received", f"po:{po['number']}", {"received": True, "receipt": ctx.record},
+                              run_id=ctx.run_id, release=ctx.release, by=self.id)
+        elif po is not None:
+            ctx.kernel.append("po.partially_received", f"po:{po['number']}", {"receipt": ctx.record, "outstanding": prior.get("outstanding_after")},
                               run_id=ctx.run_id, release=ctx.release, by=self.id)
         return self.ok("run", {**prior, "booked": booked})
 

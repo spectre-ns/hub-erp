@@ -168,12 +168,33 @@ def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict |
             checkpoints = [s for s in rule["steps"] if s["kind"] == "checkpoint"]
             if checkpoints and checkpoints[0] is rule["steps"][0]:
                 out.append(Finding("consistency", "error", "a process cannot start with a checkpoint", key, frame, line))
+            seen_ids = [s["id"] for s in rule["steps"]]
+            for dup in sorted({x for x in seen_ids if seen_ids.count(x) > 1}):
+                out.append(Finding("consistency", "error", f"process {rule['name']} has two steps titled alike ({dup}); step titles must differ", key, frame, line))
             if rule.get("reject_to") and not any(s["id"] == rule["reject_to"] for s in rule["steps"]):
                 out.append(Finding("consistency", "error", f"rejections return to unknown step {rule['reject_to']!r}", key, frame, line))
             for cp in checkpoints:
                 if not any(r["kind"] == "routing" and r["process"] == rule["name"] and r["step"] != "*"
                            and (checkpoint_for(rule, r["step"]) or {}).get("id") == cp["id"] for r in rules):
                     out.append(Finding("consistency", "warning", f"checkpoint {cp['title']!r} of {rule['name']} has no routing sentence; it will route to the role on the step", key, frame, cp["line"]))
+    # required_by_state keys must be states some process of that record type can reach.
+    if record_types:
+        from .release import render_workflow
+
+        reachable: dict[str, set[str]] = {}
+        for proc in processes.values():
+            wanted = proc.get("record_type") or next((t for t, td in record_types.items() if td.get("object") == proc["object"]), proc["object"])
+            try:
+                wf = render_workflow(proc, {}, wanted)
+            except Exception:
+                continue
+            reachable.setdefault(wanted, set()).update(wf["states"])
+        for tname, td in record_types.items():
+            if tname not in reachable:
+                continue
+            for st in td.get("required_by_state", {}):
+                if st not in reachable[tname] | {"failed", "cancelled", "open"}:
+                    out.append(Finding("consistency", "warning", f"record type {tname}: required_by_state key {st!r} is not a state any process reaches"))
     # Segregation of duties across permissions: a role allowed both to create and
     # to approve the same object in the same folder is flagged, because the SoD
     # rule can then only be enforced per person at run time.

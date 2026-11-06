@@ -124,8 +124,11 @@ def kicad_sch_bom(content: bytes) -> list[dict]:
             continue
         props = {k: v for k, v in _PROP_RE.findall(block)}
         ref = props.get("Reference", "")
-        if not ref or ref.startswith("#") or "(in_bom no)" in block.replace(" ", ""):
+        compact = re.sub(r"\s+", " ", block)
+        if not ref or ref.startswith("#") or "(in_bom no)" in compact or "(dnp yes)" in compact or "(exclude_from_bom yes)" in compact:
             continue
+        if re.search(r"\(unit [2-9]\d*\)", compact):
+            continue  # multi-unit symbols count once, by their first unit
         key = (props.get("Value", ""), props.get("Footprint", ""), props.get("MPN", props.get("mpn", "")),
                props.get("Manufacturer", props.get("manufacturer", "")))
         line = lines.setdefault(key, {"value": key[0], "footprint": key[1], "mpn": key[2], "manufacturer": key[3],
@@ -198,6 +201,11 @@ class CADExporter(Cog):
                 try:
                     info = fcstd_parts(content)
                     parts.extend(info["parts"])
+                    for part in info["parts"]:
+                        if part.get("part_number"):
+                            bom_lines.append({"value": part["label"], "footprint": part.get("material", ""), "mpn": part["part_number"],
+                                              "manufacturer": "", "lib_id": "freecad", "references": [part["name"]],
+                                              "quantity": int(part.get("quantity") or 1), "source": "freecad"})
                     ctx.kernel.set_fields(d["locator"], {"cad_properties": info["properties"], "cad_objects": len(info["objects"])},
                                           by=self.id, run_id=ctx.run_id, release=ctx.release)
                 except (zipfile.BadZipFile, ValueError, ET.ParseError) as e:
@@ -265,7 +273,7 @@ class CADExporter(Cog):
 
 class BOMReconciler(Cog):
     id = "bom-reconciler"
-    reaches = ["kernel:read"]
+    reaches = ["kernel:records"]
     description = ("Matches every BOM line to an inventory item by MPN and manufacturer, proposes items for unknown lines, "
                    "and flags manufacturers not on the approved list. Creates nothing: proposals wait at the Gate.")
 
@@ -280,7 +288,11 @@ class BOMReconciler(Cog):
         resolved, unresolved, unapproved = [], [], []
         for line in lines:
             key = (str(line.get("mpn", "")).lower(), str(line.get("manufacturer", "")).lower())
-            it = items.get(key) or items.get((key[0], ""))
+            it = items.get(key)
+            if it is None and key[1] == "":
+                it = items.get((key[0], ""))
+            if it is not None and key[1] and str(it["fields"].get("manufacturer", "")).lower() not in ("", key[1]):
+                it = None  # same MPN, different manufacturer: not the same item
             if it is None or not key[0]:
                 unresolved.append({**line, "proposal": {"type": "item", "fields": {"name": line.get("value"), "mpn": line.get("mpn"),
                                                                                      "manufacturer": line.get("manufacturer"),
@@ -361,14 +373,14 @@ class RequirementsTracer(Cog):
             linked.append(r["locator"])
         captured = []
         for need in prior.get("user_needs") or []:
-            text = need if isinstance(need, str) else need.get("text", "")
+            text = need if isinstance(need, str) else (need.get("statement") or need.get("text", ""))
             kind = "user-need" if isinstance(need, str) else need.get("kind", "user-need")
             if not text.strip():
                 continue
             if ctx.runner is None or "requirements-capture" not in ctx.bundle.get("ops", {}):
                 problems.append(problem("requirements", "no requirements-capture process in the release", "warning"))
                 break
-            run_id = ctx.runner.submit("requirements-capture", {"record": {"text": text, "kind": kind, "design": rec["locator"],
+            run_id = ctx.runner.submit("requirements-capture", {"record": {"statement": text, "kind": kind, "design": rec["locator"],
                                                                             "source": (need.get("source") if isinstance(need, dict) else None) or "customer",
                                                                             "stakeholder": (need.get("stakeholder") if isinstance(need, dict) else "") or ""}},
                                        owner=ctx.owner)
@@ -379,7 +391,7 @@ class RequirementsTracer(Cog):
         trace = []
         for ref in linked:
             r = ctx.kernel.get(ref)
-            trace.append({"requirement": r["number"], "kind": r["fields"].get("kind"), "text": r["fields"].get("text"),
+            trace.append({"requirement": r["number"], "kind": r["fields"].get("kind"), "statement": r["fields"].get("statement"),
                           "state": r["state"], "acceptance_criteria": r["fields"].get("acceptance_criteria"),
                           "verification_method": r["fields"].get("verification_method"), "verified": bool(r["fields"].get("verified"))})
         accepted = all(t["state"] == "accepted" for t in trace)
@@ -390,9 +402,9 @@ class RequirementsTracer(Cog):
         if ctx.dms is not None and trace:
             buf = io.StringIO()
             w = csv.writer(buf)
-            w.writerow(["requirement", "kind", "text", "state", "acceptance_criteria", "verification_method", "verified"])
+            w.writerow(["requirement", "kind", "statement", "state", "acceptance_criteria", "verification_method", "verified"])
             for t in trace:
-                w.writerow([t["requirement"], t["kind"], t["text"], t["state"], t["acceptance_criteria"] or "", t["verification_method"] or "", t["verified"]])
+                w.writerow([t["requirement"], t["kind"], t["statement"], t["state"], t["acceptance_criteria"] or "", t["verification_method"] or "", t["verified"]])
             ctx.dms.create(title=f"Requirements trace for {rec['number']}", doc_class="evidence", folder=rec["folder"], by=self.id,
                            content=buf.getvalue().encode("utf-8"), filename=f"{rec['number']}-requirements.csv", mime="text/csv",
                            doc_type="requirements-trace", run_id=ctx.run_id, release=ctx.release,
@@ -405,6 +417,34 @@ class RequirementsTracer(Cog):
         return self.ok("run", {**prior, **fields, "requirements_captured": captured}, problems)
 
 
+def refresh_design(kernel, rec: dict, verdict: str) -> None:
+    """Before the design authority decides: recompute the requirement trace and refuse approval while any linked
+    requirement is unaccepted or the trace is empty. Registered as the pre-decision hook for designs."""
+    from .kernel import KernelGuardError
+
+    reqs = [kernel.get(l["target"]) for l in rec["links"] if l["rel"] == "fulfils"]
+    reqs = [r for r in reqs if r and r["type"] == "requirement"]
+    trace = [{"requirement": r["number"], "kind": r["fields"].get("kind"), "statement": r["fields"].get("statement"),
+              "state": r["state"], "acceptance_criteria": r["fields"].get("acceptance_criteria"),
+              "verification_method": r["fields"].get("verification_method"), "verified": bool(r["fields"].get("verified"))} for r in reqs]
+    accepted = bool(trace) and all(t["state"] == "accepted" for t in trace)
+    conditions = dict(rec["fields"].get("conditions") or {})
+    conditions["requirements_accepted"] = accepted
+    risk = rec["fields"].get("risk")
+    cls = str(rec["fields"].get("change_class") or "2")
+    if accepted and risk == "high" and cls != "1":
+        risk = "medium" if cls == "2" or not conditions.get("design_checks_clean", True) else "low"
+    kernel.set_fields(rec["locator"], {"requirement_trace": trace, "requirements_accepted": accepted, "conditions": conditions, "risk": risk},
+                      by="hub", run_id=rec.get("run_id", ""), release=rec.get("release", ""))
+    if verdict == "approve" and not accepted:
+        unaccepted = [t["requirement"] for t in trace if t["state"] != "accepted"]
+        raise KernelGuardError("requirements", "the design cannot be approved: " + (
+            f"requirements not accepted: {', '.join(unaccepted)}" if unaccepted else "it traces to no requirement"))
+
+
 def register(registry) -> None:
+    from . import runner as _runner
+
+    _runner.PRE_DECISION_HOOKS["design"] = refresh_design
     for cls in (CADExporter, BOMReconciler, PartReleaser, RequirementsTracer):
         registry.register(cls())

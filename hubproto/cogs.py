@@ -86,6 +86,9 @@ class Cog:
                 # empty values, so fields a person supplied at a Gate reach the steps that follow.
                 if prior.get(k) in (None, "", [], {}) and v not in (None, ""):
                     prior[k] = v
+        # Fields a person supplied at a Gate win over anything an earlier step computed.
+        for k, v in (ctx.extras.get("decision_fields") or {}).items():
+            prior[k] = v
         return prior
 
 
@@ -182,57 +185,77 @@ class DocumentRenderer(Cog):
 
 class RiskScorer(Cog):
     id = "risk-scorer"
-    description = "Deterministic risk tier and the facts approval criteria can test."
+    reaches = ["kernel:records"]
+    description = "Deterministic risk tier and the facts approval criteria can test, by record type, with thresholds from the release."
 
     def task_run(self, input: dict, ctx: RunContext) -> dict:
         rec = self._prior(input, ctx)
-        reasons = []
-        conditions = {}
-        if "supplier_approved" in (rec.get("conditions") or {}) or rec.get("quantity") not in (None, ""):
+        record = ctx.rec() or {}
+        rtype = record.get("type") or ""
+        reasons: list[str] = []
+        conditions: dict = {}
+        big = float(threshold(ctx.bundle, "controller-approval-threshold", threshold(ctx.bundle, "purchase-approval-threshold", 10000)) or 10000)
+        small = float(threshold(ctx.bundle, "cog-approval-limit", threshold(ctx.bundle, "cog-purchase-limit", 2000)) or 2000)
+        if rtype == "purchase-request":
             c = rec.get("conditions") or {}
             conditions["supplier_approved"] = bool(c.get("supplier_approved"))
             conditions["item_known"] = bool(c.get("item_known"))
             amount = float(rec.get("amount") or 0)
+            if amount <= 0:
+                reasons.append("no price on the request")
             if not conditions["supplier_approved"]:
                 reasons.append("supplier not approved")
             if not conditions["item_known"]:
                 reasons.append("item not in inventory")
-            tier = "high" if amount >= 10000 or not conditions["supplier_approved"] else ("medium" if amount >= 500 or not conditions["item_known"] else "low")
-        elif rec.get("amount") not in (None, ""):
+            tier = "high" if amount >= big or not conditions["supplier_approved"] or amount <= 0 else (
+                "medium" if amount >= small or not conditions["item_known"] else "low")
+        elif rtype == "bill":
             match = rec.get("match", {}) or {}
             conditions["match_within_tolerance"] = bool(match.get("within_tolerance") and match.get("received"))
             conditions["supplier_approved"] = bool(match.get("supplier_approved"))
-            amount = float(rec["amount"])
+            amount = float(rec.get("amount") or 0)
             if not conditions["match_within_tolerance"]:
                 reasons.append("three-way match failed")
             if not conditions["supplier_approved"]:
                 reasons.append("supplier not approved")
-            if amount >= 10000:
-                reasons.append("amount at or above 10,000")
-            tier = "high" if (reasons and amount >= 10000) or "three-way match failed" in reasons else (
-                "medium" if reasons or amount >= 2000 else "low")
-        elif rec.get("change_type") or rec.get("doc_class"):
+            if amount >= big:
+                reasons.append(f"amount at or above {big:g}")
+            tier = "high" if (reasons and amount >= big) or "three-way match failed" in reasons else (
+                "medium" if reasons or amount >= small else "low")
+        elif rtype == "design":
+            c = rec.get("conditions") or {}
+            conditions.update({k: bool(c.get(k)) for k in ("bom_resolved", "design_checks_clean", "requirements_accepted")})
+            cls = str(rec.get("change_class") or "2")
+            if not conditions["requirements_accepted"]:
+                reasons.append("requirements not all accepted")
+            if not conditions["design_checks_clean"]:
+                reasons.append("design checks not clean or not run")
+            tier = "high" if cls == "1" or not conditions["requirements_accepted"] else (
+                "medium" if cls == "2" or not conditions["design_checks_clean"] else "low")
+        elif rtype in ("document", "change-request"):
             conditions["change_minor"] = rec.get("change_type") == "minor"
             tier = "low" if conditions["change_minor"] else "medium"
             if not conditions["change_minor"]:
-                reasons.append("major change to a controlled document")
-        elif rec.get("kind") in ("mechanical", "electrical", "mixed") or "bom_lines" in rec:
-            c = rec.get("conditions") or {}
-            conditions.update({k: bool(c.get(k)) for k in ("bom_resolved", "design_checks_clean", "requirements_accepted") if k in c})
-            cls = str(rec.get("change_class") or "2")
-            if not conditions.get("requirements_accepted", True):
-                reasons.append("requirements not all accepted")
-            if not c.get("design_checks_clean", True):
-                reasons.append("design checks not clean")
-            tier = "high" if cls == "1" or reasons else ("medium" if cls == "2" else "low")
-        else:
-            sev = (rec.get("severity") or rec.get("source") or "").lower()
-            open_ncr = any(r["state"] not in ("closed", "rejected") for r in ctx.kernel.query(type_="ncr")
-                           if r["locator"] != ctx.record) if ctx.record else False
-            conditions["no_open_ncr"] = not open_ncr
-            tier = "high" if sev in ("high", "complaint", "audit") else ("low" if sev in ("", "low", "inspection", "internal") else "medium")
+                reasons.append("major change")
+        elif rtype == "requirement":
+            kind = rec.get("kind") or "user-need"
+            tier = "high" if kind in ("safety", "regulatory") else "low"
             if tier != "low":
-                reasons.append(f"source or severity {sev!r}")
+                reasons.append(f"{kind} requirement")
+        else:
+            sev = (rec.get("severity") or "").lower()
+            source = (rec.get("source") or "").lower()
+            open_ncr = any(r["state"] not in ("closed", "rejected", "cancelled") for r in ctx.kernel.query(type_="ncr")
+                           if r["locator"] != ctx.record) if ctx.record and rtype == "ncr" else False
+            conditions["no_open_ncr"] = not open_ncr
+            if sev == "high" or source in ("complaint", "audit"):
+                tier = "high"
+            elif sev == "medium" or source in ("calibration", "supplier"):
+                tier = "medium"
+            else:
+                tier = "low"
+            if tier != "low":
+                reasons.append(f"severity {sev or 'n/a'}, source {source or 'n/a'}")
         conditions["risk_low"] = tier == "low"
         conditions["risk_not_high"] = tier != "high"
         if ctx.record:
@@ -283,16 +306,26 @@ class InvoiceExtractor(Cog):
 
 class ThreeWayMatcher(Cog):
     id = "three-way-matcher"
-    reaches = ["kernel:read"]
+    reaches = ["kernel:records"]
     description = "Matches a bill to its purchase order and receipt within the release's match tolerance."
 
     def task_run(self, input: dict, ctx: RunContext) -> dict:
         bill = self._prior(input, ctx)
         tol = threshold(ctx.bundle, "match-tolerance", 0.0)
         po = ctx.kernel.purchase_orders().get(f"po:{bill.get('po_ref')}")
-        match = {"po_found": bool(po), "received": bool(po and po.get("received")), "within_tolerance": False,
-                 "tolerance_percent": tol, "variance_percent": None}
         problems = []
+        amount = float(bill.get("amount") or 0)
+        if amount <= 0:
+            problems.append(problem("amount", f"a bill must carry a positive amount, not {amount:g}"))
+        period = str(bill.get("date") or "")[:7]
+        p = ctx.kernel.periods().get(f"period:{period}")
+        if not p or not p.get("open"):
+            problems.append(problem("period-open", f"period {period or 'n/a'} is not open for posting"))
+        billed = sum(float(b.get("amount") or 0) for b in ctx.kernel.bills().values()
+                     if b.get("po_ref") == bill.get("po_ref") and b.get("state") in ("posted", "awaiting-approve-the-bill")
+                     and b.get("locator") != ctx.record)
+        match = {"po_found": bool(po), "received": bool(po and po.get("received")), "within_tolerance": False,
+                 "tolerance_percent": tol, "variance_percent": None, "billed_to_date": billed}
         if not po:
             problems.append(problem("po-match", f"no purchase order {bill.get('po_ref')!r}"))
         else:
@@ -304,6 +337,8 @@ class ThreeWayMatcher(Cog):
             variance = abs(float(bill.get("amount", 0)) - base) / base * 100 if base else 100.0
             match["variance_percent"] = round(variance, 3)
             match["within_tolerance"] = variance <= tol
+            if base and billed + amount > base * (1 + tol / 100) + 0.005:
+                problems.append(problem("po-overbilled", f"{billed:.2f} already billed against {bill.get('po_ref')} ({base:.2f}); this bill of {amount:.2f} exceeds the order"))
             if not match["within_tolerance"]:
                 problems.append(problem("price-variance", f"variance {variance:.2f}% exceeds tolerance {tol}%", "warning"))
             if not po.get("received"):
@@ -346,11 +381,41 @@ class LedgerPoster(Cog):
         return self.ok("run", {**bill, "journal": number})
 
 
+class JournalReverser(Cog):
+    id = "journal-reverser"
+    reaches = ["kernel:journals"]
+    description = "Posts the mirror image of an approved journal; corrections are reversals, never edits."
+
+    def task_run(self, input: dict, ctx: RunContext) -> dict:
+        refused = self._require_grant(ctx, "run")
+        if refused:
+            return refused
+        prior = self._prior(input, ctx)
+        original = ctx.kernel.get(prior.get("journal") or "")
+        if original is None or original["type"] != "journal":
+            return make_envelope(self.id, self.version, "run", error={"code": "journal", "detail": f"no journal {prior.get('journal')!r}"})
+        if any(l["rel"] == "supersedes" for l in original["links"]):
+            return make_envelope(self.id, self.version, "run", error={"code": "reversed", "detail": f"{original['number']} was already reversed"})
+        f = original["fields"]
+        journal = {"date": date.today().isoformat(), "currency": f.get("currency"),
+                   "memo": f"Reversal of {original['number']}: {prior.get('reason', '')}", "folder": original["folder"],
+                   "reverses": original["locator"],
+                   "lines": [{"account": l["account"], "debit": float(l.get("credit", 0)), "credit": float(l.get("debit", 0))} for l in f.get("lines", [])]}
+        number = ctx.kernel.post_journal(journal, run_id=ctx.run_id, release=ctx.release, grant=ctx.grant,
+                                         prepared_by=ctx.owner, approved_by=ctx.grant.get("decided_by", ""), by=self.id)
+        rev = ctx.kernel.get(f"journal:{number}")
+        ctx.kernel.link(rev["locator"], "supersedes", original["locator"], by=self.id, run_id=ctx.run_id, release=ctx.release)
+        if ctx.record:
+            ctx.kernel.set_fields(ctx.record, {"reversal": rev["locator"]}, by=self.id, run_id=ctx.run_id, release=ctx.release)
+        return self.ok("run", {**prior, "reversal": rev["locator"], "reversal_number": number})
+
+
 # ---------------------------------------------------------------- quality
 
 class DocumentDrafter(Cog):
     id = "document-drafter"
     kind = "context"
+    reaches = ["kernel:documents"]
     description = "Turns a request into a controlled-document draft (deterministic stand-in)."
 
     def task_run(self, input: dict, ctx: RunContext) -> dict:
@@ -411,12 +476,12 @@ class NCRClassifier(Cog):
         rec = dict(input.get("record") or {})
         text = (rec.get("description") or "").lower()
         source = rec.get("source") or ("complaint" if "customer" in text else "inspection")
-        sev = "high" if any(w in text for w in ("safety", "recall", "field", "injury")) else ("medium" if "lot" in text else "low")
+        sev = rec.get("severity") or ("high" if any(w in text for w in ("safety", "recall", "field", "injury", "fire", "shock")) else "low")
         if sev == "low" and source in ("calibration", "complaint", "audit", "supplier"):
             sev = "medium"  # a nonconformance raised by another process is never low risk by default
         problems = [] if rec.get("description") else [problem("required-field", "nonconformance has no description")]
         out = {**rec, "source": source, "severity": sev,
-               "containment": rec.get("containment") or "Quarantine affected items and notify the process owner."}
+               "containment": rec.get("containment") or f"Quarantine the affected items ({rec.get('part') or rec.get('title') or 'see description'}; lot {rec.get('lot') or 'n/a'}; quantity {rec.get('quantity') or 'n/a'}) pending disposition, and notify the process owner."}
         if sev == "low":
             out.setdefault("disposition", "rework")
             out.setdefault("disposition_rationale", "Proposed by the classifier for a low-risk nonconformance; confirmed at the Gate.")
@@ -577,14 +642,20 @@ class ReviewerCog(Cog):
         actions = []
         if self.files_process and attachments and ("file" in text or "please" in text or "process" in text):
             for att in attachments:
-                run_id = ctx.runner.submit(self.files_process, {"record": att.get("content", {})}, owner=self.id)
+                content = att.get("content") or {}
+                if isinstance(content, dict) and not any(content.get(k) for k in ("description", "title", "text", "supplier")):
+                    return self.ok("inbox", {"reply": f"I cannot file {att.get('name')}: it carries no description or title. Add one and resend.",
+                                             "actions": []})
+                run_id = ctx.runner.submit(self.files_process, {"record": content}, owner=self.id)
                 actions.append({"action": "filed", "process": self.files_process, "run_id": run_id,
                                 "attachment": att.get("name"), "record": ctx.runner.load(run_id)["record"]})
             reply = "Filed " + ", ".join(a["attachment"] or "attachment" for a in actions) + \
                     " as " + ", ".join(f"{a['record']} (run {a['run_id']})" for a in actions) + "."
         elif "status" in text and ctx.runner is not None:
-            waiting = [f"{r.get('record')} ({r['process']})" for r in ctx.runner.list() if r["status"] == "waiting"]
-            reply = f"{len(waiting)} item(s) are waiting at a Gate: {', '.join(waiting) or 'none'}."
+            asker = msg.get("from", "")
+            mine = [f"{r.get('record')} ({r['process']}, {r['pending']['title']})" for r in ctx.runner.pending_for(asker)]
+            own = [f"{r.get('record')} ({r['process']}: {r['status']})" for r in ctx.runner.list() if r["owner"] == asker and r["status"] in ("waiting", "failed")]
+            reply = f"Waiting for you: {', '.join(mine) or 'nothing'}. Your open items: {', '.join(own) or 'none'}."
         else:
             reply = ("I can file an attached record into a process, or report status. "
                      "I approve only within the criteria in the current policy release.")
@@ -621,7 +692,7 @@ class CogRegistry:
     def __init__(self):
         self.cogs: dict[str, Cog] = {}
         for cls in (RecordFiler, BillFiler, DocumentFiler, Linker, Notifier, DocumentRenderer, RiskScorer,
-                    InvoiceExtractor, ThreeWayMatcher, LedgerPoster, DocumentDrafter, DocumentPublisher,
+                    InvoiceExtractor, ThreeWayMatcher, LedgerPoster, JournalReverser, DocumentDrafter, DocumentPublisher,
                     NCRClassifier, CAPAOpener, NCROpener, CAPADrafter, EffectivenessScheduler, AuditChecklistDrafter,
                     DocumentClassifier, APReviewer, DocReviewer, QualityAssistant):
             self.register(cls())

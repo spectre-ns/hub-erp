@@ -234,7 +234,7 @@ def test_capa_runs_to_closure_with_an_effectiveness_check(seeded):
 
 
 def test_quality_manager_cannot_disposition_her_own_ncr(seeded):
-    run_id = seeded.runner.submit("nonconformance", {"record": {"title": "Wrong label", "description": "Label lot mismatch"}},
+    run_id = seeded.runner.submit("nonconformance", {"record": {"title": "Wrong label", "description": "Label mismatch, safety hazard"}},
                                   owner="carol")
     state = run_state(seeded, run_id)
     assert state["status"] == "waiting" and state["pending"]["assignees"] == ["bob"]
@@ -259,7 +259,7 @@ def test_effective_document_assigns_training_and_tick_escalates_overdue_items(se
         seeded.runner.decide(tr["id"], "bob", "approve")
     state = seeded.runner.decide(tr["id"], "alice", "approve", meaning="read and understood")
     assert state["status"] == "completed" and seeded.kernel.get(mine["locator"])["state"] == "acknowledged"
-    escalated = seeded.runner.tick(today="2099-01-01")
+    escalated = [e for e in seeded.runner.tick(today="2099-01-01") if e["to"]]  # overdue items that gained an assignee
     assert {e["record"] for e in escalated} == {t["locator"] for t in trainings if t["fields"]["person"] in ("bob", "dave")}
     assert all(e["to"] == ["carol"] for e in escalated)
     bobs = next(t for t in seeded.kernel.query(type_="training") if t["fields"]["person"] == "bob")

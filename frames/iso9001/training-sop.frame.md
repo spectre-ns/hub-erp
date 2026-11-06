@@ -33,7 +33,7 @@ Staff may read Quality/Training.
 ## Routing
 At Acknowledge the document in training-acknowledgement go to the assignee.
 Acknowledge the document in training-acknowledgement is due within 14 days.
-Overdue items in training-acknowledgement go to the quality manager.
+Overdue items in training-acknowledgement are reported to the quality manager.
 
 ## Process: training-acknowledgement
 Records are filed in Quality/Training.

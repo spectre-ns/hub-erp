@@ -21,7 +21,14 @@
   "sensitivity": "internal",
   "defaults": {
    "assignee": "$owner"
-  }
+  },
+  "decision_fields": [
+   "description",
+   "priority",
+   "assignee",
+   "due",
+   "title"
+  ]
  },
  "document": {
   "prefix": "DOC",
@@ -69,7 +76,29 @@
    "revision": "A",
    "minor": 0,
    "doc_class": "controlled"
-  }
+  },
+  "system_fields": [
+   "content_sha",
+   "filename",
+   "mime",
+   "size",
+   "text",
+   "checked_out_by",
+   "approved_by",
+   "grant",
+   "minor",
+   "revision",
+   "author",
+   "attachments_filed",
+   "training_assigned",
+   "review_date",
+   "effective_from"
+  ],
+  "decision_fields": [
+   "review_date",
+   "effective_from",
+   "training_roles"
+  ]
  },
  "bill": {
   "prefix": "BILL",
@@ -98,7 +127,13 @@
    ]
   },
   "retention": "financial-reporting",
-  "sensitivity": "internal"
+  "sensitivity": "internal",
+  "system_fields": [
+   "journal",
+   "match",
+   "risk",
+   "citations"
+  ]
  },
  "journal": {
   "prefix": "JE",
@@ -153,7 +188,18 @@
   "sensitivity": "internal",
   "defaults": {
    "reported_by": "$owner"
-  }
+  },
+  "system_fields": [
+   "capa",
+   "risk",
+   "conditions",
+   "severity"
+  ],
+  "decision_fields": [
+   "disposition",
+   "disposition_rationale",
+   "containment"
+  ]
  },
  "capa": {
   "prefix": "CAPA",
@@ -191,7 +237,19 @@
   "sensitivity": "internal",
   "defaults": {
    "owner": "$owner"
-  }
+  },
+  "system_fields": [
+   "effectiveness_check_date",
+   "effectiveness_criteria",
+   "risk"
+  ],
+  "decision_fields": [
+   "root_cause",
+   "root_cause_method",
+   "actions",
+   "effectiveness_result",
+   "due"
+  ]
  },
  "training": {
   "prefix": "TRN",
@@ -217,7 +275,10 @@
   "sensitivity": "internal",
   "defaults": {
    "assigned": "$today"
-  }
+  },
+  "decision_fields": [
+   "assessed_by"
+  ]
  },
  "audit": {
   "prefix": "AUD",
@@ -246,7 +307,11 @@
   "sensitivity": "internal",
   "defaults": {
    "auditor": "$owner"
-  }
+  },
+  "decision_fields": [
+   "findings",
+   "summary"
+  ]
  },
  "supplier-evaluation": {
   "prefix": "SUP",
@@ -274,7 +339,14 @@
   "sensitivity": "internal",
   "defaults": {
    "evaluator": "$owner"
-  }
+  },
+  "decision_fields": [
+   "score",
+   "scope",
+   "reevaluation_date",
+   "approved",
+   "criteria"
+  ]
  },
  "change-request": {
   "prefix": "CR",
@@ -306,7 +378,12 @@
   "sensitivity": "internal",
   "defaults": {
    "requested_by": "$owner"
-  }
+  },
+  "decision_fields": [
+   "impact",
+   "verification",
+   "plan"
+  ]
  },
  "management-review": {
   "prefix": "MR",
@@ -335,7 +412,12 @@
   "sensitivity": "internal",
   "defaults": {
    "chair": "$owner"
-  }
+  },
+  "decision_fields": [
+   "outputs",
+   "actions",
+   "inputs"
+  ]
  },
  "calibration": {
   "prefix": "CAL",
@@ -365,7 +447,12 @@
   "defaults": {
    "performed_by": "$owner",
    "performed": "$today"
-  }
+  },
+  "decision_fields": [
+   "result",
+   "next_due",
+   "measured"
+  ]
  },
  "complaint": {
   "prefix": "CMP",
@@ -389,7 +476,11 @@
   },
   "retention": "quality",
   "sensitivity": "internal",
-  "defaults": {}
+  "defaults": {},
+  "decision_fields": [
+   "response",
+   "severity"
+  ]
  },
  "asset": {
   "prefix": "AST",
@@ -431,14 +522,31 @@
    "unit_cost": "money",
    "currency": "text"
   },
-  "required_by_state": {},
+  "required_by_state": {
+   "awaiting-approve-the-item": [
+    "name",
+    "mpn"
+   ],
+   "active": [
+    "name",
+    "mpn"
+   ]
+  },
   "defaults": {
    "unit": "ea",
    "approved_manufacturer": true,
    "stock": 0
   },
   "retention": "standard",
-  "sensitivity": "internal"
+  "sensitivity": "internal",
+  "decision_fields": [
+   "supplier",
+   "unit_cost",
+   "currency",
+   "lead_time_days",
+   "approved_manufacturer",
+   "manufacturer"
+  ]
  },
  "part": {
   "prefix": "PN",
@@ -508,7 +616,30 @@
    "change_class": "2"
   },
   "retention": "quality",
-  "sensitivity": "internal"
+  "sensitivity": "internal",
+  "system_fields": [
+   "part",
+   "exports",
+   "bom_lines",
+   "parts",
+   "checks",
+   "sources",
+   "bom_resolved",
+   "bom_unresolved",
+   "bom_unapproved",
+   "risk",
+   "conditions",
+   "requirements",
+   "requirement_trace",
+   "requirements_accepted",
+   "items_created",
+   "purchase_requests",
+   "attachments_filed"
+  ],
+  "decision_fields": [
+   "change_class",
+   "description"
+  ]
  },
  "purchase-request": {
   "prefix": "PR",
@@ -538,9 +669,7 @@
   "required_by_state": {
    "awaiting-approve-the-purchase": [
     "item",
-    "quantity",
-    "amount",
-    "currency"
+    "quantity"
    ],
    "ordered": [
     "po"
@@ -552,7 +681,21 @@
    "unit": "ea"
   },
   "retention": "financial-reporting",
-  "sensitivity": "internal"
+  "sensitivity": "internal",
+  "system_fields": [
+   "po",
+   "amount",
+   "supplier_approved",
+   "supplier_note",
+   "risk",
+   "conditions"
+  ],
+  "decision_fields": [
+   "supplier",
+   "unit_cost",
+   "needed_by",
+   "reason"
+  ]
  },
  "purchase-order": {
   "prefix": "PO",
@@ -592,6 +735,10 @@
    "notes": "text"
   },
   "required_by_state": {
+   "awaiting-confirm-the-receipt": [
+    "po",
+    "lines"
+   ],
    "received": [
     "po",
     "lines"
@@ -603,7 +750,16 @@
    "location": "MAIN"
   },
   "retention": "financial-reporting",
-  "sensitivity": "internal"
+  "sensitivity": "internal",
+  "system_fields": [
+   "po_number",
+   "supplier",
+   "booked"
+  ],
+  "decision_fields": [
+   "notes",
+   "lines"
+  ]
  },
  "requirement": {
   "prefix": "REQ",
@@ -611,7 +767,6 @@
   "yearly": true,
   "object": "requirement",
   "fields": {
-   "text": "text",
    "kind": "enum:user-need,system,functional,performance,safety,regulatory,interface",
    "source": "text",
    "rationale": "text",
@@ -625,17 +780,19 @@
    "stakeholder": "text",
    "risk": "text",
    "conditions": "object",
-   "captured_by": "principal"
+   "captured_by": "principal",
+   "statement": "text"
   },
   "required_by_state": {
    "awaiting-accept-the-requirement": [
-    "text",
+    "statement",
     "kind"
    ],
    "accepted": [
-    "text",
+    "statement",
     "kind",
-    "acceptance_criteria"
+    "acceptance_criteria",
+    "verification_method"
    ]
   },
   "defaults": {
@@ -645,6 +802,49 @@
    "source": "customer"
   },
   "retention": "quality",
+  "sensitivity": "internal",
+  "decision_fields": [
+   "acceptance_criteria",
+   "verification_method",
+   "priority",
+   "rationale"
+  ],
+  "system_fields": [
+   "risk",
+   "conditions",
+   "design"
+  ]
+ },
+ "journal-reversal": {
+  "prefix": "JR",
+  "digits": 5,
+  "yearly": false,
+  "object": "journal-reversal",
+  "fields": {
+   "journal": "ref",
+   "reason": "text",
+   "requested_by": "principal",
+   "reversal": "ref"
+  },
+  "required_by_state": {
+   "awaiting-approve-the-reversal": [
+    "journal",
+    "reason"
+   ],
+   "posted": [
+    "reversal"
+   ]
+  },
+  "defaults": {
+   "requested_by": "$owner"
+  },
+  "system_fields": [
+   "reversal"
+  ],
+  "decision_fields": [
+   "reason"
+  ],
+  "retention": "financial-reporting",
   "sensitivity": "internal"
  }
 }

@@ -64,7 +64,9 @@ def freecad_export(src: Path, out: Path, options: dict) -> dict:
         script = out / "export.py"
         script.write_text(_FREECAD_SCRIPT)
         env = {**os.environ, "HUB_SRC": str(src), "HUB_OUT": str(out)}
-        subprocess.run([b["freecad"], str(script)], check=False, capture_output=True, timeout=600, env=env)
+        proc = subprocess.run([b["freecad"], str(script)], check=False, capture_output=True, timeout=600, env=env)
+        if proc.stderr:
+            _LAST_STDERR.append(proc.stderr.decode("utf-8", errors="replace")[-2000:])
         entries = [(out / "model.step", "model-step", "model/step"), (out / "model.stl", "model-stl", "model/stl"),
                    (out / "props.json", "model-properties", "application/json")]
         payload = _files_payload(entries)
@@ -80,8 +82,14 @@ def freecad_export(src: Path, out: Path, options: dict) -> dict:
     return make_envelope("freecad-exporter", VERSION, "freecad-export", error={"code": "tool-unavailable", "detail": "FreeCAD is not installed in this worker"})
 
 
+_LAST_STDERR: list[str] = []
+
+
 def kicad_run(args: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run([binding()["kicad-cli"]] + args, check=False, capture_output=True, text=True, timeout=600)
+    proc = subprocess.run([binding()["kicad-cli"]] + args, check=False, capture_output=True, text=True, timeout=600)
+    if proc.stderr:
+        _LAST_STDERR.append(proc.stderr[-2000:])
+    return proc
 
 
 def kicad_check(kind: str, src: Path, out: Path) -> dict:
@@ -94,10 +102,17 @@ def kicad_check(kind: str, src: Path, out: Path) -> dict:
         if not report.exists():
             return make_envelope(tool, VERSION, tool, error={"code": "tool-failed", "detail": f"kicad-cli produced no {kind} report"})
         data = json.loads(report.read_text())
-        errors = sum(1 for sheet in data.get("sheets", data.get("violations", [])) if isinstance(sheet, dict)
-                     for v in sheet.get("violations", [sheet]) if v.get("severity") == "error")
-        warnings = sum(1 for sheet in data.get("sheets", data.get("violations", [])) if isinstance(sheet, dict)
-                       for v in sheet.get("violations", [sheet]) if v.get("severity") == "warning")
+
+        def violations():
+            for key in ("violations", "schematic_parity"):
+                for v in data.get(key, []) or []:
+                    yield v
+            for sheet in data.get("sheets", []) or []:
+                for v in sheet.get("violations", []) or []:
+                    yield v
+
+        errors = sum(1 for v in violations() if v.get("severity") == "error") + len(data.get("unconnected_items", []) or [])
+        warnings = sum(1 for v in violations() if v.get("severity") == "warning")
         return make_envelope(tool, VERSION, tool, payload={"errors": errors, "warnings": warnings, "report": data})
     if b["fake"]:
         text = src.read_text(errors="replace")
@@ -163,6 +178,9 @@ def invoke(request: dict) -> dict:
             env = make_envelope("cad-worker", VERSION, tool, error={"code": "invocation-failed", "detail": f"{type(e).__name__}: {e}"})
     env["timing"] = round(time.perf_counter() - started, 3)
     env["binding"] = {k: bool(v) for k, v in binding().items()}
+    if _LAST_STDERR:
+        env["raw"] = "\n".join(_LAST_STDERR)[-4000:]
+        _LAST_STDERR.clear()
     return env
 
 

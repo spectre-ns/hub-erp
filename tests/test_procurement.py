@@ -73,11 +73,11 @@ def test_design_to_order_to_receipt_to_ledger(hub, fake_worker):
     hub.runner.decide(run2, "bob", "approve", meaning="design package reviewed and released")
     d2 = k.get(d2["locator"])
     assert d2["state"] == "released" and k.get(d2["fields"]["part"])["state"] == "released"
-    assert len(d2["fields"]["items_created"]) == 1
-    new_item = k.get(d2["fields"]["items_created"][0])
-    assert new_item["fields"]["mpn"] == "CL10B104KB8NNNC" and new_item["fields"]["stock"] == 0
+    created = {k.get(ref)["fields"]["mpn"]: k.get(ref) for ref in d2["fields"]["items_created"]}
+    assert set(created) == {"CL10B104KB8NNNC", "PN-BRK-01"}, "the capacitor and the FreeCAD bracket become items"
+    assert created["CL10B104KB8NNNC"]["fields"]["stock"] == 0
     prs = [k.get(ref) for ref in d2["fields"]["purchase_requests"]]
-    assert len(prs) == 2
+    assert len(prs) == 3
     by_mpn = {pr["fields"]["mpn"]: pr for pr in prs}
     # Known item, approved supplier, tiny amount: the purchasing cog may order it within criteria.
     known = by_mpn["RC0603FR-0710KL"]

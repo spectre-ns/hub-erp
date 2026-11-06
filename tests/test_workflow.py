@@ -446,7 +446,7 @@ def test_tick_escalates_overdue_items_once(widgets):
     due = (TODAY + timedelta(days=3)).isoformat()
     assert widgets.runner.tick(today=TODAY.isoformat()) == [], "not yet due"
     escalated = widgets.runner.tick(today="2999-01-01")
-    assert escalated == [{"run": run_id, "record": widgets.runner.load(run_id)["record"], "to": ["ivy"]}]
+    assert [(e["run"], e["record"], e["to"]) for e in escalated] == [(run_id, widgets.runner.load(run_id)["record"], ["ivy"])]
     state = widgets.runner.load(run_id)
     assert state["status"] == "waiting" and state["pending"]["assignees"] == ["erin", "ivy"]
     assert state["pending"]["escalated"] == "2999-01-01"
@@ -605,7 +605,7 @@ def test_field_assignee_without_approve_permission_fails_the_run(widgets):
     failed = event(widgets, run_id, "run.failed")
     assert len(failed) == 1 and failed[0]["reason"].startswith("no eligible approver")
     rec = widgets.kernel.get(state["record"])
-    assert rec["state"] == "failed" and rec["assignees"] == []
+    assert rec["state"] == "failed" and rec["assignees"] == [widgets.runner.load(run_id)["owner"]]
     assert not [m for m in widgets.inbox.all() if m["kind"] == "approval" and m["run_id"] == run_id]
     with pytest.raises(RunError, match="not waiting"):
         widgets.runner.decide(run_id, "gina", "approve")

@@ -67,7 +67,7 @@ _ROUTING = re.compile(
     r"(?: (?P<op>over|above|under|below|at or under|at or over) (?P<amount>[\d,]+(?:\.\d+)?) (?P<cur>[A-Z]{3})"
     r"| with (?P<risk>low|medium|high) risk"
     r"|(?: for (?P<doctype>[a-z][a-z -]*?)s?)?(?: with a (?P<change>minor|major) change)?)?"
-    r" go to (?P<assignee>the [\w -]+? cog|the [\w -]+?|[a-z][\w-]*)\.$"
+    r" (?P<verb>go to|are reported to) (?P<assignee>the [\w -]+? cog|the [\w -]+?|[a-z][\w-]*)\.$"
 )
 _SLA = re.compile(r"^(?:(?P<approvals>Approvals)|(?P<title>[A-Z][^,]*?)) in (?P<process>[a-z0-9-]+) (?:is|are) due within (?P<days>\d+) days?\.$")
 _PROCESS_TERMINAL = re.compile(r"^Closes as (?P<state>[a-z][a-z-]*)\.$")
@@ -256,7 +256,7 @@ class ConventionExtractor:
             cond = None if not conds else (conds[0] if len(conds) == 1 else {"all": conds})
             step = "*" if m.group("overdue") else ("approve" if m.group("approvals") else slug(m.group("title")))
             add("routing", n, line, process=m.group("process"), step=step, condition=cond,
-                assignee=_assignee(m.group("assignee")))
+                assignee=_assignee(m.group("assignee")), mode="notify" if m.group("verb") == "are reported to" else "assign")
             return True
         m = _SLA.match(line)
         if m:

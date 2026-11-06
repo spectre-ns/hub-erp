@@ -121,6 +121,7 @@ def test_worker_unconfigured_is_a_soft_failure(monkeypatch):
 
 def _design_input(schematic: str = SCHEMATIC) -> dict:
     return {"record": {"title": "Sensor board", "kind": "electrical",
+                       "user_needs": ["The board must read temperature to within 0.5 C."],
                        "attachments": [{"name": "sensor.kicad_sch", "content": schematic, "doc_class": "controlled", "doc_type": "schematic"},
                                        {"name": "bracket.FCStd", "content_b64": __import__("base64").b64encode(fcstd_bytes()).decode(),
                                         "doc_class": "controlled", "doc_type": "model"}]}}
@@ -141,11 +142,18 @@ def test_design_release_end_to_end(hub, fake_worker):
     assert docs["bom"]["fields"]["doc_class"] == "evidence" and docs["bom"]["fields"]["provenance"]["source"] == docs["schematic"]["locator"]
     f = design["fields"]
     assert [l["value"] for l in f["bom_resolved"]] == ["10k"] and f["bom_resolved"][0]["short"] == 1
-    assert [l["value"] for l in f["bom_unresolved"]] == ["100n"] and f["bom_unresolved"][0]["proposal"]["fields"]["mpn"] == "CL10B104KB8NNNC"
+    unresolved = {l["value"]: l for l in f["bom_unresolved"]}
+    assert set(unresolved) == {"100n", "Bracket"}, "the capacitor and the FreeCAD bracket are unknown items"
+    assert unresolved["100n"]["proposal"]["fields"]["mpn"] == "CL10B104KB8NNNC" and unresolved["Bracket"]["mpn"] == "PN-BRK-01"
     assert f["checks"]["erc"] == {"ran": True, "errors": 0, "warnings": 0}
     assert f["parts"][0]["part_number"] == "PN-BRK-01"
     with pytest.raises(RunError, match="not an assignee"):
         hub.runner.decide(run_id, "alice", "approve")
+    with pytest.raises(RunError, match="requirements not accepted"):
+        hub.runner.decide(run_id, "bob", "approve", meaning="too early")
+    for req in k.query(type_="requirement"):
+        rr = hub.runner.run_for_record(req["locator"])
+        hub.runner.decide(rr["id"], "bob", "approve", meaning="accepted", fields={"acceptance_criteria": "ATP-1", "verification_method": "test"})
     state = hub.runner.decide(run_id, "bob", "approve", meaning="design package reviewed")
     assert state["status"] == "completed"
     design = k.get(design["locator"])
