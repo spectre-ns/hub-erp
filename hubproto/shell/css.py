@@ -198,4 +198,28 @@ main{{padding:var(--sp-3) var(--sp-4)}}.grid2{{grid-template-columns:1fr}}.sheet
 @media(max-width:600px){{main{{padding:var(--sp-3) var(--sp-4)}}.top{{gap:var(--sp-2)}}.top form label span.who{{display:none}}.statusbar{{margin-left:0;width:100%}}.formhead{{padding:var(--sp-2) var(--sp-3)}}
 .sheet .sheetfields .fld{{grid-template-columns:1fr}}.sheet .title{{font-size:var(--fs-xl)}}.smart a{{min-width:0;flex:1}}.kpis{{grid-template-columns:1fr 1fr}}.board{{grid-auto-columns:minmax(85vw,1fr)}}.cp .views{{margin-left:0}}}}
 @media print{{.top,.appbar,nav.rail,.skip,.formhead .btns,.composer,.cp,.tabs,.actions,form,details.cancel,.chatter form{{display:none!important}}.layout{{display:block}}main{{max-width:none;padding:0}}.sheet,.card,.formhead,.smart{{box-shadow:none;border-color:#999}}.tab-panel{{display:block!important}}body{{background:#fff;color:#000}}}}
+
+.vh{{position:absolute!important;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}}
+.mx{{position:fixed;right:16px;bottom:16px;z-index:50;display:flex;flex-direction:column;align-items:flex-end;gap:8px;font-size:var(--fs-m)}}
+.mx-toggle{{display:inline-flex;align-items:center;gap:8px;padding:10px 16px;border-radius:999px;background:var(--accent);color:var(--accent-fg);border:0;box-shadow:0 4px 14px rgba(0,0,0,.22);cursor:pointer;font-weight:600}}
+.mx-toggle svg.i{{width:18px;height:18px}}.mx.open .mx-toggle span{{display:none}}.mx.open .mx-toggle{{padding:10px}}
+.mx-panel{{order:-1;width:min(380px,calc(100vw - 32px));height:min(540px,calc(100vh - 120px));display:flex;flex-direction:column;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:12px;box-shadow:0 10px 32px rgba(0,0,0,.25);overflow:hidden}}
+.mx-panel[hidden]{{display:none}}
+.mx-head{{display:flex;align-items:center;gap:6px;padding:8px 10px;background:var(--accent);color:var(--accent-fg)}}
+.mx-head select{{flex:1;min-width:0;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:4px 6px}}.mx-pick{{flex:1;display:flex}}
+.mx-head button{{background:transparent;color:var(--accent-fg);border:0;padding:4px;min-height:auto;cursor:pointer}}.mx-head button svg.i{{width:18px;height:18px}}
+.mx-context{{margin:0;padding:6px 12px;font-size:var(--fs-s);color:var(--muted);border-bottom:1px solid var(--line);background:var(--chip)}}
+.mx-list{{list-style:none;margin:0;padding:10px;flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px}}
+.mx-msg{{display:flex;gap:6px;align-items:flex-end;max-width:100%}}.mx-msg.mine{{justify-content:flex-end}}
+.mx-bubble{{max-width:78%;padding:8px 10px;border-radius:12px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.4}}
+.mx-msg.theirs .mx-bubble{{background:var(--chip);border-bottom-left-radius:4px}}.mx-msg.mine .mx-bubble{{background:var(--accent);color:var(--accent-fg);border-bottom-right-radius:4px}}
+.mx-when{{display:block;margin-top:3px;font-size:10px;opacity:.7}}.mx-av{{flex:none}}
+.mx-empty,.mx-error{{list-style:none;color:var(--muted);font-size:var(--fs-s);text-align:center;padding:12px}}.mx-error{{color:var(--crit)}}
+.mx-form{{display:flex;gap:6px;padding:8px;border-top:1px solid var(--line)}}.mx-form textarea{{flex:1;resize:none;min-height:40px;max-height:120px;border:1px solid var(--ctl);border-radius:8px;padding:6px 8px;font:inherit;background:var(--panel);color:var(--fg)}}
+.mx-form button{{align-self:flex-end;border-radius:8px;padding:8px 10px}}.mx-form button[disabled]{{opacity:.5;cursor:progress}}
+.mx-dots{{display:inline-flex;gap:3px}}.mx-dots i{{width:6px;height:6px;border-radius:50%;background:var(--muted);animation:mxb 1.2s infinite ease-in-out}}.mx-dots i:nth-child(2){{animation-delay:.15s}}.mx-dots i:nth-child(3){{animation-delay:.3s}}
+@keyframes mxb{{0%,80%,100%{{opacity:.25;transform:translateY(0)}}40%{{opacity:1;transform:translateY(-3px)}}}}
+@media (prefers-reduced-motion:reduce){{.mx-dots i{{animation:none;opacity:.6}}}}
+@media (max-width:600px){{.mx{{right:8px;bottom:8px;left:8px;align-items:stretch}}.mx-panel{{width:auto;height:min(70vh,520px)}}.mx-toggle{{align-self:flex-end}}}}
+@media print{{.mx{{display:none!important}}}}
 """

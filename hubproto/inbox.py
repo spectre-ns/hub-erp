@@ -65,6 +65,30 @@ class Inbox:
             self._write_eml(reply)
         return reply
 
+    def chat_append(self, *, sender: str, to: str, body: str, about: str | None = None, model: str = "", stand_in: bool = False) -> dict:
+        """One line of an informal chat (the messenger): kept apart from messages, notifications and an item's chatter."""
+        return self._append({"id": uuid.uuid4().hex[:8], "at": utcnow(), "from": sender, "to": to, "channel": "chat", "kind": "chat",
+                             "subject": "", "body": body, "about": about, "run_id": "", "attachments": [], "model": model, "stand_in": stand_in})
+
+    def chat_thread(self, a: str, b: str, limit: int = 60) -> list[dict]:
+        """The chat between two members, oldest first."""
+        pair = {a, b}
+        msgs = [m for m in self.all() if m.get("kind") == "chat" and {m["from"], m["to"]} == pair and not m.get("cleared")]
+        return msgs[-limit:]
+
+    def chat_clear(self, a: str, b: str) -> int:
+        """Start a fresh conversation: the old lines stay on file (marked), the cog no longer sees them."""
+        pair = {a, b}
+        msgs = self.all()
+        n = 0
+        for m in msgs:
+            if m.get("kind") == "chat" and {m["from"], m["to"]} == pair and not m.get("cleared"):
+                m["cleared"] = True
+                n += 1
+        if n:
+            self._rewrite(msgs)
+        return n
+
     def mark(self, msg_id: str, **fields) -> None:
         """Set fields on a stored message (e.g. applied_in: the document version a reply was written into)."""
         msgs = self.all()

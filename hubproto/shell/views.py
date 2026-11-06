@@ -538,7 +538,7 @@ class ViewsMixin:
             rows.append([esc(when(d.get("at"))), self._record_link(rec["locator"]), chip(d.get("verdict")), esc(short(d.get("meaning"), 300)),
                          self._rule_html(d["delegating_rule"]) if d.get("delegating_rule") else ""])
         body += table(["When", "Item", "Verdict", "Reason", "Under"], rows, "No decisions yet.")
-        msgs = [x for x in reversed(self.hub.inbox.all()) if x["from"] == name and x["kind"] not in NOTIFICATION_KINDS][:10]
+        msgs = [x for x in reversed(self.hub.inbox.all()) if x["from"] == name and x["kind"] not in NOTIFICATION_KINDS and x["kind"] != "chat"][:10]
         body += f"<h2>{icon('message')} Recent messages {'answered' if is_cog else 'sent'}</h2>"
         body += table(["When", "To", "Subject", "Text"], [[esc(when(x["at"])), self._avatar(x["to"], size="sm", named=True), esc(short(x["subject"], 120)),
                                                           esc(short(x["body"], 200))] for x in msgs], "No messages.")

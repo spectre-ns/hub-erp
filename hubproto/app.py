@@ -114,6 +114,59 @@ class Hub:
         return authz.check(bundle, principal, action, obj, folder)
 
     # --- messaging ----------------------------------------------------------
+    def chat_cogs(self) -> list[str]:
+        meta = self.releases.current()
+        bundle = self.releases.bundle(meta["digest"]) if meta else {"members": {}}
+        return [n for n, m in sorted(bundle.get("members", {}).items()) if m.get("type") == "cog" and n in self.registry.ids()
+                and "chat" in getattr(self.registry.get(n), "tasks", [])]
+
+    def chat_prepare(self, sender: str, cog: str, text: str, about: str | None = None) -> dict:
+        """Everything a chat turn needs before the model is asked (fast; kernel reads): the system prompt and the history.
+        Returns {"system", "history", "model", "about", "cog"}; raises ValueError for a bad request."""
+        from .cogs import RunContext, chat_prompt
+
+        meta = self.releases.current()
+        if not meta:
+            raise ValueError("no policy release is in effect")
+        bundle = self.releases.bundle(meta["digest"])
+        members = bundle.get("members") or {}
+        if members.get(sender, {}).get("type") != "person":
+            raise ValueError(f"{sender} is not a person in the organization")
+        if cog not in self.chat_cogs():
+            raise ValueError(f"{cog} is not a cog you can chat with")
+        if not (text or "").strip():
+            raise ValueError("say something")
+        rec = self.kernel.get(about) if about else None
+        profile = (bundle.get("cogs") or {}).get(cog) or {}
+        ctx = RunContext(run_id="chat", release=meta["digest"], bundle=bundle, owner=cog, kernel=self.kernel, runner=self.runner,
+                         inbox=self.inbox, record=rec["locator"] if rec else None, dms=self.dms, frames=lambda: self.frames, model=self.model,
+                         extras={"cog_profile": profile})
+        queue = []
+        for r in self.runner.pending_for(cog)[:10]:
+            item = self.kernel.get(r["record"]) if r.get("record") else None
+            queue.append(f"{item['number'] if item else r['process']}: {(r.get('pending') or {}).get('title', '')}")
+        history = [{"role": "assistant" if m["from"] == cog else "user", "content": m["body"]} for m in self.inbox.chat_thread(sender, cog)[-12:]]
+        return {"system": chat_prompt(ctx, rec, cog_id=cog, person=sender, queue=queue), "history": history,
+                "model": profile.get("model") or "stand-in", "about": rec["locator"] if rec else None, "cog": cog,
+                "sops": sorted(ctx.sop_texts()), "rec": rec}
+
+    def chat_answer(self, prep: dict, sender: str, text: str) -> dict:
+        """Ask the model (slow; touches no shared state but the gateway's call log)."""
+        from .cogs import stand_in_chat
+
+        out = self.model.complete(model=prep["model"], system=prep["system"], user=text, by=prep["cog"], max_tokens=600, history=prep["history"])
+        reply = (out["text"] or "").strip()
+        if out["stand_in"] or not reply:
+            reply = stand_in_chat(prep["cog"], text, prep.get("rec"), prep.get("sops") or [])
+        return {"text": reply, "model": out.get("served_model") or prep["model"], "stand_in": out["stand_in"]}
+
+    def chat(self, sender: str, cog: str, text: str, about: str | None = None) -> dict:
+        """One informal chat turn with a cog: the person's line and the cog's answer are both kept. Nothing else changes."""
+        prep = self.chat_prepare(sender, cog, text, about)
+        self.inbox.chat_append(sender=sender, to=cog, body=text.strip(), about=prep["about"])
+        ans = self.chat_answer(prep, sender, text.strip())
+        return self.inbox.chat_append(sender=cog, to=sender, body=ans["text"], about=prep["about"], model=ans["model"], stand_in=ans["stand_in"])
+
     def send(self, sender: str, to: str, subject: str, body: str, channel: str = "dm", attachments=None,
              record: str | None = None, comment_id: str | None = None) -> dict:
         """A message to a person or a cog, optionally about an item (then it is on the item's chatter and its

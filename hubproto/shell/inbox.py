@@ -533,7 +533,7 @@ class InboxMixin:
                 rows.append([self._record_link(r["record"]) if r.get("record") else esc(r["process"]), esc(p["title"]), esc(", ".join(p["assignees"])),
                              self._due_html(p.get("due")), self._run_link(r)])
             body += table(["Item", "Waiting at", "With", "Due", "Run"], rows)
-        msgs = list(reversed(self.hub.inbox.for_principal(user)))
+        msgs = [m for m in reversed(self.hub.inbox.for_principal(user)) if m.get("kind") != "chat"]
         notes = [m for m in msgs if m["kind"] in NOTIFICATION_KINDS]
         messages = [m for m in msgs if m["kind"] not in NOTIFICATION_KINDS and m["kind"] != "approval"]
         body += f"<h2 id='notifications'>Notifications <span class='muted'>{len(notes)}</span></h2>"
@@ -559,7 +559,7 @@ class InboxMixin:
             if m.get("attachments"):
                 body += f"<div class='why'>attachments: {esc(', '.join(a.get('name', '') for a in m['attachments']))}</div>"
             body += "</article>"
-        sent = [m for m in reversed(self.hub.inbox.all()) if m["from"] == user][:20]
+        sent = [m for m in reversed(self.hub.inbox.all()) if m["from"] == user and m.get("kind") != "chat"][:20]
         if sent:
             body += details("Sent by me", "<ul>" + "".join(f"<li>to {esc(m['to'])}: {esc(short(m['subject'], 120))} <span class='muted'>{esc(when(m['at']))}</span></li>" for m in sent) + "</ul>")
         body += self._message_form()

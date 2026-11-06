@@ -212,7 +212,7 @@ class BaseHandler(BaseHTTPRequestHandler):
     def _route(self, method: str):
         r = self.route
         if method == "GET":
-            fixed = {"/": self.page_home, "/files": self.page_files, "/documents": self.page_files, "/boards": self.page_boards, "/inbox": self.page_inbox,
+            fixed = {"/chat-thread": self.page_chat_thread, "/": self.page_home, "/files": self.page_files, "/documents": self.page_files, "/boards": self.page_boards, "/inbox": self.page_inbox,
                      "/runs": self.page_runs, "/releases": self.page_releases, "/frames": self.page_frames, "/why": self.page_why,
                      "/admin": self.page_admin, "/conformance": self.page_conformance, "/download": self.page_download,
                      "/start": self.page_start, "/people": self.page_people, "/suppliers": self.page_suppliers}
@@ -226,7 +226,7 @@ class BaseHandler(BaseHTTPRequestHandler):
                     return fn
             return None
         posts = {"/start": self.post_start, "/decide": self.post_decide, "/msg": self.post_msg, "/attach": self.post_attach,
-                 "/finish-edit": self.post_finish_edit, "/new-document": self.post_new_document, "/working-copy": self.post_working_copy, "/apply-replies": self.post_apply_replies, "/start-on": self.post_start_on, "/mark-applied": self.post_mark_applied, "/editor-debug": self.post_editor_debug,
+                 "/finish-edit": self.post_finish_edit, "/new-document": self.post_new_document, "/working-copy": self.post_working_copy, "/apply-replies": self.post_apply_replies, "/start-on": self.post_start_on, "/chat": self.post_chat, "/chat-clear": self.post_chat_clear, "/mark-applied": self.post_mark_applied, "/editor-debug": self.post_editor_debug,
                  "/upload": self.post_upload, "/checkout": self.post_checkout, "/checkin": self.post_checkin, "/link": self.post_link,
                  "/snapshot": self.post_snapshot, "/hold": self.post_hold, "/resubmit": self.post_resubmit, "/retry": self.post_retry,
                  "/cancel": self.post_cancel, "/undo-checkout": self.post_undo_checkout, "/bulk-hold": self.post_bulk_hold}
@@ -503,7 +503,7 @@ class BaseHandler(BaseHTTPRequestHandler):
 <title>{esc(full_title)}</title><style>{CSS}</style><script>{SCRIPT}</script>{head}</head>
 <body><a class="skip" href="#main">Skip to content</a><div class="top">{launcher}<a class="brand" href="{href("/", user) if user else "/"}">{icon("home")}Hub</a><ol class="crumb" aria-label="You are here">{crumb}</ol>
 <form method="get" action="{esc(action)}">{keep}{me}<label><span class="who">Acting as</span> <select name="as">{self._identity_options()}</select></label> <button class="secondary">Go</button></form></div>{appbar}
-<div class="layout">{self._rail()}<main id="main">{status_line}{body}</main></div></body></html>"""
+<div class="layout">{self._rail()}<main id="main">{status_line}{body}</main></div>{self._messenger() if hasattr(self, "_messenger") else ""}</body></html>"""
         data = page.encode("utf-8")
         if status == 200 and getattr(self, "_force_status", 0):
             status = self._force_status  # a refused POST re-rendered its form: the page keeps the refusal's status

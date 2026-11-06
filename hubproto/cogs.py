@@ -691,12 +691,34 @@ def cog_context(ctx: RunContext, rec: dict | None, *, sop_chars: int | None = No
     return "\n\n".join(parts)
 
 
+def chat_prompt(ctx: RunContext, rec: dict | None, *, cog_id: str, person: str, queue: list[str] | None = None) -> str:
+    """The system prompt for an informal chat: who the cog is, what it follows, what the person is looking at
+    (the whole item, when on one), who they are and what is in the cog's queue, then how to talk."""
+    system = cog_context(ctx, rec, task="chat")
+    bundle = ctx.bundle or {}
+    roles = sorted((bundle.get("members") or {}).get(person, {}).get("roles") or [])
+    extra = [f"YOU ARE CHATTING WITH {person}" + (f" ({', '.join(r.replace('-', ' ') for r in roles)})" if roles else "") + "."]
+    extra.append(f"THEY ARE LOOKING AT {rec['number']} right now." if rec else "They are not looking at any particular item.")
+    if queue:
+        extra.append("WAITING FOR YOU (your queue):\n" + "\n".join(f"- {q}" for q in queue[:10]))
+    return system + "\n\n" + "\n".join(extra)
+
+
+def stand_in_chat(cog_id: str, text: str, rec: dict | None, sops: list[str]) -> str:
+    t = (text or "").strip().lower()
+    hello = any(w in t for w in ("hi", "hello", "hey", "morning", "afternoon"))
+    about = f" I can see you're on {rec['number']} ({(rec.get('fields') or {}).get('title') or 'untitled'})." if rec else ""
+    follows = f" I work from {', '.join(sops)}." if sops else ""
+    return ((f"Hi! I'm {cog_id}." if hello else f"I'm {cog_id}, but no model is configured for me yet, so I can't really chat.")
+            + about + follows + " Set a model for me and I'll be more useful; for reviews or edits, ask me in the item's chatter.")
+
+
 class ReviewerCog(Cog):
     """A Cog that is also a team member: reviews, approves within criteria,
     answers its inbox, and files records it is asked to file."""
 
     kind = "context"
-    tasks = ["review", "inbox", "review-document", "edit-document", "answer"]
+    tasks = ["review", "inbox", "review-document", "edit-document", "answer", "chat"]
     reaches = ["kernel:records", "kernel:documents"]
     files_process = ""
 
@@ -761,6 +783,20 @@ class ReviewerCog(Cog):
             except Exception:
                 out["start_row"] = 1
         return self.ok("edit-document", out)
+
+    def task_chat(self, input: dict, ctx: RunContext) -> dict:
+        """An informal chat turn: the person's message, the conversation so far, and what they are looking at."""
+        rec = ctx.kernel.get(input["about"]) if input.get("about") else None
+        system = chat_prompt(ctx, rec, cog_id=self.id, person=input.get("person") or "", queue=input.get("queue"))
+        model = ctx.profile.get("model") or "stand-in"
+        text, stand_in = "", True
+        if ctx.model is not None:
+            out = ctx.model.complete(model=model, system=system, user=input.get("text") or "", by=self.id, max_tokens=600,
+                                     history=input.get("history") or [])
+            text, stand_in = out["text"].strip(), out["stand_in"]
+        if stand_in or not text:
+            text = stand_in_chat(self.id, input.get("text") or "", rec, sorted(ctx.sop_texts()))
+        return self.ok("chat", {"text": text, "model": model, "stand_in": stand_in})
 
     def task_answer(self, input: dict, ctx: RunContext) -> dict:
         """Answer a question or remark in a document's comment thread from the cog's SOPs, the document's text and

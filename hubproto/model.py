@@ -48,16 +48,16 @@ class ModelGateway:
     def available(self, model: str) -> bool:
         return backend_for(model) != "stand-in"
 
-    def complete(self, *, model: str, system: str, user: str, max_tokens: int = 1200, by: str = "") -> dict:
+    def complete(self, *, model: str, system: str, user: str, max_tokens: int = 1200, by: str = "", history: list[dict] | None = None) -> dict:
         """Returns {"text", "model", "backend", "stand_in", "prompt_digest", "response_digest", "ms", "at"}."""
         t0 = time.monotonic()
         model = model or DEFAULT_MODEL
         backend = backend_for(model)
         try:
             if backend == "anthropic":
-                text = self._anthropic(model, system, user, max_tokens)
+                text = self._anthropic(model, system, user, max_tokens, history)
             elif backend == "ollama":
-                text = self._ollama(model, system, user, max_tokens)
+                text = self._ollama(model, system, user, max_tokens, history)
             else:
                 text = self._stand_in(system, user)
         except Exception as e:  # a model that does not answer never blocks the work: the stand-in says so
@@ -79,16 +79,17 @@ class ModelGateway:
         return out
 
     @staticmethod
-    def _anthropic(model: str, system: str, user: str, max_tokens: int) -> str:
+    def _anthropic(model: str, system: str, user: str, max_tokens: int, history: list[dict] | None = None) -> str:
+        turns = [{"role": t["role"], "content": t["content"]} for t in (history or []) if t.get("content")]
         body = json.dumps({"model": model, "max_tokens": max_tokens, "system": system,
-                           "messages": [{"role": "user", "content": user}]}).encode("utf-8")
+                           "messages": turns + [{"role": "user", "content": user}]}).encode("utf-8")
         req = urllib.request.Request(ANTHROPIC_URL, data=body, method="POST", headers={
             "content-type": "application/json", "x-api-key": os.environ["ANTHROPIC_API_KEY"], "anthropic-version": "2023-06-01"})
         with urllib.request.urlopen(req, timeout=60) as r:
             data = json.load(r)
         return "".join(part.get("text", "") for part in data.get("content", []) if part.get("type") == "text")
 
-    def _ollama(self, model: str, system: str, user: str, max_tokens: int) -> str:
+    def _ollama(self, model: str, system: str, user: str, max_tokens: int, history: list[dict] | None = None) -> str:
         """A local model through Ollama's chat API (``ollama/<name>`` or any name when HUBPROTO_OLLAMA_URL is set)."""
         name = model.split("/", 1)[1] if model.startswith("ollama/") else (os.environ.get("HUBPROTO_OLLAMA_MODEL") or model)
         if model.startswith("claude"):
@@ -99,7 +100,9 @@ class ModelGateway:
             system = system[:keep] + "\n[... context trimmed to fit the model's window]"
         payload = {"model": name, "stream": False,
                    "options": {"num_predict": max_tokens, "num_ctx": int(os.environ.get("HUBPROTO_MODEL_CTX") or 32768)},
-                   "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+                   "messages": [{"role": "system", "content": system}]
+                               + [{"role": t["role"], "content": t["content"]} for t in (history or []) if t.get("content")]
+                               + [{"role": "user", "content": user}]}
         if not os.environ.get("HUBPROTO_MODEL_THINK"):
             payload["think"] = False  # a thinking model otherwise spends its budget before it answers
         data = None

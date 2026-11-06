@@ -523,6 +523,11 @@ Not supported: images, merged cells, footnotes, fonts, colours. Write content on
 Not supported: merged cells, formats, charts. Write rows only: no preamble, no explanation.""",
     "review": """OUTPUT FORMAT for a review: a short assessment in plain sentences, then any further findings as lines
 '- [error] check: detail' or '- [warning] check: detail', then exactly one line 'Verdict: pass' or 'Verdict: fail'.""",
+    "chat": """HOW TO TALK HERE: a colleague has dropped by your desk for an informal chat in the hub's messenger.
+Answer like a person would across a desk: plain, warm, first person, usually one to four sentences; more only if they ask for detail.
+No headings, no review format, no verdict lines. Say what you know from the procedures, the item they are looking at and your queue.
+You do not change anything from this chat: if they want a review, an edit or an approval, tell them to ask in the item's chatter or
+comments, or to use the Ops buttons on the item, and that you will pick it up there. If you do not know, say so.""",
     "answer": """OUTPUT FORMAT for an answer in a comment thread: a few plain sentences a colleague can act on; cite the procedure
 by name when you rely on it. No headings, no lists longer than three items.""",
 }
