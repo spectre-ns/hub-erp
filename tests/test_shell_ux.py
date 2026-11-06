@@ -718,6 +718,6 @@ def test_inbox_survives_odd_field_shapes_from_the_json_box(shell):
     run_id, state = start_task(shell, "List title later")
     hub.kernel.set_fields(state["record"], {"title": ["a", "list"], "lot": {"odd": 1}}, by="alice")
     number = hub.kernel.get(state["record"])["number"]
-    status, text, _ = get(shell, "/inbox", **{"as": "carol"})
+    status, text, _ = get(shell, "/inbox", **{"as": "carol", "open": run_id})
     assert status == 200 and "Waiting for me" in text
-    assert number in text, "the item is still listed, not dropped"
+    assert number in text, "the item is still listed (on its page), not dropped"
