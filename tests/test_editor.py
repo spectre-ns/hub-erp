@@ -542,3 +542,31 @@ def test_every_version_of_an_office_file_updates_the_text_the_cogs_read(shell):
     hub.dms.checkout(doc["locator"], by="carol")
     hub.dms.checkin(doc["locator"], newer, by="carol", filename="torque2.docx", mime=mime)
     assert "traveller" in hub.kernel.get(doc["locator"])["fields"]["text"], "a manual check-in too"
+
+
+def test_a_document_goes_back_to_the_start(shell):
+    hub = shell["hub"]
+    content, mime = wopi.blank_document("docx")
+    doc = hub.dms.create(title="WI to restart", doc_class="working", folder="Quality/Controlled Documents", by="carol", content=content,
+                         filename="restart.docx", mime=mime, doc_type="wi")
+    loc = doc["locator"]
+    hub.runner.submit("document-control", {"record": {}}, owner="carol", record=loc)
+    run = hub.runner.run_for_record(loc)
+    assert run["status"] == "waiting"
+    waiting_for = run["pending"]["assignees"]
+    status, page = get(shell, "/document/" + quote(loc, safe=":"), **{"as": "carol"})
+    assert "Back to the start" in page
+    status, page = get(shell, "/document/" + quote(loc, safe=":"), **{"as": "dave"})
+    assert "Back to the start" not in page, "neither its owner nor an approver"
+    status, url, text = post(shell, "/restart", {"as": "carol", "record": loc, "reason": "wrong template; starting again"})
+    assert status == 200 and "is back at the start" in text
+    rec = hub.kernel.get(loc)
+    assert rec["state"] == "draft" and rec["assignees"] == [] and hub.runner.load(run["id"])["status"] == "cancelled"
+    assert len(hub.dms.versions(loc)) >= 1, "versions stay"
+    told = [m for p_ in waiting_for if p_ != "carol" for m in hub.inbox.for_principal(p_) if m.get("kind") == "returned" and "back at the start" in m["subject"]]
+    assert told, "whoever it waited for is told"
+    status, url, text = post(shell, "/restart", {"as": "carol", "record": loc, "reason": ""})
+    assert status == 400
+    # It can go round again.
+    hub.runner.submit("document-control", {"record": {}}, owner="carol", record=loc)
+    assert hub.runner.run_for_record(loc)["status"] == "waiting"

@@ -517,16 +517,29 @@ class ViewsMixin:
                 body += (f"<div class='card crit' role='status'><b>{esc(name)} is not available.</b> It is bundled with {esc(prof.get('model') or 'no model')}, "
                          f"which this hub cannot use: {esc(res['note'])}. It takes no work until it can; choose an installed model below to propose a change.</div>")
             avail = available_models()
-            served = (f"<span class='chip {'ok' if res['available'] else 'crit'}'>{'answers' if res['available'] else 'not available'}</span> "
-                      f"served by <b>{esc(res['served'])}</b> ({esc(res['backend'])}; {esc(res['note'])})")
-            options = "".join(f"<option value='{esc(c['value'])}'{' selected' if c['value'] == prof.get('model') else ''}>{esc(c['label'])}</option>" for c in avail["choices"])
-            if prof.get("model") and prof["model"] not in {c["value"] for c in avail["choices"]}:
-                options = f"<option value='{esc(prof['model'])}' selected>{esc(prof['model'])} (as in the profile)</option>" + options
-            picker = ("" if not (self._is_member() and (self.bundle["members"].get(user) or {}).get("type") == "person") else
-                      f"<form method='post' action='/cog-model' class='inline'>{hidden_as(user)}{self._once()}<input type='hidden' name='cog' value='{esc(name)}'>"
-                      f"<label class='vh' for='cogmodel'>Model</label><select id='cogmodel' name='model'>{options}</select> <button class='ghost'>{icon('send')}Propose this model</button></form>"
-                      + (f" <span class='why'>{esc(avail['ollama_error'])}</span>" if avail["ollama_error"] else ""))
-            profile = [("Model", esc(prof.get("model") or "none (stand-in words)") + "<br>" + served + ("<br>" + picker if picker else "")),
+            current = prof.get("model") or ""
+            info = {f"ollama/{m['name']}": m for m in avail["ollama"]}
+            cur = info.get(current)
+            what = (f"{cur['params']} {cur['family']}, local via Ollama, {cur['size_gb']} GB" if cur else
+                    ("Anthropic" if res["backend"] == "anthropic" else res["note"]))
+            served = (f"<b>{esc(current or 'none')}</b> <span class='chip {'ok' if res['available'] else 'crit'}'>{'answers' if res['available'] else 'not available'}</span> "
+                      f"<span class='muted'>{esc(what)}</span>")
+            can_change = self._is_member() and (self.bundle["members"].get(user) or {}).get("type") == "person"
+            rows = []
+            for c in avail["choices"]:
+                mi = info.get(c["value"])
+                detail = f"{mi['params']} {mi['family']} · {mi['quant']} · {mi['size_gb']} GB · installed" if mi else ("Anthropic" if c["available"] else "needs an Anthropic key")
+                name_ = mi["name"] if mi else c["value"]
+                is_cur = c["value"] == current
+                rows.append(f"<label class='mopt{' off' if not c['available'] else ''}{' cur' if is_cur else ''}'><input type='radio' name='model' value='{esc(c['value'])}'"
+                            f"{' checked' if is_cur else ''}{'' if c['available'] else ' disabled'}><span class='mname'>{esc(name_)}</span>"
+                            f"<span class='mdetail'>{esc(detail)}{' · current' if is_cur else ''}</span></label>")
+            picker = ("" if not can_change else
+                      f"<details class='modelpick'><summary>Change model</summary><form method='post' action='/cog-model'>{hidden_as(user)}{self._once()}"
+                      f"<input type='hidden' name='cog' value='{esc(name)}'><fieldset><legend class='vh'>Model for {esc(name)}</legend>{''.join(rows)}</fieldset>"
+                      + (f"<p class='why'>{esc(avail['ollama_error'])}</p>" if avail["ollama_error"] else "")
+                      + f"<div class='actions'><button>{icon('send')}Propose the change</button><span class='why'>A cog comes with its model: the policy owners approve a change.</span></div></form></details>")
+            profile = [("Model", served + picker),
                        ("Prompt", esc(prof.get("prompt") or "-")),
                        ("Follows", ", ".join(f'<a href="{href("/frame/" + fr, user)}">{esc(fr)}</a>' for fr in follows) or "<span class='muted'>no procedure: it is routed no work</span>"),
                        ("Reviews", esc(", ".join(prof.get("reviews") or []) or "-")), ("Written in", self._rule_link(prof.get("source")) if prof.get("source") else "")]

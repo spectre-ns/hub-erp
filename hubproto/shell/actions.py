@@ -10,9 +10,10 @@ from .. import authz
 from ..runner import RunError
 from ..kernel import KernelGuardError
 from .forms import RESERVED_KEYS, ShellError, coerce, doc_type_for
-from .handler import href, log_line
+from .handler import hidden_as, href, log_line
+from .icons import icon
 from .pages import may_file
-from .text import day, field_label, join_words, type_name
+from .text import esc, day, field_label, join_words, type_name
 
 
 class ActionsMixin:
@@ -311,6 +312,37 @@ class ActionsMixin:
                                   attach_to=attach_to, title=self._f("title"), doc_class="working" if editable else "external")
         note = "; it is a working document you can edit online" if editable else "; kept as received"
         self._redirect(self._once_finish(href("/files", user, folder=folder, done=f"Uploaded {filename} as {doc['number']}{note}.")))
+
+    def _restart_form(self, rec: dict) -> str:
+        """'Back to the start' for an item in flight or stopped, behind a disclosure that asks why."""
+        ok, _ = self.hub.runner.may_restart(rec, self.user)
+        if not ok or rec["state"] in ("open", "draft"):
+            return ""
+        return (f"<details class='inline restart'><summary class='button ghost'>{icon('retry')}Back to the start</summary>"
+                f"<form method='post' action='/restart' class='card'>{hidden_as(self.user)}{self._once()}<input type='hidden' name='record' value='{esc(rec['locator'])}'>"
+                f"<p class='why'>Withdraws the run it is in and returns {esc(rec['number'])} to the first step of its workflow; versions and history stay, "
+                f"and its owner and whoever it waits for are told.</p>"
+                f"<label class='f'><span>Why <b>*</b></span><input name='reason' required></label>"
+                f"<div class='actions'><button class='reject'>{icon('retry')}Send it back to the start</button></div></form></details>")
+
+    def post_restart(self):
+        self._need_release()
+        done = self._once_done()
+        if done:
+            return self._redirect(done)
+        rec = self.hub.kernel.require(self._f("record"))
+        self.arg = rec["locator"]
+        reason = self._f("reason")
+        if not reason:
+            raise ShellError("Say why it goes back to the start.", field="reason")
+        try:
+            rec = self.hub.runner.restart(rec["locator"], self.user, reason)
+        except RunError as e:
+            raise ShellError(str(e)) from None
+        log_line(f"restart record={rec['number']} by={self.user} reason={reason[:80]}")
+        page = "/document/" if rec["type"] == "document" else "/record/"
+        self._redirect(self._once_finish(href(page + quote(rec["locator"], safe=":"), self.user,
+                                              done=f"{rec['number']} is back at the start ({rec['state']}).")))
 
     def post_start_on(self):
         """Run a process on an existing item (an Ops button): the item is the submission."""

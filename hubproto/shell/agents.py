@@ -167,6 +167,9 @@ class NewMemberMixin:
         if done:
             return self._redirect(done)
         cog, model = self._f("cog"), self._f("model")
+        current = ((self.bundle.get("cogs") or {}).get(cog) or {}).get("model")
+        if not model or model == current:
+            raise ShellError(f"{cog} already uses {current}; choose another model to propose." if model else "Choose a model.")
         try:
             p = self.hub.propose_cog_model(cog, model, by=self.user)
         except ValueError as e:

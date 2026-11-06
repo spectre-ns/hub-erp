@@ -816,6 +816,59 @@ class Runner:
         self._save(state)
         return state
 
+    # ------------------------------------------------------------- back to the start
+    START_STATES = {"controlled": "draft", "template": "draft"}
+    NOT_RESTARTABLE = {"effective", "obsolete", "superseded"}
+
+    def may_restart(self, rec: dict, by: str) -> tuple[bool, str]:
+        """Who may send an item back to the start: its owner, anyone who may approve it, or (documents) a document controller."""
+        meta = self.releases.current()
+        bundle = self.releases.bundle(meta["digest"]) if meta else {}
+        by = authz.principal_name(by)
+        f = rec["fields"]
+        if rec["state"] in self.NOT_RESTARTABLE:
+            return False, f"{rec['number']} is {rec['state']}; it changes through a new revision, not by starting over"
+        owner = f.get("owner") or f.get("author") or f.get("filed_by") or rec.get("created_by")
+        if by == owner:
+            return True, ""
+        if rec["type"] == "document" and "document-controller" in authz.roles_of(bundle, by):
+            return True, ""
+        obj = rec["type"]
+        run = self.run_for_record(rec["locator"])
+        if run:
+            obj = run["manifest"]["object"]
+        if bundle and authz.check(bundle, by, "approve", obj, rec["folder"])["allowed"]:
+            return True, ""
+        return False, f"only {owner or 'its owner'}, an approver of {obj}" + (" or a document controller" if rec["type"] == "document" else "") + " may"
+
+    def restart(self, record: str, by: str, reason: str) -> dict:
+        """Send an item back to the start of its workflow: the run it is in is withdrawn, the item returns to its first
+        state with nobody assigned, and its owner and whoever it waited for are told. Versions and history stay."""
+        rec = self.kernel.require(record)
+        by = authz.principal_name(by)
+        if not (reason or "").strip():
+            raise RunError("say why the item goes back to the start")
+        ok, why = self.may_restart(rec, by)
+        if not ok:
+            raise RunError(why)
+        run = self.run_for_record(rec["locator"])
+        waited = list((run or {}).get("pending", {}) and run["pending"].get("assignees") or [])
+        if run and run["status"] not in ("completed", "cancelled", "rejected"):
+            self.cancel(run["id"], by, reason=f"back to the start: {reason}")
+        start = self.START_STATES.get(rec["fields"].get("doc_class") or "", "open")
+        rec = self.kernel.get(rec["locator"])
+        if rec["state"] != start:
+            self.kernel.transition(rec["locator"], start, by=by, reason=f"back to the start: {reason}", assignees=[])
+        if rec["fields"].get("checked_out_by"):
+            self.kernel.set_fields(rec["locator"], {"checked_out_by": None, "checked_out_via": None, "editors": []}, by=by)
+        f = rec["fields"]
+        owner = f.get("owner") or f.get("author") or f.get("filed_by") or rec.get("created_by")
+        people = [p for p in dict.fromkeys([owner, *waited]) if p and p != by]
+        self._notify(people, kind="returned", subject=f"{rec['number']} is back at the start",
+                     body=f"{by} sent {rec['number']} back to the start of its workflow: {reason}. It is {start} again; nothing waits on anyone.",
+                     run_id=(run or {}).get("id", ""))
+        return self.kernel.get(rec["locator"])
+
     # ------------------------------------------------------------- escalation
     def tick(self, today: str | None = None) -> list[dict]:
         """Escalate overdue items. A route written 'go to' adds assignees; one written 'are reported to' only informs."""

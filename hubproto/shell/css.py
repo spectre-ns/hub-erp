@@ -227,4 +227,14 @@ pre.diff{{font:12px/1.45 ui-monospace,monospace;background:var(--chip);border:1p
 pre.diff .add{{color:var(--ok);background:color-mix(in srgb,var(--ok) 12%,transparent);display:inline-block;width:100%}}pre.diff .del{{color:var(--crit);background:color-mix(in srgb,var(--crit) 10%,transparent);display:inline-block;width:100%}}pre.diff .hunk{{color:var(--muted)}}
 
 .checks{{display:flex;flex-wrap:wrap;gap:4px 14px}}.checks label.check{{display:inline-flex;align-items:center;gap:4px;font-size:var(--fs-s)}}fieldset{{border:1px solid var(--line);border-radius:6px;margin:8px 0;padding:6px 10px}}legend{{font-size:var(--fs-s);color:var(--muted)}}
+
+details.modelpick{{margin-top:6px}}details.modelpick summary{{cursor:pointer;color:var(--accent);font-size:var(--fs-s);width:max-content}}
+details.modelpick fieldset{{border:0;padding:0;margin:8px 0;display:grid;gap:6px;max-width:34em}}
+label.mopt{{display:grid;grid-template-columns:auto 1fr;grid-template-rows:auto auto;column-gap:10px;align-items:center;padding:8px 10px;border:1px solid var(--line);border-radius:8px;cursor:pointer;background:var(--panel)}}
+label.mopt input{{grid-row:1 / span 2}}label.mopt .mname{{font-weight:600}}label.mopt .mdetail{{font-size:var(--fs-s);color:var(--muted)}}
+label.mopt:hover{{border-color:var(--accent)}}label.mopt.cur{{border-color:var(--accent);background:var(--chip)}}label.mopt.off{{opacity:.55;cursor:not-allowed}}
+label.mopt:has(input:checked){{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}}
+
+details.restart{{display:inline-block;position:relative}}details.restart>summary{{list-style:none;cursor:pointer}}details.restart>summary::-webkit-details-marker{{display:none}}
+details.restart[open]>form{{position:absolute;z-index:20;top:110%;left:0;width:min(420px,80vw);box-shadow:0 8px 24px rgba(0,0,0,.18)}}
 """
