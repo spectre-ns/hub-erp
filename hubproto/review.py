@@ -30,12 +30,15 @@ def gather(ctx, record: dict) -> dict:
         except Exception:
             pass
     f = record["fields"]
+    TECHNICAL = {"mime", "size", "filename", "content_sha", "checked_out_by", "checked_out_via", "wopi_lock", "editors", "provenance",
+                 "office_comments", "text", "minor", "language", "attachments_filed", "attachments", "citations", "sources", "exports",
+                 "reviews", "requirement_trace", "parts", "bom_lines", "checks", "conditions", "grant"}
     if record["type"] == "document":  # the item is the document: its own text and comments are what is reviewed
         docs.insert(0, {"number": record["number"], "title": f.get("title"), "doc_class": f.get("doc_class"), "doc_type": f.get("doc_type"),
                         "state": record["state"], "filename": f.get("filename"), "revision": f"{f.get('revision', '')}.{f.get('minor', 0)}",
                         "text": (f.get("text") or "")[:8000], "comments": [c.get("text") for c in (f.get("office_comments") or [])]})
     return {"number": record["number"], "type": record["type"], "state": record["state"], "folder": record["folder"],
-            "fields": {k: v for k, v in f.items() if k not in ("text",) and not isinstance(v, (bytes,))},
+            "fields": {k: v for k, v in f.items() if k not in TECHNICAL and not isinstance(v, (bytes,)) and v not in (None, "", [], {})},
             "documents": docs, "checks": f.get("checks") or {}, "conditions": f.get("conditions") or {},
             "requirement_trace": f.get("requirement_trace") or [], "decisions": record.get("decisions") or []}
 

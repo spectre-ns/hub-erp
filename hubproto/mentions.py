@@ -43,6 +43,8 @@ def intent_of(text: str, *, model=None, model_name: str = "", thread: list[dict]
     """What the writer wants: edit (write or change content), review, approve (move the item on), or an answer.
     The cog's model decides when one is configured, with the thread in view; keywords otherwise."""
     fallback = intent_by_keywords(text)
+    if fallback == "approve":
+        return "approve"  # an explicit approval phrase is not for a model to second-guess
     if model is None or not getattr(model, "available", lambda m: False)(model_name):
         return fallback
     context = "\n".join(f"- {t.get('author')}: {t.get('text')}" for t in (thread or [])[-6:])

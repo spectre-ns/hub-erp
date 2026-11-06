@@ -210,3 +210,30 @@ def test_the_cogs_system_prompt_carries_its_sops_the_whole_document_and_every_th
     assert "# ncr-sop" in system and "# design-control-sop" in system, "the SOPs it follows"
     assert "DOCUMENT " + doc["number"] in system and "Torque the M4 screws to 2 Nm." in system, "the whole document"
     assert "- [0] carol: @quality-assistant is 2 Nm right?" in system and "  - [1] quality-assistant (reply to 0): Yes" in system and "    - [2] carol (reply to 1): Which procedure?" in system
+
+
+def test_reviews_do_not_show_the_model_technical_fields(released):
+    from hubproto import review as _review
+    from hubproto.cogs import RunContext
+
+    doc = released.dms.create(title="Spec", doc_class="working", folder="Quality/Controlled Documents", by="carol", content=b"body",
+                              filename="spec.md", mime="text/markdown", doc_type="document")
+    released.kernel.set_fields(doc["locator"], {"wopi_lock": "cool-lock1", "editors": ["carol"], "checked_out_by": "carol"}, by="carol")
+    ctx = RunContext(run_id="t", release="", bundle=released.releases.bundle(released.releases.current()["digest"]), owner="quality-assistant",
+                     kernel=released.kernel, dms=released.dms, frames=lambda: released.frames, extras={})
+    ev = _review.gather(ctx, released.kernel.get(doc["locator"]))
+    assert "wopi_lock" not in ev["fields"] and "mime" not in ev["fields"] and "editors" not in ev["fields"] and ev["fields"]["title"] == "Spec"
+
+
+def test_an_explicit_approval_phrase_is_not_second_guessed_by_the_model(monkeypatch):
+    from hubproto.mentions import intent_of
+
+    class Model:
+        def available(self, m):
+            return True
+
+        def complete(self, **kw):
+            return {"text": "REVIEW"}
+
+    assert intent_of("Please move this document to approval", model=Model(), model_name="x") == "approve"
+    assert intent_of("Please make it a table", model=Model(), model_name="x") == "review", "otherwise the model decides"
