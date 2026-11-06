@@ -88,10 +88,13 @@ if(m.MessageId==='App_LoadingStatus'&&m.Values&&m.Values.Status==='Document_Load
 if(m.MessageId==='UI_Mention'){{var v=m.Values||{{}};if(v.type==='autocomplete'){{var q=String(v.text||'').replace(/^@/,'').toLowerCase();
 var out=list.filter(function(x){{return x.username.toLowerCase().indexOf(q)===0}}).slice(0,10).map(function(x){{return {{username:x.username,profile:x.profile}}}});
 post({{MessageId:'Action_Mention',SendTime:Date.now(),Values:{{list:out}}}})}}}}
-if(m.MessageId==='Action_Save_Resp'){{if(window.__applyAfterSave){{window.__applyAfterSave=false;applyReplies()}}}}}});
-var repliesUrl={json.dumps(href("/editor-replies/" + quote(rec["locator"], safe=":"), user))};var applyUrl={json.dumps(href("/apply-replies", user))};var loc={json.dumps(rec["locator"])};var busy=false;
+if(m.MessageId==='Action_Save_Resp'){{if(window.__applyAfterSave){{window.__applyAfterSave=false;applyReplies()}}}}
+if(m.MessageId==='Doc_ModifiedStatus'&&m.Values&&m.Values.Modified===true){{clearTimeout(window.__saveSoon);window.__saveSoon=setTimeout(function(){{post({{MessageId:'Action_Save',Values:{{DontTerminateEdit:true,DontSaveIfUnmodified:true,Notify:true}}}})}},2000)}}}});
+var repliesUrl={json.dumps(href("/editor-replies/" + quote(rec["locator"], safe=":"), user))};var applyUrl={json.dumps(href("/apply-replies", user))};var loc={json.dumps(rec["locator"])};var busy=false;var loadedVersion={len(self.hub.dms.versions(rec["locator"]))};
+function reloadFrame(why){{var s=document.getElementById('editstatus');if(s)s.textContent=why+'; reloading…';loadedVersion=1e9;frame.src=frame.src.replace(/&reload=\d+/,'')+'&reload='+Date.now();setTimeout(function(){{fetch(repliesUrl).then(function(r){{return r.json()}}).then(function(j){{loadedVersion=j.version;busy=false}})}},3000)}}
 function applyReplies(){{var fd=new FormData();fd.append('as',{json.dumps(user)});fd.append('doc',loc);fetch(applyUrl,{{method:'POST',body:fd}}).then(function(r){{return r.json()}}).then(function(j){{busy=false;if(j.applied>0){{var s=document.getElementById('editstatus');if(s)s.textContent='Replies from '+j.by.join(', ')+' written into the document; reloading…';frame.src=frame.src.replace(/&reload=\d+/,'')+'&reload='+Date.now()}}}}).catch(function(){{busy=false}})}}
-function poll(){{if(busy)return;fetch(repliesUrl).then(function(r){{return r.json()}}).then(function(j){{if(j.pending>0&&!busy){{busy=true;window.__applyAfterSave=true;post({{MessageId:'Action_Save',Values:{{DontTerminateEdit:true,DontSaveIfUnmodified:true,Notify:true}}}});setTimeout(function(){{if(window.__applyAfterSave){{window.__applyAfterSave=false;applyReplies()}}}},2500)}}}}).catch(function(){{}})}}
+function poll(){{if(busy)return;fetch(repliesUrl).then(function(r){{return r.json()}}).then(function(j){{if(j.pending>0&&!busy){{busy=true;window.__applyAfterSave=true;post({{MessageId:'Action_Save',Values:{{DontTerminateEdit:true,DontSaveIfUnmodified:true,Notify:true}}}});setTimeout(function(){{if(window.__applyAfterSave){{window.__applyAfterSave=false;applyReplies()}}}},2500)}}
+else if(j.version>loadedVersion&&j.machine&&!busy){{busy=true;reloadFrame(j.version_by+' wrote version '+j.version)}}else if(j.version>loadedVersion){{loadedVersion=j.version}}}}).catch(function(){{}})}}
 setInterval(poll,4000);}})();</script>"""
         self._page(f"Edit {number}", body, head="<style>main#main{padding:0;max-width:none} .editbar{display:flex;gap:.6em;align-items:center;flex-wrap:wrap;padding:.5em .8em;border-bottom:1px solid var(--line);background:var(--panel)} .editbar form{margin-left:auto} .editor{width:100%;height:calc(100vh - 9.5em);border:0;display:block;background:var(--panel)}</style>")
 
@@ -103,7 +106,11 @@ setInterval(poll,4000);}})();</script>"""
             return self._json({"error": "no such document"}, 404)
         self._require_read(rec["folder"])
         pending = wopi.WopiHost(self.hub).pending_replies(rec)
-        return self._json({"pending": len(pending), "by": sorted({m["from"] for m in pending})})
+        versions = self.hub.dms.versions(rec["locator"])
+        latest = versions[-1] if versions else {}
+        machine = latest.get("by") in set(self.hub.registry.ids()) | {"hub"}
+        return self._json({"pending": len(pending), "by": sorted({m["from"] for m in pending}),
+                           "version": latest.get("version") or 0, "version_by": latest.get("by") or "", "machine": machine})
 
     def post_apply_replies(self):
         """Write the waiting replies into the document as reply comments (a new version by the hub)."""

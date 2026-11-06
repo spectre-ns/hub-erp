@@ -26,6 +26,8 @@ def slug(name: str) -> str:
 
 def intent_of(text: str) -> str:
     t = (text or "").lower()
+    if re.search(r"\b(edit|insert|include|add|write|draft|rewrite|update|change) (this|the|a|an|it|some)?\b", t) and not re.search(r"\b(approve|approval)\b", t):
+        return "edit"
     if re.search(r"\b(approve|approval|sign off|sign-off|release)\b", t):
         return "approve"
     if re.search(r"\b(review|check|look at|assess|inspect|comments?)\b", t):
@@ -98,6 +100,41 @@ def handle(hub, msg: dict, bundle: dict) -> list[dict]:
         ctx = RunContext(run_id="inbox-" + msg["id"], release=release, bundle=bundle, owner=cog_id, kernel=hub.kernel,
                          runner=hub.runner, inbox=hub.inbox, record=record["locator"] if record else None, dms=hub.dms,
                          frames=lambda: hub.frames, model=hub.model, extras={"cog_profile": profile, "process": run["process"] if run else ""})
+        if record and record["type"] == "document" and intent == "edit" and "edit-document" in cog.tasks:
+            env = cog.invoke("edit-document", {"record": record["locator"], "request": msg.get("body") or msg.get("subject")}, ctx)
+            r = env.get("payload") or {}
+            from . import office, wopi as _wopi
+
+            content, latest = hub.dms.content(record["locator"])
+            ext = _wopi.extension_of(latest.get("filename") or record["fields"].get("filename") or "")
+            new = office.insert_paragraphs(content, ext, r.get("paragraphs") or [], r.get("position") or "start") if r.get("paragraphs") else None
+            if new is None:
+                body = f"I cannot write into {record['number']}: " + ((env.get("error") or {}).get("detail") or f"the editor cannot change a .{ext or '?'} file")
+            else:
+                explanation = r.get("explanation") or "Written as asked."
+                if msg.get("comment_id") not in (None, ""):
+                    new = office.add_reply(new, ext, str(msg["comment_id"]), cog_id, explanation, date=msg.get("at") or "") or new
+                try:
+                    before = hub.kernel.get(record["locator"])["fields"]
+                    holder, via, editors = before.get("checked_out_by"), before.get("checked_out_via"), list(before.get("editors") or [])
+                    hub.dms.add_version(record["locator"], new, by="hub", filename=latest.get("filename") or "", mime=latest.get("mime") or "",
+                                        note=f"edited by {cog_id}: {explanation}")
+                    if holder:  # a new version clears the lock; the editing session goes on
+                        hub.dms.checkout(record["locator"], by=holder, via=via or "manual")
+                        if editors:
+                            hub.kernel.set_fields(record["locator"], {"editors": editors}, by=cog_id)
+                    _, version = hub.dms.content(record["locator"])
+                    hub.kernel.set_fields(record["locator"], {"text": office.extract_text(new, ext),
+                                                              "office_comments": [{k: c[k] for k in ("id", "author", "date", "text", "digest")} for c in office.extract_comments(new, ext)]}, by=cog_id)
+                    body = f"{explanation} (version {version.get('version')} of {record['number']}" + (", drafted with the stand-in: configure a model for real wording" if r.get("stand_in") else f", drafted with {r.get('model')}") + ")"
+                    reply = hub.inbox.reply(msg, sender=cog_id, body=body, record=record["locator"], envelope=env)
+                    hub.inbox.mark(reply["id"], applied_in=version.get("version"))
+                    out.append(reply)
+                    continue
+                except Exception as e:
+                    body = f"I drafted the content but could not write it into {record['number']}: {e}"
+            out.append(hub.inbox.reply(msg, sender=cog_id, body=body, record=record["locator"], envelope=env))
+            continue
         if record and "review-document" in cog.tasks:
             env = cog.invoke("review-document", {"record": record["locator"], "question": msg.get("body") or msg.get("subject")}, ctx)
             r = env.get("payload") or {}

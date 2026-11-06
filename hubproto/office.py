@@ -174,3 +174,56 @@ def add_reply(content: bytes, extension: str, parent_id: str, author: str, text:
             else:
                 out.writestr(n, files[n])
     return buf.getvalue()
+
+
+def insert_paragraphs(content: bytes, extension: str, paragraphs: list[str], position: str = "start") -> bytes | None:
+    """Write paragraphs into the document body at the start or the end. A line starting with '# ' is a heading.
+    docx and odt are supported; None otherwise."""
+    ext = (extension or "").lower()
+    z = _zip(content)
+    if z is None or not paragraphs:
+        return None
+    names = z.namelist()
+    files = {n: z.read(n) for n in names}
+    if ext == "docx" and "word/document.xml" in files:
+        xml = files["word/document.xml"].decode("utf-8")
+        out = []
+        for line in paragraphs:
+            if line.startswith("# "):
+                out.append(f'<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:rPr><w:b/><w:sz w:val="32"/></w:rPr><w:t xml:space="preserve">{_escape(line[2:].strip())}</w:t></w:r></w:p>')
+            elif line.startswith("## "):
+                out.append(f'<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:rPr><w:b/><w:sz w:val="28"/></w:rPr><w:t xml:space="preserve">{_escape(line[3:].strip())}</w:t></w:r></w:p>')
+            else:
+                out.append(f'<w:p><w:r><w:t xml:space="preserve">{_escape(line)}</w:t></w:r></w:p>')
+        block = "".join(out)
+        if position == "start":
+            xml = re.sub(r"(<w:body[^>]*>)", lambda m: m.group(1) + block, xml, count=1)
+        else:
+            xml = re.sub(r"(<w:sectPr[ >/].*?</w:sectPr>|<w:sectPr/>)?\s*</w:body>", lambda m: block + (m.group(1) or "") + "</w:body>", xml, count=1, flags=re.S)
+        files["word/document.xml"] = xml.encode("utf-8")
+    elif ext == "odt" and "content.xml" in files:
+        xml = files["content.xml"].decode("utf-8")
+        out = []
+        for line in paragraphs:
+            if line.startswith("# "):
+                out.append(f'<text:h text:outline-level="1">{_escape(line[2:].strip())}</text:h>')
+            elif line.startswith("## "):
+                out.append(f'<text:h text:outline-level="2">{_escape(line[3:].strip())}</text:h>')
+            else:
+                out.append(f"<text:p>{_escape(line)}</text:p>")
+        block = "".join(out)
+        if position == "start":
+            xml = re.sub(r"(<office:text[^>]*>)", lambda m: m.group(1) + block, xml, count=1)
+        else:
+            xml = xml.replace("</office:text>", block + "</office:text>", 1)
+        files["content.xml"] = xml.encode("utf-8")
+    else:
+        return None
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as outz:
+        for n in names:
+            if n == "mimetype":
+                outz.writestr(zipfile.ZipInfo(n), files[n], compress_type=zipfile.ZIP_STORED)
+            else:
+                outz.writestr(n, files[n])
+    return buf.getvalue()

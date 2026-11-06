@@ -274,3 +274,31 @@ def test_a_cogs_answer_is_written_into_the_document_as_a_reply_comment(shell):
     assert wopi_call(shell, f"/wopi/files/{number}/contents", token, "POST", content, {"X-WOPI-Override": "PUT", "X-COOL-WOPI-Timestamp": stamp})[0] == 200
     assert len([m for m in hub.inbox.on_record(loc) if m["kind"] == "message"]) == 1, "the written reply is not posted to the chatter again"
     hub.dms.undo_checkout(loc, by="carol")
+
+
+def test_a_comment_asking_the_cog_to_edit_makes_it_write_into_the_document(shell):
+    hub = shell["hub"]
+    from hubproto import office
+
+    content, mime = wopi.blank_document("docx")
+    doc = hub.dms.create(title="Test procedure TP-7", doc_class="working", folder="Quality/Controlled Documents", by="carol", content=content,
+                         filename="tp7.docx", mime=mime, doc_type="document")
+    number, loc = doc["number"], doc["locator"]
+    hub.dms.checkout(loc, by="carol", via="editor")
+    token = wopi.issue_token("carol", number, can_write=True, root=shell["root"])
+    saved = docx_with_comment("@quality-assistant please edit this document to include a quality header.")
+    assert wopi_call(shell, f"/wopi/files/{number}/contents", token, "POST", saved, {"X-WOPI-Override": "PUT"})[0] == 200
+    content, version = hub.dms.content(loc)
+    assert version["by"] == "hub" and "edited by quality-assistant" in version["note"]
+    text = office.extract_text(content, "docx")
+    assert text.startswith("Test procedure TP-7") and "Inspection plan for the sensor board." in text, "the header was written before the existing text"
+    comments = office.extract_comments(content, "docx")
+    assert [c["author"] for c in comments] == ["carol", "quality-assistant"] and "I wrote" in comments[1]["text"]
+    chatter = hub.inbox.on_record(loc)
+    reply = next(m for m in chatter if m["kind"] == "reply")
+    assert reply.get("applied_in") == version["version"] and "version" in reply["body"]
+    assert hub.kernel.get(loc)["fields"]["checked_out_by"] == "carol", "the editing session survives the cog's edit"
+    status, text = get(shell, "/editor-replies/" + quote(loc, safe=":"), **{"as": "carol"})
+    j = json.loads(text)
+    assert j["pending"] == 0 and j["version"] == version["version"] and j["machine"] is True
+    hub.dms.undo_checkout(loc, by="carol")

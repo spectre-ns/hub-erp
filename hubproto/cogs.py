@@ -643,9 +643,39 @@ class ReviewerCog(Cog):
     answers its inbox, and files records it is asked to file."""
 
     kind = "context"
-    tasks = ["review", "inbox", "review-document"]
+    tasks = ["review", "inbox", "review-document", "edit-document"]
     reaches = ["kernel:records", "kernel:documents"]
     files_process = ""
+
+    def task_edit_document(self, input: dict, ctx: RunContext) -> dict:
+        """Draft what a comment asks for ("include a quality header") from the cog's SOPs and the document's text;
+        the hub writes it into the document. Returns {"paragraphs", "position", "explanation", "model", "stand_in"}."""
+        rec = ctx.kernel.get(input.get("record") or ctx.record) if (input.get("record") or ctx.record) else None
+        if rec is None:
+            return make_envelope(self.id, self.version, "edit-document", error={"code": "no-record", "detail": "nothing to edit"})
+        request = input.get("request") or ""
+        f = rec["fields"]
+        sops = ctx.sop_texts()
+        per = max(1500, 12000 // max(1, len(sops)))
+        system = (ctx.profile.get("prompt") or f"You are {self.id}.") + "\n\nYou write document content that follows these procedures:\n\n" + \
+            "\n\n".join(f"# {n}\n{t[:per]}" for n, t in sops.items())
+        user = (f"A colleague wrote this comment in document {rec['number']} ({f.get('title')}):\n{request}\n\n"
+                f"The document currently reads:\n{(f.get('text') or '')[:5000] or '(empty)'}\n\n"
+                "Write only the content to insert, as plain lines: a heading line starting with '# ', then paragraphs. "
+                "No preamble, no explanation, no markdown other than the '# ' heading.")
+        text, model, stand_in = "", ctx.profile.get("model") or "stand-in", True
+        if ctx.model is not None:
+            out = ctx.model.complete(model=model, system=system, user=user, by=self.id)
+            text, stand_in = out["text"], out["stand_in"]
+        lines = [ln.rstrip() for ln in text.splitlines() if ln.strip()]
+        if stand_in or not lines:
+            title = f.get("title") or rec["number"]
+            lines = [f"# {title}", f"Document {rec['number']}, revision {f.get('revision', 'A')}.{f.get('minor', 0)}; owner {f.get('owner') or '-'}; "
+                     f"class {f.get('doc_class') or '-'}; state {rec['state']}.",
+                     "Prepared under the procedures " + (", ".join(sorted(sops)) or "of the quality system") + ". Review and approval are recorded on the item."]
+        position = "end" if re.search(r"\b(end|bottom|append|footer|conclusion)\b", request.lower()) else "start"
+        return self.ok("edit-document", {"paragraphs": lines[:40], "position": position, "model": model, "stand_in": stand_in,
+                                         "explanation": f"I wrote {len(lines[:40])} line(s) at the {position} of the document as asked."})
 
     def task_review_document(self, input: dict, ctx: RunContext) -> dict:
         """Review an item against the SOPs this cog follows and file the review as evidence."""
