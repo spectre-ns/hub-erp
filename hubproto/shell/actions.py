@@ -267,9 +267,22 @@ class ActionsMixin:
         channel = self._f("channel", "dm") or "dm"
         if channel not in ("dm", "email"):
             raise ShellError("Messages go by DM or by email.", field="channel")
-        reply = self.hub.send(user, to, subject[:300], body, channel=channel)
+        record = self._f("record") or None
+        if record:
+            rec = self.hub.kernel.get(record)
+            if rec is None:
+                raise ShellError(f"There is no item '{record}' to post the message on.", 404)
+            self._require_read(rec["folder"])
+            record = rec["locator"]
+        reply = self.hub.send(user, to, subject[:300], body, channel=channel, record=record)
         is_cog = bundle["members"][to]["type"] == "cog"
-        msg = f"Message sent to {to}" + (f"; it answered: {reply.get('body', '')[:200]}" if is_cog and reply.get("kind") == "reply" else "") + "."
+        note = to == user
+        replies = reply.get("replies") or ([reply] if reply.get("kind") == "reply" else [])
+        answered = "; ".join(f"{r['from']} answered: {r.get('body', '')[:160]}" for r in replies[:3])
+        msg = ("Note logged" if note else f"Message sent to {to}") + (f"; {answered}" if answered else "") + "."
+        back = self._f("return")
+        if back.startswith(("/record/", "/document/", "/user/")):  # sent from a chatter or a profile: land back there
+            return self._redirect(self._once_finish(back + ("&" if "?" in back else "?") + "done=" + quote(msg) + "#chatter"))
         self._redirect(self._once_finish(href("/inbox", user, done=msg) + "#messages"))
 
     # -------------------------------------------------------------- documents

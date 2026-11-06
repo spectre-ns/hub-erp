@@ -202,8 +202,10 @@ def test_document_checkout_checkin_over_http(shell):
     loc = doc["locator"]
     status, url, text = post(shell, "/checkout", {"as": "alice", "doc": loc})
     assert status == 200 and "checked out to you" in text and "Checked out by" in text and "alice" in text
-    status, url, text = post(shell, "/checkin", {"as": "doc-reviewer", "doc": loc, "note": "edit"}, files=[("file", "sop9.md", b"v2")])
+    status, url, text = post(shell, "/checkin", {"as": "carol", "doc": loc, "note": "edit"}, files=[("file", "sop9.md", b"v2")])  # a document controller
     assert status == 400 and "checked out by alice" in text
+    status, url, text = post(shell, "/checkin", {"as": "doc-reviewer", "doc": loc, "note": "edit"}, files=[("file", "sop9.md", b"v2")])
+    assert status == 403 and "watching doc-reviewer" in text, "nobody acts in a cog's name from the shell"
     status, url, text = post(shell, "/checkin", {"as": "alice", "doc": loc, "note": "second"}, files=[("file", "sop9.md", b"v2")])
     assert status == 200
     assert len(hub.dms.versions(loc)) == 2 and hub.dms.content(loc)[0] == b"v2"

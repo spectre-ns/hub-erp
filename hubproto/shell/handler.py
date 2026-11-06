@@ -22,21 +22,35 @@ import uuid
 from datetime import date
 from email.parser import BytesParser
 from http.server import BaseHTTPRequestHandler
-from urllib.parse import parse_qs, quote, urlencode, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
 from .. import authz
 from ..app import Hub
 from ..frames import FrameError, FrameStore
 from ..kernel import KernelGuardError
 from ..runner import RunError
+from .apps import app_for_route, app_map, appbar_html, avatar, launcher_html
 from .css import CSS
 from .forms import ShellError, error_field
+from .icons import icon
 from .text import clean, esc, friendly, humanize, short, summary_of_record, tag, type_name, version_label, why_sentence
 
 DEFAULT_MAX_UPLOAD = 25 * 1024 * 1024
-RAIL_MAIN = [("Home", "/"), ("Inbox", "/inbox"), ("Files", "/files"), ("Boards", "/boards")]
-RAIL_POLICY = [("Runs", "/runs"), ("Policy versions", "/releases"), ("Policies", "/frames"), ("Why", "/why"),
-               ("Conformance", "/conformance"), ("People and roles", "/admin")]
+RAIL_MAIN = [("Home", "/", "home"), ("Inbox", "/inbox", "inbox"), ("Documents", "/files", "folder"), ("Boards", "/boards", "kanban"), ("People", "/people", "users")]
+RAIL_POLICY = [("Runs", "/runs", "activity"), ("Policy versions", "/releases", "layers"), ("Policies", "/frames", "book"), ("Why", "/why", "help"),
+               ("Conformance", "/conformance", "check-circle"), ("People and roles", "/admin", "users")]
+# Routes the identity switcher may stay on (anything else goes home).
+STAY_ROUTES = ("/", "/inbox", "/files", "/documents", "/boards", "/runs", "/releases", "/frames", "/why", "/admin", "/conformance", "/people", "/suppliers")
+STAY_PREFIXES = ("/record/", "/document/", "/run/", "/frame/", "/release/", "/items/", "/app/", "/user/")
+# The small script: tabs show one panel at a time (every panel is visible without it) and the print button prints.
+SCRIPT = """document.documentElement.classList.add('js');
+addEventListener('DOMContentLoaded',function(){var tabs=document.querySelectorAll('.tabs a[data-tab]');
+function show(id){tabs.forEach(function(a){var on=a.getAttribute('data-tab')===id;a.setAttribute('aria-selected',on?'true':'false');
+var p=document.getElementById(a.getAttribute('data-tab'));if(p){p.classList.toggle('active',on)}})}
+function go(){if(!tabs.length)return;var h=location.hash.replace('#','');var t=h&&document.getElementById(h);var p=t&&(t.classList.contains('tab-panel')?t:t.closest('.tab-panel'));
+show(p?p.id:tabs[0].getAttribute('data-tab'));if(t&&t!==p){setTimeout(function(){t.scrollIntoView()},0)}}
+go();addEventListener('hashchange',go);
+var all=document.querySelector('input[data-select-all]');if(all){all.addEventListener('change',function(){document.querySelectorAll('input[name=sel]').forEach(function(c){c.checked=all.checked})})}});"""
 ONCE_KEEP = 2000  # one-use tokens remembered (the oldest are forgotten first)
 
 
@@ -130,6 +144,7 @@ class BaseHandler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         self.q = parse_qs(url.query, keep_blank_values=True)
         self.form: dict[str, str] = {}
+        self.multi: dict[str, list[str]] = {}  # every value of a repeated field (the list view's selection)
         self.files: list[tuple[str, str, bytes]] = []
         self.user = clean(self.q.get("as", [""])[0] or "").strip()
         self.route = url.path.rstrip("/") or "/"
@@ -161,6 +176,9 @@ class BaseHandler(BaseHTTPRequestHandler):
                 self.bundle = self.hub.releases.bundle(self.meta["digest"]) if self.meta else None
                 if method == "GET" and not self.user and self.route not in ("/download",):
                     return self.page_whoami()
+                if method == "POST" and self._viewing_cog():
+                    raise ShellError(f"You are watching {self.user}, a cog: it decides, files and answers on its own within the policy, "
+                                     f"and nobody acts in its name from here. Choose your own name under 'Acting as' to act.", 403)
                 self._dispatch(method)
         except ShellError as e:
             self._error_page(str(e), e.status)
@@ -189,15 +207,15 @@ class BaseHandler(BaseHTTPRequestHandler):
     def _route(self, method: str):
         r = self.route
         if method == "GET":
-            fixed = {"/": self.page_home, "/files": self.page_files, "/boards": self.page_boards, "/inbox": self.page_inbox,
+            fixed = {"/": self.page_home, "/files": self.page_files, "/documents": self.page_files, "/boards": self.page_boards, "/inbox": self.page_inbox,
                      "/runs": self.page_runs, "/releases": self.page_releases, "/frames": self.page_frames, "/why": self.page_why,
                      "/admin": self.page_admin, "/conformance": self.page_conformance, "/download": self.page_download,
-                     "/start": self.page_start}
+                     "/start": self.page_start, "/people": self.page_people, "/suppliers": self.page_suppliers}
             if r in fixed:
                 return fixed[r]
             for prefix, fn in (("/record/", self.page_record), ("/document/", self.page_document), ("/doc/", self.page_document),
                                ("/run/", self.page_run), ("/frame/", self.page_frame), ("/release/", self.page_release),
-                               ("/edit/", self.page_edit)):
+                               ("/edit/", self.page_edit), ("/items/", self.page_items), ("/app/", self.page_app), ("/user/", self.page_user)):
                 if r.startswith(prefix) and len(r) > len(prefix):
                     self.arg = r[len(prefix):]
                     return fn
@@ -206,7 +224,7 @@ class BaseHandler(BaseHTTPRequestHandler):
                  "/finish-edit": self.post_finish_edit, "/new-document": self.post_new_document,
                  "/upload": self.post_upload, "/checkout": self.post_checkout, "/checkin": self.post_checkin, "/link": self.post_link,
                  "/snapshot": self.post_snapshot, "/hold": self.post_hold, "/resubmit": self.post_resubmit, "/retry": self.post_retry,
-                 "/cancel": self.post_cancel, "/undo-checkout": self.post_undo_checkout}
+                 "/cancel": self.post_cancel, "/undo-checkout": self.post_undo_checkout, "/bulk-hold": self.post_bulk_hold}
         return posts.get(r)
 
     def _read_raw(self) -> bytes:
@@ -259,10 +277,13 @@ class BaseHandler(BaseHTTPRequestHandler):
                 if filename:
                     self.files.append((name, clean(os.path.basename(filename)), payload))
                 else:
-                    self.form[name] = clean(payload.decode("utf-8", "replace"))
+                    text = clean(payload.decode("utf-8", "replace"))
+                    self.form.setdefault(name, text)
+                    self.multi.setdefault(name, []).append(text)
         else:
             for k, v in parse_qs(body.decode("utf-8", "replace"), keep_blank_values=True).items():
                 self.form[k] = clean(v[0])
+                self.multi[k] = [clean(x) for x in v]
 
     def _drain(self, length: int) -> None:
         """Read and discard an oversize body (up to the limit) so the client sees the 413 instead of a reset."""
@@ -353,7 +374,14 @@ class BaseHandler(BaseHTTPRequestHandler):
             if self.route in ("/attach", "/link", "/hold", "/snapshot"):
                 self.arg = self.form.get("record", "")
                 return self.page_record(status=status)
+            if self.route == "/bulk-hold":
+                self.arg = self.form.get("type", "")
+                return self.page_items(status=status)
             if self.route == "/msg":
+                back = self.form.get("return", "")
+                if back.startswith(("/record/", "/document/")):  # sent from a chatter: the composer is re-rendered there
+                    self.arg = unquote(back.split("?")[0].split("/", 2)[2])
+                    return self.page_record(status=status) if back.startswith("/record/") else self.page_document(status=status)
                 return self.page_inbox(status=status)
             if self.route == "/upload":
                 self.q["folder"] = [self.form.get("folder", "")]
@@ -405,42 +433,71 @@ class BaseHandler(BaseHTTPRequestHandler):
         user, bundle = self.user, self.bundle
         members = bundle["members"] if bundle else {}
 
-        def item(n, p):
+        def item(n, p, ic):
             cur = ' aria-current="page"' if (self.route == p or (p != "/" and self.route.startswith(p))) else ""
-            return f'<li><a{cur} href="{href(p, user)}">{esc(n)}</a></li>'
+            return f'<li>{icon(ic)}<a{cur} href="{href(p, user)}">{esc(n)}</a></li>'
 
-        out = '<nav class="rail" aria-label="Workspace"><ul class="main">' + "".join(item(n, p) for n, p in RAIL_MAIN) + "</ul>"
+        out = '<nav class="rail" aria-label="Workspace"><ul class="main">' + "".join(item(n, p, ic) for n, p, ic in RAIL_MAIN) + "</ul>"
         if self._policy_owner():
-            out += '<h2 id="rail-policy">Policy</h2><ul class="main" aria-labelledby="rail-policy">' + "".join(item(n, p) for n, p in RAIL_POLICY) + "</ul>"
+            out += '<h2 id="rail-policy">Policy</h2><ul class="main" aria-labelledby="rail-policy">' + "".join(item(n, p, ic) for n, p, ic in RAIL_POLICY) + "</ul>"
         if bundle and user in members:
             cur_folder = self.q.get("folder", [""])[0]
             out += '<h2 id="rail-folders">Folders</h2><div class="tree" aria-labelledby="rail-folders">' + render_tree(folder_tree(bundle["folders"]), "", user, cur_folder) + "</div>"
         return out + "</nav>"
 
-    def _page(self, title: str, body: str, status: int = 200, head: str = "", crumbs: list[tuple[str, str | None]] | None = None) -> None:
-        user = self.user
+    def _viewing_cog(self) -> bool:
+        """The chosen identity is a cog: the shell shows what it sees and does, and refuses to act in its name."""
+        return bool(self.bundle) and (self.bundle["members"].get(self.user) or {}).get("type") == "cog"
+
+    def _apps(self) -> list[dict]:
+        if getattr(self, "_apps_cache", None) is None:
+            self._apps_cache = app_map(self.bundle, self.hub.kernel.types, policy_owner=self._policy_owner())
+        return self._apps_cache
+
+    def _avatar(self, name: str, **kw) -> str:
+        return avatar(name, self.bundle, href=lambda p: href(p, self.user), **kw)
+
+    def _identity_options(self) -> str:
         bundle = self.bundle
+        user = self.user
         members = dict(bundle["members"]) if bundle else {}
         people = sorted(m for m in members if members[m]["type"] == "person")
+        cogs = sorted(m for m in members if members[m]["type"] == "cog")
         options = "".join(f'<option value="{esc(m)}"{" selected" if m == user else ""}>{esc(m)}</option>' for m in people)
-        if user and user not in people:
+        if user and user not in people and user not in cogs:
             options = f'<option value="{esc(user)}" selected>{esc(user)} (not a member)</option>' + options
         if not user:
             options = '<option value="" selected>choose…</option>' + options
+        if cogs:
+            options += '<optgroup label="See what a cog is doing (read-only)">' + "".join(
+                f'<option value="{esc(m)}"{" selected" if m == user else ""}>{esc(m)} (cog)</option>' for m in cogs) + "</optgroup>"
+        return options
+
+    def _page(self, title: str, body: str, status: int = 200, head: str = "", crumbs: list[tuple[str, str | None]] | None = None,
+              app_type: str = "") -> None:
+        user = self.user
         keep = "".join(f'<input type="hidden" name="{esc(k)}" value="{esc(v[0])}">' for k, v in self.q.items() if k not in ("as", "done") and v)
-        action = self.route if self.route in ("/", "/inbox", "/files", "/boards", "/runs", "/releases", "/frames", "/why", "/admin", "/conformance") \
-            or self.route.startswith(("/record/", "/document/", "/run/", "/frame/", "/release/")) else "/"
+        action = self.route if self.route in STAY_ROUTES or self.route.startswith(STAY_PREFIXES) else "/"
         crumb_items = [("Hub", href("/", user) if user else "/")] + list(crumbs or [(title, None)])
         crumb = "".join(f'<li><a href="{esc(h)}">{esc(n)}</a></li>' if h else f"<li>{esc(n)}</li>" for n, h in crumb_items)
         done = self.q.get("done", [""])[0]
         status_line = f'<p class="status" role="status">{esc(short(done, 300))}</p>' if done else ""
         if self.err and not getattr(self, "_err_shown", False):  # the form that was refused is not on this page: say it up front
             status_line += f'<div class="card crit" role="alert"><p>{esc(self.err[0])}</p></div>'
+        if user and self._viewing_cog():
+            status_line += (f'<div class="card quiet" role="status">{icon("eye")} You are watching <b>{esc(user)}</b>, a cog. It decides within fixed '
+                            f'criteria on its own; nothing here can be sent in its name. <a href="{href("/user/" + user, user)}">What it is doing</a></div>')
         full_title = (f"{short(done, 40)} - " if done else "") + title + (f" ({user})" if user else "") + " - Hub"
+        apps = self._apps() if user else []
+        rt = app_type or (self.arg.split("?")[0] if self.route.startswith("/items/") else "")
+        app = app_for_route(apps, self.route, rt) if apps else None
+        launcher = launcher_html(apps, user, href, app["key"] if app else None) if apps and self._is_member() else ""
+        appbar = appbar_html(app, user, href, self.route, rt) if app and self._is_member() else ""
+        me = (f'<span class="who">{self._avatar(user, size="sm")} {esc(user)}</span>' if user else "")
         page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{esc(full_title)}</title><style>{CSS}</style>{head}</head>
-<body><a class="skip" href="#main">Skip to content</a><div class="top"><a href="{href("/", user) if user else "/"}">Hub</a><ol class="crumb" aria-label="You are here">{crumb}</ol>
-<form method="get" action="{esc(action)}">{keep}<label>Acting as <select name="as">{options}</select></label> <button class="secondary">Go</button></form></div>
+<title>{esc(full_title)}</title><style>{CSS}</style><script>{SCRIPT}</script>{head}</head>
+<body><a class="skip" href="#main">Skip to content</a><div class="top">{launcher}<a class="brand" href="{href("/", user) if user else "/"}">{icon("home")}Hub</a><ol class="crumb" aria-label="You are here">{crumb}</ol>
+<form method="get" action="{esc(action)}">{keep}{me}<label><span class="who">Acting as</span> <select name="as">{self._identity_options()}</select></label> <button class="secondary">Go</button></form></div>{appbar}
 <div class="layout">{self._rail()}<main id="main">{status_line}{body}</main></div></body></html>"""
         data = page.encode("utf-8")
         if status == 200 and getattr(self, "_force_status", 0):
@@ -459,12 +516,15 @@ class BaseHandler(BaseHTTPRequestHandler):
         cogs = sorted(p for p, m in members.items() if m["type"] == "cog")
         target = self.route if self.route != "/healthz" else "/"
         query = {k: v[0] for k, v in self.q.items() if k != "as" and v}
-        cards = "".join(f'<div class="card"><a href="{esc(target)}?{urlencode({"as": p, **query})}">{esc(p)}</a><div class="why">'
-                        f'{esc(", ".join(r.replace("-", " ") for r in members[p]["roles"]))}</div></div>' for p in people)
+        cards = "".join(f'<div class="card">{avatar(p, self.bundle, size="lg")}<div><a href="{esc(target)}?{urlencode({"as": p, **query})}">{esc(p)}</a><div class="why">'
+                        f'{esc(", ".join(r.replace("-", " ") for r in members[p]["roles"]))}</div></div></div>' for p in people)
         body = (f"<h1>Who are you?</h1><p>This prototype has no sign-in: choose your name to act as that person. Every signature, "
                 f"message and change is recorded under the name you choose.</p><div class='who'>{cards or '<p class=muted>No policy release is in effect yet.</p>'}</div>")
         if cogs:
-            body += f"<p class='why'>Automatic reviewers ({esc(', '.join(cogs))}) act on their own within the policy; nobody signs in as one.</p>"
+            cog_cards = "".join(f'<div class="card">{avatar(p, self.bundle, size="lg")}<div><a href="/user/{esc(p)}?{urlencode({"as": p})}">See what {esc(p)} is doing</a>'
+                                f'<div class="why">{esc(", ".join(r.replace("-", " ") for r in members[p]["roles"]))} &middot; read-only</div></div></div>' for p in cogs)
+            body += (f"<h2>Automatic reviewers</h2><p class='why'>Cogs act on their own within the policy; nobody signs in as one, but you can watch "
+                     f"what each is doing.</p><div class='who'>{cog_cards}</div>")
         self._page("Who are you?", body, status=200)
 
     # --- shared lookups -------------------------------------------------------

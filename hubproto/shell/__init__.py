@@ -1,4 +1,4 @@
-"""The workspace shell: a Nextcloud/SharePoint-style web UI over the record system, the DMS and the workflow engine.
+"""The workspace shell: an Odoo-style, app-based web UI over the record system, the DMS and the workflow engine.
 
 Standard library only (``http.server``), no JavaScript frameworks; the one optional script is mermaid for the
 workflow diagram, and every page degrades to plain HTML without it. Identity is chosen with ``?as=<principal>``
@@ -6,9 +6,11 @@ because the prototype has no SSO (a page without it asks who you are; nobody is 
 puts Keycloak in front. Every page is permission-trimmed with the release in effect and explains a denial as
 "who may, you are, ask".
 
-Modules: ``text`` (names, formatters, sentences), ``css``, ``forms`` (controls and coercion), ``handler`` (request
-plumbing, errors, page frame), ``pages`` (home, files, boards, runs, records, documents), ``inbox`` (the queue and
-the decision card), ``policy`` (versions, policies, why, people and roles, conformance), ``actions`` (POSTs).
+Modules: ``text`` (names, formatters, sentences), ``css`` (the visual system), ``icons`` (inline SVG), ``apps`` (the app
+map, launcher and avatars), ``charts`` (server-rendered SVG), ``forms`` (controls and coercion), ``handler`` (request
+plumbing, errors, page frame), ``pages`` (dashboard, files library, boards, runs, records as forms, documents),
+``views`` (list and kanban views, app pages, people and cog profiles, chatter), ``inbox`` (the queue and the decision
+card), ``policy`` (versions, policies, why, people and roles, conformance), ``actions`` (POSTs), ``editor`` (WOPI).
 """
 
 from __future__ import annotations
@@ -22,20 +24,21 @@ from http.server import ThreadingHTTPServer
 from ..app import Hub
 from .actions import ActionsMixin
 from .editor import EditorMixin
-from .css import CONTRAST_PAIRS, DARK, LIGHT  # noqa: F401  (public: the contrast test)
+from .css import AVATAR_COLOURS, AVATAR_FG, CONTRAST_PAIRS, DARK, LIGHT  # noqa: F401  (public: the contrast tests)
 from .forms import START_INPUTS, ShellError, coerce, prefill, widget  # noqa: F401  (public: cli_records, tests)
 from .handler import DEFAULT_MAX_UPLOAD, BaseHandler, href, log_line, table  # noqa: F401
 from .inbox import InboxMixin
 from .pages import PagesMixin
 from .policy import PolicyMixin, sentence_diff  # noqa: F401
+from .views import ViewsMixin
 from .text import TYPE_NAMES, VERBS, chip, esc, friendly, money, day, when, why_sentence  # noqa: F401
 
 __all__ = ["Handler", "ShellError", "coerce", "make_server", "serve", "serve_in_thread", "free_port", "max_upload_from_env",
-           "DEFAULT_MAX_UPLOAD", "LIGHT", "DARK", "CONTRAST_PAIRS", "TYPE_NAMES", "VERBS", "START_INPUTS", "friendly", "money", "day",
+           "DEFAULT_MAX_UPLOAD", "LIGHT", "DARK", "CONTRAST_PAIRS", "AVATAR_COLOURS", "AVATAR_FG", "TYPE_NAMES", "VERBS", "START_INPUTS", "friendly", "money", "day",
            "when", "why_sentence", "sentence_diff", "widget", "prefill", "chip", "esc", "href", "table"]
 
 
-class Handler(PagesMixin, InboxMixin, PolicyMixin, ActionsMixin, EditorMixin, BaseHandler):
+class Handler(PagesMixin, ViewsMixin, InboxMixin, PolicyMixin, ActionsMixin, EditorMixin, BaseHandler):
     """The request handler: the plumbing in BaseHandler, the pages and actions in the mixins."""
 
 

@@ -1,17 +1,23 @@
-"""Pages for everyone: home (the front door), the Start forms, files, boards, runs, records and documents."""
+"""Pages for everyone: the dashboard (home), the Start forms, the document library, boards, runs, records as Odoo-style forms, and documents."""
 
 from __future__ import annotations
 
 import json
 from urllib.parse import quote
 
+from datetime import date, timedelta
+
 from .. import authz, wopi
+from .apps import FOLDER_APPS, avatars, plural
+from .charts import day_bars, hbars, last_days, median, per_day, sparkline, stacked_bars
 from .editor import new_document_form
 from ..runner import FIELD_ROLES
 from .forms import DEFAULT_START_INPUTS, REQUIRED_EXTRA, START_INPUTS, ShellError, file_input, text_input, widget
-from .handler import details, hidden_as, href, kv, table
-from .text import (BLOB_FIELDS, chip, day, esc, event_sentence, field_label, fmt, owner_of, short, state_name,
+from .handler import details, folder_tree, hidden_as, href, kv, table
+from .icons import TYPE_ICONS, file_icon, icon, type_icon
+from .text import (BLOB_FIELDS, chip, day, days_from, esc, event_sentence, field_label, fmt, owner_of, short, state_name,
                    summary_of_record, tag, track_sentence, type_name, value_text, verb_for, when)
+from .views import BUCKET_WORDS, EXIT_STATES, bucket_of
 
 MERMAID_URL = "https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.4.1/mermaid.min.js"
 EDITABLE_DOC_STATES = ("draft", "open", "returned", "failed")
@@ -84,18 +90,9 @@ class PagesMixin:
             return self._page("Home", f"<h1>Welcome, {esc(user)}</h1><div class='card crit' role='alert'><b>{esc(user)} is not a member of the organization</b> under the "
                                       "policy release in effect, so nothing here is available. Ask a policy owner (bob or carol) to add you to the org model.</div>")
         m = bundle["members"][user]
-        runs = [r for r in self.hub.runner.list() if r["owner"] == user]
-        waiting = self._pending(user, "decision")
-        returned = self._pending(user, "resubmit")
-        failed = self._failed_for(user)
-        others = self._waiting_on_others(user)
         roles = " ".join(tag(r.replace("-", " ")) for r in m["roles"]) or "no role"
-        body = f"""<h1>Welcome, {esc(user)}</h1><p>You are {roles}.</p>
-<div class="counts"><div class="card"><b>{len(waiting)}</b><a href="{href('/inbox', user)}">waiting for my approval</a></div>
-<div class="card"><b>{len(returned) + len(failed)}</b><a href="{href('/inbox', user)}#mine">of mine returned or stopped</a></div>
-<div class="card"><b>{len(others)}</b><a href="{href('/inbox', user)}#others">of mine waiting on others</a></div>
-<div class="card"><b>{len(runs)}</b><a href="{href('/runs', user, owner='me')}">items I started</a></div></div>
-<h2>Start something</h2><p class="why">Fields marked * are required. Each entry opens its form.</p>"""
+        body = f"""<h1>Welcome, {esc(user)}</h1><p>You are {roles}.</p>""" + self._dashboard()
+        body += f"<h2 id='start'>{icon('play')} Start something</h2><p class='why'>Fields marked * are required. Each entry opens its form.</p>"
         open_process = self.q.get("start", [""])[0] or (self.vals.get("process") if self.err else "")
         startable, unavailable = [], []
         for name, op in bundle["ops"].items():
@@ -109,6 +106,10 @@ class PagesMixin:
                 unavailable.append((name, op, why))
         if not startable:
             body += "<p class='muted'>Nothing under the release in effect.</p>"
+        else:
+            body += '<div class="quick" aria-label="Quick actions">' + "".join(
+                f'<a href="{href("/", user, start=name)}#start-{esc(name)}">{type_icon(op.get("record_type"))}{esc(verb_for(op.get("record_type"), name))}</a>'
+                for name, op, _ in startable) + "</div>"
         for name, op, d in startable:
             body += self._start_entry(name, op, d, open_=(name == open_process))
         if unavailable:
@@ -117,6 +118,90 @@ class PagesMixin:
         vlabel = self._version_html(meta["digest"])
         body += f"<p class='why'>Policy in effect: {vlabel}, released by {esc(meta['released_by'])}.</p>"
         self._page("Home", body, status=status, crumbs=[("Home", None)])
+
+    def _dashboard(self) -> str:
+        """KPI tiles with sparklines and four charts, every number a link to the list it counts."""
+        user, bundle, today = self.user, self.bundle, self.today
+        days14 = last_days(14, today)
+        days30 = last_days(30, today)
+        runs = self.hub.runner.list()
+        waiting = self._pending(user, "decision")
+        overdue = [r for r in waiting if r["pending"].get("due") and r["pending"]["due"] < today]
+        returned = self._pending(user, "resubmit") + self._failed_for(user)
+        mine = [r for r in runs if r["owner"] == user]
+        ncrs = [r for r in self._records("ncr") if bucket_of(r, self._wf_for_type("ncr")) in ("open", "waiting", "returned")]
+        pos = [r for r in self._records("purchase-order") if not r["fields"].get("received") and bucket_of(r, self._wf_for_type("purchase-order")) != "rejected"]
+        bills = [r for r in self._records("bill") if r["state"].startswith("awaiting")]
+        checked_out = [r for r in self._records("document") if r["fields"].get("checked_out_by")]
+
+        def spark(items, key=lambda x: x.get("created_at", "")):
+            return sparkline([n for _, n in per_day([key(x) for x in items], days14)])
+
+        tiles = [("Waiting for me", len(waiting), "inbox", href("/inbox", user), spark(waiting), False),
+                 ("Overdue", len(overdue), "alert", href("/items/all", user, filter="overdue"), spark(overdue, lambda r: r["pending"].get("due", "")), bool(overdue)),
+                 ("Returned or stopped", len(returned), "retry", href("/inbox", user) + "#mine", spark(returned), bool(returned)),
+                 ("My runs", len(mine), "activity", href("/runs", user, owner="me"), spark(mine), False),
+                 ("Open NCRs", len(ncrs), "alert", href("/items/ncr", user, filter="open"), spark(ncrs), False),
+                 ("POs awaiting receipt", len(pos), "truck", href("/items/purchase-order", user, filter="open"), spark(pos), False),
+                 ("Bills to approve", len(bills), "coins", href("/items/bill", user, bucket="waiting"), spark(bills), False),
+                 ("Documents checked out", len(checked_out), "lock", href("/items/document", user, text="checked"), spark(checked_out, lambda r: r.get("updated_at", "")), False)]
+        kpis = "".join(f'<a class="kpi{" crit" if crit and n else ""}" href="{h}"><span class="kpi-h">{icon(ic)}{esc(label)}</span><b>{n}</b>{sp}</a>'
+                       for label, n, ic, h, sp, crit in tiles)
+        # items by stage per app
+        legend = [(BUCKET_WORDS[b], b) for b in ("open", "waiting", "done", "returned", "rejected")]
+        app_root = {v: k for k, v in FOLDER_APPS.items()}
+        rows = []
+        for app in self._apps():
+            if not app["types"]:
+                continue
+            counts = {b: 0 for b, _ in legend}
+            for rt in app["types"]:
+                wf = self._wf_for_type(rt)
+                for r in self._records(rt):
+                    counts[BUCKET_WORDS[bucket_of(r, wf)]] += 1
+            if not sum(counts.values()):
+                continue
+            root = app_root.get(app["key"])
+            if app["key"] == "documents":
+                link = lambda key: href("/items/document", user, bucket=key)
+            elif root:
+                link = lambda key, root=root: href("/items/all", user, bucket=key, folder=root)
+            else:
+                link = lambda key, rt=app["types"][0]: href("/items/" + rt, user, bucket=key)
+            rows.append((app["name"], [(b, counts[b], link(key)) for b, key in legend]))
+        by_app = stacked_bars(rows, legend=legend, label="Items by stage per app")
+        # decisions per day
+        stamps = [d.get("at", "") for r in self._records() for d in r["decisions"]]
+        decisions = day_bars(per_day(stamps, days30), href_for=lambda d: href("/items/all", user, decided=d), label="Decisions per day, last 30 days")
+        # cycle time by process: median days from the record's creation to its terminal state
+        cycles: dict[str, list[float]] = {}
+        for r in self._records():
+            wf = self._wf_for_type(r["type"])
+            if not wf or r["state"] != wf["terminal"] or not r["transitions"]:
+                continue
+            try:
+                t0 = date.fromisoformat(r["created_at"][:10])
+                t1 = date.fromisoformat(r["transitions"][-1]["at"][:10])
+            except (ValueError, KeyError):
+                continue
+            cycles.setdefault(r["type"], []).append((t1 - t0).days)
+        cycle_rows = sorted(((plural(rt), median(v) or 0.0, href("/items/" + rt, user, bucket="done"), f"{median(v):g} d (n={len(v)})") for rt, v in cycles.items()),
+                            key=lambda x: -x[1])
+        cycle = hbars(cycle_rows[:8], swatch="sw", unit="days", label="Median days from submission to close, by process")
+        # overdue by assignee
+        late: dict[str, int] = {}
+        for r in runs:
+            p = r.get("pending") or {}
+            if r["status"] == "waiting" and p.get("due") and p["due"] < today and self._run_visible(r):
+                for a in p.get("assignees") or []:
+                    late[a] = late.get(a, 0) + 1
+        late_rows = sorted(((a, float(n), href("/items/all", user, assignee=a, filter="overdue"), f"{n}") for a, n in late.items()), key=lambda x: -x[1])
+        late_chart = hbars(late_rows[:8], swatch="sw-crit", label="Overdue items by assignee")
+        return (f'<div class="kpis">{kpis}</div><div class="charts">'
+                f'<div class="chart"><h2>{icon("chart")}Items by stage, per app</h2>{by_app}</div>'
+                f'<div class="chart"><h2>{icon("check-circle")}Decisions per day, last 30 days</h2>{decisions}</div>'
+                f'<div class="chart"><h2>{icon("clock")}Cycle time by process <span class="muted">median days, submit to close</span></h2>{cycle}</div>'
+                f'<div class="chart"><h2>{icon("alert")}Overdue by assignee</h2>{late_chart}</div></div>')
 
     def _start_entry(self, name: str, op: dict, d: dict, open_: bool = False) -> str:
         user = self.user
@@ -191,49 +276,106 @@ class PagesMixin:
         user = self.user
         bundle = self._need_release()
         folder = self.q.get("folder", [""])[0].strip("/")
+        sort = self.q.get("sort", [""])[0] or "date"
+        tree = self._library_tree(folder)
         if not folder:
             roots = [f for f in bundle["folders"] if "/" not in f]
             rows = []
             for f in roots:
                 d = self._can_read(f)
-                rows.append([f'<a href="{href("/files", user, folder=f)}">{esc(f)}</a>', chip("readable") if d["allowed"] else chip("no access"),
+                rows.append([f'{icon("folder")} <a href="{href("/files", user, folder=f)}">{esc(f)}</a>', chip("readable") if d["allowed"] else chip("no access"),
                              f'<span class="why">{self._why_html(d, "read", "*", f)}</span>'])
-            return self._page("Files", "<h1>Files</h1><p class='why'>Folders you may open, and why.</p>" + table(["Folder", "Access", "Why"], rows), crumbs=[("Files", None)])
+            recent = sorted(self._records("document"), key=lambda r: r.get("updated_at") or r["created_at"], reverse=True)[:24]
+            body = (f"<h1>{icon('folder', cls='lg')} Documents</h1><div class='library'>{tree}<div>"
+                    f"<p class='why'>Folders you may open, and why. Recent documents across them below.</p>" + table(["Folder", "Access", "Why"], rows)
+                    + "<h2>Recent documents</h2>" + self._tiles(recent) + "</div></div>")
+            return self._page("Files", body, crumbs=[("Files", None)])
         d = self._can_read(folder)
         parts = folder.split("/")
         crumbs = [("Files", href("/files", user))] + [(p, href("/files", user, folder="/".join(parts[: i + 1]))) for i, p in enumerate(parts[:-1])] + [(parts[-1], None)]
-        body = f"<h1>{esc(parts[-1])} <span class='why'>{esc(folder)}</span></h1>"
+        body = f"<h1>{icon('folder-open', cls='lg')} {esc(parts[-1])} <span class='why'>{esc(folder)}</span></h1>"
         if not d["allowed"]:
             return self._page(folder, body + f"<div class='card crit' role='alert'>You cannot read this folder.<div class='why'>{self._why_html(d, 'read', '*', folder)}</div></div>", status=403, crumbs=crumbs)
         subs = [f for f in bundle["folders"] if f.startswith(folder + "/") and "/" not in f[len(folder) + 1:]]
-        if subs:
-            body += "<h2>Folders</h2><ul>" + "".join(f'<li><a href="{href("/files", user, folder=s)}">{esc(s.split("/")[-1])}</a></li>' for s in subs) + "</ul>"
         text = self.q.get("text", [""])[0]
         recs = [r for r in self.hub.kernel.query(folder=folder, text=text or None) if r["folder"] == folder]
         records = list(reversed([r for r in recs if r["type"] != "document"]))
-        docs = list(reversed([r for r in recs if r["type"] == "document"]))
-        body += f"""<form method="get" action="/files" class="card">{hidden_as(user)}<input type="hidden" name="folder" value="{esc(folder)}">
-<div class="fields">{widget("text", "text", text, label="Search this folder", hint="number or words in the title")}</div><div class="actions"><button class="secondary">Search</button></div></form>"""
+        docs = [r for r in recs if r["type"] == "document"]
+        keyf = {"name": lambda r: str(r["fields"].get("title") or "").lower(), "revision": lambda r: (str(r["fields"].get("revision") or ""), int(r["fields"].get("minor") or 0)),
+                "date": lambda r: r.get("updated_at") or r["created_at"]}.get(sort, lambda r: r.get("updated_at") or r["created_at"])
+        docs.sort(key=keyf, reverse=(sort == "date"))
+        f = may_file(bundle, user, folder)
+        toolbar = '<div class="toolbar">'
+        if f["allowed"]:
+            toolbar += f'<a class="button" href="#new-document">{icon("plus")}New document</a><a class="button secondary" href="#upload">{icon("upload")}Upload</a>'
+        sorts = "".join(f'<option value="{k}"{" selected" if sort == k else ""}>{v}</option>' for k, v in (("date", "newest first"), ("name", "name"), ("revision", "revision")))
+        toolbar += (f'<form method="get" action="/files" class="sort">{hidden_as(user)}<input type="hidden" name="folder" value="{esc(folder)}">'
+                    f'<label class="f" style="width:auto"><span class="vh">Search this folder</span><input type="search" name="text" value="{esc(text)}" aria-label="Search this folder" title="number or words in the title"></label>'
+                    f'<label class="f" style="width:auto"><span>Sort by</span><select name="sort" class="small">{sorts}</select></label><button class="ghost">{icon("search")}Search</button></form></div>')
+        body += f"<div class='library'>{tree}<div>{toolbar}"
+        if subs:
+            body += "<h2>Folders</h2><ul class='folders'>" + "".join(f'<li>{icon("folder")} <a href="{href("/files", user, folder=s)}">{esc(s.split("/")[-1])}</a></li>' for s in subs) + "</ul>"
+        body += f"<h2>Documents <span class='muted'>{len(docs)}</span></h2>" + self._tiles(docs)
         body += "<h2>Items</h2><p class='why'>Newest first.</p>" + table(["Number", "Type", "State", "Title", "Owner", "With", "Due", "Updated"],
-                                                                          [[self._record_link(r["locator"], with_summary=False), tag(type_name(r["type"])), self._state_chip(r["state"]),
-                                                                            esc(summary_of_record(r)), esc(owner_of(r)), esc(", ".join(r["assignees"])),
+                                                                          [[f"{type_icon(r['type'])} {self._record_link(r['locator'], with_summary=False)}", tag(type_name(r["type"])), self._state_chip(r["state"]),
+                                                                            esc(summary_of_record(r)), esc(owner_of(r)), avatars(r["assignees"], bundle),
                                                                             self._due_html(r["due"] or r["fields"].get("due")), esc(when(r.get("updated_at") or r.get("created_at")))] for r in records],
                                                                           "No items in this folder.")
-        body += "<h2>Documents</h2>" + table(["Number", "Title", "Class", "Rev", "State", "Owner", "Size", "Updated"],
-                                              [[self._record_link(r["locator"], with_summary=False), esc(r["fields"].get("title")),
-                                                esc(r["fields"].get("doc_class")), esc(f"{r['fields'].get('revision', '')}.{r['fields'].get('minor', 0)}"), self._state_chip(r["state"]),
-                                                esc(owner_of(r)), esc(r["fields"].get("size", "")), esc(when(r.get("updated_at") or r.get("created_at")))] for r in docs], "No documents in this folder.")
-        f = may_file(bundle, user, folder)
         if f["allowed"]:
             err = self._form_error(["file", "title"]) if self.err and self.route == "/upload" else ""
-            body += f"""<h2>Upload a file</h2><div class="card"><p class="why">Files a received file as an external document (kept as received, with provenance).</p>{err}
+            body += f"""<h2 id="upload">{icon('upload')} Upload a file</h2><div class="card"><p class="why">Files a received file as an external document (kept as received, with provenance).</p>{err}
 <form method="post" action="/upload" enctype="multipart/form-data">{hidden_as(user)}{self._once()}<input type="hidden" name="folder" value="{esc(folder)}">
 <div class="fields">{file_input("file", "File", required=True, hint=f"up to {self.max_upload // (1024 * 1024)} MB")}{text_input("title", "Title", self._val("title"), hint="defaults to the file name", error=self._field_error("title"))}</div>
-<div class="actions"><button>Upload</button></div></form></div>"""
+<div class="actions"><button>{icon('upload')}Upload</button></div></form></div>"""
             body += new_document_form(user, folder=folder, once=self._once(), error=self._form_error(["title", "kind"]) if self.route == "/new-document" else "")
         else:
             body += f"<p class='why'>You cannot file documents here: {self._why_html(f, 'create', 'document', folder)}</p>"
+        body += "</div></div>"
         self._page(parts[-1], body, status=status, crumbs=crumbs)
+
+    def _library_tree(self, current: str) -> str:
+        """The folder tree of the Documents app with icons; folders the user cannot read are greyed and say so."""
+        user, bundle = self.user, self.bundle
+
+        def render(node: dict, prefix: str) -> str:
+            out = "<ul>"
+            for name, child in node.items():
+                path = f"{prefix}/{name}" if prefix else name
+                ok = self._can_read(path)["allowed"]
+                cur = ' aria-current="page"' if path == current else ""
+                cls = "" if ok else ' class="denied"'
+                out += f'<li><a{cur}{cls} href="{href("/files", user, folder=path)}" title="{esc(path)}{"" if ok else " (no access)"}">{icon("folder-open" if current.startswith(path) and cur == "" else "folder")}{esc(name)}</a>'
+                out += (render(child, path) if child else "") + "</li>"
+            return out + "</ul>"
+
+        return f'<nav class="ftree" aria-label="Folders">{render(folder_tree(bundle["folders"]), "")}</nav>'
+
+    def _tiles(self, docs: list[dict]) -> str:
+        """Document tiles: a type badge or a text preview, the title, revision and state, and the open and download links."""
+        user = self.user
+        if not docs:
+            return "<p class='muted'>No documents here.</p>"
+        tiles = ""
+        for d in docs:
+            f = d["fields"]
+            name = f.get("filename") or ""
+            ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+            if ext in ("md", "txt") and f.get("text"):
+                thumb = f"<pre aria-hidden='true'>{esc(short(f['text'], 220))}</pre>"
+            else:
+                thumb = file_icon(name, label=False)
+            page = href("/document/" + quote(d["locator"], safe=":"), user)
+            links = f'<a href="{page}">{icon("file-text")}Open</a>'
+            if wopi.is_viewable(d):
+                links += f'<a href="{href("/edit/" + quote(d["locator"], safe=":"), user)}">{icon("edit" if wopi.is_editable(d) else "eye")}{"Edit online" if wopi.is_editable(d) else "View"}</a>'
+            if f.get("content_sha"):
+                links += f'<a href="{href("/download", user, doc=d["locator"])}">{icon("download")}Download</a>'
+            locked = f' {chip("checked out", "warn")}' if f.get("checked_out_by") else ""
+            tiles += (f'<div class="tile"><div class="thumb">{thumb}</div><div class="name">{file_icon(name)} <a href="{page}">{esc(f.get("title") or d["number"])}</a></div>'
+                      f'<div class="tmeta">{esc(d["number"])} &middot; rev {esc(f.get("revision", ""))}.{esc(f.get("minor", 0))} {self._state_chip(d["state"])}{locked}</div>'
+                      f'<div class="tmeta">{self._avatar(owner_of(d), size="sm", named=True) if owner_of(d) else ""} <span>{esc(when(d.get("updated_at") or d["created_at"]))}</span></div>'
+                      f'<div class="tlinks">{links}</div></div>')
+        return f'<div class="tiles">{tiles}</div>'
 
     # ---------------------------------------------------------------- boards
     def page_boards(self):
@@ -254,6 +396,7 @@ class PagesMixin:
         types = "".join(f'<option value="{esc(t)}"{" selected" if t == type_ else ""}>{esc(type_name(t))}</option>' for t in self.hub.kernel.types if t != "$comment")
         folders = "".join(f'<option value="{esc(f)}"{" selected" if f == folder else ""}>{esc(f)}</option>' for f in bundle["folders"])
         people = "".join(f'<option value="{esc(p)}"{" selected" if p == assignee else ""}>{esc(p)}</option>' for p in self._people())
+        wf_for_type = None
         if not type_:
             # The user's own work, in columns named by what the person has to do.
             mine = [r for r in self.hub.kernel.query(folder=folder or None, assignee=assignee or None, text=text or None)
@@ -275,7 +418,6 @@ class PagesMixin:
             intro = "Your items, by what happens next. Choose a type to see every item of that kind by state."
         else:
             columns: list[str] = []
-            wf_for_type = None
             for name, wf in workflows.items():
                 if wf["record_type"] == type_:
                     wf_for_type = wf_for_type or wf
@@ -302,14 +444,13 @@ class PagesMixin:
 <label class="f"><span>Folder</span><select name="folder"><option value="">any</option>{folders}</select></label>
 <label class="f"><span>Assigned to</span><select name="assignee"><option value="">anyone</option>{people}</select></label>
 {widget("text", "text", text, label="Search", hint="number or words")}</div>
-<div class="actions"><button>Filter</button> <a href="{saved}">Link to this filter</a></div></form><div class="board">"""
+<div class="actions"><button>{icon("filter")}Filter</button> <a href="{saved}">Link to this filter</a>{(' <a class="button ghost" href="' + href("/items/" + type_, user, view="kanban") + '">' + icon("kanban") + 'Open as the ' + esc(type_name(type_).lower()) + ' kanban</a>') if type_ else ''}</div></form><div class="board">"""
         total = 0
         for col, items in grouped.items():
             total += len(items)
-            body += f"<div class='col{' empty' if not items else ''}'><h3>{esc(col)} <span class='muted'>{len(items)}</span></h3>"
+            body += f"<div class='col{' empty' if not items else ''}'><h3>{esc(col)}<span class='n'>{len(items)}</span></h3>"
             for r in reversed(items):
-                due = r["due"] or r["fields"].get("due")
-                body += f"""<div class="kcard">{self._record_link(r['locator'])}<div class="why">{tag(type_name(r['type']))} {esc(r['folder'])} &middot; {esc(owner_of(r))}{' &middot; with ' + esc(', '.join(r['assignees'])) if r['assignees'] else ''} {self._due_html(due) if due else ''}</div></div>"""
+                body += self._kanban_card(r, wf_for_type if type_ else None, show_type=not type_)
             body += "</div>"
         body += "</div>"
         if not total:
@@ -431,9 +572,39 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
             can.append("approve here" if user in rec["assignees"] else "hold or release this item")
         if run and run["owner"] == user and run["status"] in ("failed", "waiting"):
             can.append("retry or cancel its run" if run["status"] == "failed" else "cancel its run")
-        body = f"""<h1>{esc(rec['number'])} {tag(tname)} {self._state_chip(rec['state'], wf)}{hold}</h1>
-<div class="card"><b>{esc(short(headline, 300))}</b><div class="why">{esc(tname)} in <a href="{href('/files', user, folder=rec['folder'])}">{esc(rec['folder'])}</a> &middot; owner {esc(owner_of(rec))}
-&middot; with {esc(', '.join(rec['assignees']) or '-')}{' &middot; due ' + esc(day(typed_due)) if typed_due else ''}{' &middot; approval due ' + self._due_html(approval_due) if approval_due else ''}
+        docs = self.hub.dms.documents_of(loc)
+        links = self.hub.kernel.links_of(loc)
+        f_may = may_file(bundle, user, rec["folder"])
+        decisions = list(rec["decisions"])
+        reviews = [r for r in (rec["fields"].get("reviews") or []) if isinstance(r, dict)]
+        runs_of = [r for r in self.hub.runner.list() if r.get("record") == loc]
+        # --- the form head: action buttons on the left, the status bar pipeline on the right
+        btns = ""
+        decides_here = run and pending and pending.get("kind", "decision") == "decision" and run["status"] == "waiting" and user in pending["assignees"]
+        if decides_here:
+            btns += f'<a class="button" href="#decide">{icon("check")}Approve</a><a class="button reject" href="#reject-{esc(run["id"])}">{icon("x")}Reject</a>'
+        if run and pending and pending.get("kind") == "resubmit" and user in pending["assignees"]:
+            btns += f'<a class="button" href="#rework">{icon("retry")}Rework and resubmit</a>'
+        if run and run["status"] == "failed" and rec["state"] == "failed":
+            btns += f'<a class="button" href="#stopped">{icon("retry")}Fix and retry</a>'
+        if may_approve["allowed"]:
+            btns += f'<a class="button ghost" href="#hold">{icon("pause")}{"Release the hold" if rec["hold"] else "Put on hold"}</a>'
+        if f_may["allowed"]:
+            btns += f'<a class="button ghost" href="#attach">{icon("paperclip")}Attach</a><a class="button ghost" href="#new-document">{icon("plus")}New document</a>'
+        startable = [(n, op) for n, op in bundle["ops"].items() if authz.check(bundle, user, "create", op["object"], op["folder"])["allowed"]
+                     and (op["steps"][0]["role"] in ("system", *FIELD_ROLES) or op["steps"][0]["role"] in authz.roles_of(bundle, user))]
+        if startable:
+            btns += f'<a class="button ghost" href="{href("/", user)}#start">{icon("play")}Start a process</a>'
+        btns += f'<form method="post" action="/snapshot" class="inline">{hidden_as(user)}{self._once()}<input type="hidden" name="record" value="{esc(loc)}"><button class="ghost" title="files a copy of this item as an evidence document">{icon("camera")}Render snapshot</button></form>'
+        btns += f'<button type="button" class="ghost" onclick="print()">{icon("printer")}Print</button>'
+        body = f'<div class="formhead"><div class="btns">{btns}</div>{self._statusbar(wf, rec)}</div>'
+        body += self._smart_buttons([("Documents", len(docs), "paperclip", "documents"), ("Links", len([l for l in links if l["rel"] != "has-document"]), "link", "links"),
+                                     ("Runs", len(runs_of), "activity", "workflow"), ("Decisions", len(decisions), "check-circle", "decisions")]
+                                    + ([("Reviews", len(reviews), "eye", "reviews")] if reviews else []))
+        # --- the sheet
+        body += f"""<div class="sheet"><h1 class="title">{esc(rec['number'])} {tag(tname)} {self._state_chip(rec['state'], wf)}{hold}</h1>
+<div class="subtitle"><b>{esc(short(headline, 300))}</b><div class="why">{esc(tname)} in <a href="{href('/files', user, folder=rec['folder'])}">{esc(rec['folder'])}</a> &middot; owner {self._avatar(owner_of(rec), size='sm', named=True) if owner_of(rec) else '-'}
+&middot; with {' '.join(self._avatar(a, size='sm', named=True) for a in rec['assignees']) or '-'}{' &middot; due ' + esc(day(typed_due)) if typed_due else ''}{' &middot; approval due ' + self._due_html(approval_due) if approval_due else ''}
 {(' &middot; ' + esc(self._process_name(process))) if process and self._process_name(process) != tname else ''} &middot; {self._run_link(run, 'run ' + run['id'][:8]) + ' ' + self._state_chip(run['status']) if run else 'no run'} &middot; {labels}</div>
 {('<div class=why>You may ' + esc(' and '.join(can)) + '.</div>') if can else ''}</div>"""
         if rec["hold"]:
@@ -448,21 +619,70 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
                 body += f"<div class='card warn'><b>Returned for rework</b>: {esc(pending.get('reason') or '')} <span class='why'>Waiting for {esc(', '.join(pending['assignees']))} to resubmit.</span></div>"
         if run and pending and pending.get("kind", "decision") == "decision" and run["status"] == "waiting":
             if user in pending["assignees"]:
-                body += self._decision_card(run, standalone=True)
+                body += f"<div id='decide'>{self._decision_card(run, standalone=True)}</div>"
             else:
-                body += f"<div class='card warn'>Waiting for {esc(', '.join(pending['assignees']))} at <b>{esc(pending['title'])}</b>{' (approval due ' + esc(day(pending['due'])) + ')' if pending.get('due') else ''}.</div>"
-        tabs = "".join(f'<a href="#{t.lower()}">{t}</a>' for t in ("Details", "Workflow", "Documents", "Links", "History", "Decisions"))
-        body += f'<div class="tabs">{tabs}</div>'
-        rows = [[esc(field_label(k)), self._field_html(k, v, rec["fields"])] for k, v in sorted(rec["fields"].items()) if k not in BLOB_FIELDS and v not in (None, "", [], {})]
-        body += '<h2 id="details">Details</h2>' + table(["Field", "Value"], rows, "No fields.", row_header=True)
+                body += f"<div class='card warn'>Waiting for {' '.join(self._avatar(a, size='sm', named=True) for a in pending['assignees'])} at <b>{esc(pending['title'])}</b>{' (approval due ' + esc(day(pending['due'])) + ')' if pending.get('due') else ''}.</div>"
+        tabs = [("details", "Details", "form"), ("documents", "Documents", "paperclip"), ("links", "Links", "link")] + \
+               ([("reviews", "Reviews", "eye")] if reviews else []) + [("history", "History", "activity"), ("workflow", "Workflow and decisions", "workflow")]
+        body += '<nav class="tabs" role="tablist" aria-label="Sections">' + "".join(
+            f'<a href="#{t}" data-tab="tab-{t}" role="tab" aria-selected="{"true" if i == 0 else "false"}">{icon(ic)}{label}</a>' for i, (t, label, ic) in enumerate(tabs)) + "</nav>"
+        # Details: a two-column sheet of fields, then the hold form.
+        flds = "".join(f'<div class="fld"><dt>{esc(field_label(k))}</dt><dd>{self._field_html(k, v, rec["fields"])}</dd></div>'
+                       for k, v in sorted(rec["fields"].items()) if k not in BLOB_FIELDS and k != "reviews" and v not in (None, "", [], {}))
+        body += '<section class="tab-panel active" id="tab-details"><h2 id="details">Details</h2>' + (f'<dl class="sheetfields">{flds}</dl>' if flds else "<p class='muted'>No fields.</p>")
         err_hold = self._field_error("reason") if self.route == "/hold" else None
         err_form = self._form_error(["reason"]) if self.route in ("/hold", "/snapshot") else ""
-        body += f"""<div class="card">{err_form}<form method="post" action="/snapshot" class="inline">{hidden_as(user)}{self._once()}<input type="hidden" name="record" value="{esc(loc)}"><button class="secondary">Save a snapshot</button> <span class="why">files a copy of this item as an evidence document</span></form>
-<form method="post" action="/hold">{hidden_as(user)}<input type="hidden" name="record" value="{esc(loc)}"><input type="hidden" name="on" value="{'0' if rec['hold'] else '1'}">
+        body += f"""<div class="card" id="hold">{err_form}<form method="post" action="/hold">{hidden_as(user)}<input type="hidden" name="record" value="{esc(loc)}"><input type="hidden" name="on" value="{'0' if rec['hold'] else '1'}">
 <div class="fields">{text_input("reason", "Reason for the hold" if not rec["hold"] else "Reason for releasing the hold", self._val("reason") if self.route == "/hold" else "", required=True, error=err_hold)}</div>
-<div class="actions"><button class="secondary"{'' if may_approve['allowed'] else ' disabled'}>{'Release the hold' if rec['hold'] else 'Put on hold'}</button>
-{'' if may_approve['allowed'] else '<span class="why">Only approvers of this item may hold it: ' + self._why_html(may_approve, 'approve', obj, rec['folder']) + '</span>'}</div></form></div>"""
-        body += '<h2 id="workflow">Workflow</h2>'
+<div class="actions"><button class="secondary"{'' if may_approve['allowed'] else ' disabled'}>{icon('pause')}{'Release the hold' if rec['hold'] else 'Put on hold'}</button>
+{'' if may_approve['allowed'] else '<span class="why">Only approvers of this item may hold it: ' + self._why_html(may_approve, 'approve', obj, rec['folder']) + '</span>'}</div></form></div></section>"""
+        # Documents
+        body += '<section class="tab-panel" id="tab-documents"><h2 id="documents">Documents</h2>' + table(["Number", "Title", "Class", "Type", "Rev", "State", "Size", "Open"],
+                                                                                        [[f"{file_icon(d['fields'].get('filename'))} " + self._record_link(d["locator"], with_summary=False), esc(d["fields"].get("title")),
+                                                                                          esc(d["fields"].get("doc_class")), esc(d["fields"].get("doc_type")), esc(f"{d['fields'].get('revision', '')}.{d['fields'].get('minor', 0)}"), self._state_chip(d["state"]),
+                                                                                          esc(d["fields"].get("size", "")),
+                                                                                          (f'<a href="{href("/edit/" + quote(d["locator"], safe=":"), user)}">{"Edit" if wopi.is_editable(d) else "View"}</a>' if wopi.is_viewable(d) else "")] for d in docs], "No documents attached.")
+        if f_may["allowed"]:
+            body += new_document_form(user, attach_to=loc, once=self._once(), error=self._form_error(["title", "kind"]) if self.route == "/new-document" else "")
+            in_folder = [d for d in self.hub.kernel.query(type_="document", folder=rec["folder"]) if d["folder"] == rec["folder"]
+                         and d["locator"] not in {x["locator"] for x in docs}]
+            opts = [(d["locator"], f"{d['number']} {d['fields'].get('title')}") for d in in_folder]
+            err = self._form_error(["file", "title", "doc"]) if self.route == "/attach" else ""
+            body += f"""<div class="card" id="attach">{err}<form method="post" action="/attach" enctype="multipart/form-data">{hidden_as(user)}{self._once()}<input type="hidden" name="record" value="{esc(loc)}">
+<div class="fields">{file_input("file", "Upload and attach a file")}{text_input("title", "Title for the file", hint="defaults to the file name")}
+{widget("doc", "ref", "", label="Or attach an existing document", options=opts, blank="none", hint="") if opts else ''}</div>
+<div class="actions"><button>{icon('paperclip')}Attach</button></div></form></div>"""
+        else:
+            body += f"<p class='why'>You cannot attach documents here: {self._why_html(f_may, 'create', 'document', rec['folder'])}</p>"
+        body += "</section>"
+        # Links
+        body += '<section class="tab-panel" id="tab-links"><h2 id="links">Links</h2>' + table(["Relation", "Item", "Direction"], [[esc(l["label"].replace("-", " ")), self._record_link(l["target"]), esc(l["direction"])] for l in links], "No links.")
+        if f_may["allowed"]:
+            rels = [(r, r.replace("-", " ")) for r in self.hub.kernel.link_vocab]
+            err = self._form_error(["rel", "target"]) if self.route == "/link" else ""
+            body += f"""<div class="card">{err}<form method="post" action="/link">{hidden_as(user)}{self._once()}<input type="hidden" name="record" value="{esc(loc)}">
+<div class="fields">{widget("rel", "text", self._val("rel") if self.route == "/link" else "", label="Link as", options=rels, required=True, hint="", error=self._field_error("rel") if self.route == "/link" else None)}
+{text_input("target", "To item", self._val("target") if self.route == "/link" else "", required=True, hint="number, e.g. PO-1002", error=self._field_error("target") if self.route == "/link" else None)}</div>
+<div class="actions"><button>{icon('link')}Add link</button></div></form></div>"""
+        body += "</section>"
+        # Reviews by cogs (swarm steps and @mentions): one row per cog, with the evidence document holding the full text
+        if reviews:
+            evidence = [d for d in docs if d["fields"].get("doc_type") == "review"]
+            rrows = []
+            for rv in reviews:
+                ev = next((d for d in reversed(evidence) if rv.get("cog", "") in (d["fields"].get("title") or "")), evidence[-1] if evidence else None)
+                rrows.append([self._avatar(rv.get("cog", ""), size="sm", named=True), chip(rv.get("verdict")), esc(short(rv.get("summary"), 400)),
+                              esc(f"{rv.get('model') or '-'}{' (stand-in)' if rv.get('stand_in') else ''}"), esc(", ".join(rv.get("sops") or [])),
+                              esc(str((rv.get("findings") if not isinstance(rv.get("findings"), list) else len(rv["findings"])) or 0)),
+                              self._record_link(ev["locator"], with_summary=False) if ev else ""])
+            verdict = rec["fields"].get("review_verdict")
+            body += (f'<section class="tab-panel" id="tab-reviews"><h2 id="reviews">Reviews {chip(verdict) if verdict else ""}</h2>'
+                     f"<p class='why'>Cogs reviewed this item from the procedures they follow; a model drafted the words, the full text is filed as evidence, and nobody signed.</p>"
+                     + table(["Cog", "Verdict", "Summary", "Model", "Procedures", "Findings", "Evidence"], rrows) + "</section>")
+        # History
+        body += '<section class="tab-panel" id="tab-history"><h2 id="history">History</h2>' + self._history_html(loc, run["id"] if run else None) + "</section>"
+        # Workflow and decisions
+        body += '<section class="tab-panel" id="tab-workflow"><h2 id="workflow">Workflow</h2>'
         if wf:
             diagram = mermaid_for(wf, rec["state"])
             states = list(wf["states"]) + [s for s in ("returned", "failed", "cancelled") if s not in wf["states"]]
@@ -485,50 +705,25 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
             body += table(["From", "To", "How", "Steps / on reject", "Who may take it"], trows) + "</div>"
         else:
             body += "<p class='muted'>No workflow in the release covers this item type.</p>"
-        docs = self.hub.dms.documents_of(loc)
-        body += '<h2 id="documents">Documents</h2>' + table(["Number", "Title", "Class", "Type", "Rev", "State", "Size", "Open"],
-                                                               [[self._record_link(d["locator"], with_summary=False), esc(d["fields"].get("title")),
-                                                                 esc(d["fields"].get("doc_class")), esc(d["fields"].get("doc_type")), esc(f"{d['fields'].get('revision', '')}.{d['fields'].get('minor', 0)}"), self._state_chip(d["state"]),
-                                                                 esc(d["fields"].get("size", "")),
-                                                                 (f'<a href="{href("/edit/" + quote(d["locator"], safe=":"), user)}">{"Edit" if wopi.is_editable(d) else "View"}</a>' if wopi.is_viewable(d) else "")] for d in docs], "No documents attached.")
-        f = may_file(bundle, user, rec["folder"])
-        if f["allowed"]:
-            body += new_document_form(user, attach_to=loc, once=self._once(), error=self._form_error(["title", "kind"]) if self.route == "/new-document" else "")
-            in_folder = [d for d in self.hub.kernel.query(type_="document", folder=rec["folder"]) if d["folder"] == rec["folder"]
-                         and d["locator"] not in {x["locator"] for x in docs}]
-            opts = [(d["locator"], f"{d['number']} {d['fields'].get('title')}") for d in in_folder]
-            err = self._form_error(["file", "title", "doc"]) if self.route == "/attach" else ""
-            body += f"""<div class="card">{err}<form method="post" action="/attach" enctype="multipart/form-data">{hidden_as(user)}{self._once()}<input type="hidden" name="record" value="{esc(loc)}">
-<div class="fields">{file_input("file", "Upload and attach a file")}{text_input("title", "Title for the file", hint="defaults to the file name")}
-{widget("doc", "ref", "", label="Or attach an existing document", options=opts, blank="none", hint="") if opts else ''}</div>
-<div class="actions"><button>Attach</button></div></form></div>"""
-        else:
-            body += f"<p class='why'>You cannot attach documents here: {self._why_html(f, 'create', 'document', rec['folder'])}</p>"
-        links = self.hub.kernel.links_of(loc)
-        body += '<h2 id="links">Links</h2>' + table(["Relation", "Item", "Direction"], [[esc(l["label"].replace("-", " ")), self._record_link(l["target"]), esc(l["direction"])] for l in links], "No links.")
-        if f["allowed"]:
-            rels = [(r, r.replace("-", " ")) for r in self.hub.kernel.link_vocab]
-            err = self._form_error(["rel", "target"]) if self.route == "/link" else ""
-            body += f"""<div class="card">{err}<form method="post" action="/link">{hidden_as(user)}{self._once()}<input type="hidden" name="record" value="{esc(loc)}">
-<div class="fields">{widget("rel", "text", self._val("rel") if self.route == "/link" else "", label="Link as", options=rels, required=True, hint="", error=self._field_error("rel") if self.route == "/link" else None)}
-{text_input("target", "To item", self._val("target") if self.route == "/link" else "", required=True, hint="number, e.g. PO-1002", error=self._field_error("target") if self.route == "/link" else None)}</div>
-<div class="actions"><button>Add link</button></div></form></div>"""
-        body += '<h2 id="history">History</h2>' + self._history_html(loc, run["id"] if run else None)
-        decisions = list(rec["decisions"])
+        if runs_of:
+            body += "<h2>Runs</h2>" + table(["Run", "Started by", "Status", "Started", "Waiting for"],
+                                             [[self._run_link(r), self._avatar(r["owner"], size="sm", named=True), self._state_chip(r["status"]), esc(when(r["created_at"])),
+                                               esc(", ".join((r.get("pending") or {}).get("assignees") or []))] for r in reversed(runs_of)])
         body += '<h2 id="decisions">Decisions</h2>' + table(["When", "By", "Verdict", "Meaning", "Step", "Under"],
-                                                             [[esc(when(d.get("at", ""))), f"{esc(d.get('by'))} ({'automatic reviewer' if d.get('by_type') == 'cog' else 'person'})", chip(d.get("verdict")),
+                                                             [[esc(when(d.get("at", ""))), f"{self._avatar(d.get('by', ''), size='sm', named=True)} ({'automatic reviewer' if d.get('by_type') == 'cog' else 'person'})", chip(d.get("verdict")),
                                                                esc(short(d.get("meaning"), 600)) + details("signature", f"<code>{esc(d.get('signature'))}</code> on payload <code>{esc(str(d.get('payload_digest', ''))[:12])}</code>"),
                                                                esc((d.get("step") or "").replace("-", " ")),
                                                                self._rule_html(d["delegating_rule"]) if d.get("delegating_rule") else ""]
-                                                              for d in decisions], "No signatures yet.")
+                                                              for d in decisions], "No signatures yet.") + "</section>"
+        body += self._chatter(rec, run)
         head = (f'<script src="{MERMAID_URL}"></script><script>if(window.mermaid){{mermaid.initialize({{startOnLoad:true,theme:matchMedia("(prefers-color-scheme: dark)").matches?"dark":"default"}})}}'
                 f'else{{addEventListener("load",function(){{var d=document.getElementById("wf-diagram");if(d&&!window.mermaid){{d.hidden=true}}}})}}</script>')
         parts = rec["folder"].split("/")
         crumbs = [("Files", href("/files", user))] + [(p, href("/files", user, folder="/".join(parts[: i + 1]))) for i, p in enumerate(parts)]
         if process:
-            crumbs.append((self._process_name(process), href("/boards", user, type=rec["type"])))
+            crumbs.append((self._process_name(process), href("/items/" + rec["type"], user)))
         crumbs.append((rec["number"], None))
-        self._page(rec["number"], body, status=status, head=head, crumbs=crumbs)
+        self._page(rec["number"], body, status=status, head=head, crumbs=crumbs, app_type=rec["type"])
 
     def _field_html(self, name: str, v, fields: dict) -> str:
         if name == "supplier" and isinstance(v, str):

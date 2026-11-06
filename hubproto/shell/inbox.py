@@ -577,6 +577,10 @@ class InboxMixin:
         return f"<div class='card warn' role='alert'><p>{text} The item is now {self._state_chip(rec['state']) if rec else esc(run['status'])}: {link}.</p></div>"
 
     def _message_links(self, m: dict) -> str:
+        if m.get("record") and self.hub.kernel.get(m["record"]):
+            rec = self.hub.kernel.get(m["record"])
+            page = "/document/" if rec["type"] == "document" else "/record/"
+            return f" <a href='{href(page + m['record'], self.user)}#chatter'>Open {esc(rec['number'])}</a>"
         if not m.get("run_id"):
             return ""
         try:

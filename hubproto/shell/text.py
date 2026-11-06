@@ -63,7 +63,7 @@ MEANING_EXAMPLES = {
     "audit": ("findings recorded as observed", "findings accepted; CAPA to follow"),
     "change-request": ("approved; impact on WI-7 understood", "verified on the first batch"),
 }
-NOTIFICATION_KINDS = ("escalation", "failure", "returned", "rejection", "auto-decided")
+NOTIFICATION_KINDS = ("escalation", "failure", "returned", "rejection", "auto-decided", "request", "review", "mention")
 MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 _LOCATOR = re.compile(r"rec:[a-z-]+:([A-Z]+-[0-9A-Z-]+)")
 _TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:\+00:00|Z)?")
@@ -464,7 +464,8 @@ def notification_sentence(m: dict, link_number=None) -> str:
     subj = humanize(m.get("subject", ""), link_number)
     body = humanize(short(m.get("body", ""), 400), link_number)
     lead = {"failure": "Stopped", "returned": "Returned to you", "rejection": "Rejected", "escalation": "Escalated",
-            "auto-decided": "Decided automatically", "approval": "Waiting for you"}.get(kind, kind.capitalize())
+            "auto-decided": "Decided automatically", "approval": "Waiting for you", "request": "Asked of you", "review": "Review posted",
+            "mention": "Mention"}.get(kind, kind.capitalize())
     return f"<b>{lead}:</b> {subj}" + (f" <span class='muted'>{body}</span>" if body and body != subj else "")
 
 
