@@ -151,3 +151,42 @@ def test_the_design_process_swarms_two_cogs_and_records_their_reviews(hub, monke
         assert all(p["severity"] == "warning" for p in step["problems"]), "reviews advise the Gate; they do not stop the run"
     finally:
         server.shutdown()
+
+
+def test_the_gateway_uses_ollama_when_configured(monkeypatch):
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    seen = {}
+
+    class Fake(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            seen.update(body)
+            out = json.dumps({"message": {"role": "assistant", "content": "Looks fine.\nVerdict: pass"}}).encode()
+            self.send_response(200); self.send_header("Content-Length", str(len(out))); self.end_headers(); self.wfile.write(out)
+
+        def log_message(self, *a):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), Fake)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setenv("HUBPROTO_OLLAMA_URL", f"http://127.0.0.1:{srv.server_address[1]}")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("HUBPROTO_MODEL_FAKE", raising=False)
+        g = ModelGateway()
+        out = g.complete(model="ollama/qwen2.5", system="You review.", user="Review this.", by="quality-assistant")
+        assert out["backend"] == "ollama" and out["stand_in"] is False and "Looks fine" in out["text"]
+        assert seen["model"] == "qwen2.5" and seen["messages"][0]["role"] == "system" and seen["stream"] is False
+        # A claude-* profile falls back to the local model when asked to.
+        monkeypatch.setenv("HUBPROTO_OLLAMA_FALLBACK", "1"); monkeypatch.setenv("HUBPROTO_OLLAMA_MODEL", "llama3.1")
+        out = g.complete(model="claude-sonnet-5-5", system="s", user="u")
+        assert out["backend"] == "ollama" and seen["model"] == "llama3.1"
+        # A model that does not answer never blocks the work.
+        monkeypatch.setenv("HUBPROTO_OLLAMA_URL", "http://127.0.0.1:9")
+        out = g.complete(model="ollama/nothing", system="s", user="u")
+        assert out["stand_in"] is True and "did not answer" in out["text"]
+    finally:
+        srv.shutdown()

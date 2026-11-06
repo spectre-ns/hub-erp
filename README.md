@@ -102,8 +102,11 @@ Each cog has a profile in a Frame (`frames/company/cogs.frame.md`): a `## Cog: <
 `Model:`, `Prompt:` and `Follows:` (the SOPs it follows). The profile is a reviewed rule in the release;
 changing it is a widening (two policy owners). A cog is routed work only from processes defined in the SOPs
 it follows, as a person is only given work they are trained on; a context cog drafts with its model and prompt
-and the text of those SOPs as its only context (`hubproto/model.py`; set `ANTHROPIC_API_KEY` to use the model,
-otherwise a deterministic stand-in answers). Models draft and answer; they never sign.
+and the text of those SOPs as its only context (`hubproto/model.py`). Which model answers: a profile model `ollama/<name>` goes to a local Ollama at
+`HUBPROTO_OLLAMA_URL` (compose points it at the host's `host.docker.internal:11434`; `ollama pull llama3.1` on
+the host first); a `claude-*` model goes to Anthropic when `ANTHROPIC_API_KEY` is set, or to Ollama's
+`HUBPROTO_OLLAMA_MODEL` when `HUBPROTO_OLLAMA_FALLBACK=1` (the compose default); otherwise a deterministic
+stand-in answers, and a model that does not answer never blocks the work. Models draft and answer; they never sign.
 
 A message about an item (`hubproto msg --record NCR-0001 ...`, or the item's chatter in the shell) acts on its
 @mentions: a mentioned **cog** reviews the item against its SOPs, answers in the chatter, files the review as

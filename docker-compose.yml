@@ -22,7 +22,15 @@ services:
       HUBPROTO_WOPI_BASE: http://hub:8080
       HUBPROTO_COLLABORA_DISCOVERY: http://collabora:9980
       HUBPROTO_PUBLIC_URL: ${HUBPROTO_PUBLIC_URL:-http://localhost:8080}
+      # A local model for the cogs: Ollama on the host (host.docker.internal:11434). A profile model written
+      # "ollama/<name>" uses it; with HUBPROTO_OLLAMA_FALLBACK=1 claude-* profiles use HUBPROTO_OLLAMA_MODEL when no
+      # ANTHROPIC_API_KEY is set. Leave HUBPROTO_OLLAMA_URL empty to use the deterministic stand-in.
+      HUBPROTO_OLLAMA_URL: ${HUBPROTO_OLLAMA_URL:-http://host.docker.internal:11434}
+      HUBPROTO_OLLAMA_MODEL: ${HUBPROTO_OLLAMA_MODEL:-llama3.1}
+      HUBPROTO_OLLAMA_FALLBACK: ${HUBPROTO_OLLAMA_FALLBACK:-1}
       # Optional: HUBPROTO_EXTRACTOR=claude and ANTHROPIC_API_KEY for guided-mode extraction
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - cad-worker
       - collabora
