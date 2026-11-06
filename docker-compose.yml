@@ -44,7 +44,11 @@ services:
     container_name: hub-erp-ollama-relay
     network_mode: host
     entrypoint: ["/bin/sh", "-c"]
-    command: ["IP=$(ip -4 addr show docker0 | sed -n 's/.*inet \([0-9.]*\).*/\1/p'); exec socat TCP-LISTEN:11434,bind=$IP,fork,reuseaddr TCP:127.0.0.1:11434"]
+    command:
+      - >-
+        IP=$$(ip -4 -o addr show docker0 | awk '{print $$4}' | cut -d/ -f1);
+        echo "relaying $$IP:11434 to 127.0.0.1:11434";
+        exec socat TCP-LISTEN:11434,bind=$$IP,fork,reuseaddr TCP:127.0.0.1:11434
     restart: unless-stopped
 
   # Cogs as users, as a service: the shell leaves items assigned to a cog waiting and this worker takes them
