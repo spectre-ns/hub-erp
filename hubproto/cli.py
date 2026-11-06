@@ -204,14 +204,18 @@ def resolve_run(hub: Hub, ref: str) -> str:
 
 
 def proposal_numbers(hub: Hub) -> dict[str, int]:
-    """Proposal id -> number. A number is given once, in creation order, the first time the CLI sees the proposal,
-    and kept in state/proposal-numbers.json, so the number an operator was shown never moves."""
+    """Proposal id -> number. The core numbers proposals at compile time; proposals from before that are numbered
+    once, in creation order, and the assignment is kept in state/proposal-numbers.json so a number never moves."""
     path = hub.root / "state" / "proposal-numbers.json"
     try:
         numbers = {k: int(v) for k, v in json.loads(path.read_text()).items()}
     except (OSError, ValueError):
         numbers = {}
-    fresh = [p for p in sorted(hub.proposals.list(), key=lambda p: (p.get("created_at") or "", p["id"])) if p["id"] not in numbers]
+    proposals = sorted(hub.proposals.list(), key=lambda p: (p.get("created_at") or "", p["id"]))
+    for p in proposals:
+        if p.get("number"):
+            numbers[p["id"]] = int(p["number"])
+    fresh = [p for p in proposals if p["id"] not in numbers]
     if fresh:
         n = max(numbers.values(), default=0)
         for p in fresh:
