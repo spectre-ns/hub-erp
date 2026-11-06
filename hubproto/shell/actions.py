@@ -320,7 +320,7 @@ class ActionsMixin:
             return ""
         return (f"<details class='inline restart'><summary class='button ghost'>{icon('retry')}Back to the start</summary>"
                 f"<form method='post' action='/restart' class='card'>{hidden_as(self.user)}{self._once()}<input type='hidden' name='record' value='{esc(rec['locator'])}'>"
-                f"<p class='why'>Withdraws the run it is in and returns {esc(rec['number'])} to the first step of its workflow; versions and history stay, "
+                f"<p class='why'>Stops the run it is in and returns {esc(rec['number'])} to the first step of its workflow; versions and history stay, "
                 f"and its owner and whoever it waits for are told.</p>"
                 f"<label class='f'><span>Why <b>*</b></span><input name='reason' required></label>"
                 f"<div class='actions'><button class='reject'>{icon('retry')}Send it back to the start</button></div></form></details>")
