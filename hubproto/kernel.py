@@ -58,7 +58,8 @@ class Kernel:
     def __init__(self, path: Path, config_dir: Path | None = None):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(str(self.path))
+        # One connection shared by the shell's handler threads; callers serialize writes (the shell holds a lock).
+        self.db = sqlite3.connect(str(self.path), check_same_thread=False)
         self.db.execute(
             "CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT, type TEXT, "
             "aggregate TEXT, data TEXT, run_id TEXT, release_digest TEXT, by TEXT)"

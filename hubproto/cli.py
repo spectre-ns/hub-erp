@@ -209,12 +209,6 @@ def cmd_bills(args):
         print(f"{b['id']} {b.get('supplier')} {b.get('amount')} {b.get('currency')} state={b['state']} folder={b['folder']} run={b['run_id']}")
 
 
-def cmd_docs(args):
-    hub = _hub(args)
-    for d in hub.kernel.documents().values():
-        print(f"{d['id']} {d.get('title')!r} {d.get('change_type')} state={d['state']} author={d.get('author')} approved_by={d.get('approved_by', '-')}")
-
-
 def cmd_shell(args):
     from .shell import serve
 
@@ -317,7 +311,6 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_mail_in)
     sub.add_parser("ledger").set_defaults(fn=cmd_ledger)
     sub.add_parser("bills").set_defaults(fn=cmd_bills)
-    sub.add_parser("docs").set_defaults(fn=cmd_docs)
     s = sub.add_parser("shell", help="serve the workspace shell")
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8080)

@@ -1,0 +1,282 @@
+"""Workspace shell smoke suite: every page answers, the main flows work over HTTP, and the records CLI runs in-process."""
+
+import io
+import shutil
+import uuid
+from contextlib import redirect_stdout
+from pathlib import Path
+from urllib.error import HTTPError
+from urllib.parse import quote, urlencode
+from urllib.request import Request, urlopen
+
+import pytest
+
+from conftest import BIG_BILL, ROOT, dated, release_all
+from hubproto import cli
+from hubproto.app import Hub
+from hubproto.shell import free_port, serve_in_thread
+
+
+@pytest.fixture(scope="module")
+def shell(tmp_path_factory):
+    root = tmp_path_factory.mktemp("hub")
+    shutil.copytree(ROOT / "frames", root / "frames")
+    hub = Hub(root)
+    hub.kernel.seed()
+    release_all(hub)
+    port = free_port()
+    server = serve_in_thread(hub, "127.0.0.1", port)
+    yield {"hub": hub, "root": root, "base": f"http://127.0.0.1:{port}"}
+    server.shutdown()
+    server.server_close()
+
+
+def get(shell, path: str, **params) -> tuple[int, str]:
+    url = shell["base"] + path + ("&" if "?" in path else "?") + urlencode(params) if params else shell["base"] + path
+    try:
+        with urlopen(url, timeout=10) as r:
+            return r.status, r.read().decode("utf-8")
+    except HTTPError as e:
+        return e.code, e.read().decode("utf-8")
+
+
+def post(shell, path: str, fields: dict, files: list[tuple[str, str, bytes]] | None = None) -> tuple[int, str, str]:
+    """POST a form (urlencoded, or multipart when files are given); follows the redirect. Returns (status, final url, body)."""
+    if files:
+        boundary = "----hubproto" + uuid.uuid4().hex
+        body = b""
+        for k, v in fields.items():
+            body += f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode("utf-8")
+        for name, filename, content in files:
+            body += (f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'
+                     f"Content-Type: application/octet-stream\r\n\r\n").encode("utf-8") + content + b"\r\n"
+        body += f"--{boundary}--\r\n".encode("utf-8")
+        ctype = f"multipart/form-data; boundary={boundary}"
+    else:
+        body = urlencode(fields).encode("utf-8")
+        ctype = "application/x-www-form-urlencoded"
+    req = Request(shell["base"] + path, data=body, headers={"Content-Type": ctype}, method="POST")
+    try:
+        with urlopen(req, timeout=10) as r:
+            return r.status, r.url, r.read().decode("utf-8")
+    except HTTPError as e:
+        return e.code, e.url, e.read().decode("utf-8")
+
+
+# ------------------------------------------------------------------ pages
+def test_healthz(shell):
+    status, text = get(shell, "/healthz")
+    assert status == 200 and text == "ok"
+
+
+@pytest.mark.parametrize("path,needle", [
+    ("/", "Processes you can start"),
+    ("/files?folder=Finance/Payables", "Upload a file"),
+    ("/boards?type=bill", "awaiting-approve-the-bill"),
+    ("/inbox", "Send a message"),
+    ("/runs", "Runs"),
+    ("/releases", "Routing in effect"),
+    ("/frames", "finance-policy"),
+    ("/frame/finance-policy", 'id=\'L1\''),
+    ("/why?action=create&object=bill&folder=Finance/Payables", "allowed by finance-policy line"),
+    ("/admin", "record-filer"),
+    ("/conformance", "Conformance"),
+    ("/files", "Finance"),
+    ("/boards", "Boards"),
+])
+def test_pages_answer(shell, path, needle):
+    status, text = get(shell, path, **{"as": "alice"})
+    assert status == 200, text[:500]
+    assert needle in text
+    assert "as=alice" in text, "links keep the acting user"
+
+
+def test_home_shows_roles_and_release(shell):
+    status, text = get(shell, "/", **{"as": "bob"})
+    assert status == 200
+    assert "controller" in text and "policy-owner" in text
+    assert "Policy release in effect" in text
+
+
+def test_denied_folder_shows_why(shell):
+    status, text = get(shell, "/files?folder=Finance/Payables", **{"as": "carol"})
+    assert status == 403
+    assert "no rule in the release" in text or "denied by" in text
+
+
+def test_why_links_to_the_frame_line(shell):
+    status, text = get(shell, "/why?action=create&object=bill&folder=Finance/Payables", **{"as": "carol"})
+    assert status == 200 and "denied" in text and "Quality managers may not create bills" in text
+    assert "/frame/finance-policy?as=carol#L" in text
+
+
+def test_unknown_page_is_a_readable_404(shell):
+    status, text = get(shell, "/nope", **{"as": "alice"})
+    assert status == 404 and "No such page" in text
+
+
+def test_conformance_without_profile_says_so(shell):
+    status, text = get(shell, "/conformance", **{"as": "alice"})
+    assert status == 200
+    assert "not installed" in text or "<table>" in text
+
+
+# ------------------------------------------------------------------ flows
+def test_start_decide_upload_attach_flow(shell):
+    hub = shell["hub"]
+    bill = dated(BIG_BILL)
+    status, url, text = post(shell, "/start", {"as": "alice", "process": "purchase-to-pay", "supplier": bill["supplier"],
+                                               "amount": str(bill["amount"]), "currency": bill["currency"], "date": bill["date"],
+                                               "po_ref": bill["po_ref"], "description": bill["description"], "json": ""})
+    assert status == 200 and "/run/" in url, text[:500]
+    run_id = url.split("/run/")[1].split("?")[0]
+    state = hub.runner.load(run_id)
+    assert state["status"] == "waiting" and state["pending"]["assignees"] == ["bob"]
+    locator = state["record"]
+    rec = hub.kernel.get(locator)
+    assert rec["fields"]["amount"] == 12000.0 and rec["fields"]["po_ref"] == "PO-1002"
+
+    # The record page shows the workflow states and the pending transition.
+    status, text = get(shell, "/record/" + quote(locator, safe=":"), **{"as": "alice"})
+    assert status == 200
+    for s in ("open", "awaiting-approve-the-bill", "posted", "rejected"):
+        assert s in text
+    assert "stateDiagram-v2" in text and "pending" in text
+    status, text = get(shell, "/record/" + rec["number"], **{"as": "bob"})
+    assert status == 200 and "may bob approve bill in Finance/Payables" in text and "allowed" in text
+
+    # The inbox shows the approval with the routing sentence; bob decides.
+    status, text = get(shell, "/inbox", **{"as": "bob"})
+    assert status == 200 and "over 10,000 USD" in text and state["pending"]["payload_digest"] in text
+    status, url, text = post(shell, "/decide", {"as": "dave", "run": run_id, "verdict": "approve", "meaning": "x",
+                                                "digest": state["pending"]["payload_digest"]})
+    assert status == 400 and "not an assignee" in text
+    status, url, text = post(shell, "/decide", {"as": "bob", "run": run_id, "verdict": "approve", "meaning": "approved for posting",
+                                                "digest": state["pending"]["payload_digest"]})
+    assert status == 200, text[:500]
+    assert hub.runner.load(run_id)["status"] == "completed"
+    status, text = get(shell, "/record/" + quote(locator, safe=":"), **{"as": "alice"})
+    assert status == 200 and ">posted<" in text and "approved for posting" in text
+
+    # Upload files an external document into the folder; it appears on /files.
+    content = b"Invoice 4711\nAcme Metals\nTotal 12,000.00 USD\n"
+    status, url, text = post(shell, "/upload", {"as": "alice", "folder": "Finance/Payables", "title": "Acme invoice 4711"},
+                             files=[("file", "acme-4711.txt", content)])
+    assert status == 200 and "/files" in url, text[:500]
+    assert "acme-4711.txt" in text or "Acme invoice 4711" in text
+    doc = next(d for d in hub.kernel.query(type_="document", folder="Finance/Payables") if d["fields"]["title"] == "Acme invoice 4711")
+    assert doc["fields"]["doc_class"] == "external" and doc["fields"]["provenance"]["channel"] == "shell"
+
+    # Attach it to the bill; the record page lists it.
+    status, url, text = post(shell, "/attach", {"as": "alice", "record": locator, "doc": doc["locator"]})
+    assert status == 200 and "/record/" in url
+    assert doc["number"] in text
+    assert any(d["locator"] == doc["locator"] for d in hub.dms.documents_of(locator))
+
+    # The document page and the download.
+    status, text = get(shell, "/document/" + quote(doc["locator"], safe=":"), **{"as": "alice"})
+    assert status == 200 and "Acme invoice 4711" in text and "Invoice 4711" in text and rec["number"] in text
+    with urlopen(shell["base"] + "/download?" + urlencode({"doc": doc["locator"], "v": 1, "as": "alice"}), timeout=10) as r:
+        assert r.status == 200 and r.read() == content
+    status, text = get(shell, "/document/" + quote(doc["locator"], safe=":"), **{"as": "carol"})
+    assert status == 403
+
+    # Uploading and attaching in one step, then a snapshot of the bill.
+    status, url, text = post(shell, "/attach", {"as": "alice", "record": locator, "title": "receipt"}, files=[("file", "receipt.txt", b"received")])
+    assert status == 200 and "receipt" in text
+    status, url, text = post(shell, "/snapshot", {"as": "alice", "record": locator})
+    assert status == 200 and "/document/" in url and "snapshot" in text
+    assert len(hub.dms.documents_of(locator)) == 3
+
+    # A denied upload shows the policy sentence.
+    status, url, text = post(shell, "/upload", {"as": "carol", "folder": "Finance/Payables"}, files=[("file", "x.txt", b"x")])
+    assert status == 403 and "cannot file documents" in text
+
+
+def test_document_checkout_checkin_over_http(shell):
+    hub = shell["hub"]
+    doc = hub.dms.create(title="SOP-9 Cleaning", doc_class="controlled", folder="Quality/Controlled Documents", by="alice",
+                         content=b"v1", filename="sop9.md")
+    loc = doc["locator"]
+    status, url, text = post(shell, "/checkout", {"as": "alice", "doc": loc})
+    assert status == 200 and "checked out by" in text and "alice" in text
+    status, url, text = post(shell, "/checkin", {"as": "doc-reviewer", "doc": loc, "note": "edit"}, files=[("file", "sop9.md", b"v2")])
+    assert status == 400 and "checked out by alice" in text
+    status, url, text = post(shell, "/checkin", {"as": "alice", "doc": loc, "note": "second"}, files=[("file", "sop9.md", b"v2")])
+    assert status == 200
+    assert len(hub.dms.versions(loc)) == 2 and hub.dms.content(loc)[0] == b"v2"
+    assert "second" in text
+
+
+def test_boards_filters_and_inbox_message(shell):
+    status, text = get(shell, "/boards", **{"as": "alice", "type": "bill", "folder": "Finance/Payables", "text": "fixtures"})
+    assert status == 200 and "CNC fixtures" in text and "Saved filter" in text
+    status, url, text = post(shell, "/msg", {"as": "alice", "to": "ap-reviewer", "subject": "status", "body": "what is the status?", "channel": "dm"})
+    assert status == 200 and "/inbox" in url and "replied" in text.lower() or "Re: status" in text
+
+
+def test_record_links_and_hold(shell):
+    hub = shell["hub"]
+    bills = hub.kernel.query(type_="bill")
+    assert bills
+    loc = bills[0]["locator"]
+    status, url, text = post(shell, "/link", {"as": "alice", "record": loc, "rel": "references", "target": loc})
+    assert status == 200 and "references" in text
+    status, url, text = post(shell, "/link", {"as": "alice", "record": loc, "rel": "bogus", "target": loc})
+    assert status == 400 and "link-vocabulary" in text
+    status, url, text = post(shell, "/hold", {"as": "alice", "record": loc, "on": "1", "reason": "audit"})
+    assert status == 403 and "approve permission" in text
+    status, url, text = post(shell, "/hold", {"as": "bob", "record": loc, "on": "1", "reason": "audit"})
+    assert status == 200 and "on hold" in text
+    post(shell, "/hold", {"as": "bob", "record": loc, "on": "0", "reason": "done"})
+    assert not hub.kernel.get(loc)["hold"]
+
+
+# -------------------------------------------------------------------- CLI
+def run_cli(root: Path, *argv) -> str:
+    out = io.StringIO()
+    with redirect_stdout(out):
+        cli.main(["--root", str(root), *argv])
+    return out.getvalue()
+
+
+def test_cli_records_and_documents(shell, tmp_path):
+    root = shell["root"]
+    hub = shell["hub"]
+    out = run_cli(root, "records")
+    assert "BILL-0001" in out and "bill" in out
+    out = run_cli(root, "records", "--type", "bill", "--state", "posted")
+    assert "BILL-0001" in out
+    out = run_cli(root, "record", "BILL-0001")
+    assert "fields:" in out and "links:" in out and "documents:" in out and "decisions:" in out and "transitions:" in out
+    assert "approved for posting" in out and "has-document" in out
+    src = tmp_path / "wi-3.md"
+    src.write_text("# Work instruction 3\n")
+    out = run_cli(root, "doc-new", "--title", "WI-3", "--class", "controlled", "--folder", "Quality/Controlled Documents", "--as", "alice",
+                  "--file", str(src), "--attach-to", "BILL-0001", "--type", "work-instruction")
+    number = out.split()[0]
+    assert number.startswith("DOC-") and "rev A.0" in out
+    out = run_cli(root, "doc-versions", number)
+    assert "wi-3.md" in out and " 1 " in out
+    out = run_cli(root, "docs", "--folder", "Quality/Controlled Documents")
+    assert "WI-3" in out
+    out = run_cli(root, "doc-checkout", number, "--as", "alice")
+    assert "checked out" in out
+    src.write_text("# Work instruction 3, revised\n")
+    out = run_cli(root, "doc-checkin", number, "--as", "alice", "--file", str(src), "--note", "revised")
+    assert "version 2" in out
+    target = tmp_path / "out.md"
+    run_cli(root, "doc-get", number, "--out", str(target), "--version", "1")
+    assert target.read_text() == "# Work instruction 3\n"
+    out = run_cli(root, "upload", "--folder", "Finance/Payables", "--as", "alice", "--file", str(src), "--attach-to", "BILL-0001")
+    assert "filed in Finance/Payables" in out
+    out = run_cli(root, "snapshot", "BILL-0001", "--as", "bob")
+    assert "snapshot" in out
+    out = run_cli(root, "link", "BILL-0001", "references", number, "--as", "alice")
+    assert "references" in out
+    out = run_cli(root, "attach", "BILL-0001", number, "--as", "alice")
+    assert "attached to BILL-0001" in out
+    hub.kernel._cache = None
+    assert any(d["number"] == number for d in hub.dms.documents_of("BILL-0001"))
+    with pytest.raises(SystemExit, match="link-vocabulary"):
+        run_cli(root, "link", "BILL-0001", "bogus", number, "--as", "alice")
