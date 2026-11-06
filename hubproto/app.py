@@ -53,7 +53,7 @@ class Hub:
                                     extractor=extractor or get_extractor(), now=now,
                                     record_types=self.kernel.types, config_digests=self.kernel.config_digests)
         existing = self.proposals.list()
-        proposal["number"] = 1 + max((int(x.get("number") or 0) for x in existing), default=0)
+        proposal["number"] = 1 + max(len(existing), max((int(x.get("number") or 0) for x in existing), default=0))
         # An open proposal on the same base is superseded by this one; decisions already given on the same change
         # (same change id, same rule) carry forward, so a recompile does not throw away a policy owner's approval.
         for old in existing:

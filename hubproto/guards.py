@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 
 from .frames import Frame
-from .rules import rule_key, validate_rule
+from .rules import rule_key, sha256_of, validate_rule
 
 
 @dataclass
@@ -212,22 +212,79 @@ def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict |
 _WIDENING_KINDS = {"permission", "member", "routing", "approval_criteria", "threshold", "role"}
 
 
+def rule_identity(rule: dict) -> str:
+    """What a rule is about, apart from what it says: an add and a remove with the same identity are one change."""
+    kind = rule.get("kind")
+    fields = {
+        "routing": ("process", "step", "condition"), "permission": ("subject", "action", "object", "folder"),
+        "approval_criteria": ("approver", "process"), "sla": ("process", "step"), "sod": ("object",),
+        "member": ("principal",), "role": ("name",), "folder": ("path",), "threshold": ("name",),
+    }.get(kind)
+    if not fields:
+        return rule_key(rule)
+    return sha256_of({"kind": kind, **{f: rule.get(f) for f in fields}})[:16]
+
+
+def _differences(old: dict, new: dict) -> str:
+    skip = {"source", "key"}
+    parts = []
+    for k in sorted(set(old) | set(new)):
+        if k in skip or old.get(k) == new.get(k):
+            continue
+        parts.append(f"{k}: {old.get(k, 'unset')!r} -> {new.get(k, 'unset')!r}")
+    return "; ".join(parts)
+
+
 def drift_guard(old_rules: list[dict], new_rules: list[dict]) -> list[dict]:
-    """Diff two rule sets. Returns changes with a ``widening`` flag."""
+    """Diff two rule sets. Returns changes with a ``widening`` flag. An add and a remove about the same thing are
+    linked (``changes_from`` on the add, ``changed_to`` on the remove) and worded as one change."""
     old = {rule_key(r): r for r in old_rules}
     new = {rule_key(r): r for r in new_rules}
     changes: list[dict] = []
-    for key, rule in new.items():
-        if key not in old:
-            changes.append({"id": "add:" + key, "op": "add", "rule": rule, "widening": _widens(rule, old.values()),
-                            "reason": _reason(rule, "add")})
-    for key, rule in old.items():
-        if key not in new:
-            changes.append({"id": "remove:" + key, "op": "remove", "rule": rule,
-                            "widening": rule["kind"] == "permission" and rule["effect"] == "deny",
-                            "reason": _reason(rule, "remove")})
+    added = {key: rule for key, rule in new.items() if key not in old}
+    removed = {key: rule for key, rule in old.items() if key not in new}
+    removed_by_identity: dict[str, list[str]] = {}
+    for key, rule in removed.items():
+        removed_by_identity.setdefault(rule_identity(rule), []).append(key)
+    paired: dict[str, str] = {}  # removed key -> added key
+    for key, rule in added.items():
+        candidates = [k for k in removed_by_identity.get(rule_identity(rule), []) if k not in paired]
+        if candidates:
+            paired[candidates[0]] = key
+    for key, rule in added.items():
+        change = {"id": "add:" + key, "op": "add", "rule": rule, "widening": _widens(rule, old.values()),
+                  "reason": _reason(rule, "add")}
+        old_key = next((ok for ok, nk in paired.items() if nk == key), None)
+        if old_key:
+            change["changes_from"] = removed[old_key]
+            change["reason"] = _reason(rule, "change") + " (" + (_differences(removed[old_key], rule) or "restated") + ")"
+            change["widening"] = change["widening"] and _widens_over(removed[old_key], rule)
+        changes.append(change)
+    for key, rule in removed.items():
+        change = {"id": "remove:" + key, "op": "remove", "rule": rule,
+                  "widening": rule["kind"] == "permission" and rule["effect"] == "deny",
+                  "reason": _reason(rule, "remove")}
+        if key in paired:
+            change["changed_to"] = added[paired[key]]
+            change["reason"] = "superseded by the change above: " + _reason(rule, "remove")
+            change["widening"] = False
+        changes.append(change)
     changes.sort(key=lambda c: (c["rule"]["kind"], c["id"]))
     return changes
+
+
+def _widens_over(old: dict, new: dict) -> bool:
+    """A restatement widens only if it allows more than before: same effect and assignee, broader scope or limit."""
+    if old.get("kind") != new.get("kind"):
+        return True
+    if new.get("kind") == "approval_criteria":
+        o, n = old.get("max_amount"), new.get("max_amount")
+        return (n is None and o is not None) or (o is not None and n is not None and n > o) or len(new.get("conditions") or []) < len(old.get("conditions") or [])
+    if new.get("kind") == "routing":
+        return old.get("assignee") != new.get("assignee") or (old.get("mode") or "assign") != (new.get("mode") or "assign")
+    if new.get("kind") == "member":
+        return not set(new.get("roles") or []) <= set(old.get("roles") or [])
+    return old != {**new, "source": old.get("source")}
 
 
 def _widens(rule: dict, old_rules) -> bool:

@@ -193,3 +193,32 @@ def test_a_broken_frame_stops_only_the_verbs_that_read_frames(tmp_path):
     assert hub.kernel.query() == []  # the kernel works
     with pytest.raises(FrameError, match="bad.frame.md"):
         hub.frames
+
+
+def test_a_restated_rule_is_one_change_not_a_remove_and_an_add(hub):
+    from hubproto.guards import drift_guard
+
+    old = [{"kind": "routing", "process": "capa", "step": "*", "condition": {"field": "overdue", "op": "==", "value": True},
+            "assignee": "role:management-representative", "source": {"frame": "f", "line": 1, "text": "old"}}]
+    new = [{**old[0], "mode": "assign", "source": {"frame": "f", "line": 2, "text": "new"}}]
+    changes = drift_guard(old, new)
+    add = next(c for c in changes if c["op"] == "add")
+    remove = next(c for c in changes if c["op"] == "remove")
+    assert add["changes_from"] == old[0] and remove["changed_to"] == new[0]
+    assert add["reason"].startswith("change") and "mode" in add["reason"] and add["widening"] is False
+    assert remove["widening"] is False and "superseded" in remove["reason"]
+    # Widening a restated rule is still flagged: the assignee becomes a cog.
+    wider = [{**new[0], "assignee": "cog:quality-assistant"}]
+    add2 = next(c for c in drift_guard(old, wider) if c["op"] == "add")
+    assert add2["widening"] is True
+
+
+def test_proposal_numbers_never_collide_with_unnumbered_older_proposals(hub):
+    release_all(hub)
+    for p in hub.proposals.list():
+        p.pop("number", None)
+        hub.proposals.save(p)
+    edit_frame(hub, "finance-policy", "Finance clerks may create bills in Finance/Payables.",
+               "Finance clerks may create bills in Finance/Payables.\nStaff may create bills in Finance/Payables.", bump="1.1")
+    proposal = hub.compile()
+    assert proposal["number"] == len(hub.proposals.list())

@@ -35,7 +35,7 @@ from .frames import FrameError
 from .inbox import parse_eml
 from .kernel import KernelGuardError
 from .release import strip_sources, utcnow
-from .rules import CONDITION_VOCABULARY
+from .rules import rule_key, CONDITION_VOCABULARY
 from .runner import RunError
 
 DIGEST = 12
@@ -354,9 +354,17 @@ def collapse_changes(changes: list[dict]) -> list[dict]:
         bodies.setdefault(key, []).append(c)
     out: list[dict] = []
     seen: set[str] = set()
+    by_id = {c["id"]: c for c in changes}
     for c in changes:
         if c["id"] in seen:
             continue
+        if c["op"] == "add" and c.get("changes_from") is not None:
+            old_id = "remove:" + rule_key(c["changes_from"])
+            if old_id in by_id:
+                seen.update({c["id"], old_id})
+                out.append({"changed": True, "ids": [c["id"], old_id], "changes": [c, by_id[old_id]], "kind": c["rule"]["kind"],
+                            "name": c["rule"].get("name") or c["rule"]["kind"], "widening": c["widening"], "reason": c["reason"]})
+                continue
         key = json.dumps(strip_sources({k: v for k, v in c["rule"].items() if k != "source"}), sort_keys=True)
         group = bodies[key]
         adds = [x for x in group if x["op"] == "add"]
@@ -383,6 +391,18 @@ def print_changes(hub: Hub, changes: list[dict], with_decisions: bool = False) -
             states = {change_state(x) for x in entry["changes"]}
             state = "approved" if states == {"approved"} else ("rejected" if "rejected" in states else "pending")
             print(f"  {entry['kind']} {entry['name']}: re-rendered, no semantic change  [{state}; ids {', '.join(entry['ids'])}]")
+            if with_decisions:
+                for x in entry["changes"]:
+                    for d in x.get("decisions", []):
+                        print(f"      {d['by']} {d['verdict']} {d['at']}: {clean(d.get('meaning'), 80)}")
+            continue
+        if entry.get("changed"):
+            states = {change_state(x) for x in entry["changes"]}
+            state = "approved" if states == {"approved"} else ("rejected" if "rejected" in states else "pending")
+            flag = "WIDENING " if entry["widening"] else ""
+            new, old = entry["changes"]
+            src = new["rule"].get("source") or {}
+            print(f"  {flag}{entry['reason']}  — \"{clean(src.get('text'), 100)}\" ({src.get('path') or src.get('frame')}:{src.get('line')})  [{state}; ids {', '.join(entry['ids'])}]")
             if with_decisions:
                 for x in entry["changes"]:
                     for d in x.get("decisions", []):
