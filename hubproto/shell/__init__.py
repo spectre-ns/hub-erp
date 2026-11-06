@@ -21,6 +21,7 @@ from http.server import ThreadingHTTPServer
 
 from ..app import Hub
 from .actions import ActionsMixin
+from .editor import EditorMixin
 from .css import CONTRAST_PAIRS, DARK, LIGHT  # noqa: F401  (public: the contrast test)
 from .forms import START_INPUTS, ShellError, coerce, prefill, widget  # noqa: F401  (public: cli_records, tests)
 from .handler import DEFAULT_MAX_UPLOAD, BaseHandler, href, log_line, table  # noqa: F401
@@ -34,7 +35,7 @@ __all__ = ["Handler", "ShellError", "coerce", "make_server", "serve", "serve_in_
            "when", "why_sentence", "sentence_diff", "widget", "prefill", "chip", "esc", "href", "table"]
 
 
-class Handler(PagesMixin, InboxMixin, PolicyMixin, ActionsMixin, BaseHandler):
+class Handler(PagesMixin, InboxMixin, PolicyMixin, ActionsMixin, EditorMixin, BaseHandler):
     """The request handler: the plumbing in BaseHandler, the pages and actions in the mixins."""
 
 

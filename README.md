@@ -81,6 +81,24 @@ seen (`inbox-pending` prints the seen digest and the fields the Gate
 accepts). A failed run is the owner's to repair:
 `hubproto retry <run> --field k=v --file path`, or `cancel`.
 
+## The integrated editor
+
+Documents open in Collabora Online inside the hub: the hub is a WOPI host (`hubproto/wopi.py`; the
+endpoints are under `/wopi/files/<number>`), so SharePoint's Office Online or any other WOPI client
+could stand in for Collabora in production. `docker compose up` starts Collabora beside the hub.
+
+- "New document" on a folder page or an item creates a blank .docx, .xlsx, .odt, .ods, .md or .txt
+  (a *working* document) and opens it. "Edit online" on a document page opens an existing one.
+- Opening the editor checks the document out to you; every save is a minor version noted "saved in
+  the editor"; "Finish editing" releases it. Someone else's check-out, an *effective* controlled
+  document, and evidence or external files open read-only (a controlled document changes only
+  through a new revision via document-control).
+- Settings: `HUBPROTO_COLLABORA_URL` (the editor as the browser reaches it), `HUBPROTO_WOPI_BASE`
+  (this hub as the editor reaches it), `HUBPROTO_COLLABORA_DISCOVERY` (where the hub reads the
+  editor's discovery document), `HUBPROTO_PUBLIC_URL` (this hub's origin, for the editor's frame
+  policy). Without them the editor page says how to configure it and documents stay downloadable
+  and check-in-able. Set `HUBPROTO_SECRET` to keep editor sessions valid across hub restarts.
+
 ## Backup and restore
 
 The state is one SQLite file plus directories under `state/`: `kernel.db`,

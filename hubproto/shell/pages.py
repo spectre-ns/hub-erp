@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 from urllib.parse import quote
 
-from .. import authz
+from .. import authz, wopi
+from .editor import new_document_form
 from ..runner import FIELD_ROLES
 from .forms import DEFAULT_START_INPUTS, REQUIRED_EXTRA, START_INPUTS, ShellError, file_input, text_input, widget
 from .handler import details, hidden_as, href, kv, table
@@ -229,6 +230,7 @@ class PagesMixin:
 <form method="post" action="/upload" enctype="multipart/form-data">{hidden_as(user)}{self._once()}<input type="hidden" name="folder" value="{esc(folder)}">
 <div class="fields">{file_input("file", "File", required=True, hint=f"up to {self.max_upload // (1024 * 1024)} MB")}{text_input("title", "Title", self._val("title"), hint="defaults to the file name", error=self._field_error("title"))}</div>
 <div class="actions"><button>Upload</button></div></form></div>"""
+            body += new_document_form(user, folder=folder, once=self._once(), error=self._form_error(["title", "kind"]) if self.route == "/new-document" else "")
         else:
             body += f"<p class='why'>You cannot file documents here: {self._why_html(f, 'create', 'document', folder)}</p>"
         self._page(parts[-1], body, status=status, crumbs=crumbs)
@@ -484,12 +486,14 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
         else:
             body += "<p class='muted'>No workflow in the release covers this item type.</p>"
         docs = self.hub.dms.documents_of(loc)
-        body += '<h2 id="documents">Documents</h2>' + table(["Number", "Title", "Class", "Type", "Rev", "State", "Size"],
+        body += '<h2 id="documents">Documents</h2>' + table(["Number", "Title", "Class", "Type", "Rev", "State", "Size", "Open"],
                                                                [[self._record_link(d["locator"], with_summary=False), esc(d["fields"].get("title")),
                                                                  esc(d["fields"].get("doc_class")), esc(d["fields"].get("doc_type")), esc(f"{d['fields'].get('revision', '')}.{d['fields'].get('minor', 0)}"), self._state_chip(d["state"]),
-                                                                 esc(d["fields"].get("size", ""))] for d in docs], "No documents attached.")
+                                                                 esc(d["fields"].get("size", "")),
+                                                                 (f'<a href="{href("/edit/" + quote(d["locator"], safe=":"), user)}">{"Edit" if wopi.is_editable(d) else "View"}</a>' if wopi.is_viewable(d) else "")] for d in docs], "No documents attached.")
         f = may_file(bundle, user, rec["folder"])
         if f["allowed"]:
+            body += new_document_form(user, attach_to=loc, once=self._once(), error=self._form_error(["title", "kind"]) if self.route == "/new-document" else "")
             in_folder = [d for d in self.hub.kernel.query(type_="document", folder=rec["folder"]) if d["folder"] == rec["folder"]
                          and d["locator"] not in {x["locator"] for x in docs}]
             opts = [(d["locator"], f"{d['number']} {d['fields'].get('title')}") for d in in_folder]
@@ -570,6 +574,10 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
                 ("Provenance", esc(fmt(f.get("provenance")))), ("Effective from", esc(day(f.get("effective_from")))), ("Review date", esc(day(f.get("review_date")))),
                 ("Approved by", esc(f.get("approved_by")))]
         body = f"<h1>{esc(rec['number'])} {tag('Document')} {self._state_chip(rec['state'])}</h1><div class='card'><b>{esc(f.get('title'))}</b>{kv([(k, v) for k, v in meta if v])}</div>"
+        if wopi.is_viewable(rec) and versions:
+            editable = can and not immutable and rec["state"] in EDITABLE_DOC_STATES and wopi.is_editable(rec) and (not locked or locked == user)
+            label = "Edit online" if editable else "Open in the viewer"
+            body += f'<p><a class="button" href="{href("/edit/" + quote(loc, safe=":"), user)}">{label}</a> <span class="why">{"every save becomes a version; finish editing to release the document" if editable else "read-only"}</span></p>'
         body += "<h2>Versions</h2>" + table(["Version", "When", "By", "File", "Size", "Note", "Download"],
                                              [[esc(v["version"]), esc(when(v["at"])), esc(v["by"]), esc(v.get("filename")), esc(v.get("size")), esc(v.get("note")),
                                                f'<a href="{href("/download", user, doc=loc, v=v["version"])}">Download version {esc(v["version"])}</a>'] for v in versions], "No content yet.")

@@ -144,6 +144,12 @@ class BaseHandler(BaseHTTPRequestHandler):
         try:
             if self.route == "/healthz":
                 return self._text("ok")
+            if self.route.startswith("/wopi/files/"):
+                self.raw_body = self._read_raw() if method == "POST" else b""
+                with self.lock:
+                    self.meta = self.hub.releases.current()
+                    self.bundle = self.hub.releases.bundle(self.meta["digest"]) if self.meta else None
+                    return self.handle_wopi(method)
             if method == "POST":
                 self._read_body()  # validated and read outside the lock
                 self.user = clean(self.form.get("as") or self.q.get("as", [""])[0] or "").strip()
@@ -190,16 +196,34 @@ class BaseHandler(BaseHTTPRequestHandler):
             if r in fixed:
                 return fixed[r]
             for prefix, fn in (("/record/", self.page_record), ("/document/", self.page_document), ("/doc/", self.page_document),
-                               ("/run/", self.page_run), ("/frame/", self.page_frame), ("/release/", self.page_release)):
+                               ("/run/", self.page_run), ("/frame/", self.page_frame), ("/release/", self.page_release),
+                               ("/edit/", self.page_edit)):
                 if r.startswith(prefix) and len(r) > len(prefix):
                     self.arg = r[len(prefix):]
                     return fn
             return None
         posts = {"/start": self.post_start, "/decide": self.post_decide, "/msg": self.post_msg, "/attach": self.post_attach,
+                 "/finish-edit": self.post_finish_edit, "/new-document": self.post_new_document,
                  "/upload": self.post_upload, "/checkout": self.post_checkout, "/checkin": self.post_checkin, "/link": self.post_link,
                  "/snapshot": self.post_snapshot, "/hold": self.post_hold, "/resubmit": self.post_resubmit, "/retry": self.post_retry,
                  "/cancel": self.post_cancel, "/undo-checkout": self.post_undo_checkout}
         return posts.get(r)
+
+    def _read_raw(self) -> bytes:
+        """A raw request body (the editor's saves), bounded like an upload."""
+        raw = self.headers.get("Content-Length")
+        try:
+            length = int(raw or "0")
+        except ValueError:
+            raise ShellError("Content-Length is not a number.", 400) from None
+        if length < 0 or length > self.max_upload:
+            self.close_connection = True
+            raise ShellError(f"The body is {length:,} bytes; the limit is {self.max_upload:,}.", 413)
+        try:
+            return self.rfile.read(length) if length else b""
+        except (socket.timeout, TimeoutError):
+            self.close_connection = True
+            raise ShellError("The body stopped before it was complete.", 408) from None
 
     def _read_body(self) -> None:
         raw = self.headers.get("Content-Length")

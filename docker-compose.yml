@@ -16,9 +16,32 @@ services:
       HUBPROTO_CAD_WORKER_URL: http://cad-worker:9000
       # Largest request body the shell accepts (bytes); larger uploads get 413.
       HUBPROTO_MAX_UPLOAD: "26214400"
+      # The integrated editor (Collabora Online, WOPI): where the browser reaches the editor, where the editor
+      # reaches this hub, where this hub reads the editor's discovery document, and this hub's public origin.
+      HUBPROTO_COLLABORA_URL: ${HUBPROTO_COLLABORA_URL:-http://localhost:9980}
+      HUBPROTO_WOPI_BASE: http://hub:8080
+      HUBPROTO_COLLABORA_DISCOVERY: http://collabora:9980
+      HUBPROTO_PUBLIC_URL: ${HUBPROTO_PUBLIC_URL:-http://localhost:8080}
       # Optional: HUBPROTO_EXTRACTOR=claude and ANTHROPIC_API_KEY for guided-mode extraction
     depends_on:
       - cad-worker
+      - collabora
+    restart: unless-stopped
+
+  # Collabora Online: the office editor documents open in. It fetches files from the hub over WOPI
+  # (http://hub:8080/wopi/...) and the browser loads its pages from localhost:9980.
+  collabora:
+    image: collabora/code:latest
+    container_name: hub-erp-collabora
+    ports:
+      - "127.0.0.1:9980:9980"
+    environment:
+      aliasgroup1: http://hub:8080
+      server_name: ${HUBPROTO_COLLABORA_HOST:-localhost:9980}
+      extra_params: --o:ssl.enable=false --o:ssl.termination=false --o:net.frame_ancestors=${HUBPROTO_PUBLIC_URL:-http://localhost:8080} --o:storage.wopi.alias_groups[@mode]=groups
+      dictionaries: en_US
+    cap_add:
+      - MKNOD
     restart: unless-stopped
 
   # FreeCAD and KiCad behind the /invoke seam. Large image; build with:
