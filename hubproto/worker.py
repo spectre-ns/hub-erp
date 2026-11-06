@@ -44,9 +44,9 @@ def _files_payload(entries: list[tuple[Path, str, str]]) -> dict:
 
 
 _FREECAD_SCRIPT = r"""
-import sys, FreeCAD, Part
-doc = FreeCAD.openDocument(sys.argv[1])
-out = sys.argv[2]
+import os, FreeCAD, Part
+doc = FreeCAD.openDocument(os.environ["HUB_SRC"])
+out = os.environ["HUB_OUT"]
 shapes = [o.Shape for o in doc.Objects if hasattr(o, "Shape") and not o.Shape.isNull()]
 if shapes:
     comp = Part.makeCompound(shapes)
@@ -63,7 +63,8 @@ def freecad_export(src: Path, out: Path, options: dict) -> dict:
     if b["freecad"]:
         script = out / "export.py"
         script.write_text(_FREECAD_SCRIPT)
-        subprocess.run([b["freecad"], str(script), "--", str(src), str(out)], check=False, capture_output=True, timeout=600)
+        env = {**os.environ, "HUB_SRC": str(src), "HUB_OUT": str(out)}
+        subprocess.run([b["freecad"], str(script)], check=False, capture_output=True, timeout=600, env=env)
         entries = [(out / "model.step", "model-step", "model/step"), (out / "model.stl", "model-stl", "model/stl"),
                    (out / "props.json", "model-properties", "application/json")]
         payload = _files_payload(entries)
