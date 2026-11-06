@@ -118,8 +118,8 @@ def launcher_html(apps: list[dict], user: str, href, current: str | None) -> str
         subs = "".join(f'<li><a href="{href("/items/" + rt, user)}">{esc(plural(rt))}</a></li>' for rt in app["types"][:5])
         subs += "".join(f'<li><a href="{href(path.split("?")[0], user, **dict(p.split("=") for p in path.split("?")[1].split("&")) if "?" in path else {})}">{esc(label)}</a></li>'
                         for label, path, _ in app["pages"][:3])
-        out += (f'<a class="app"{cur} href="{href("/app/" + app["key"], user)}"><span class="ic">{icon(app["icon"])}</span>{esc(app["name"])}'
-                f'{"<ul>" + subs + "</ul>" if subs else ""}</a>')
+        out += (f'<div class="app"><a class="apptitle"{cur} href="{href("/app/" + app["key"], user)}"><span class="ic">{icon(app["icon"])}</span>{esc(app["name"])}</a>'
+                f'{"<ul>" + subs + "</ul>" if subs else ""}</div>')
     return f'<details class="apps"><summary aria-label="Apps" title="Apps">{icon("apps", cls="lg")}</summary><div class="launcher">{out}</div></details>'
 
 

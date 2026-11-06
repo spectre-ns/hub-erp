@@ -48,7 +48,7 @@ svg.i{{width:1.25em;height:1.25em;vertical-align:-0.3em;flex:none}}svg.i.big{{wi
 details.apps{{position:relative}}details.apps>summary{{list-style:none;cursor:pointer;display:flex;align-items:center;padding:var(--sp-1);border-radius:var(--r);color:var(--top-fg)}}
 details.apps>summary::-webkit-details-marker{{display:none}}details.apps>summary:hover,details.apps[open]>summary{{background:rgba(255,255,255,.18)}}
 .launcher{{position:absolute;top:100%;left:0;z-index:20;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px var(--shadow);padding:var(--sp-3);width:min(92vw,720px);display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:var(--sp-2)}}
-.launcher .app{{display:block;padding:var(--sp-2);border-radius:var(--r);color:var(--fg);font-weight:600;text-decoration:none}}.launcher .app:hover,.launcher .app[aria-current]{{background:var(--chip)}}
+.launcher .app{{display:block;padding:var(--sp-2);border-radius:var(--r)}}.launcher .app:hover,.launcher .app:has([aria-current]){{background:var(--chip)}}.launcher .apptitle{{display:block;color:var(--fg);font-weight:600;text-decoration:none}}
 .launcher .app .ic{{display:flex;align-items:center;justify-content:center;width:40px;height:40px;border-radius:10px;margin-bottom:var(--sp-1);background:var(--chip);color:var(--accent)}}
 .launcher .app ul{{list-style:none;margin:var(--sp-1) 0 0;padding:0;font-weight:400;font-size:var(--fs-s)}}.launcher .app ul a{{color:var(--muted);font-weight:400}}
 .appbar{{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-1) var(--sp-3);padding:0 var(--sp-4);background:var(--panel);border-bottom:1px solid var(--line);min-height:38px;font-size:var(--fs-m)}}
