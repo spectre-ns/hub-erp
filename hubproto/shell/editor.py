@@ -118,6 +118,40 @@ class EditorMixin:
             href("/document/" + quote(doc["locator"], safe=":"), user, done=f"Created {doc['number']}; download it to edit, then check it in.")
         self._redirect(self._once_finish(where))
 
+    def post_working_copy(self):
+        """A received or effective document cannot change; a working copy of its content can, and stays linked."""
+        from .pages import may_file
+
+        user = self.user
+        bundle = self._need_release()
+        done = self._once_done()
+        if done:
+            return self._redirect(done)
+        rec = self.hub.kernel.require(self._f("doc"))
+        if rec["type"] != "document":
+            raise ShellError(f"{rec['number']} is not a document.")
+        self._require_read(rec["folder"])
+        d = may_file(bundle, user, rec["folder"])
+        if not d["allowed"]:
+            raise ShellError(f"You cannot file documents in {rec['folder']}. " + self._why_text(d, "create", "document", rec["folder"]), 403)
+        if not wopi.is_editable(rec):
+            raise ShellError(f"{rec['number']} ({rec['fields'].get('filename') or 'no file'}) is not a kind of file the editor edits.")
+        content, version = self.hub.dms.content(rec["locator"])
+        f = rec["fields"]
+        copy = self.hub.dms.create(title=f"{f.get('title') or rec['number']} (working copy)", doc_class="working", folder=rec["folder"], by=user,
+                                   content=content, filename=version.get("filename") or f.get("filename") or "", mime=version.get("mime") or f.get("mime") or "",
+                                   doc_type=f.get("doc_type") or "document")
+        self.hub.kernel.link(copy["locator"], "references", rec["locator"], by=user)
+        for l in self.hub.kernel.links_of(rec["locator"]):
+            if l["direction"] == "in" and l["rel"] == "has-document":
+                try:
+                    self.hub.dms.attach(l["target"], copy["locator"], by=user)
+                except Exception:
+                    pass
+        where = href("/edit/" + quote(copy["locator"], safe=":"), user) if editor_configured() else \
+            href("/document/" + quote(copy["locator"], safe=":"), user, done=f"Created {copy['number']} as a working copy of {rec['number']}.")
+        self._redirect(self._once_finish(where))
+
     # ------------------------------------------------------------ the WOPI side (token-authenticated; no `as`)
     def handle_wopi(self, method: str) -> None:
         host = wopi.WopiHost(self.hub)

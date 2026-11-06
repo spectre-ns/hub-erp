@@ -221,7 +221,7 @@ class BaseHandler(BaseHTTPRequestHandler):
                     return fn
             return None
         posts = {"/start": self.post_start, "/decide": self.post_decide, "/msg": self.post_msg, "/attach": self.post_attach,
-                 "/finish-edit": self.post_finish_edit, "/new-document": self.post_new_document,
+                 "/finish-edit": self.post_finish_edit, "/new-document": self.post_new_document, "/working-copy": self.post_working_copy,
                  "/upload": self.post_upload, "/checkout": self.post_checkout, "/checkin": self.post_checkin, "/link": self.post_link,
                  "/snapshot": self.post_snapshot, "/hold": self.post_hold, "/resubmit": self.post_resubmit, "/retry": self.post_retry,
                  "/cancel": self.post_cancel, "/undo-checkout": self.post_undo_checkout, "/bulk-hold": self.post_bulk_hold}

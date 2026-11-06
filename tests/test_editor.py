@@ -149,3 +149,21 @@ def test_an_uploaded_office_file_is_a_working_document_unless_kept_as_received(s
 def test_wopi_times_are_in_the_shape_clients_parse():
     assert wopi.wopi_time("2026-11-06T17:20:35+00:00") == "2026-11-06T17:20:35.000000Z"
     assert wopi.wopi_time("2026-11-06T17:20:35.5Z") == "2026-11-06T17:20:35.5Z"
+
+
+def test_a_received_document_gets_a_working_copy_that_opens_in_the_editor(shell, monkeypatch):
+    hub = shell["hub"]
+    monkeypatch.setenv("HUBPROTO_COLLABORA_URL", "http://editor.test:9980")
+    monkeypatch.setenv("HUBPROTO_WOPI_BASE", "http://hub.test:8080")
+    monkeypatch.setenv("HUBPROTO_COLLABORA_URLSRC", "http://editor.test:9980/browser/dist/cool.html?")
+    content, mime = wopi.blank_document("docx")
+    received = hub.dms.intake(folder="Finance/Payables", by="alice", content=content, filename="spec.docx", channel="email", sender="vendor")
+    assert received["fields"]["doc_class"] == "external"
+    status, page = get(shell, "/document/" + quote(received["locator"], safe=":"), **{"as": "alice"})
+    assert status == 200 and "Make a working copy" in page and "Open in the viewer" in page
+    status, url, text = post(shell, "/working-copy", {"as": "alice", "doc": received["locator"]})
+    assert status == 200 and "/edit/" in url, text[:300]
+    copy = next(d for d in hub.kernel.query(type_="document") if d["fields"].get("title") == "spec.docx (working copy)")
+    assert copy["fields"]["doc_class"] == "working" and hub.dms.content(copy["locator"])[0] == content
+    assert any(l["rel"] == "references" and l["target"] == received["locator"] for l in copy["links"])
+    assert hub.kernel.get(copy["locator"])["fields"]["checked_out_by"] == "alice"
