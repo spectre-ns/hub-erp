@@ -14,6 +14,7 @@ import os
 import time
 import urllib.request
 
+from .release import utcnow
 from .rules import sha256_of
 
 DEFAULT_MODEL = "stand-in"
@@ -38,7 +39,7 @@ class ModelGateway:
         else:
             text = self._stand_in(system, user)
             stand_in = True
-        out = {"text": text, "model": model, "stand_in": stand_in, "by": by,
+        out = {"text": text, "model": model, "stand_in": stand_in, "by": by, "at": utcnow(),
                "prompt_digest": sha256_of({"system": system, "user": user})[:16], "response_digest": sha256_of(text)[:16],
                "ms": int((time.monotonic() - t0) * 1000)}
         self.calls.append(out)
