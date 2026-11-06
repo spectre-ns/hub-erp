@@ -3,7 +3,7 @@ type: frame [0.2]
 name: design-control-sop
 description: How a mechanical or electrical design is submitted, exported, reconciled against inventory, reviewed and released as a part revision.
 visibility: internal
-version: "1.0.0"
+version: "1.1.0"
 scope: department
 maintainer: engineering
 inherits: org-model
@@ -70,10 +70,11 @@ Rejections return to Submit the design.
 3. [system] Export the design (cad-exporter)
 4. [system] Reconcile the bill of materials (bom-reconciler)
 5. [system] Score the risk (risk-scorer)
-6. [design-authority] Review the design
-7. [system] Release the part (part-releaser)
-8. [system] Order the shortages (shortage-requester)
-9. [system] Render the record (document-renderer)
+6. [system] Review the design package (quality-assistant, purchasing-assistant)
+7. [design-authority] Review the design
+8. [system] Release the part (part-releaser)
+9. [system] Order the shortages (shortage-requester)
+10. [system] Render the record (document-renderer)
 
 ## Process: requirements-capture
 Records are filed in Engineering/Requirements.

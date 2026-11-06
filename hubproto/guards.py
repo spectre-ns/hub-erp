@@ -52,6 +52,11 @@ def grounding_guard(rules: list[dict], frames: dict[str, Frame]) -> list[Finding
     out = []
     for rule in rules:
         src = rule.get("source") or {}
+        if rule.get("kind") == "cog":
+            for name in list(rule.get("follows") or []) + list(rule.get("reviews") or []):
+                if name not in frames:
+                    out.append(Finding("source-grounding", "error", f"cog {rule['name']} follows {name!r}, which is not a Frame", rule_key(rule),
+                                       src.get("frame", ""), int(src.get("line", 0) or 0)))
         frame = frames.get(src.get("frame", ""))
         key = rule_key(rule)
         if frame is None:
@@ -119,6 +124,13 @@ def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict |
                     out.append(Finding("consistency", "error", f"member {rule['principal']} holds unknown role {role!r}", key, frame, line))
             if rule["principal_type"] == "cog" and rule["principal"] not in cog_ids:
                 out.append(Finding("consistency", "error", f"cog {rule['principal']!r} is not in the Cog catalog", key, frame, line))
+        elif kind == "cog":
+            if rule["name"] not in cog_ids:
+                out.append(Finding("consistency", "error", f"cog profile {rule['name']!r} names a cog that is not in the Cog catalog", key, frame, line))
+            elif rule["name"] not in members or members[rule["name"]]["principal_type"] != "cog":
+                out.append(Finding("consistency", "error", f"cog profile {rule['name']!r} has no matching cog member in the org model", key, frame, line))
+            if not rule.get("follows"):
+                out.append(Finding("consistency", "warning", f"cog {rule['name']} follows no SOP; it will be routed nothing", key, frame, line))
         elif kind == "permission":
             if not ref_ok(rule["subject"]):
                 out.append(Finding("consistency", "error", f"permission subject {rule['subject']!r} is unknown", key, frame, line))
@@ -163,6 +175,11 @@ def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict |
             for step in rule["steps"]:
                 if step["kind"] == "cog" and step["cog"] not in cog_ids:
                     out.append(Finding("consistency", "error", f"step {step['id']!r} names unknown cog {step['cog']!r}", key, frame, step["line"]))
+                for name in step.get("swarm") or []:
+                    if name not in cog_ids:
+                        out.append(Finding("consistency", "error", f"step {step['id']!r} swarms unknown cog {name!r}", key, frame, step["line"]))
+                    elif name not in members or members[name]["principal_type"] != "cog":
+                        out.append(Finding("consistency", "error", f"step {step['id']!r} swarms {name!r}, which is not a cog member of the org model", key, frame, step["line"]))
                 if step["role"] not in ("system", "assignee", "owner", "author", "requester", "auditor", "chair", "evaluator", "reporter") and step["role"] not in roles:
                     out.append(Finding("consistency", "error", f"step {step['id']!r} names unknown role {step['role']!r}", key, frame, step["line"]))
             checkpoints = [s for s in rule["steps"] if s["kind"] == "checkpoint"]
@@ -177,6 +194,12 @@ def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict |
                 if not any(r["kind"] == "routing" and r["process"] == rule["name"] and r["step"] != "*"
                            and (checkpoint_for(rule, r["step"]) or {}).get("id") == cp["id"] for r in rules):
                     out.append(Finding("consistency", "warning", f"checkpoint {cp['title']!r} of {rule['name']} has no routing sentence; it will route to the role on the step", key, frame, cp["line"]))
+    profiled = {r["name"] for r in rules if r["kind"] == "cog"}
+    for name, m in members.items():
+        if m["principal_type"] == "cog" and name not in profiled:
+            src = m.get("source") or {}
+            out.append(Finding("consistency", "warning", f"cog member {name} has no '## Cog: {name}' profile (model, prompt, the SOPs it follows); it is routed work without one",
+                               rule_key(m), src.get("frame", ""), int(src.get("line", 0) or 0)))
     # required_by_state keys must be states some process of that record type can reach.
     if record_types:
         from .release import render_workflow
@@ -218,7 +241,7 @@ def rule_identity(rule: dict) -> str:
     fields = {
         "routing": ("process", "step", "condition"), "permission": ("subject", "action", "object", "folder"),
         "approval_criteria": ("approver", "process"), "sla": ("process", "step"), "sod": ("object",),
-        "member": ("principal",), "role": ("name",), "folder": ("path",), "threshold": ("name",),
+        "member": ("principal",), "role": ("name",), "folder": ("path",), "threshold": ("name",), "cog": ("name",),
     }.get(kind)
     if not fields:
         return rule_key(rule)
@@ -293,6 +316,8 @@ def _widens(rule: dict, old_rules) -> bool:
         return rule["effect"] == "allow"
     if kind == "member":
         return True
+    if kind == "cog":
+        return True  # a cog's model, prompt or SOPs change what it does: two policy owners
     if kind == "routing":
         return rule["assignee"].startswith("cog:")
     if kind == "approval_criteria":
@@ -337,4 +362,6 @@ def _reason(rule: dict, op: str) -> str:
         return f"{op} process {rule['name']} with {len(rule['steps'])} steps"
     if kind == "sod":
         return f"{op} segregation of duties on {rule['object']}: {rule['roles']}"
+    if kind == "cog":
+        return f"{op} cog profile {rule['name']}: model {rule.get('model') or 'none'}, follows {', '.join(rule.get('follows') or []) or 'nothing'}"
     return f"{op} {kind} " + str({k: v for k, v in rule.items() if k not in ('kind', 'source')})

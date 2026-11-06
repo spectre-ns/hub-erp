@@ -261,7 +261,9 @@ def proposal_number(hub: Hub, pid: str) -> int:
 
 def releases_in_order(hub: Hub) -> list[dict]:
     """Releases as versions: v1 is the first to take effect."""
-    return sorted(hub.releases.list(), key=lambda m: (m["effective_from"], m["created_at"], m["digest"]))
+    # Timestamps are second-resolution; two releases in one second keep the order they were released in.
+    return [m for _, m in sorted(enumerate(hub.releases.list()), key=lambda im: (im[1]["effective_from"], im[1]["created_at"], im[0]))]
+
 
 
 def version_of(hub: Hub, digest: str | None) -> str:
@@ -863,11 +865,18 @@ def cmd_msg(args) -> int:
         fail("no policy release is in effect, so there is nobody to write to; compile and release first", 1)
     require_member(hub, args.from_user, flag="--as", members=members)
     require_member(hub, args.to, flag="--to", people_only=False, members=members)
-    reply = hub.send(args.from_user, args.to, args.subject, args.body, channel=args.channel, attachments=_attachments(args.attach))
-    if reply.get("kind") == "reply":
-        print(f"{reply['from']} replied: {clean(reply['body'], 400)}")
-    else:
-        print(f"delivered to {reply['to']} via {reply['channel']}")
+    record = None
+    if getattr(args, "record", None):
+        rec = resolve_record(hub, args.record)
+        record = rec["locator"]
+    reply = hub.send(args.from_user, args.to, args.subject, args.body, channel=args.channel, attachments=_attachments(args.attach), record=record)
+    for r in (reply.get("replies") or [reply]):
+        if r.get("kind") == "reply":
+            print(f"{r['from']} replied: {clean(r['body'], 600)}")
+        elif r.get("kind") in ("request", "mention", "review"):
+            print(f"{r['to']} was told: {clean(r['subject'], 200)}")
+        else:
+            print(f"delivered to {r['to']} via {r['channel']}")
     return 0
 
 
@@ -1241,6 +1250,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--body", default="", metavar="TEXT", help="message body")
     s.add_argument("--channel", choices=["dm", "email"], default="dm", help="dm (default) or email (also written to state/inbox/outbox)")
     s.add_argument("--attach", action="append", metavar="PATH", help="a file to attach (JSON or text); repeatable")
+    s.add_argument("--record", metavar="NUMBER", help="the item this message is about: it goes on the item's chatter and its @mentions act (a cog reviews, a person is asked, a committee fans out)")
     s.set_defaults(fn=cmd_msg)
     s = sub.add_parser("mail-in", help="deliver an .eml file as email to its To: member")
     s.add_argument("file", help="path of the .eml file")

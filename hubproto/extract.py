@@ -86,8 +86,10 @@ _PROCESS_HEAD = re.compile(r"^## Process: (?P<name>[a-z0-9-]+)$")
 _MODAL = re.compile(r"\b(may|must|shall|can|cannot|go to|goes to|are reported to|is due|closes as|threshold|tolerance|limit|interval)\b", re.I)
 _PROCESS_FOLDER = re.compile(r"^Records are filed in (?P<folder>[A-Z][\w /-]+?)\.$")
 _PROCESS_STEP = re.compile(
-    r"^(?P<n>\d+)\. \[(?P<role>[a-z][\w-]*)\] (?P<title>[^()]+?)(?: \((?P<cog>[a-z][\w-]*)\))?$"
+    r"^(?P<n>\d+)\. \[(?P<role>[a-z][\w-]*)\] (?P<title>[^()]+?)(?: \((?P<cog>[a-z][\w-]*(?:, ?[a-z][\w-]*)*)\))?$"
 )
+_COG_HEAD = re.compile(r"^## Cog: (?P<name>[a-z0-9][\w-]*)$")
+_COG_KEY = re.compile(r"^(?P<key>Model|Prompt|Follows|Reviews): ?(?P<rest>.*)$")
 _OPS = {"over": ">", "above": ">", "under": "<", "below": "<", "at or under": "<=", "at or over": ">="}
 
 
@@ -149,19 +151,58 @@ class ConventionExtractor:
                 out.rules.append(process)
                 process = None
 
+        cog_profile: dict | None = None
+        cog_key = ""
+
+        def close_cog():
+            nonlocal cog_profile, cog_key
+            if cog_profile is not None:
+                cog_profile["prompt"] = " ".join(cog_profile["prompt"]).strip()
+                out.rules.append(cog_profile)
+                cog_profile = None
+                cog_key = ""
+
         for n, raw in enumerate(frame.lines, start=frame.body_start):
             line = raw.strip()
             if not line:
                 continue
+            m = _COG_HEAD.match(line)
+            if m:
+                close_process()
+                close_cog()
+                section = "cog"
+                cog_profile = {"kind": "cog", "name": m.group("name"), "model": "", "prompt": [], "follows": [], "reviews": [],
+                               "source": src(n, line)}
+                continue
+            if section == "cog" and cog_profile is not None and not line.startswith("#"):
+                m = _COG_KEY.match(line)
+                if m:
+                    cog_key = m.group("key").lower()
+                    rest = m.group("rest").strip()
+                    if cog_key == "model":
+                        cog_profile["model"] = rest.rstrip(".")
+                    elif cog_key == "prompt":
+                        cog_profile["prompt"] = [rest] if rest else []
+                    else:
+                        names = [slug(x) for x in re.split(r",| and ", rest.rstrip(".")) if x.strip()]
+                        cog_profile[cog_key] = names
+                elif cog_key == "prompt":
+                    cog_profile["prompt"].append(line)
+                else:
+                    out.notes.append({"frame": frame.name, "line": n, "text": line,
+                                      "note": "unparsed line in a cog section (Model:, Prompt:, Follows:, Reviews:)"})
+                continue
             m = _PROCESS_HEAD.match(line)
             if m:
                 close_process()
+                close_cog()
                 section = "process"
                 process = {"kind": "process", "name": m.group("name"), "folder": "", "object": "",
                            "steps": [], "terminal": "closed", "reject_to": None, "source": src(n, line)}
                 continue
             if line.startswith("## "):
                 close_process()
+                close_cog()
                 section = line[3:].strip().lower()
                 if section not in RULE_SECTIONS and not section.startswith("process:"):
                     near = difflib.get_close_matches(section, RULE_SECTIONS, n=1, cutoff=0.75)
@@ -174,6 +215,7 @@ class ConventionExtractor:
                 continue
             if line.startswith("#"):
                 close_process()
+                close_cog()
                 section = ""
                 continue
             if section == "process" and process is not None:
@@ -196,8 +238,10 @@ class ConventionExtractor:
                 m = _PROCESS_STEP.match(line)
                 if m:
                     title = m.group("title").strip()
+                    cog_names = [c.strip() for c in (m.group("cog") or "").split(",") if c.strip()]
                     step = {"n": int(m.group("n")), "id": slug(title), "title": title,
-                            "role": m.group("role"), "cog": m.group("cog"),
+                            "role": m.group("role"), "cog": cog_names[0] if len(cog_names) == 1 else ("swarm" if cog_names else None),
+                            "swarm": cog_names if len(cog_names) > 1 else None,
                             "kind": "cog" if m.group("cog") else "checkpoint",
                             "line": n}
                     if not process["steps"]:
@@ -219,6 +263,7 @@ class ConventionExtractor:
                                     "(see the writing-policy-frames reference); it would be silently dropped")
                 out.notes.append(note)
         close_process()
+        close_cog()
         return out
 
     def _match_sentence(self, line: str, n: int, section: str, add) -> bool:

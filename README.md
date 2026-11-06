@@ -96,6 +96,24 @@ By default the cog takes its turn at once, in the same process (deterministic fo
 against the same API as people. `hubproto inbox-pending --as ap-reviewer` shows a cog's queue; the shell shows
 each cog's profile, queue and decisions under People.
 
+## Cog profiles, @mentions, committees and swarms
+
+Each cog has a profile in a Frame (`frames/company/cogs.frame.md`): a `## Cog: <name>` section with
+`Model:`, `Prompt:` and `Follows:` (the SOPs it follows). The profile is a reviewed rule in the release;
+changing it is a widening (two policy owners). A cog is routed work only from processes defined in the SOPs
+it follows, as a person is only given work they are trained on; a context cog drafts with its model and prompt
+and the text of those SOPs as its only context (`hubproto/model.py`; set `ANTHROPIC_API_KEY` to use the model,
+otherwise a deterministic stand-in answers). Models draft and answer; they never sign.
+
+A message about an item (`hubproto msg --record NCR-0001 ...`, or the item's chatter in the shell) acts on its
+@mentions: a mentioned **cog** reviews the item against its SOPs, answers in the chatter, files the review as
+evidence, and takes its turn at the Gate if the item is waiting for it and the review passed; a mentioned
+**person** is asked in their inbox; a mentioned **role** (a committee, people and cogs) fans out to its members;
+"please approve" with nothing in flight starts the item's own process, if the sender may. A process step that
+names several cogs, `[system] Review the design package (quality-assistant, purchasing-assistant)`, is a swarm:
+each reviews from its own SOPs, the findings merge onto the record and into one evidence document, and the
+Gate that follows sees them.
+
 ## The integrated editor
 
 Documents open in Collabora Online inside the hub: the hub is a WOPI host (`hubproto/wopi.py`; the

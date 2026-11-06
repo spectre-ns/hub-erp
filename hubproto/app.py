@@ -13,6 +13,7 @@ from .compile import CompileError, ProposalStore, compile_proposal, decide_chang
 from .extract import get_extractor
 from .frames import FrameStore
 from .inbox import Inbox
+from .model import ModelGateway
 from .kernel import Kernel
 from .release import ReleaseStore
 from .runner import Runner
@@ -40,6 +41,9 @@ class Hub:
         # Cogs are users: a Gate pends for a cog, and the cog takes its turn either at once (inline) or from the
         # cog-users service (`hubproto cog-users --loop 5`, HUBPROTO_COG_USERS=service).
         self.runner.cog_users_inline = os.environ.get("HUBPROTO_COG_USERS", "inline") != "service"
+        self.runner.frames_store = lambda: self.frames
+        self.model = ModelGateway()
+        self.runner.model = self.model
 
     @property
     def frames(self) -> FrameStore:
@@ -109,9 +113,12 @@ class Hub:
         return authz.check(bundle, principal, action, obj, folder)
 
     # --- messaging ----------------------------------------------------------
-    def send(self, sender: str, to: str, subject: str, body: str, channel: str = "dm", attachments=None) -> dict:
+    def send(self, sender: str, to: str, subject: str, body: str, channel: str = "dm", attachments=None,
+             record: str | None = None) -> dict:
+        """A message to a person or a cog, optionally about an item (then it is on the item's chatter and its
+        @mentions are acted on: see hubproto.mentions)."""
         meta = self.releases.current()
         bundle = self.releases.bundle(meta["digest"]) if meta else {"members": {}}
         return self.inbox.send(sender=sender, to=to, subject=subject, body=body, channel=channel,
                                attachments=attachments, bundle=bundle, registry=self.registry, runner=self.runner,
-                               kernel=self.kernel, release=meta["digest"] if meta else "")
+                               kernel=self.kernel, release=meta["digest"] if meta else "", record=record, hub=self)

@@ -56,6 +56,10 @@ def render_manifest(process: dict) -> dict:
             "input": {"record": {"$from": "inputs.record"}},
             "gate": {"type": "default"},
         }
+        if step.get("swarm"):  # several cogs review in parallel and their findings merge: an Op within the Op
+            entry["cog"] = {"id": "swarm", "task": "run"}
+            entry["input"]["cogs"] = list(step["swarm"])
+            entry["input"]["question"] = step["title"]
         if prev_id:
             entry["input"]["prior"] = {"$from": f"steps.{prev_id}.payload"}
             entry["depends_on"] = [prev_id]
@@ -137,6 +141,7 @@ def render(rules: list[dict], record_types: dict | None = None) -> dict:
     roles: list[str] = []
     folders: list[str] = []
     permissions, routing, criteria, sod, thresholds, processes = [], [], [], [], {}, {}
+    cogs: dict[str, dict] = {}
     slas: list[dict] = []
     for r in rules:
         body = {k: v for k, v in r.items() if k != "kind"}
@@ -167,6 +172,8 @@ def render(rules: list[dict], record_types: dict | None = None) -> dict:
             sod.append(body)
         elif kind == "process":
             processes[r["name"]] = body
+        elif kind == "cog":
+            cogs[r["name"]] = body
     # Resolve the 'approve' alias and bare checkpoint names to checkpoint ids.
     for r in routing + slas:
         proc = processes.get(r["process"])
@@ -205,6 +212,7 @@ def render(rules: list[dict], record_types: dict | None = None) -> dict:
         "approval_criteria": criteria,
         "sod": sod,
         "processes": dict(sorted(processes.items())),
+        "cogs": dict(sorted(cogs.items())),
         "ops": ops,
     }
 
@@ -270,7 +278,8 @@ class ReleaseStore:
         return meta
 
     def list(self) -> list[dict]:
-        return sorted(self._index(), key=lambda m: (m["created_at"], m["digest"]))
+        """Releases in the order they were made (timestamps are second-resolution, so the index order breaks ties)."""
+        return [m for _, m in sorted(enumerate(self._index()), key=lambda im: (im[1]["created_at"], im[0]))]
 
     def get(self, d: str) -> dict:
         matches = [m for m in self._index() if m["digest"].startswith(d)]
@@ -291,5 +300,6 @@ class ReleaseStore:
         live = [m for m in self._index() if m["effective_from"] <= at]
         if not live:
             return None
-        live.sort(key=lambda m: (m["effective_from"], m["created_at"]))
+        order = {m["digest"]: i for i, m in enumerate(self._index())}
+        live.sort(key=lambda m: (m["effective_from"], m["created_at"], order.get(m["digest"], 0)))
         return live[-1]

@@ -36,10 +36,29 @@ class RunContext:
     inbox: object = None
     record: str | None = None
     dms: object = None
+    frames: object = None  # the Frame store (SOP texts) a context cog reads from
+    model: object = None  # the model gateway (hubproto.model.ModelGateway) a context cog drafts with
     extras: dict = field(default_factory=dict)
 
     def rec(self) -> dict | None:
         return self.kernel.get(self.record) if self.record else None
+
+    @property
+    def profile(self) -> dict:
+        """The cog's profile from the release: model, prompt and the SOPs it follows."""
+        return self.extras.get("cog_profile") or {}
+
+    def sop_texts(self, names=None) -> dict[str, str]:
+        """The bodies of the SOPs the cog follows (or the named ones), as the context it works from."""
+        names = list(names) if names is not None else list(self.profile.get("follows") or []) + list(self.profile.get("reviews") or [])
+        out: dict[str, str] = {}
+        store = self.frames() if callable(self.frames) else self.frames
+        for n in names:
+            try:
+                out[n] = store.get(n).body
+            except Exception:
+                continue
+        return out
 
 
 class Cog:
@@ -624,8 +643,20 @@ class ReviewerCog(Cog):
     answers its inbox, and files records it is asked to file."""
 
     kind = "context"
-    tasks = ["review", "inbox"]
+    tasks = ["review", "inbox", "review-document"]
+    reaches = ["kernel:records", "kernel:documents"]
     files_process = ""
+
+    def task_review_document(self, input: dict, ctx: RunContext) -> dict:
+        """Review an item against the SOPs this cog follows and file the review as evidence."""
+        from . import review as _review
+
+        rec = ctx.kernel.get(input.get("record") or ctx.record) if (input.get("record") or ctx.record) else None
+        if rec is None:
+            return make_envelope(self.id, self.version, "review-document", error={"code": "no-record", "detail": "nothing to review"})
+        r = _review.review(self.id, ctx.profile, ctx, rec, input.get("question") or "")
+        doc = _review.file_review(ctx, rec, [r], input.get("question") or "", by=self.id) if input.get("file", True) else None
+        return self.ok("review-document", {**r, "evidence": doc["locator"] if doc else None})
 
     def task_review(self, input: dict, ctx: RunContext) -> dict:
         payload = input.get("payload") or {}
@@ -672,6 +703,46 @@ class ReviewerCog(Cog):
         return self.ok("inbox", {"reply": reply, "actions": actions})
 
 
+class Swarm(Cog):
+    """Several cogs review the item in parallel against their own SOPs; findings merge. A step written as
+    ``[system] Review the package (quality-assistant, purchasing-assistant)`` runs this."""
+
+    id = "swarm"
+    reaches = ["kernel:records", "kernel:documents"]
+    description = "Fans a review out to the named cogs and merges their findings into the payload and one evidence document."
+
+    def task_run(self, input: dict, ctx: RunContext) -> dict:
+        from . import review as _review
+
+        rec = ctx.rec()
+        if rec is None:
+            return make_envelope(self.id, self.version, "run", error={"code": "no-record", "detail": "run has no record"})
+        cogs = list(input.get("cogs") or [])
+        reviews = _review.swarm(cogs, ctx, rec, input.get("question") or "", process=ctx.extras.get("process", ""))
+        doc = _review.file_review(ctx, rec, reviews, input.get("question") or "", by=self.id)
+        prior = self._prior(input, ctx)
+        # The reviews are advice for the Gate that follows: their findings reach the approver's card as warnings,
+        # and the review verdict is on the record; the run stops only when no cog could review at all.
+        problems = []
+        for r in reviews:
+            for p in r["findings"]:
+                problems.append(problem(f"{r['cog']}:{p['check']}", p["detail"], "warning"))
+        passed = [r["cog"] for r in reviews if r["verdict"] == "pass"]
+        failed = [r["cog"] for r in reviews if r["verdict"] == "fail"]
+        declined = [r["cog"] for r in reviews if r["verdict"] == "declined"]
+        out = {**prior, "reviews": [{k: v for k, v in r.items() if k != "findings"} | {"findings": len(r["findings"])} for r in reviews],
+               "review_verdict": "fail" if failed else "pass", "review_evidence": doc["locator"] if doc else None}
+        if ctx.record:
+            try:
+                ctx.kernel.set_fields(ctx.record, {"reviews": out["reviews"], "review_verdict": out["review_verdict"]}, by=self.id,
+                                      run_id=ctx.run_id, release=ctx.release)
+            except Exception:
+                pass
+        if not reviews:
+            problems.append(problem("swarm", "no cog was named for the review", "error"))
+        return self.ok("run", out, problems)
+
+
 class APReviewer(ReviewerCog):
     id = "ap-reviewer"
     files_process = "purchase-to-pay"
@@ -704,7 +775,7 @@ class CogRegistry:
         for cls in (RecordFiler, BillFiler, DocumentFiler, Linker, Notifier, DocumentRenderer, RiskScorer,
                     InvoiceExtractor, ThreeWayMatcher, LedgerPoster, JournalReverser, DocumentDrafter, DocumentPublisher,
                     NCRClassifier, CAPAOpener, NCROpener, CAPADrafter, EffectivenessScheduler, AuditChecklistDrafter,
-                    DocumentClassifier, APReviewer, DocReviewer, QualityAssistant):
+                    DocumentClassifier, APReviewer, DocReviewer, QualityAssistant, Swarm):
             self.register(cls())
         from . import cad, procurement  # CAD/ECAD and procurement cogs live in their own modules
 

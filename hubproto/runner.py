@@ -72,6 +72,8 @@ class Runner:
         self.registry = registry
         self.inbox = inbox
         self.dms = dms
+        self.frames_store = None  # set by the Hub: the SOP texts a context cog reads
+        self.model = None  # set by the Hub: the model gateway context cogs draft with
 
     # ------------------------------------------------------------ persistence
     def _dir(self, run_id: str) -> Path:
@@ -198,9 +200,10 @@ class Runner:
         dms = DMS(scoped, self.dms.blobs) if self.dms is not None else None
         return RunContext(run_id=state["id"], release=state["release"], bundle=bundle, owner=state["owner"],
                           kernel=scoped, grant=state.get("grant"), runner=self, inbox=self.inbox,
-                          record=state.get("record"), dms=dms,
+                          record=state.get("record"), dms=dms, frames=self.frames_store, model=self.model,
                           extras={"folder": state["manifest"]["folder"], "object": state["manifest"]["object"],
-                                  "process": state["process"], "decision_fields": dict(state.get("decision_fields") or {})})
+                                  "process": state["process"], "decision_fields": dict(state.get("decision_fields") or {}),
+                                  "cog_profile": (bundle.get("cogs") or {}).get(cog.id)})
 
     def advance(self, run_id: str) -> dict:
         state = self.load(run_id)
@@ -349,7 +352,13 @@ class Runner:
                 track.append({"type": "gate.skipped", "run_id": state["id"], "step": step["id"], "candidate": assignee,
                               "reason": "no such cog is a member", "route_rule": rule["source"]})
                 return []
+            why = self.cog_follows(bundle, name, state["process"])
+            if why:
+                track.append({"type": "gate.skipped", "run_id": state["id"], "step": step["id"], "candidate": assignee,
+                              "reason": why, "route_rule": rule["source"]})
+                return []
             return [name]
+
         if kind == "field":
             value = payload.get(name) or (record or {}).get("fields", {}).get(name)
             people = [authz.principal_name(value)] if value and bundle["members"].get(authz.principal_name(value)) else []
@@ -363,6 +372,19 @@ class Runner:
                           "reason": "no eligible person holds this route", "route_rule": rule["source"]})
         return people
 
+    @staticmethod
+    def cog_follows(bundle: dict, cog_name: str, process: str) -> str:
+        """Empty when the cog's profile lists the SOP that defines the process (or it has no profile); otherwise why not.
+        A person is trained on the SOPs their role needs; a cog's Frame says which it follows."""
+        profile = (bundle.get("cogs") or {}).get(cog_name)
+        if not profile:
+            return ""
+        proc = (bundle.get("processes") or {}).get(process) or {}
+        frame = (proc.get("source") or {}).get("frame", "")
+        follows = profile.get("follows") or []
+        if frame and frame not in follows:
+            return f"{cog_name} does not follow {frame} (its profile lists: {', '.join(follows) or 'nothing'})"
+        return ""
     def _pend_next(self, state: dict, bundle: dict, step: dict, payload: dict, rctx: dict, track: Track, cands: list[dict]) -> str:
         record = self.kernel.get(state["record"]) if state.get("record") else None
         gate = step["gate"]

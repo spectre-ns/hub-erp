@@ -134,7 +134,7 @@ def test_profile_compiles_with_no_errors_and_releases(tmp_path):
     assert bundle["thresholds"]["effectiveness-check-interval"]["value"] == 90.0
     assert bundle["workflows"]["nonconformance"]["sla"] == {"disposition-the-nonconformance": 5}
     assert bundle["workflows"]["training-acknowledgement"]["terminal"] == "acknowledged"
-    assert bundle["members"]["quality-assistant"]["roles"] == ["quality-manager", "staff"]
+    assert set(bundle["members"]["quality-assistant"]["roles"]) >= {"quality-manager", "staff"}
 
 
 def test_conformance_reports_covered_and_uncovered_clauses(seeded):

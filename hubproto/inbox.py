@@ -39,18 +39,46 @@ class Inbox:
     def for_principal(self, principal: str) -> list[dict]:
         return [m for m in self.all() if m["to"] == principal]
 
-    def notify(self, to: str, *, kind: str, subject: str, body: str, run_id: str = "") -> dict:
+    def notify(self, to: str, *, kind: str, subject: str, body: str, run_id: str = "", record: str | None = None) -> dict:
         return self._append({"id": uuid.uuid4().hex[:8], "at": utcnow(), "from": "hub", "to": to, "channel": "dm",
-                             "kind": kind, "subject": subject, "body": body, "run_id": run_id, "attachments": []})
+                             "kind": kind, "subject": subject, "body": body, "run_id": run_id, "record": record, "attachments": []})
+
+    def notify_all(self, people, **kw) -> list[dict]:
+        return [self.notify(p, **kw) for p in people]
+
+    def reply(self, msg: dict, *, sender: str, body: str, record: str | None = None, envelope: dict | None = None) -> dict:
+        """A reply to a message, in the thread and on the item's chatter when the message was about one."""
+        env = envelope or {}
+        reply = {"id": uuid.uuid4().hex[:8], "at": utcnow(), "from": sender, "to": msg["from"], "channel": msg.get("channel", "dm"),
+                 "kind": "reply", "subject": "Re: " + (msg.get("subject") or ""), "body": body, "in_reply_to": msg["id"],
+                 "run_id": msg.get("run_id", ""), "record": record or msg.get("record"), "attachments": []}
+        if env:
+            reply["cog_envelope"] = {"ok": env.get("ok"), "problems": env.get("problems"), "error": env.get("error"),
+                                     "cog": env.get("cog"), "timing": env.get("timing")}
+        self._append(reply)
+        if reply["channel"] == "email":
+            self._write_eml(reply)
+        return reply
+
+    def on_record(self, locator: str) -> list[dict]:
+        """The chatter of an item: every message, reply and notification about it, oldest first."""
+        return [m for m in self.all() if m.get("record") == locator]
 
     def send(self, *, sender: str, to: str, subject: str, body: str, channel: str = "dm", attachments=None,
-             bundle: dict | None = None, registry=None, runner=None, kernel=None, release: str = "") -> dict:
+             bundle: dict | None = None, registry=None, runner=None, kernel=None, release: str = "",
+             record: str | None = None, hub=None) -> dict:
         msg = {"id": uuid.uuid4().hex[:8], "at": utcnow(), "from": sender, "to": to, "channel": channel,
-               "kind": "message", "subject": subject, "body": body, "run_id": "", "attachments": attachments or []}
+               "kind": "message", "subject": subject, "body": body, "run_id": "", "record": record, "attachments": attachments or []}
         self._append(msg)
         member = (bundle or {}).get("members", {}).get(to)
         if channel == "email":
             self._write_eml(msg)
+        if hub is not None and bundle and ("@" in (body or "") or "@" in (subject or "")):
+            from . import mentions
+
+            replies = mentions.handle(hub, msg, bundle)
+            if replies and (not member or member["type"] != "cog" or to in {r["from"] for r in replies}):
+                return replies[0] if len(replies) == 1 else {**msg, "replies": replies}
         if member and member["type"] == "cog" and registry is not None:
             cog = registry.get(to)
             ctx = RunContext(run_id="inbox-" + msg["id"], release=release, bundle=bundle, owner=to, kernel=kernel,
