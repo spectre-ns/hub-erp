@@ -45,8 +45,9 @@ def extract_text(content: bytes, extension: str, limit: int = 20000) -> str:
             root = ElementTree.fromstring(z.read("content.xml"))
             TABLE = "{urn:oasis:names:tc:opendocument:xmlns:table:1.0}"
             lines = []
+            OFF = "{urn:oasis:names:tc:opendocument:xmlns:office:1.0}"
             for row in root.iter(TABLE + "table-row"):
-                cells = [_itertext(c).strip() for c in row.iter(TABLE + "table-cell")]
+                cells = [(_itertext(c).strip() or c.get(OFF + "value") or "") for c in row.iter(TABLE + "table-cell")]
                 if any(cells):
                     lines.append(" | ".join(cells).rstrip(" |"))
             return "\n".join(lines)[:limit]
@@ -337,6 +338,9 @@ def docx_blocks(lines: list[str]) -> list[str]:
             table.append(stripped.strip("|").split("|"))
             continue
         flush_table()
+        if stripped == "---":
+            out.append('<w:p><w:r><w:br w:type="page"/></w:r></w:p>')
+            continue
         if stripped.startswith("# "):
             out.append(f'<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr>{_docx_runs(stripped[2:].strip(), "<w:b/><w:sz w:val=\"32\"/>")}</w:p>')
         elif stripped.startswith("## "):
@@ -426,7 +430,16 @@ def insert_rows(content: bytes, extension: str, rows: list[list[str]]) -> bytes 
         new = ""
         for i, cells in enumerate(rows):
             r = start + i
-            cs = "".join(f'<c r="{_col(j)}{r}" t="inlineStr"><is><t xml:space="preserve">{_escape(v)}</t></is></c>' for j, v in enumerate(cells))
+            cs = ""
+            for j, v in enumerate(cells):
+                v = v.strip()
+                ref = f"{_col(j)}{r}"
+                if v.startswith("=") and len(v) > 1:
+                    cs += f'<c r="{ref}"><f>{_escape(v[1:])}</f></c>'
+                elif re.fullmatch(r"-?\d+(\.\d+)?", v):
+                    cs += f'<c r="{ref}"><v>{v}</v></c>'
+                else:
+                    cs += f'<c r="{ref}" t="inlineStr"><is><t xml:space="preserve">{_escape(v)}</t></is></c>'
             new += f'<row r="{r}">{cs}</row>'
         if "<sheetData/>" in xml:
             xml = xml.replace("<sheetData/>", f"<sheetData>{new}</sheetData>", 1)
@@ -439,7 +452,15 @@ def insert_rows(content: bytes, extension: str, rows: list[list[str]]) -> bytes 
         width = max(len(r) for r in rows)
         new = ""
         for cells in rows:
-            cs = "".join(f'<table:table-cell office:value-type="string"><text:p>{_escape(v)}</text:p></table:table-cell>' for v in cells)
+            cs = ""
+            for v in cells:
+                v = v.strip()
+                if v.startswith("=") and len(v) > 1:
+                    cs += f'<table:table-cell table:formula="of:{_escape(v)}" office:value-type="float" office:value="0"><text:p>0</text:p></table:table-cell>'
+                elif re.fullmatch(r"-?\d+(\.\d+)?", v):
+                    cs += f'<table:table-cell office:value-type="float" office:value="{v}"><text:p>{v}</text:p></table:table-cell>'
+                else:
+                    cs += f'<table:table-cell office:value-type="string"><text:p>{_escape(v)}</text:p></table:table-cell>'
             cs += "<table:table-cell/>" * (width - len(cells))
             new += f"<table:table-row>{cs}</table:table-row>"
         m = re.search(r"<table:table [^>]*>.*?</table:table>", xml, re.S)
@@ -467,3 +488,30 @@ def insert_rows(content: bytes, extension: str, rows: list[list[str]]) -> bytes 
 
 def is_sheet(extension: str) -> bool:
     return (extension or "").lower() in ("xlsx", "ods", "xls", "csv")
+
+
+# ---------------------------------------------------------------- the writing interface
+WRITING_INTERFACE = {
+    "text": """OUTPUT FORMAT when you write into a text document (docx, odt): plain lines in this markup, nothing else.
+- '# Title', '## Section', '### Subsection' become heading styles 1, 2 and 3.
+- A plain line is a paragraph. A blank line separates paragraphs.
+- '- item' is a bullet point; '1. item' is a numbered point.
+- '**bold**' and '*italic*' inside a line.
+- A table is consecutive rows '| Cell | Cell |'; put '|---|---|' after the first row to make it the header row.
+- '---' alone on a line is a page break.
+Not supported: images, merged cells, footnotes, fonts, colours. Write content only: no preamble, no explanation, no code fences.""",
+    "sheet": """OUTPUT FORMAT when you write into a spreadsheet (xlsx, ods): one row per line, cells separated by '|', like '| Item | Limit | Result |'.
+- The first row may be column headings.
+- A cell that is a number (12, 2.5, -3) is stored as a number; text otherwise.
+- A cell starting with '=' is a formula, e.g. '=SUM(B2:B5)'; use A1 references; rows you write start at the row the hub tells you.
+- Keep one table; no headings, no bullets, no blank rows inside it.
+Not supported: merged cells, formats, charts. Write rows only: no preamble, no explanation.""",
+    "review": """OUTPUT FORMAT for a review: a short assessment in plain sentences, then any further findings as lines
+'- [error] check: detail' or '- [warning] check: detail', then exactly one line 'Verdict: pass' or 'Verdict: fail'.""",
+    "answer": """OUTPUT FORMAT for an answer in a comment thread: a few plain sentences a colleague can act on; cite the procedure
+by name when you rely on it. No headings, no lists longer than three items.""",
+}
+
+
+def writing_interface(kind: str) -> str:
+    return WRITING_INTERFACE.get(kind, "")

@@ -438,3 +438,29 @@ def test_an_edit_request_on_a_spreadsheet_yields_rows_for_the_seat(shell):
     content, version = hub.dms.content(loc)
     assert office.sheet_rows_used(content, "xlsx") == len(rows) and version["by"] == "hub"
     hub.dms.undo_checkout(loc, by="carol")
+
+
+def test_sheets_store_numbers_and_formulas_and_the_prompt_states_the_writing_interface(released):
+    from hubproto import office
+    from hubproto.cogs import RunContext, cog_context
+    import zipfile, io
+
+    content, _ = wopi.blank_document("xlsx")
+    new = office.insert_rows(content, "xlsx", [["Item", "Qty", "Unit", "Total"], ["Washer", "12", "0.5", "=B2*C2"], ["Total", "", "", "=SUM(D2:D2)"]])
+    xml = zipfile.ZipFile(io.BytesIO(new)).read("xl/worksheets/sheet1.xml").decode()
+    assert '<c r="B2"><v>12</v></c>' in xml and "<f>B2*C2</f>" in xml and "<f>SUM(D2:D2)</f>" in xml and 'r="A1" t="inlineStr"' in xml
+    ods, _ = wopi.blank_document("ods")
+    new2 = office.insert_rows(ods, "ods", [["Qty", "2.5", "=A1*2"]])
+    cxml = zipfile.ZipFile(io.BytesIO(new2)).read("content.xml").decode()
+    assert 'office:value-type="float" office:value="2.5"' in cxml and 'table:formula="of:=A1*2"' in cxml
+    # The system prompt states the interface for the target format.
+    bundle = released.releases.bundle(released.releases.current()["digest"])
+    doc = released.dms.create(title="Log", doc_class="working", folder="Quality/Controlled Documents", by="carol", content=content,
+                              filename="log.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", doc_type="document")
+    ctx = RunContext(run_id="t", release="", bundle=bundle, owner="quality-assistant", kernel=released.kernel, frames=lambda: released.frames,
+                     extras={"cog_profile": bundle["cogs"]["quality-assistant"]})
+    rec = released.kernel.get(doc["locator"])
+    assert "OUTPUT FORMAT when you write into a spreadsheet" in cog_context(ctx, rec, task="edit")
+    rec["fields"]["filename"] = "wi.docx"
+    assert "OUTPUT FORMAT when you write into a text document" in cog_context(ctx, rec, task="edit") and "page break" in cog_context(ctx, rec, task="edit")
+    assert "Verdict: pass" in cog_context(ctx, rec, task="review") and "comment thread" in cog_context(ctx, rec, task="answer")

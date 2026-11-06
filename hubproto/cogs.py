@@ -638,7 +638,7 @@ class DocumentClassifier(Cog):
 
 # ---------------------------------------------------------------- reviewer cogs (team members)
 
-def cog_context(ctx: RunContext, rec: dict | None, *, sop_chars: int | None = None, doc_chars: int | None = None) -> str:
+def cog_context(ctx: RunContext, rec: dict | None, *, sop_chars: int | None = None, doc_chars: int | None = None, task: str = "") -> str:
     """What a cog has in front of it when it works on an item: its standing prompt, the SOPs it follows, the whole
     document (text) and every comment thread in it, with authors and reply structure. Goes in the system prompt
     of every document task, so review, edit and answer reason from the same reference."""
@@ -668,6 +668,16 @@ def cog_context(ctx: RunContext, rec: dict | None, *, sop_chars: int | None = No
             for c in comments:
                 lines.append(("  " * depth(c)) + f"- [{c.get('id')}] {c.get('author') or '?'}" + (f" (reply to {c.get('parent')})" if c.get("parent") not in (None, "") else "") + f": {c.get('text')}")
             parts.append("COMMENT THREADS IN THE DOCUMENT (indented lines are replies):\n" + "\n".join(lines))
+    if task:
+        from . import office as _office
+
+        kind = task
+        if task == "edit":
+            fn = ((rec or {}).get("fields") or {}).get("filename") or ""
+            kind = "sheet" if _office.is_sheet(fn.rsplit(".", 1)[-1] if "." in fn else "") else "text"
+        iface = _office.writing_interface(kind)
+        if iface:
+            parts.append(iface)
     return "\n\n".join(parts)
 
 
@@ -689,18 +699,21 @@ class ReviewerCog(Cog):
         request = input.get("request") or ""
         f = rec["fields"]
         sops = ctx.sop_texts()
-        system = cog_context(ctx, rec)
+        system = cog_context(ctx, rec, task="edit")
         from . import office as _office
 
         sheet = _office.is_sheet((f.get("filename") or "").rsplit(".", 1)[-1] if "." in (f.get("filename") or "") else "")
         if sheet:
+            try:
+                content, _ = ctx.dms.content(rec["locator"]) if ctx.dms is not None else (b"", {})
+                next_row = _office.sheet_rows_used(content, (f.get("filename") or "").rsplit(".", 1)[-1]) + 1
+            except Exception:
+                next_row = 1
             user = (f"A colleague wrote this comment in the spreadsheet above:\n{request}\n\n"
-                    "Write only the rows to add, one row per line, cells separated by | like '| Item | Limit | Result |'. "
-                    "A first row of column headings is welcome. No preamble, no explanation.")
+                    f"Your rows will be written starting at row {next_row}. Write the rows now, in the output format.")
         else:
             user = (f"A colleague wrote this comment in the document above:\n{request}\n\n"
-                    "Write only the content to insert, as plain lines: a heading line starting with '# ', then paragraphs; "
-                    "'- ' for bullet points, '**bold**' for emphasis, and '| a | b |' rows for a table. No preamble, no explanation.")
+                    "Write the content to insert now, in the output format.")
         text, model, stand_in = "", ctx.profile.get("model") or "stand-in", True
         if ctx.model is not None:
             out = ctx.model.complete(model=model, system=system, user=user, by=self.id)
@@ -733,7 +746,7 @@ class ReviewerCog(Cog):
         question = input.get("question") or ""
         thread = input.get("thread") or []
         sops = ctx.sop_texts()
-        system = cog_context(ctx, rec)
+        system = cog_context(ctx, rec, task="answer")
         user = ("This thread so far:\n" + "\n".join(f"- {t.get('author')}: {t.get('text')}" for t in thread) + "\n\n" if thread else "") + \
             f"Reply to this comment in that thread:\n{question}\n\nAnswer in a few sentences a colleague can act on, from the procedures and the document above."
         text, model, stand_in = "", ctx.profile.get("model") or "stand-in", True

@@ -83,11 +83,11 @@ def review(cog_id: str, profile: dict, ctx, record: dict, question: str = "") ->
     verdict = "fail" if any(p["severity"] == "error" for p in findings) else "pass"
     from .cogs import cog_context
 
-    system = cog_context(ctx, record if record.get("type") == "document" else None)
+    system = cog_context(ctx, record if record.get("type") == "document" else None, task="review")
     item = {k: v for k, v in evidence.items() if k != "documents"} if record.get("type") == "document" else evidence
     user = (f"Question: {question or 'Review this item.'}\n\nITEM:\n{json.dumps(item, indent=1, default=str)[:6000]}\n\n"
             f"FINDINGS:\n" + "\n".join(f"- [{p['severity']}] {p['check']}: {p['detail']}" for p in findings) + "\n\n"
-            "Answer with: a short assessment, any further findings as '- [error|warning] check: detail' lines, and 'Verdict: pass' or 'Verdict: fail'.")
+            "Answer in the output format.")
     text, model, stand_in = "", profile.get("model") or "stand-in", True
     if ctx.model is not None:
         out = ctx.model.complete(model=model, system=system, user=user, by=cog_id)
