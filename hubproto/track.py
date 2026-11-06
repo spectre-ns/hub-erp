@@ -41,14 +41,19 @@ class Track:
             t = ev["type"]
             if t == "run.completed":
                 return "completed"
+            if t == "run.cancelled":
+                return "cancelled"
             if t == "run.failed":
                 return "failed"
+            if t == "gate.returned":
+                return "waiting"  # returned to the owner for rework: the run waits for a resubmission
             if t == "run.rejected":
                 return "rejected"
-            if t == "gate.pending":
+            if t in ("gate.pending", "gate.escalated", "gate.overdue"):
                 return "waiting"
             if t == "run.submitted":
                 return "submitted"
-            if t in ("step.started", "step.result", "gate.decided", "gate.passed", "grant.issued"):
+            if t in ("step.started", "step.result", "gate.decided", "gate.passed", "grant.issued", "run.retried",
+                     "run.resubmitted", "record.fields_set", "gate.skipped", "gate.cog_review"):
                 return "running"
         return "running"

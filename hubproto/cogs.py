@@ -82,9 +82,9 @@ class Cog:
             prior.setdefault("id", rec["number"])
             prior.setdefault("folder", rec["folder"])
             for k, v in rec["fields"].items():
-                # The record is the system of record: it fills gaps in the step payload and overrides
-                # empty values, so fields a person supplied at a Gate reach the steps that follow.
-                if prior.get(k) in (None, "", [], {}) and v not in (None, ""):
+                # The record is the system of record: its fields win over whatever an earlier step's payload
+                # carried (a retry after a fix, a value a person set at a Gate); the payload only adds keys.
+                if v not in (None, ""):
                     prior[k] = v
         # Fields a person supplied at a Gate win over anything an earlier step computed.
         for k, v in (ctx.extras.get("decision_fields") or {}).items():
@@ -394,7 +394,7 @@ class JournalReverser(Cog):
         original = ctx.kernel.get(prior.get("journal") or "")
         if original is None or original["type"] != "journal":
             return make_envelope(self.id, self.version, "run", error={"code": "journal", "detail": f"no journal {prior.get('journal')!r}"})
-        if any(l["rel"] == "supersedes" for l in original["links"]):
+        if any(l["rel"] == "supersedes" and l["direction"] == "in" for l in ctx.kernel.links_of(original["locator"])):
             return make_envelope(self.id, self.version, "run", error={"code": "reversed", "detail": f"{original['number']} was already reversed"})
         f = original["fields"]
         journal = {"date": date.today().isoformat(), "currency": f.get("currency"),

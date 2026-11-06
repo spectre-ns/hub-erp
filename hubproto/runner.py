@@ -572,6 +572,12 @@ class Runner:
         start = ids.index(pending["step"]) if pending["step"] in ids else 0
         for sid in ids[start:]:
             state["steps"].pop(sid, None)
+        # The rerun reads the record as it now is: the original submission's one-shot inputs are spent.
+        record_input = dict(state["inputs"].get("record") or {})
+        record_input.update(fields or {})
+        for spent in ("user_needs", "attachments"):
+            record_input.pop(spent, None)
+        state["inputs"] = {**state["inputs"], "record": record_input}
         state["pending"] = None
         state["grant"] = None
         track.append({"type": "run.resubmitted", "run_id": state["id"], "by": by, "from_step": pending["step"], "note": note,

@@ -230,7 +230,7 @@ class CADExporter(Cog):
                 env = call_worker("kicad-export", d["fields"].get("filename", "board.kicad_pcb"), content, {"formats": ["gerbers", "step"]})
                 exports += self._file_exports(ctx, rec, d, env, problems, "kicad")
         if not sources:
-            problems.append(problem("no-cad-files", "no FreeCAD or KiCad document is attached to the design record"))
+            problems.append(problem("no-cad-files", "no FreeCAD or KiCad document is attached to the design record", "warning"))
         fields = {"exports": exports, "bom_lines": bom_lines, "parts": parts, "checks": checks, "sources": sources}
         ctx.kernel.set_fields(rec["locator"], fields, by=self.id, run_id=ctx.run_id, release=ctx.release)
         return self.ok("run", {**prior, **fields}, problems)
@@ -372,11 +372,21 @@ class RequirementsTracer(Cog):
             ctx.kernel.link(rec["locator"], "fulfils", r["locator"], by=self.id, run_id=ctx.run_id, release=ctx.release)
             linked.append(r["locator"])
         captured = []
+        already = {}
+        for l in rec["links"]:
+            if l["rel"] == "fulfils":
+                r = ctx.kernel.get(l["target"])
+                if r and r["type"] == "requirement":
+                    already[(r["fields"].get("statement") or "").strip()] = r["locator"]
+                    if r["locator"] not in linked:
+                        linked.append(r["locator"])
         for need in prior.get("user_needs") or []:
             text = need if isinstance(need, str) else (need.get("statement") or need.get("text", ""))
             kind = "user-need" if isinstance(need, str) else need.get("kind", "user-need")
             if not text.strip():
                 continue
+            if text.strip() in already:
+                continue  # captured on an earlier submission of this design
             if ctx.runner is None or "requirements-capture" not in ctx.bundle.get("ops", {}):
                 problems.append(problem("requirements", "no requirements-capture process in the release", "warning"))
                 break
