@@ -1,0 +1,35 @@
+---
+type: frame [0.2]
+name: tasks-sop
+description: "Tasks: any member of staff files a task for a person; it waits for that person and closes as done when they complete it. Used for quality objectives, management review actions and improvement suggestions."
+visibility: internal
+version: "0.1.0"
+scope: company
+maintainer: operations
+inherits: org-model
+clauses: []
+compile: convention
+---
+# Tasks SOP
+
+A task is the general-purpose record for work that is not one of the quality
+processes: an action from management review, a quality objective milestone,
+an improvement suggestion, a reminder. Any member of staff files a task for
+an assignee (themselves by default); the task waits for the assignee and
+closes as done when they complete it. Tasks live in the Tasks folder and are
+readable by everyone.
+
+## Permissions
+Staff may create tasks in Tasks.
+Staff may approve tasks in Tasks.
+Staff may read Tasks.
+
+## Routing
+At Complete the task in task go to the assignee.
+
+## Process: task
+Records are filed in Tasks.
+The record type is task.
+Closes as done.
+1. [staff] File the task (record-filer)
+2. [staff] Complete the task

@@ -163,7 +163,7 @@ def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict |
             for step in rule["steps"]:
                 if step["kind"] == "cog" and step["cog"] not in cog_ids:
                     out.append(Finding("consistency", "error", f"step {step['id']!r} names unknown cog {step['cog']!r}", key, frame, step["line"]))
-                if step["role"] != "system" and step["role"] not in roles:
+                if step["role"] not in ("system", "assignee", "owner", "author", "requester", "auditor", "chair", "evaluator", "reporter") and step["role"] not in roles:
                     out.append(Finding("consistency", "error", f"step {step['id']!r} names unknown role {step['role']!r}", key, frame, step["line"]))
             checkpoints = [s for s in rule["steps"] if s["kind"] == "checkpoint"]
             if checkpoints and checkpoints[0] is rule["steps"][0]:

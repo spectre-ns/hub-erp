@@ -3,7 +3,7 @@ type: frame [0.2]
 name: org-model
 description: Roles, members (people and cogs) and folders of Example Instruments Ltd.
 visibility: internal
-version: "1.0.0"
+version: "1.1.0"
 scope: company
 maintainer: operations
 ---
@@ -22,17 +22,33 @@ messages, and are bound by segregation of duties.
 - author
 - reviewer
 - policy-owner
+- internal-auditor
+- management-representative
+- document-controller
+- process-owner
+- staff
 
 ## Members
-- alice (person): finance-clerk, author
-- bob (person): controller, reviewer, policy-owner
-- carol (person): quality-manager, reviewer, policy-owner
-- dave (person): payables-reviewer
+- alice (person): finance-clerk, author, process-owner, staff
+- bob (person): controller, reviewer, policy-owner, management-representative, internal-auditor, staff
+- carol (person): quality-manager, reviewer, policy-owner, document-controller, staff
+- dave (person): payables-reviewer, staff
 - ap-reviewer (cog): payables-reviewer, finance-clerk
 - doc-reviewer (cog): reviewer, author
+- quality-assistant (cog): quality-manager, staff
 
 ## Folders
 - Finance
 - Finance/Payables
 - Quality
 - Quality/Controlled Documents
+- Quality/Training
+- Quality/Nonconformances
+- Quality/CAPA
+- Quality/Audits
+- Quality/Suppliers
+- Quality/Changes
+- Quality/Management Review
+- Quality/Calibration
+- Quality/Complaints
+- Tasks

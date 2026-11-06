@@ -37,6 +37,14 @@ def render_manifest(process: dict) -> dict:
         if step["kind"] == "checkpoint":
             if not steps:
                 raise ValueError("process starts with a checkpoint")
+            if steps[-1].get("gate", {}).get("type") == "human":
+                # Two checkpoints in a row: a no-op step carries the second Gate.
+                carrier = {"id": f"reach-{step['id']}", "title": f"Reach {step['title'].lower()}", "role": "system",
+                           "cog": {"id": "noop", "task": "run"}, "input": {"record": {"$from": "inputs.record"},
+                                                                          "prior": {"$from": f"steps.{prev_id}.payload"}},
+                           "depends_on": [prev_id], "gate": {"type": "default"}}
+                steps.append(carrier)
+                prev_id = carrier["id"]
             steps[-1]["gate"] = {"type": "human", "step": step["id"], "route": {"process": process["name"], "step": step["id"]},
                                  "title": step["title"], "role": step["role"]}
             continue
@@ -70,7 +78,7 @@ def checkpoint_for(process: dict, step: str) -> dict | None:
     cps = [s for s in process["steps"] if s["kind"] == "checkpoint"]
     if step == "approve":
         for cp in cps:
-            if cp["id"].startswith("approv"):
+            if cp["id"].startswith(("approv", "accept", "confirm", "authori")):
                 return cp
         return None
     for cp in cps:
@@ -90,6 +98,8 @@ def render_workflow(process: dict, slas: dict[str, int], record_type: str) -> di
         if step["kind"] == "cog":
             pending_auto.append(step["id"])
             continue
+        if checkpoints and not pending_auto:
+            pending_auto.append(f"reach-{step['id']}")
         waiting = f"awaiting-{step['id']}"
         states.append(waiting)
         transitions.append({"from": current, "to": waiting, "kind": "automatic", "steps": pending_auto})

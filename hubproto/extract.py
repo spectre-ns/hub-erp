@@ -54,7 +54,7 @@ _MEMBER_ITEM = re.compile(
 )
 _FOLDER_ITEM = re.compile(r"^- (?P<path>[A-Z][\w /-]*)$")
 _PERMISSION = re.compile(
-    r"^(?P<subject>[A-Z][\w -]+?) may (?P<neg>not )?(?P<action>[a-z]+) (?P<object>[a-z-]+) in (?P<folder>[A-Z][\w /-]+?)\.$"
+    r"^(?P<subject>[A-Z][\w -]+?) may (?P<neg>not )?(?P<action>[a-z]+) (?P<object>[a-z][a-z -]*?) in (?P<folder>[A-Z][\w /-]+?)\.$"
 )
 _PERMISSION_READ = re.compile(
     r"^(?P<subject>[A-Z][\w -]+?) may (?P<neg>not )?read (?P<folder>[A-Z][\w /-]+?)\.$"
@@ -74,7 +74,7 @@ _PROCESS_TERMINAL = re.compile(r"^Closes as (?P<state>[a-z][a-z-]*)\.$")
 _PROCESS_TYPE = re.compile(r"^The record type is (?P<t>[a-z][a-z-]*)\.$")
 _PROCESS_REJECT = re.compile(r"^Rejections return to (?P<title>[A-Z][^.]+?)\.$")
 _CRITERIA = re.compile(
-    r"^The (?P<cog>[a-z][\w-]*) cog may approve (?P<process>[a-z0-9-]+) (?P<object>[a-z]+)"
+    r"^The (?P<cog>[a-z][\w-]*) cog may approve (?P<process>[a-z0-9-]+) (?P<object>[a-z][a-z -]*?)"
     r"(?: under (?P<amount>[\d,]+(?:\.\d+)?) (?P<cur>[A-Z]{3}))?"
     r"(?: when (?P<conds>.+?))?\.$"
 )

@@ -339,6 +339,72 @@ class PartReleaser(Cog):
         return self.ok("run", {**prior, "part": part["locator"], "revision": part["fields"].get("revision")})
 
 
+class RequirementsTracer(Cog):
+    id = "requirements-tracer"
+    reaches = ["kernel:records"]
+    description = ("Links accepted requirements to the design, captures inline user needs as requirement records routed to the "
+                   "design authority, files the trace matrix as evidence, and reports whether every requirement is accepted.")
+
+    def task_run(self, input: dict, ctx: RunContext) -> dict:
+        prior = self._prior(input, ctx)
+        rec = ctx.rec()
+        if rec is None:
+            return make_envelope(self.id, self.version, "run", error={"code": "no-record", "detail": "run has no record"})
+        problems = []
+        linked: list[str] = []
+        for ref in prior.get("requirements") or []:
+            r = ctx.kernel.get(ref)
+            if r is None or r["type"] != "requirement":
+                problems.append(problem("requirement", f"{ref!r} is not a requirement record", "warning"))
+                continue
+            ctx.kernel.link(rec["locator"], "fulfils", r["locator"], by=self.id, run_id=ctx.run_id, release=ctx.release)
+            linked.append(r["locator"])
+        captured = []
+        for need in prior.get("user_needs") or []:
+            text = need if isinstance(need, str) else need.get("text", "")
+            kind = "user-need" if isinstance(need, str) else need.get("kind", "user-need")
+            if not text.strip():
+                continue
+            if ctx.runner is None or "requirements-capture" not in ctx.bundle.get("ops", {}):
+                problems.append(problem("requirements", "no requirements-capture process in the release", "warning"))
+                break
+            run_id = ctx.runner.submit("requirements-capture", {"record": {"text": text, "kind": kind, "design": rec["locator"],
+                                                                            "source": (need.get("source") if isinstance(need, dict) else None) or "customer",
+                                                                            "stakeholder": (need.get("stakeholder") if isinstance(need, dict) else "") or ""}},
+                                       owner=ctx.owner)
+            r = ctx.runner.load(run_id)["record"]
+            ctx.kernel.link(rec["locator"], "fulfils", r, by=self.id, run_id=ctx.run_id, release=ctx.release)
+            linked.append(r)
+            captured.append({"record": r, "run_id": run_id})
+        trace = []
+        for ref in linked:
+            r = ctx.kernel.get(ref)
+            trace.append({"requirement": r["number"], "kind": r["fields"].get("kind"), "text": r["fields"].get("text"),
+                          "state": r["state"], "acceptance_criteria": r["fields"].get("acceptance_criteria"),
+                          "verification_method": r["fields"].get("verification_method"), "verified": bool(r["fields"].get("verified"))})
+        accepted = all(t["state"] == "accepted" for t in trace)
+        if trace and not accepted:
+            problems.append(problem("requirements-accepted", f"{sum(1 for t in trace if t['state'] != 'accepted')} requirement(s) not yet accepted by the design authority", "warning"))
+        if not trace:
+            problems.append(problem("requirements", "the design traces to no requirement; add user needs or link accepted requirements", "warning"))
+        if ctx.dms is not None and trace:
+            buf = io.StringIO()
+            w = csv.writer(buf)
+            w.writerow(["requirement", "kind", "text", "state", "acceptance_criteria", "verification_method", "verified"])
+            for t in trace:
+                w.writerow([t["requirement"], t["kind"], t["text"], t["state"], t["acceptance_criteria"] or "", t["verification_method"] or "", t["verified"]])
+            ctx.dms.create(title=f"Requirements trace for {rec['number']}", doc_class="evidence", folder=rec["folder"], by=self.id,
+                           content=buf.getvalue().encode("utf-8"), filename=f"{rec['number']}-requirements.csv", mime="text/csv",
+                           doc_type="requirements-trace", run_id=ctx.run_id, release=ctx.release,
+                           provenance={"record": rec["locator"]}, attach_to=rec["locator"])
+        conditions = dict(prior.get("conditions") or {})
+        conditions["requirements_accepted"] = accepted and bool(trace)
+        fields = {"requirements": linked, "requirement_trace": trace, "requirements_accepted": conditions["requirements_accepted"],
+                  "conditions": conditions, "user_needs": None}
+        ctx.kernel.set_fields(rec["locator"], fields, by=self.id, run_id=ctx.run_id, release=ctx.release)
+        return self.ok("run", {**prior, **fields, "requirements_captured": captured}, problems)
+
+
 def register(registry) -> None:
-    for cls in (CADExporter, BOMReconciler, PartReleaser):
+    for cls in (CADExporter, BOMReconciler, PartReleaser, RequirementsTracer):
         registry.register(cls())

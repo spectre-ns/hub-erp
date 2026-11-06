@@ -82,7 +82,10 @@ class Cog:
             prior.setdefault("id", rec["number"])
             prior.setdefault("folder", rec["folder"])
             for k, v in rec["fields"].items():
-                prior.setdefault(k, v)
+                # The record is the system of record: it fills gaps in the step payload and overrides
+                # empty values, so fields a person supplied at a Gate reach the steps that follow.
+                if prior.get(k) in (None, "", [], {}) and v not in (None, ""):
+                    prior[k] = v
         return prior
 
 
@@ -185,7 +188,17 @@ class RiskScorer(Cog):
         rec = self._prior(input, ctx)
         reasons = []
         conditions = {}
-        if rec.get("amount") not in (None, ""):
+        if "supplier_approved" in (rec.get("conditions") or {}) or rec.get("quantity") not in (None, ""):
+            c = rec.get("conditions") or {}
+            conditions["supplier_approved"] = bool(c.get("supplier_approved"))
+            conditions["item_known"] = bool(c.get("item_known"))
+            amount = float(rec.get("amount") or 0)
+            if not conditions["supplier_approved"]:
+                reasons.append("supplier not approved")
+            if not conditions["item_known"]:
+                reasons.append("item not in inventory")
+            tier = "high" if amount >= 10000 or not conditions["supplier_approved"] else ("medium" if amount >= 500 or not conditions["item_known"] else "low")
+        elif rec.get("amount") not in (None, ""):
             match = rec.get("match", {}) or {}
             conditions["match_within_tolerance"] = bool(match.get("within_tolerance") and match.get("received"))
             conditions["supplier_approved"] = bool(match.get("supplier_approved"))
@@ -203,12 +216,21 @@ class RiskScorer(Cog):
             tier = "low" if conditions["change_minor"] else "medium"
             if not conditions["change_minor"]:
                 reasons.append("major change to a controlled document")
+        elif rec.get("kind") in ("mechanical", "electrical", "mixed") or "bom_lines" in rec:
+            c = rec.get("conditions") or {}
+            conditions.update({k: bool(c.get(k)) for k in ("bom_resolved", "design_checks_clean", "requirements_accepted") if k in c})
+            cls = str(rec.get("change_class") or "2")
+            if not conditions.get("requirements_accepted", True):
+                reasons.append("requirements not all accepted")
+            if not c.get("design_checks_clean", True):
+                reasons.append("design checks not clean")
+            tier = "high" if cls == "1" or reasons else ("medium" if cls == "2" else "low")
         else:
             sev = (rec.get("severity") or rec.get("source") or "").lower()
             open_ncr = any(r["state"] not in ("closed", "rejected") for r in ctx.kernel.query(type_="ncr")
                            if r["locator"] != ctx.record) if ctx.record else False
             conditions["no_open_ncr"] = not open_ncr
-            tier = "high" if sev in ("high", "complaint", "audit") else ("medium" if sev else "low")
+            tier = "high" if sev in ("high", "complaint", "audit") else ("low" if sev in ("", "low", "inspection", "internal") else "medium")
             if tier != "low":
                 reasons.append(f"source or severity {sev!r}")
         conditions["risk_low"] = tier == "low"
@@ -390,6 +412,8 @@ class NCRClassifier(Cog):
         text = (rec.get("description") or "").lower()
         source = rec.get("source") or ("complaint" if "customer" in text else "inspection")
         sev = "high" if any(w in text for w in ("safety", "recall", "field", "injury")) else ("medium" if "lot" in text else "low")
+        if sev == "low" and source in ("calibration", "complaint", "audit", "supplier"):
+            sev = "medium"  # a nonconformance raised by another process is never low risk by default
         problems = [] if rec.get("description") else [problem("required-field", "nonconformance has no description")]
         out = {**rec, "source": source, "severity": sev,
                "containment": rec.get("containment") or "Quarantine affected items and notify the process owner."}
@@ -585,6 +609,14 @@ class QualityAssistant(ReviewerCog):
     description = "Quality team member: files nonconformances from messages and approves low-risk dispositions within criteria."
 
 
+class Noop(Cog):
+    id = "noop"
+    description = "Carries a Gate when two checkpoints follow each other; passes the prior payload through."
+
+    def task_run(self, input: dict, ctx: RunContext) -> dict:
+        return self.ok("run", self._prior(input, ctx))
+
+
 class CogRegistry:
     def __init__(self):
         self.cogs: dict[str, Cog] = {}
@@ -593,9 +625,11 @@ class CogRegistry:
                     NCRClassifier, CAPAOpener, NCROpener, CAPADrafter, EffectivenessScheduler, AuditChecklistDrafter,
                     DocumentClassifier, APReviewer, DocReviewer, QualityAssistant):
             self.register(cls())
-        from . import cad  # CAD and ECAD cogs live in their own module
+        from . import cad, procurement  # CAD/ECAD and procurement cogs live in their own modules
 
         cad.register(self)
+        procurement.register(self)
+        self.register(Noop())
 
     def register(self, cog: Cog) -> None:
         self.cogs[cog.id] = cog

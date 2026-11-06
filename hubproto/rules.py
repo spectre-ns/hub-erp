@@ -33,6 +33,8 @@ CONDITION_VOCABULARY = {
     "the risk is not high": "risk_not_high",
     "the bill of materials is resolved": "bom_resolved",
     "the design checks are clean": "design_checks_clean",
+    "the item is known": "item_known",
+    "every requirement is accepted": "requirements_accepted",
 }
 
 

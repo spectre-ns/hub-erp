@@ -133,6 +133,8 @@ class FrameStore:
         self.root = Path(root)
         self.frames: dict[str, Frame] = {}
         for path in sorted(self.root.rglob("*.frame.md")):
+            if any(part.startswith(".") for part in path.relative_to(self.root).parts):
+                continue  # dot-directories hold replaced or archived Frames
             frame = load_frame(path)
             if frame.name in self.frames:
                 raise FrameError(f"duplicate Frame name {frame.name!r}")

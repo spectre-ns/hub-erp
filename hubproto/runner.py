@@ -248,8 +248,10 @@ class Runner:
         checkpoint = gate["step"]
         cands = candidates(bundle, gate["route"]["process"], checkpoint, rctx)
         if not cands and gate.get("role"):
-            # No routing sentence for this checkpoint: route to the role written on the step.
-            cands = [{"assignee": "role:" + gate["role"], "process": state["process"], "step": checkpoint, "condition": None,
+            # No routing sentence for this checkpoint: route to the role (or field) written on the step.
+            kind = "field" if gate["role"] in ("assignee", "owner", "author", "requester", "auditor", "chair", "evaluator", "reporter") else "role"
+            field_map = {"requester": "requested_by", "reporter": "reported_by"}
+            cands = [{"assignee": f"{kind}:{field_map.get(gate['role'], gate['role'])}", "process": state["process"], "step": checkpoint, "condition": None,
                       "source": {"frame": "(process step)", "line": 0, "text": f"[{gate['role']}] {gate['title']}"}}]
         sod = self._sod_applies(bundle, state)
         owner = authz.principal_name(state["owner"])

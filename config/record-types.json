@@ -488,7 +488,11 @@
    "bom_unapproved": "list",
    "risk": "text",
    "conditions": "object",
-   "designer": "principal"
+   "designer": "principal",
+   "requirements": "list",
+   "user_needs": "list",
+   "requirements_accepted": "bool",
+   "requirement_trace": "list"
   },
   "required_by_state": {
    "awaiting-review-the-design": [
@@ -502,6 +506,143 @@
   "defaults": {
    "designer": "$owner",
    "change_class": "2"
+  },
+  "retention": "quality",
+  "sensitivity": "internal"
+ },
+ "purchase-request": {
+  "prefix": "PR",
+  "digits": 5,
+  "yearly": false,
+  "object": "purchase-request",
+  "fields": {
+   "title": "text",
+   "item": "ref",
+   "mpn": "text",
+   "manufacturer": "text",
+   "quantity": "number",
+   "unit": "text",
+   "unit_cost": "money",
+   "amount": "money",
+   "currency": "text",
+   "supplier": "ref",
+   "supplier_approved": "bool",
+   "needed_by": "date",
+   "reason": "text",
+   "design": "ref",
+   "requested_by": "principal",
+   "risk": "text",
+   "conditions": "object",
+   "po": "ref"
+  },
+  "required_by_state": {
+   "awaiting-approve-the-purchase": [
+    "item",
+    "quantity",
+    "amount",
+    "currency"
+   ],
+   "ordered": [
+    "po"
+   ]
+  },
+  "defaults": {
+   "requested_by": "$owner",
+   "currency": "USD",
+   "unit": "ea"
+  },
+  "retention": "financial-reporting",
+  "sensitivity": "internal"
+ },
+ "purchase-order": {
+  "prefix": "PO",
+  "digits": 4,
+  "yearly": false,
+  "object": "purchase-order",
+  "fields": {
+   "supplier": "ref",
+   "lines": "list",
+   "amount": "money",
+   "currency": "text",
+   "description": "text",
+   "requests": "list",
+   "received": "bool",
+   "issued_by": "principal",
+   "approved_by": "principal"
+  },
+  "required_by_state": {},
+  "defaults": {
+   "received": false
+  },
+  "retention": "financial-reporting",
+  "sensitivity": "internal",
+  "gapless": true
+ },
+ "receipt": {
+  "prefix": "GR",
+  "digits": 5,
+  "yearly": false,
+  "object": "receipt",
+  "fields": {
+   "po": "ref",
+   "lines": "list",
+   "received_by": "principal",
+   "received": "date",
+   "location": "text",
+   "notes": "text"
+  },
+  "required_by_state": {
+   "received": [
+    "po",
+    "lines"
+   ]
+  },
+  "defaults": {
+   "received_by": "$owner",
+   "received": "$today",
+   "location": "MAIN"
+  },
+  "retention": "financial-reporting",
+  "sensitivity": "internal"
+ },
+ "requirement": {
+  "prefix": "REQ",
+  "digits": 4,
+  "yearly": true,
+  "object": "requirement",
+  "fields": {
+   "text": "text",
+   "kind": "enum:user-need,system,functional,performance,safety,regulatory,interface",
+   "source": "text",
+   "rationale": "text",
+   "acceptance_criteria": "text",
+   "verification_method": "enum:test,inspection,analysis,demonstration",
+   "verified": "bool",
+   "verified_by": "principal",
+   "verification_evidence": "ref",
+   "priority": "enum:must,should,could",
+   "design": "ref",
+   "stakeholder": "text",
+   "risk": "text",
+   "conditions": "object",
+   "captured_by": "principal"
+  },
+  "required_by_state": {
+   "awaiting-accept-the-requirement": [
+    "text",
+    "kind"
+   ],
+   "accepted": [
+    "text",
+    "kind",
+    "acceptance_criteria"
+   ]
+  },
+  "defaults": {
+   "captured_by": "$owner",
+   "priority": "must",
+   "verified": false,
+   "source": "customer"
   },
   "retention": "quality",
   "sensitivity": "internal"

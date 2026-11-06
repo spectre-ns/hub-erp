@@ -200,6 +200,14 @@ def render_markdown(kernel: Kernel, rec: dict) -> str:
             v = json.dumps(v, sort_keys=True, default=str)
         lines.append(f"- **{k}**: {v}")
     links = kernel.links_of(rec["locator"])
+    reqs = [kernel.get(l["target"]) for l in links if l["rel"] == "fulfils" and l["direction"] == "out"]
+    reqs = [r for r in reqs if r and r["type"] == "requirement"]
+    if reqs:
+        lines += ["", "## Requirements", ""]
+        for r in reqs:
+            f = r["fields"]
+            lines.append(f"- {r['number']} [{f.get('kind')}] {f.get('text')} (state {r['state']}; acceptance: {f.get('acceptance_criteria') or 'n/a'}; "
+                         f"verification: {f.get('verification_method') or 'n/a'}; verified: {bool(f.get('verified'))})")
     if links:
         lines += ["", "## Links", ""] + [f"- {l['label']}: {l['target']}" for l in links]
     if rec["transitions"]:
