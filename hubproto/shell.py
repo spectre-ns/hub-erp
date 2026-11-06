@@ -275,10 +275,10 @@ May <b>{esc(user)}</b> <input name="action" value="{esc(action)}" size="8"> <inp
         self._page(name, body, user)
 
 
-def serve(hub: Hub, port: int = 8080) -> None:
+def serve(hub: Hub, host: str = "127.0.0.1", port: int = 8080) -> None:
     Handler.hub = hub
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    print(f"workspace shell at http://127.0.0.1:{port}/?as=alice")
+    server = ThreadingHTTPServer((host, port), Handler)
+    print(f"workspace shell at http://{host}:{port}/?as=alice")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -218,7 +218,36 @@ def cmd_docs(args):
 def cmd_shell(args):
     from .shell import serve
 
-    serve(_hub(args), port=args.port)
+    serve(_hub(args), host=args.host, port=args.port)
+
+
+def cmd_tick(args):
+    hub = _hub(args)
+    for e in hub.runner.tick(args.today):
+        print(f"escalated run {e['run']} ({e['record']}) to {', '.join(e['to'])}")
+    print("tick done")
+
+
+def cmd_bootstrap_release(args):
+    """First release on a fresh hub: compile, approve with two policy owners, release."""
+    hub = _hub(args)
+    if hub.releases.current() and not args.force:
+        print("a release is already in effect; use --force to add another")
+        return
+    proposal = hub.compile()
+    errors = [f for f in proposal["findings"] if f["severity"] == "error"]
+    for f in errors:
+        print(f"  [error] {f['guard']}: {f['detail']}  ({f['frame']}:{f['line']})")
+    if errors:
+        sys.exit("bootstrap stopped: fix the findings above")
+    for who in (args.as_user, args.second):
+        if who:
+            hub.review(proposal["id"], who, approve_all=True, meaning="bootstrap release")
+    try:
+        meta = hub.release(proposal["id"], args.as_user)
+    except CompileError as e:
+        sys.exit(f"error: {e}")
+    print(f"release {meta['digest']} in effect (rules: {len(proposal['rules'])})")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -290,8 +319,26 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("bills").set_defaults(fn=cmd_bills)
     sub.add_parser("docs").set_defaults(fn=cmd_docs)
     s = sub.add_parser("shell", help="serve the workspace shell")
+    s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8080)
     s.set_defaults(fn=cmd_shell)
+    s = sub.add_parser("tick", help="escalate overdue items")
+    s.add_argument("--today")
+    s.set_defaults(fn=cmd_tick)
+    s = sub.add_parser("bootstrap-release", help="compile, approve with two policy owners and release")
+    s.add_argument("--as", dest="as_user", required=True)
+    s.add_argument("--second")
+    s.add_argument("--force", action="store_true")
+    s.set_defaults(fn=cmd_bootstrap_release)
+    for modname in ("hubproto.profile", "hubproto.cli_records"):
+        try:
+            import importlib
+
+            mod = importlib.import_module(modname)
+        except ImportError:
+            continue
+        if hasattr(mod, "register"):
+            mod.register(sub)
     return p
 
 

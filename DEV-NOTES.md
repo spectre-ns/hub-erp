@@ -1,0 +1,156 @@
+# Developer notes (read before changing anything)
+
+This is the from-scratch prototype of the Intelligence Hub ERP plan. Standard
+library Python 3.11+, SQLite, files. No new runtime dependencies without a
+reason written in the PR. Tests: `python -m pytest -q` (all must pass).
+
+## Module map and ownership
+
+| File | Purpose | Owner |
+|---|---|---|
+| `hubproto/frames.py` | Frame Spec v0.2 loading, inheritance resolution | core |
+| `hubproto/extract.py` | sentence grammar -> rule statements with citations | core |
+| `hubproto/rules.py` | statement kinds, canonical JSON, rule keys, condition vocabulary | core |
+| `hubproto/guards.py` | schema, grounding, consistency, drift Guards | core |
+| `hubproto/compile.py` | proposal, per-change Gate decisions, finalize | core |
+| `hubproto/release.py` | render bundle (permissions, routing, workflows, op manifests), digest, ReleaseStore | core |
+| `hubproto/authz.py` | permission check with folder inheritance; deny wins; returns the sentence | core |
+| `hubproto/routing.py` | routing candidates, approval criteria, thresholds, SLAs | core |
+| `hubproto/kernel.py` | generic record system + ledger command on an event store | core |
+| `hubproto/dms.py` | blob store, document versions, classes, check-out, snapshots, intake | core |
+| `hubproto/runner.py` | Op runner = workflow engine; Gates, grants, Track, tick (SLA escalation) | core |
+| `hubproto/cogs.py` | Cog catalog (code cogs, context stand-ins, reviewer cogs) | core |
+| `hubproto/inbox.py` | DMs and email to people and cogs | core |
+| `hubproto/app.py` | `Hub` wiring | core |
+| `hubproto/cli.py` | command line; registers `register(sub)` from `hubproto.profile` and `hubproto.cli_records` if present | core |
+| `hubproto/shell.py` | the workspace shell (stdlib http.server) | shell agent |
+| `hubproto/cli_records.py` | CLI commands for records and documents (`register(sub)`) | shell agent |
+| `hubproto/profile.py` | seed profiles: install, conformance checklist (`register(sub)`) | profile agent |
+| `profiles/iso9001/**` | the ISO 9001 seed profile | profile agent |
+| `frames/**` | the example company's Frames | core (profile agent may add `frames/iso9001/` via the seed command) |
+| `config/*.json` | record types, link vocabulary, retention classes | core (profile agent may add record types; tell core) |
+| `tests/test_compile.py`, `tests/test_runtime.py`, `tests/conftest.py` | existing suites | core |
+| `tests/test_records.py`, `tests/test_workflow.py`, `tests/test_dms.py` | new suites | test agent |
+| `tests/test_profile.py` | seed profile suite | profile agent |
+| `tests/test_shell.py` | shell smoke suite | shell agent |
+
+Do not edit files you do not own. If you need a core change, say exactly
+what in your final report and work around it meanwhile.
+
+## The model in one paragraph
+
+Frames (Markdown + YAML frontmatter) hold policy prose. `hub.compile()`
+extracts rule statements (each cites its sentence), runs Guards, and makes a
+proposal; policy owners (members with role `policy-owner`) approve each
+change (widenings need two); `hub.release()` renders the **policy release**:
+members, roles, folders, permissions, thresholds, routing, approval criteria,
+segregation of duties, processes, generated Op manifests (`ops`) and
+**workflows** (state machines per process). Runs pin the release digest.
+A run creates a record (type from the workflow), executes automatic cog
+steps, and at each checkpoint routes to a person or a cog; the record waits
+in state `awaiting-<checkpoint-id>` with assignees and a due date; a
+decision (`runner.decide`) is the electronic signature; the run continues
+and closes the record in the process's terminal state. Everything is on the
+run's Track (`state/runs/<id>/track.jsonl`) and on the record's events.
+
+## Sentence grammar (convention mode)
+
+Only inside these sections: `## Roles`, `## Members`, `## Folders`,
+`## Permissions`, `## Thresholds`, `## Routing`, `## Approval criteria`,
+`## Segregation of duties`, `## Process: <name>`. Frontmatter may carry
+`compile: convention|guided|none` (default convention) and `clauses: [...]`.
+
+```
+## Roles            - quality-manager
+## Members          - alice (person): finance-clerk, staff      - ap-reviewer (cog): payables-reviewer
+## Folders          - Quality/Nonconformances
+## Permissions      Quality managers may approve nonconformances in Quality/Nonconformances.
+                    Finance clerks may not approve bills in Finance/Payables.
+                    Controllers may read Finance.
+## Thresholds       The match tolerance is 2 percent.      The effectiveness check interval is 90 days.
+                    (name words + threshold|tolerance|limit|interval; units USD EUR GBP percent days)
+## Routing          Approvals in purchase-to-pay over 10,000 USD go to the controller.
+                    At Disposition the nonconformance in nonconformance with low risk go to the quality-assistant cog.
+                    At Acknowledge the document in training-acknowledgement go to the assignee.
+                    Approvals in document-control for drawings with a minor change go to the doc-reviewer cog.
+                    Overdue items in nonconformance go to the management representative.
+                    Disposition the nonconformance in nonconformance is due within 5 days.      (SLA)
+                    assignees: the <role words> | the <cog-id> cog | <person> | the assignee|owner|author|requester|auditor|chair|evaluator|reporter (field)
+                    conditions: over|above|under|below|at or under|at or over <amount> <CUR>; with low|medium|high risk;
+                                for <doctype>s; with a minor|major change; (Overdue items ...) 
+## Approval criteria  The ap-reviewer cog may approve purchase-to-pay bills under 2,000 USD when the three-way match is within tolerance and the supplier is approved.
+                    conditions (closed vocabulary, rules.py CONDITION_VOCABULARY): the three-way match is within tolerance;
+                    the supplier is approved; the risk is low; the risk is not high; the change is minor; the document is a minor revision; no open nonconformance exists
+## Segregation of duties  The preparer and the approver of a bill must be different people.   (object = record object noun)
+## Process: nonconformance
+Records are filed in Quality/Nonconformances.
+The record type is ncr.                      (optional; otherwise derived from the first step's object)
+Closes as closed.                            (terminal state; default closed)
+Rejections return to Open the nonconformance.   (optional; otherwise a rejection ends in state rejected)
+1. [staff] Open the nonconformance (ncr-classifier)        <- step with a cog = automatic
+2. [system] File the nonconformance (record-filer)
+3. [system] Score the risk (risk-scorer)
+4. [quality-manager] Disposition the nonconformance         <- no cog = human checkpoint; state awaiting-disposition-the-nonconformance
+5. [system] Open corrective action (capa-opener)
+```
+
+The **object** of a process is the first step's title minus its verb and article
+("Open the nonconformance" -> `nonconformance`). Permission sentences use the
+same noun, pluralized ("may create nonconformances in ..."). The run owner
+must hold the first step's role and a `create <object>` permission on the
+filing folder; a person deciding a checkpoint must hold `approve <object>`
+there. The record type is the config type whose `object` equals that noun,
+unless `The record type is X.` says otherwise.
+
+A checkpoint with no routing sentence routes to the role on its step (warning).
+A routed role with no member is an error ("fill the org model"): this is how
+seed placeholders work.
+
+## Record types (`config/record-types.json`)
+
+`prefix`, `digits`, `yearly`, `object`, `fields` (types: text, int, number,
+money, date, bool, list, object, ref, principal, enum:a,b), `required_by_state`
+(state -> fields that must be set before the record may enter it; waiting
+states are `awaiting-<checkpoint-id>`), `defaults` (`$owner`, `$today`),
+`retention`, `sensitivity`, `gapless`.
+
+## APIs you will use
+
+```python
+from hubproto.app import Hub
+hub = Hub(root)                      # root has frames/ and state/
+hub.kernel.seed()                    # suppliers, POs, periods
+p = hub.compile(); hub.review(p["id"], "bob", approve_all=True); hub.review(p["id"], "carol", approve_all=True)
+meta = hub.release(p["id"], "bob")   # -> {"digest", "effective_from", ...}
+bundle = hub.current_bundle()        # members, permissions, routing, workflows, ops, processes, thresholds, sod, approval_criteria
+hub.why(user, action, obj, folder)   # {"allowed", "rule", "why"}
+run_id = hub.runner.submit(process, {"record": {...}}, owner="alice")
+state = hub.runner.load(run_id)      # id, process, owner, release, record (locator), steps, pending{step,checkpoint,assignees,due,payload_digest,title}, grant, status
+hub.runner.decide(run_id, "bob", "approve"|"reject", meaning="...", fields={...})
+hub.runner.track(run_id); hub.runner.tick(today=None); hub.runner.run_for_record(locator); hub.runner.list()
+k = hub.kernel
+k.query(type_=, folder=, state=, linked_to=, text=, assignee=, overdue_at=)   # list of records
+rec = k.get("rec:ncr:NCR-2026-0001") or k.get("NCR-2026-0001")
+# record: locator number type folder state fields labels hold archived created_at created_by run_id release events links decisions transitions assignees due
+k.links_of(ref); k.link(ref, rel, target, by=); k.set_fields(ref, {...}, by=); k.flat(rec); k.types; k.link_vocab; k.retention
+d = hub.dms
+d.create(title=, doc_class=, folder=, by=, content=bytes, filename=, mime=, doc_type=, attach_to=locator)
+d.add_version(ref, bytes, by=, filename=, note=); d.versions(ref); d.content(ref) -> (bytes, version)
+d.checkout(ref, by=); d.checkin(ref, bytes, by=); d.attach(record_ref, doc_ref, by=); d.documents_of(record_ref)
+d.render_snapshot(record_ref, by=); d.intake(folder=, by=, content=, filename=, channel=, sender=, attach_to=)
+hub.inbox.for_principal(p); hub.inbox.notify(...); hub.send(sender, to, subject, body, channel="dm"|"email", attachments=[{"name","content"}])
+hub.frames.frames  # name -> Frame(path, name, version, scope, maintainer, inherits, body, lines, frontmatter)
+hub.releases.list()/current()/bundle(digest)/get(digest)
+hub.registry.cards()
+```
+
+Cog ids available for process steps: record-filer, record-linker, notifier,
+document-renderer, risk-scorer, invoice-extractor, three-way-matcher,
+ledger-poster, document-drafter, document-publisher, ncr-classifier,
+capa-opener, ncr-opener, capa-drafter, effectiveness-scheduler,
+audit-checklist-drafter, document-classifier; reviewer cogs (members):
+ap-reviewer, doc-reviewer, quality-assistant.
+
+Workflow bundle shape: `bundle["workflows"][process] = {record_type, object,
+states, transitions[{from,to,kind:automatic|human,steps|step,title,on_reject,sla_days}],
+checkpoints[{id,title,role,state,sla_days}], terminal, reject_to, sla{checkpoint: days}}`.
