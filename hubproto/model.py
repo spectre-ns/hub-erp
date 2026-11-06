@@ -85,7 +85,7 @@ class ModelGateway:
         if model.startswith("claude"):
             name = os.environ.get("HUBPROTO_OLLAMA_MODEL") or "llama3.1"
         payload = {"model": name, "stream": False,
-                   "options": {"num_predict": max_tokens, "num_ctx": int(os.environ.get("HUBPROTO_MODEL_CTX") or 16384)},
+                   "options": {"num_predict": max_tokens, "num_ctx": int(os.environ.get("HUBPROTO_MODEL_CTX") or 32768)},
                    "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
         if not os.environ.get("HUBPROTO_MODEL_THINK"):
             payload["think"] = False  # a thinking model otherwise spends its budget before it answers

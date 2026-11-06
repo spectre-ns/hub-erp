@@ -403,3 +403,38 @@ def test_the_hub_writes_formatted_content_into_a_docx():
     assert '<w:pStyle w:val="Heading1"/>' in xml and "<w:b/>" in xml and "ISO 9001" in xml
     assert xml.count("• ") == 2 and "<w:tbl>" in xml and xml.count("<w:tr>") == 2 and "Torque" in xml
     assert office.extract_text(new, "docx").startswith("Quality header")
+
+
+def test_the_hub_writes_rows_into_xlsx_and_ods_sheets():
+    from hubproto import office
+
+    for ext in ("xlsx", "ods"):
+        content, _ = wopi.blank_document(ext)
+        new = office.insert_paragraphs(content, ext, ["| Item | Limit |", "|---|---|", "| Torque | 2 Nm |", "Note: checked"], "start")
+        assert new is not None, ext
+        text = office.extract_text(new, ext)
+        assert "Item | Limit" in text and "Torque | 2 Nm" in text and "Note: checked" in text, (ext, text)
+        assert office.sheet_rows_used(new, ext) == 3, (ext, office.sheet_rows_used(new, ext))
+        again = office.insert_paragraphs(new, ext, ["| Mass | 12 g |"], "end")
+        assert office.sheet_rows_used(again, ext) == 4 and "Mass | 12 g" in office.extract_text(again, ext)
+
+
+def test_an_edit_request_on_a_spreadsheet_yields_rows_for_the_seat(shell):
+    hub = shell["hub"]
+    content, mime = wopi.blank_document("xlsx")
+    doc = hub.dms.create(title="Inspection log", doc_class="working", folder="Quality/Controlled Documents", by="carol", content=content,
+                         filename="log.xlsx", mime=mime, doc_type="document")
+    number, loc = doc["number"], doc["locator"]
+    hub.dms.checkout(loc, by="carol", via="editor")
+    reply = hub.send("carol", "carol", "Comment", "@quality-assistant please add a checklist with columns for item, requirement and result", record=loc)
+    pending = wopi.WopiHost(hub).pending_replies(hub.kernel.get(loc))
+    assert pending and pending[0]["edit"]["kind"] == "sheet" and pending[0]["edit"]["start_row"] == 1
+    rows = pending[0]["edit"]["rows"]
+    assert rows and all(isinstance(r, list) for r in rows) and len(rows[0]) >= 2
+    status, url, text = post(shell, "/apply-replies", {"as": "carol", "doc": loc})
+    assert json.loads(text)["applied"] == 1
+    from hubproto import office
+
+    content, version = hub.dms.content(loc)
+    assert office.sheet_rows_used(content, "xlsx") == len(rows) and version["by"] == "hub"
+    hub.dms.undo_checkout(loc, by="carol")

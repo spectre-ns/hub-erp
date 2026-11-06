@@ -110,7 +110,10 @@ def handle(hub, msg: dict, bundle: dict) -> list[dict]:
             explanation = (r.get("explanation") or "Written as asked.") + ("" if not r.get("stand_in") else " (drafted with the stand-in: configure a model for real wording)")
             reply = hub.inbox.reply(msg, sender=cog_id, body=explanation, record=record["locator"], envelope=env)
             # The content is written by the cog's seat in the live editor, or by the hub into the file when no editor is open.
-            hub.inbox.mark(reply["id"], edit={"paragraphs": r["paragraphs"], "position": r.get("position") or "start"})
+            edit = {"paragraphs": r["paragraphs"], "position": r.get("position") or "start"}
+            if r.get("kind") == "sheet":
+                edit.update({"kind": "sheet", "rows": r.get("rows") or [], "start_row": r.get("start_row") or 1})
+            hub.inbox.mark(reply["id"], edit=edit)
             out.append(reply)
             continue
         if record and record["type"] == "document" and intent == "message" and msg.get("comment_id") not in (None, "") and "answer" in cog.tasks:

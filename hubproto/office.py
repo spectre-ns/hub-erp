@@ -41,14 +41,41 @@ def extract_text(content: bytes, extension: str, limit: int = 20000) -> str:
             root = ElementTree.fromstring(z.read("word/document.xml"))
             paras = ["".join(t.text or "" for t in p.iter(W + "t")) for p in root.iter(W + "p")]
             return "\n".join(p for p in paras if p.strip())[:limit]
-        if ext in ("odt", "ods", "odp") and "content.xml" in z.namelist():
+        if ext == "ods" and "content.xml" in z.namelist():
+            root = ElementTree.fromstring(z.read("content.xml"))
+            TABLE = "{urn:oasis:names:tc:opendocument:xmlns:table:1.0}"
+            lines = []
+            for row in root.iter(TABLE + "table-row"):
+                cells = [_itertext(c).strip() for c in row.iter(TABLE + "table-cell")]
+                if any(cells):
+                    lines.append(" | ".join(cells).rstrip(" |"))
+            return "\n".join(lines)[:limit]
+        if ext in ("odt", "odp") and "content.xml" in z.namelist():
             root = ElementTree.fromstring(z.read("content.xml"))
             paras = [_itertext(p) for p in root.iter() if p.tag in (TEXT + "p", TEXT + "h")]
             return "\n".join(p for p in paras if p.strip())[:limit]
-        if ext == "xlsx" and "xl/sharedStrings.xml" in z.namelist():
-            root = ElementTree.fromstring(z.read("xl/sharedStrings.xml"))
+        if ext == "xlsx":
             ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
-            return "\n".join(_itertext(si) for si in root.iter(ns + "si"))[:limit]
+            shared = []
+            if "xl/sharedStrings.xml" in z.namelist():
+                shared = [_itertext(si) for si in ElementTree.fromstring(z.read("xl/sharedStrings.xml")).iter(ns + "si")]
+            lines = []
+            if "xl/worksheets/sheet1.xml" in z.namelist():
+                root = ElementTree.fromstring(z.read("xl/worksheets/sheet1.xml"))
+                for row in root.iter(ns + "row"):
+                    cells = []
+                    for c in row.iter(ns + "c"):
+                        t = c.get("t")
+                        v = c.find(ns + "v")
+                        if t == "s" and v is not None and v.text and v.text.isdigit() and int(v.text) < len(shared):
+                            cells.append(shared[int(v.text)])
+                        elif t == "inlineStr":
+                            cells.append(_itertext(c))
+                        elif v is not None:
+                            cells.append(v.text or "")
+                    if any(x.strip() for x in cells):
+                        lines.append(" | ".join(cells))
+            return "\n".join(lines or shared)[:limit]
         if ext == "pptx":
             out = []
             for name in sorted(n for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml")):
@@ -207,6 +234,8 @@ def insert_paragraphs(content: bytes, extension: str, paragraphs: list[str], pos
     """Write paragraphs into the document body at the start or the end. A line starting with '# ' is a heading.
     docx and odt are supported; None otherwise."""
     ext = (extension or "").lower()
+    if is_sheet(ext):
+        return insert_rows(content, ext, rows_from_lines(paragraphs))
     z = _zip(content)
     if z is None or not paragraphs:
         return None
@@ -323,3 +352,115 @@ def docx_blocks(lines: list[str]) -> list[str]:
             out.append(f"<w:p>{_docx_runs(stripped)}</w:p>")
     flush_table()
     return out
+
+
+# ---------------------------------------------------------------- spreadsheets
+def _col(n: int) -> str:
+    out = ""
+    n += 1
+    while n:
+        n, r = divmod(n - 1, 26)
+        out = chr(65 + r) + out
+    return out
+
+
+def rows_from_lines(lines: list[str]) -> list[list[str]]:
+    """Content lines as rows: '| a | b |' rows become cells, a '|---|' line is skipped, headings and plain lines
+    become one-cell rows (heading marks and bullets stripped)."""
+    rows: list[list[str]] = []
+    for line in lines:
+        t = line.strip()
+        if not t:
+            continue
+        if t.startswith("|") and t.endswith("|"):
+            if re.fullmatch(r"\|[\s:|-]+\|", t):
+                continue
+            rows.append([c.strip().replace("**", "") for c in t.strip("|").split("|")])
+        else:
+            rows.append([re.sub(r"^(#+\s*|[-*•]\s+|\d+[.)]\s+)", "", t).replace("**", "")])
+    return rows
+
+
+def sheet_rows_used(content: bytes, extension: str) -> int:
+    """The last used row number of the first sheet (0 when empty)."""
+    ext = (extension or "").lower()
+    z = _zip(content)
+    if z is None:
+        return 0
+    if ext == "xlsx" and "xl/worksheets/sheet1.xml" in z.namelist():
+        xml = z.read("xl/worksheets/sheet1.xml").decode("utf-8", "replace")
+        nums = [int(x) for x in re.findall(r'<row [^>]*r="(\d+)"', xml)]
+        return max(nums) if nums else 0
+    if ext == "ods" and "content.xml" in z.namelist():
+        xml = z.read("content.xml").decode("utf-8", "replace")
+        m = re.search(r"<table:table [^>]*>(.*?)</table:table>", xml, re.S)
+        if not m:
+            return 0
+        count = last_used = 0
+        for rm in re.finditer(r"<table:table-row\b([^>]*)>(.*?)</table:table-row>", m.group(1), re.S):
+            rep = re.search(r'table:number-rows-repeated="(\d+)"', rm.group(1))
+            n = int(rep.group(1)) if rep else 1
+            if n > 1000:
+                break
+            count += n
+            if "<text:p>" in rm.group(2) or "office:value" in rm.group(2):
+                last_used = count
+        return last_used
+    return 0
+
+
+def insert_rows(content: bytes, extension: str, rows: list[list[str]]) -> bytes | None:
+    """Append rows of cells after the last used row of the first sheet (xlsx or ods); None otherwise."""
+    ext = (extension or "").lower()
+    z = _zip(content)
+    if z is None or not rows:
+        return None
+    names = z.namelist()
+    files = {n: z.read(n) for n in names}
+    if ext == "xlsx" and "xl/worksheets/sheet1.xml" in files:
+        xml = files["xl/worksheets/sheet1.xml"].decode("utf-8")
+        start = sheet_rows_used(content, ext) + 1
+        new = ""
+        for i, cells in enumerate(rows):
+            r = start + i
+            cs = "".join(f'<c r="{_col(j)}{r}" t="inlineStr"><is><t xml:space="preserve">{_escape(v)}</t></is></c>' for j, v in enumerate(cells))
+            new += f'<row r="{r}">{cs}</row>'
+        if "<sheetData/>" in xml:
+            xml = xml.replace("<sheetData/>", f"<sheetData>{new}</sheetData>", 1)
+        else:
+            xml = xml.replace("</sheetData>", new + "</sheetData>", 1)
+        xml = re.sub(r'<dimension ref="[^"]*"/>', "", xml, count=1)
+        files["xl/worksheets/sheet1.xml"] = xml.encode("utf-8")
+    elif ext == "ods" and "content.xml" in files:
+        xml = files["content.xml"].decode("utf-8")
+        width = max(len(r) for r in rows)
+        new = ""
+        for cells in rows:
+            cs = "".join(f'<table:table-cell office:value-type="string"><text:p>{_escape(v)}</text:p></table:table-cell>' for v in cells)
+            cs += "<table:table-cell/>" * (width - len(cells))
+            new += f"<table:table-row>{cs}</table:table-row>"
+        m = re.search(r"<table:table [^>]*>.*?</table:table>", xml, re.S)
+        if not m:
+            return None
+        table = m.group(0)
+        # drop a trailing all-empty repeated row block so the new rows follow the used ones
+        table2 = re.sub(r'(?:<table:table-row\b[^>]*>(?:\s*<table:table-cell\b[^>]*/>|\s*<table:table-cell\b[^>]*></table:table-cell>)*\s*</table:table-row>\s*)+</table:table>$',
+                        new + "</table:table>", table, count=1, flags=re.S)
+        if table2 == table:
+            table2 = table.replace("</table:table>", new + "</table:table>", 1)
+        xml = xml.replace(table, table2, 1)
+        files["content.xml"] = xml.encode("utf-8")
+    else:
+        return None
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as out:
+        for n in names:
+            if n == "mimetype":
+                out.writestr(zipfile.ZipInfo(n), files[n], compress_type=zipfile.ZIP_STORED)
+            else:
+                out.writestr(n, files[n])
+    return buf.getvalue()
+
+
+def is_sheet(extension: str) -> bool:
+    return (extension or "").lower() in ("xlsx", "ods", "xls", "csv")

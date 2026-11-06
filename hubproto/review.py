@@ -81,12 +81,11 @@ def review(cog_id: str, profile: dict, ctx, record: dict, question: str = "") ->
     evidence = gather(ctx, record)
     findings = checklist(evidence, sops)
     verdict = "fail" if any(p["severity"] == "error" for p in findings) else "pass"
-    budget = int(os.environ.get("HUBPROTO_SOP_CHARS") or 14000)  # a small local model has a small window; the SOPs share it
-    per = max(1500, budget // max(1, len(sops)))
-    system = (profile.get("prompt") or f"You are {cog_id}, a reviewer on the team.") + "\n\n" + \
-        "Review the item strictly against these procedures, and only these:\n\n" + \
-        "\n\n".join(f"# {name}\n{text[:per]}" for name, text in sops.items())
-    user = (f"Question: {question or 'Review this item.'}\n\nITEM:\n{json.dumps(evidence, indent=1, default=str)[:6000]}\n\n"
+    from .cogs import cog_context
+
+    system = cog_context(ctx, record if record.get("type") == "document" else None)
+    item = {k: v for k, v in evidence.items() if k != "documents"} if record.get("type") == "document" else evidence
+    user = (f"Question: {question or 'Review this item.'}\n\nITEM:\n{json.dumps(item, indent=1, default=str)[:6000]}\n\n"
             f"FINDINGS:\n" + "\n".join(f"- [{p['severity']}] {p['check']}: {p['detail']}" for p in findings) + "\n\n"
             "Answer with: a short assessment, any further findings as '- [error|warning] check: detail' lines, and 'Verdict: pass' or 'Verdict: fail'.")
     text, model, stand_in = "", profile.get("model") or "stand-in", True

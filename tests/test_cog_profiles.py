@@ -190,3 +190,23 @@ def test_the_gateway_uses_ollama_when_configured(monkeypatch):
         assert out["stand_in"] is True and "did not answer" in out["text"]
     finally:
         srv.shutdown()
+
+
+def test_the_cogs_system_prompt_carries_its_sops_the_whole_document_and_every_thread(released):
+    from hubproto.cogs import RunContext, cog_context
+
+    content = b"# WI-12\nTorque the M4 screws to 2 Nm.\nRecord the value."
+    doc = released.dms.create(title="WI-12 Torque", doc_class="working", folder="Quality/Controlled Documents", by="carol", content=content,
+                              filename="wi12.md", mime="text/markdown", doc_type="wi")
+    released.kernel.set_fields(doc["locator"], {"text": content.decode(), "office_comments": [
+        {"id": "0", "author": "carol", "text": "@quality-assistant is 2 Nm right?", "parent": None},
+        {"id": "1", "author": "quality-assistant", "text": "Yes, per the procedure.", "parent": "0"},
+        {"id": "2", "author": "carol", "text": "Which procedure?", "parent": "1"}]}, by="carol")
+    bundle = released.releases.bundle(released.releases.current()["digest"])
+    ctx = RunContext(run_id="t", release="", bundle=bundle, owner="quality-assistant", kernel=released.kernel, frames=lambda: released.frames,
+                     extras={"cog_profile": bundle["cogs"]["quality-assistant"]})
+    system = cog_context(ctx, released.kernel.get(doc["locator"]))
+    assert system.startswith("You are the quality assistant.")
+    assert "# ncr-sop" in system and "# design-control-sop" in system, "the SOPs it follows"
+    assert "DOCUMENT " + doc["number"] in system and "Torque the M4 screws to 2 Nm." in system, "the whole document"
+    assert "- [0] carol: @quality-assistant is 2 Nm right?" in system and "  - [1] quality-assistant (reply to 0): Yes" in system and "    - [2] carol (reply to 1): Which procedure?" in system

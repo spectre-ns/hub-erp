@@ -638,6 +638,39 @@ class DocumentClassifier(Cog):
 
 # ---------------------------------------------------------------- reviewer cogs (team members)
 
+def cog_context(ctx: RunContext, rec: dict | None, *, sop_chars: int | None = None, doc_chars: int | None = None) -> str:
+    """What a cog has in front of it when it works on an item: its standing prompt, the SOPs it follows, the whole
+    document (text) and every comment thread in it, with authors and reply structure. Goes in the system prompt
+    of every document task, so review, edit and answer reason from the same reference."""
+    import os as _os
+
+    sops = ctx.sop_texts()
+    sop_budget = sop_chars or int(_os.environ.get("HUBPROTO_SOP_CHARS") or 14000)
+    doc_budget = doc_chars or int(_os.environ.get("HUBPROTO_DOC_CHARS") or 24000)
+    per = max(1500, sop_budget // max(1, len(sops)))
+    parts = [ctx.profile.get("prompt") or f"You are {getattr(ctx, 'owner', 'a cog')}, a reviewer on the team."]
+    parts.append("PROCEDURES YOU FOLLOW (review, write and answer strictly against these):\n\n" +
+                 ("\n\n".join(f"# {n}\n{t[:per]}" for n, t in sops.items()) or "(none assigned)"))
+    if rec:
+        f = rec.get("fields") or {}
+        head = f"DOCUMENT {rec['number']}: {f.get('title') or ''} (type {rec['type']}; class {f.get('doc_class') or '-'}; revision {f.get('revision', '')}.{f.get('minor', 0)}; state {rec['state']}; owner {f.get('owner') or '-'})"
+        text = (f.get("text") or "").strip()
+        parts.append(head + "\n" + (text[:doc_budget] + ("\n[... truncated]" if len(text) > doc_budget else "") if text else "(no text extracted)"))
+        comments = f.get("office_comments") or []
+        if comments:
+            by_id = {str(c.get("id")): c for c in comments}
+
+            def depth(c, n=0):
+                p = c.get("parent")
+                return n if p in (None, "") or str(p) not in by_id or n > 12 else depth(by_id[str(p)], n + 1)
+
+            lines = []
+            for c in comments:
+                lines.append(("  " * depth(c)) + f"- [{c.get('id')}] {c.get('author') or '?'}" + (f" (reply to {c.get('parent')})" if c.get("parent") not in (None, "") else "") + f": {c.get('text')}")
+            parts.append("COMMENT THREADS IN THE DOCUMENT (indented lines are replies):\n" + "\n".join(lines))
+    return "\n\n".join(parts)
+
+
 class ReviewerCog(Cog):
     """A Cog that is also a team member: reviews, approves within criteria,
     answers its inbox, and files records it is asked to file."""
@@ -656,13 +689,18 @@ class ReviewerCog(Cog):
         request = input.get("request") or ""
         f = rec["fields"]
         sops = ctx.sop_texts()
-        per = max(1500, 12000 // max(1, len(sops)))
-        system = (ctx.profile.get("prompt") or f"You are {self.id}.") + "\n\nYou write document content that follows these procedures:\n\n" + \
-            "\n\n".join(f"# {n}\n{t[:per]}" for n, t in sops.items())
-        user = (f"A colleague wrote this comment in document {rec['number']} ({f.get('title')}):\n{request}\n\n"
-                f"The document currently reads:\n{(f.get('text') or '')[:5000] or '(empty)'}\n\n"
-                "Write only the content to insert, as plain lines: a heading line starting with '# ', then paragraphs. "
-                "No preamble, no explanation, no markdown other than the '# ' heading.")
+        system = cog_context(ctx, rec)
+        from . import office as _office
+
+        sheet = _office.is_sheet((f.get("filename") or "").rsplit(".", 1)[-1] if "." in (f.get("filename") or "") else "")
+        if sheet:
+            user = (f"A colleague wrote this comment in the spreadsheet above:\n{request}\n\n"
+                    "Write only the rows to add, one row per line, cells separated by | like '| Item | Limit | Result |'. "
+                    "A first row of column headings is welcome. No preamble, no explanation.")
+        else:
+            user = (f"A colleague wrote this comment in the document above:\n{request}\n\n"
+                    "Write only the content to insert, as plain lines: a heading line starting with '# ', then paragraphs; "
+                    "'- ' for bullet points, '**bold**' for emphasis, and '| a | b |' rows for a table. No preamble, no explanation.")
         text, model, stand_in = "", ctx.profile.get("model") or "stand-in", True
         if ctx.model is not None:
             out = ctx.model.complete(model=model, system=system, user=user, by=self.id)
@@ -673,9 +711,20 @@ class ReviewerCog(Cog):
             lines = [f"# {title}", f"Document {rec['number']}, revision {f.get('revision', 'A')}.{f.get('minor', 0)}; owner {f.get('owner') or '-'}; "
                      f"class {f.get('doc_class') or '-'}; state {rec['state']}.",
                      "Prepared under the procedures " + (", ".join(sorted(sops)) or "of the quality system") + ". Review and approval are recorded on the item."]
-        position = "end" if re.search(r"\b(end|bottom|append|footer|conclusion)\b", request.lower()) else "start"
-        return self.ok("edit-document", {"paragraphs": lines[:40], "position": position, "model": model, "stand_in": stand_in,
-                                         "explanation": f"I wrote {len(lines[:40])} line(s) at the {position} of the document as asked."})
+        position = "end" if sheet or re.search(r"\b(end|bottom|append|footer|conclusion)\b", request.lower()) else "start"
+        if sheet and (stand_in or not any("|" in ln for ln in lines)):
+            lines = ["| Item | Requirement | Result |", f"| {f.get('title') or rec['number']} | per " + (", ".join(sorted(sops)) or "the quality procedures") + " | |"] if stand_in else lines
+        out = {"paragraphs": lines[:60], "position": position, "model": model, "stand_in": stand_in,
+               "explanation": f"I wrote {len(lines[:60])} {'row' if sheet else 'line'}(s) at the {position} of the {'sheet' if sheet else 'document'} as asked."}
+        if sheet:
+            out["kind"] = "sheet"
+            out["rows"] = _office.rows_from_lines(lines[:60])
+            try:
+                content, _ = ctx.dms.content(rec["locator"]) if ctx.dms is not None else (b"", {})
+                out["start_row"] = _office.sheet_rows_used(content, (f.get("filename") or "").rsplit(".", 1)[-1]) + 1
+            except Exception:
+                out["start_row"] = 1
+        return self.ok("edit-document", out)
 
     def task_answer(self, input: dict, ctx: RunContext) -> dict:
         """Answer a question or remark in a document's comment thread from the cog's SOPs, the document's text and
@@ -684,13 +733,9 @@ class ReviewerCog(Cog):
         question = input.get("question") or ""
         thread = input.get("thread") or []
         sops = ctx.sop_texts()
-        per = max(1500, 10000 // max(1, len(sops)))
-        system = (ctx.profile.get("prompt") or f"You are {self.id}.") + "\n\nAnswer from these procedures, briefly and concretely:\n\n" + \
-            "\n\n".join(f"# {n}\n{t[:per]}" for n, t in sops.items())
-        doc_text = ((rec or {}).get("fields") or {}).get("text") or ""
-        user = ("Thread so far:\n" + "\n".join(f"- {t.get('author')}: {t.get('text')}" for t in thread) + "\n\n" if thread else "") + \
-            (f"Document {rec['number']} ({rec['fields'].get('title')}) reads:\n{doc_text[:4000] or '(empty)'}\n\n" if rec else "") + \
-            f"Reply to this:\n{question}\n\nAnswer in a few sentences a colleague can act on."
+        system = cog_context(ctx, rec)
+        user = ("This thread so far:\n" + "\n".join(f"- {t.get('author')}: {t.get('text')}" for t in thread) + "\n\n" if thread else "") + \
+            f"Reply to this comment in that thread:\n{question}\n\nAnswer in a few sentences a colleague can act on, from the procedures and the document above."
         text, model, stand_in = "", ctx.profile.get("model") or "stand-in", True
         if ctx.model is not None:
             out = ctx.model.complete(model=model, system=system, user=user, by=self.id, max_tokens=500)
