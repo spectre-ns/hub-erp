@@ -50,7 +50,10 @@ var p=document.getElementById(a.getAttribute('data-tab'));if(p){p.classList.togg
 function go(){if(!tabs.length)return;var h=location.hash.replace('#','');var t=h&&document.getElementById(h);var p=t&&(t.classList.contains('tab-panel')?t:t.closest('.tab-panel'));
 show(p?p.id:tabs[0].getAttribute('data-tab'));if(t&&t!==p){setTimeout(function(){t.scrollIntoView()},0)}}
 go();addEventListener('hashchange',go);
-var all=document.querySelector('input[data-select-all]');if(all){all.addEventListener('change',function(){document.querySelectorAll('input[name=sel]').forEach(function(c){c.checked=all.checked})})}});"""
+var all=document.querySelector('input[data-select-all]');if(all){all.addEventListener('change',function(){document.querySelectorAll('input[name=sel]').forEach(function(c){c.checked=all.checked})})}
+addEventListener('keydown',function(ev){if(ev.ctrlKey||ev.metaKey||ev.altKey)return;var t=ev.target;if(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.tagName==='SELECT'||t.isContentEditable))return;
+var k=ev.key.toLowerCase();var el=null;document.querySelectorAll('[data-hotkey]').forEach(function(b){if(!el&&b.getAttribute('data-hotkey').toLowerCase()===k)el=b});if(!el)return;ev.preventDefault();
+if(el.tagName==='A'&&el.getAttribute('href')&&el.getAttribute('href').charAt(0)==='#'){location.hash=el.getAttribute('href');var h=document.getElementById(el.getAttribute('href').slice(1));if(h){var f=h.querySelector('input,textarea,select,button');if(f)f.focus()}}else{el.click()}});});"""
 ONCE_KEEP = 2000  # one-use tokens remembered (the oldest are forgotten first)
 
 
@@ -221,7 +224,7 @@ class BaseHandler(BaseHTTPRequestHandler):
                     return fn
             return None
         posts = {"/start": self.post_start, "/decide": self.post_decide, "/msg": self.post_msg, "/attach": self.post_attach,
-                 "/finish-edit": self.post_finish_edit, "/new-document": self.post_new_document, "/working-copy": self.post_working_copy, "/apply-replies": self.post_apply_replies, "/mark-applied": self.post_mark_applied, "/editor-debug": self.post_editor_debug,
+                 "/finish-edit": self.post_finish_edit, "/new-document": self.post_new_document, "/working-copy": self.post_working_copy, "/apply-replies": self.post_apply_replies, "/start-on": self.post_start_on, "/mark-applied": self.post_mark_applied, "/editor-debug": self.post_editor_debug,
                  "/upload": self.post_upload, "/checkout": self.post_checkout, "/checkin": self.post_checkin, "/link": self.post_link,
                  "/snapshot": self.post_snapshot, "/hold": self.post_hold, "/resubmit": self.post_resubmit, "/retry": self.post_retry,
                  "/cancel": self.post_cancel, "/undo-checkout": self.post_undo_checkout, "/bulk-hold": self.post_bulk_hold}

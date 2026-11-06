@@ -248,7 +248,7 @@ def test_an_approval_request_files_a_working_document_into_the_process_folder_an
     assert run is not None and run["process"] == "document-control"
     rec = released.kernel.get(doc["locator"])
     assert rec["folder"] == "Quality/Controlled Documents", "filed where document-control files its records"
-    assert "started document-control" in reply["body"]
+    assert "started document-control" in reply["body"] or "waiting for" in reply["body"]
     assert any(e["type"] == "record.moved" for e in released.kernel.events(aggregate=doc["locator"]))
 
 

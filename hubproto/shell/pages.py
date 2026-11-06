@@ -15,7 +15,7 @@ from ..runner import FIELD_ROLES
 from .forms import DEFAULT_START_INPUTS, REQUIRED_EXTRA, START_INPUTS, ShellError, file_input, text_input, widget
 from .handler import details, folder_tree, hidden_as, href, kv, table
 from .icons import TYPE_ICONS, file_icon, icon, type_icon
-from .text import (BLOB_FIELDS, chip, day, days_from, esc, event_sentence, field_label, fmt, owner_of, short, state_name,
+from .text import (type_name, BLOB_FIELDS, chip, day, days_from, esc, event_sentence, field_label, fmt, owner_of, short, state_name,
                    summary_of_record, tag, track_sentence, type_name, value_text, verb_for, when)
 from .views import BUCKET_WORDS, EXIT_STATES, bucket_of
 
@@ -583,7 +583,7 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
         btns = ""
         decides_here = run and pending and pending.get("kind", "decision") == "decision" and run["status"] == "waiting" and user in pending["assignees"]
         if decides_here:
-            btns += f'<a class="button" href="#decide">{icon("check")}Approve</a><a class="button reject" href="#reject-{esc(run["id"])}">{icon("x")}Reject</a>'
+            btns += f'<a class="button" href="#decide" data-hotkey="a">{icon("check")}Approve<kbd class="hk">a</kbd></a><a class="button reject" href="#reject-{esc(run["id"])}" data-hotkey="x">{icon("x")}Reject<kbd class="hk">x</kbd></a>'
         if run and pending and pending.get("kind") == "resubmit" and user in pending["assignees"]:
             btns += f'<a class="button" href="#rework">{icon("retry")}Rework and resubmit</a>'
         if run and run["status"] == "failed" and rec["state"] == "failed":
@@ -598,7 +598,7 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
             btns += f'<a class="button ghost" href="{href("/", user)}#start">{icon("play")}Start a process</a>'
         btns += f'<form method="post" action="/snapshot" class="inline">{hidden_as(user)}{self._once()}<input type="hidden" name="record" value="{esc(loc)}"><button class="ghost" title="files a copy of this item as an evidence document">{icon("camera")}Render snapshot</button></form>'
         btns += f'<button type="button" class="ghost" onclick="print()">{icon("printer")}Print</button>'
-        body = f'<div class="formhead"><div class="btns">{btns}</div>{self._statusbar(wf, rec)}</div>'
+        body = f'<div class="formhead"><div class="btns">{btns}</div>{self._statusbar(wf, rec)}</div>' + self._ops_row(rec, run)
         body += self._smart_buttons([("Documents", len(docs), "paperclip", "documents"), ("Links", len([l for l in links if l["rel"] != "has-document"]), "link", "links"),
                                      ("Runs", len(runs_of), "activity", "workflow"), ("Decisions", len(decisions), "check-circle", "decisions")]
                                     + ([("Reviews", len(reviews), "eye", "reviews")] if reviews else []))
@@ -741,6 +741,52 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
         crumbs.append((rec["number"], None))
         self._page(rec["number"], body, status=status, head=head, crumbs=crumbs, app_type=rec["type"])
 
+    OPS_ON_RECORD = {"document-control": "Send for approval", "design-release": "Submit for release", "requirements-capture": "Submit for acceptance",
+                     "purchase-request": "Request the purchase", "goods-receipt": "Record the receipt", "nonconformance": "Open the nonconformance",
+                     "capa": "Open the corrective action", "purchase-to-pay": "Send the bill for approval", "item-request": "Request the item",
+                     "journal-reversal": "Request the reversal", "change-control": "Send for change control", "calibration": "Record the calibration",
+                     "internal-audit": "Plan the audit", "training-acknowledgement": "Send for acknowledgement", "complaint": "Open the complaint",
+                     "management-review": "Hold the review", "task": "Assign the task", "supplier-evaluation": "Start the evaluation"}
+
+    def _ops_row(self, rec: dict, run: dict | None) -> str:
+        """One-click Ops on this item: the processes that apply to it (started on it, not on a copy) and the cogs that
+        can be asked about it, each with a key: press the key on the page to fire it."""
+        user, bundle, loc = self.user, self.bundle, rec["locator"]
+        live = run is not None and run["status"] in ("waiting", "submitted", "running")
+        keys = iter("123456789")
+        letters = iter("qwertyuiop")
+        items = []
+        if not live:
+            for name, wf in sorted((bundle.get("workflows") or {}).items()):
+                if wf.get("record_type") != rec["type"]:
+                    continue
+                op = bundle["ops"].get(name) or {}
+                d = authz.check(bundle, user, "create", op.get("object", rec["type"]), op.get("folder") or rec["folder"])
+                first = op["steps"][0]["role"] if op.get("steps") else "system"
+                if not d["allowed"] or not (first in ("system", *FIELD_ROLES) or first in authz.roles_of(bundle, user)):
+                    continue
+                k = next(keys, "")
+                label = self.OPS_ON_RECORD.get(name) or ("Start " + name.replace("-", " "))
+                where = "" if op.get("folder") in ("", rec["folder"]) else f"; files it in {op.get('folder')}"
+                items.append(f'<form method="post" action="/start-on" class="inline">{hidden_as(user)}{self._once()}<input type="hidden" name="process" value="{esc(name)}"><input type="hidden" name="record" value="{esc(loc)}">'
+                             f'<button class="button" data-hotkey="{k}" title="starts {esc(name)} on this item{esc(where)}">{icon("play")}{esc(label)}<kbd class="hk">{k}</kbd></button></form>')
+        cogs = [(n, m) for n, m in sorted((bundle.get("members") or {}).items()) if m.get("type") == "cog" and n in self.hub.registry.ids()]
+        for n, m in cogs:
+            cog = self.hub.registry.get(n)
+            if "review-document" not in getattr(cog, "tasks", []):
+                continue
+            k = next(letters, "")
+            body = f"@{n} please review this {type_name(rec['type']).lower()}"
+            items.append(f'<form method="post" action="/msg" class="inline">{hidden_as(user)}{self._once()}<input type="hidden" name="to" value="{esc(n)}"><input type="hidden" name="record" value="{esc(loc)}">'
+                         f'<input type="hidden" name="subject" value="Review of {esc(rec["number"])}"><input type="hidden" name="body" value="{esc(body)}"><input type="hidden" name="return" value="{esc(self._self_url())}">'
+                         f'<button class="button ghost" data-hotkey="{k}" title="asks {esc(n)} for a review in the chatter">{self._avatar(n, size="sm")} Ask {esc(n)} to review<kbd class="hk">{k}</kbd></button></form>')
+        if not items:
+            return ""
+        return f'<div class="ops" role="group" aria-label="Ops on this item"><span class="lbl">{icon("zap")}Ops</span>{"".join(items)}<span class="lbl">press a key to run one</span></div>'
+
+    def _self_url(self) -> str:
+        return self.path.split("?", 1)[0] + "?as=" + quote(self.user)
+
     def _field_html(self, name: str, v, fields: dict) -> str:
         if name == "supplier" and isinstance(v, str):
             return esc(self._supplier_name(v)) + (f" <span class='muted'>({esc(v)})</span>" if self._supplier_name(v) != v else "")
@@ -800,7 +846,7 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
         if versions:
             btns += f'<a class="button ghost" href="{href("/download", user, doc=loc)}">{icon("download")}Download</a>'
         btns += f'<a class="button ghost" href="#checkout">{icon("lock")}Check-out and check-in</a><button type="button" class="ghost" onclick="print()">{icon("printer")}Print</button>'
-        body = f'<div class="formhead"><div class="btns">{btns}</div>{self._statusbar(wf, rec)}</div>'
+        body = f'<div class="formhead"><div class="btns">{btns}</div>{self._statusbar(wf, rec)}</div>' + self._ops_row(rec, self.hub.runner.run_for_record(loc))
         body += self._smart_buttons([("Versions", len(versions), "layers", "versions"), ("Attached to", len(attached), "paperclip", "attached"), ("Links", len(other), "link", "links")])
         body += (f"<div class='sheet'><h1 class='title'>{esc(rec['number'])} {tag('Document')} {self._state_chip(rec['state'])}</h1>"
                  f"<div class='subtitle'><b>{file_icon(f.get('filename'))} {esc(f.get('title'))}</b></div><dl class='sheetfields'>"

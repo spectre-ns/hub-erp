@@ -198,7 +198,7 @@ def test_form_view_has_a_status_bar_action_buttons_smart_buttons_tabs_and_a_chat
     assert [s for _, s in states] == ["open", "awaiting-approve-the-bill", "posted", "rejected"]
     assert dict((s, c) for c, s in states)["awaiting-approve-the-bill"] == "current" and 'aria-current="step"' in bar
     btns = text.split('<div class="btns">')[1].split("</div>")[0]
-    assert ">Approve</a>" in btns and ">Reject</a>" in btns and "Put on hold" in btns and "Render snapshot" in btns and "Start a process" in btns and "Print" in btns
+    assert "Approve<kbd" in btns and "Reject<kbd" in btns and "Put on hold" in btns and "Render snapshot" in btns and "Start a process" in btns and "Print" in btns
     assert "Attach" not in btns, "bob may not file documents in Finance/Payables"
     smart = text.split('<div class="smart"')[1].split("</div>")[0]
     assert re.search(r'href="#documents">.*?<b>\d+</b>Documents', smart) and "Links" in smart and "Runs" in smart and "Decisions" in smart
@@ -212,7 +212,7 @@ def test_form_view_has_a_status_bar_action_buttons_smart_buttons_tabs_and_a_chat
     assert 'action="/decide"' in text and "Approve BILL-" in text, "the decision card is on the form for the assignee"
     status, text = get(shell, "/record/" + quote(loc, safe=":"), **{"as": "alice"})
     btns = text.split('<div class="btns">')[1].split("</div>")[0]
-    assert ">Approve</a>" not in btns and "Attach" in btns and "New document" in btns
+    assert "Approve<kbd" not in btns and "Attach" in btns and "New document" in btns
 
 
 def test_chatter_posts_on_the_item_and_a_mentioned_cog_answers_there(shell):

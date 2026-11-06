@@ -81,7 +81,7 @@ class EditorMixin:
         mentions = json.dumps(people + roles)
         parts = browser_url.split("/")
         origin = parts[0] + "//" + parts[2] if len(parts) > 2 and "//" in browser_url else browser_url
-        body += f"""<script>(function(){{var frame=document.getElementById('editor');var list={mentions};var origin={json.dumps(origin)};
+        body += rf"""<script>(function(){{var frame=document.getElementById('editor');var list={mentions};var origin={json.dumps(origin)};
 function post(o){{try{{frame.contentWindow.postMessage(JSON.stringify(o),'*')}}catch(e){{}}}}
 window.addEventListener('message',function(ev){{if(origin&&ev.origin!==origin)return;var m;try{{m=JSON.parse(ev.data)}}catch(e){{return}}
 if(m.MessageId==='App_LoadingStatus'&&m.Values&&m.Values.Status==='Document_Loaded'){{post({{MessageId:'Host_PostmessageReady'}})}}

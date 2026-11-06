@@ -721,3 +721,27 @@ def test_inbox_survives_odd_field_shapes_from_the_json_box(shell):
     status, text, _ = get(shell, "/inbox", **{"as": "carol", "open": run_id})
     assert status == 200 and "Waiting for me" in text
     assert number in text, "the item is still listed (on its page), not dropped"
+
+
+def test_ops_buttons_on_a_document_start_its_process_or_ask_a_cog_with_a_key(shell):
+    hub = shell["hub"]
+    from hubproto import wopi
+
+    content, mime = wopi.blank_document("docx")
+    doc = hub.dms.create(title="WI 14 draft", doc_class="working", folder="Tasks", by="carol", content=content, filename="wi14.docx", mime=mime, doc_type="wi")
+    loc = doc["locator"]
+    status, text, _ = get(shell, "/document/" + quote(loc, safe=":"), **{"as": "carol"})
+    assert status == 200 and 'aria-label="Ops on this item"' in text
+    assert "Send for approval" in text and 'data-hotkey="1"' in text and '<kbd class="hk">1</kbd>' in text
+    assert "Ask quality-assistant to review" in text and 'data-hotkey="q"' in text
+    assert "data-hotkey" in text and "keydown" in text, "the page script wires the keys"
+    # The process button runs document-control on this very item.
+    status, url, text = post(shell, "/start-on", {"as": "carol", "process": "document-control", "record": loc})
+    assert status == 200 and "Started document control on" in text, text[:300]
+    run = hub.runner.run_for_record(loc)
+    assert run and run["process"] == "document-control" and hub.kernel.get(loc)["folder"] == "Quality/Controlled Documents"
+    # Now the item is in flight: no process buttons, the cog buttons remain.
+    status, text, _ = get(shell, "/document/" + quote(loc, safe=":"), **{"as": "carol"})
+    assert "Send for approval" not in text and "Ask quality-assistant to review" in text
+    status, url, text = post(shell, "/start-on", {"as": "carol", "process": "document-control", "record": loc})
+    assert status == 400 and "already in document-control" in text

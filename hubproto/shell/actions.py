@@ -7,6 +7,7 @@ import json
 from urllib.parse import quote
 
 from .. import authz
+from ..runner import RunError
 from ..kernel import KernelGuardError
 from .forms import RESERVED_KEYS, ShellError, coerce, doc_type_for
 from .handler import href, log_line
@@ -310,6 +311,30 @@ class ActionsMixin:
                                   attach_to=attach_to, title=self._f("title"), doc_class="working" if editable else "external")
         note = "; it is a working document you can edit online" if editable else "; kept as received"
         self._redirect(self._once_finish(href("/files", user, folder=folder, done=f"Uploaded {filename} as {doc['number']}{note}.")))
+
+    def post_start_on(self):
+        """Run a process on an existing item (an Ops button): the item is the submission."""
+        user = self.user
+        bundle = self._need_release()
+        done = self._once_done()
+        if done:
+            return self._redirect(done)
+        process = self._f("process")
+        if process not in bundle["ops"]:
+            raise ShellError(f"There is no process '{process}' in the release.", 404)
+        rec = self.hub.kernel.require(self._f("record"))
+        live = self.hub.runner.run_for_record(rec["locator"])
+        if live and live["status"] in ("waiting", "submitted", "running"):
+            raise ShellError(f"{rec['number']} is already in {live['process']} ({live['status']}); finish or cancel that run first.")
+        try:
+            run_id = self.hub.runner.submit(process, {"record": {}}, owner=user, record=rec["locator"])
+        except RunError as e:
+            raise ShellError(str(e)) from None
+        state = self.hub.runner.load(run_id)
+        where = (" It is waiting for " + ", ".join(state["pending"]["assignees"]) + ".") if state.get("pending") else f" It is {state['status']}."
+        log_line(f"ops start process={process} record={rec['number']} by={user} -> {state['status']}")
+        page = "/document/" if rec["type"] == "document" else "/record/"
+        self._redirect(self._once_finish(href(page + quote(rec["locator"], safe=":"), user, done=f"Started {process.replace('-', ' ')} on {rec['number']}.{where}")))
 
     def post_attach(self):
         user = self.user
