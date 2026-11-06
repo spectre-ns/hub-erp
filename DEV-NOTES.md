@@ -21,6 +21,9 @@ reason written in the PR. Tests: `python -m pytest -q` (all must pass).
 | `hubproto/runner.py` | Op runner = workflow engine; Gates, grants, Track, tick (SLA escalation) | core |
 | `hubproto/cogs.py` | Cog catalog (code cogs, context stand-ins, reviewer cogs) | core |
 | `hubproto/inbox.py` | DMs and email to people and cogs | core |
+| `hubproto/cad.py` | CAD/ECAD: FreeCAD and KiCad stdlib extraction, worker client, cad-exporter, bom-reconciler, part-releaser cogs | core |
+| `hubproto/worker.py` | the CAD worker (its own image, docker/cad-worker): /invoke envelope seam over FreeCADCmd and kicad-cli, fake mode | core |
+| `frames/engineering/design-control-sop.frame.md` | design-release process (submit, export, reconcile BOM, risk, review, release part) | core |
 | `hubproto/app.py` | `Hub` wiring | core |
 | `hubproto/cli.py` | command line; registers `register(sub)` from `hubproto.profile` and `hubproto.cli_records` if present | core |
 | `hubproto/shell.py` | the workspace shell (stdlib http.server) | shell agent |
@@ -154,3 +157,16 @@ ap-reviewer, doc-reviewer, quality-assistant.
 Workflow bundle shape: `bundle["workflows"][process] = {record_type, object,
 states, transitions[{from,to,kind:automatic|human,steps|step,title,on_reject,sla_days}],
 checkpoints[{id,title,role,state,sla_days}], terminal, reject_to, sla{checkpoint: days}}`.
+
+## CAD and ECAD
+
+Attach `.FCStd`, `.kicad_sch` or `.kicad_pcb` files to a design record (the
+submission's `attachments` list is filed by record-filer; the shell's upload
+does the same). `cad-exporter` reads parts lists and BOMs in the hub, calls the
+worker (`HUBPROTO_CAD_WORKER_URL`) for STEP, PDF, Gerbers, ERC and DRC, files
+every export as evidence, and raises error-severity problems when a check
+exceeds `The design rule error limit is N percent.` `bom-reconciler` matches
+BOM lines to `item` records by MPN and manufacturer and attaches proposals for
+unknown lines. `part-releaser` creates or revises the `part` after the design
+authority's approval. The worker answers with synthetic exports when
+`HUBPROTO_CAD_FAKE=1` (tests, and `CAD_TOOLS=none` images).
