@@ -23,7 +23,7 @@ TOOLS = [
      "parameters": {"type": "object", "properties": {
          "query": {"type": "string", "description": "words to look for; empty lists the newest"},
          "type": {"type": "string", "description": "record type, e.g. bill, purchase-request, design, ncr, document"},
-         "state": {"type": "string", "description": "a state, e.g. open, posted, awaiting-approve-the-bill"},
+         "state": {"type": "string", "description": "a state, e.g. posted or awaiting-approve-the-bill; 'open' means not finished yet"},
          "folder": {"type": "string", "description": "a folder, e.g. Finance/Payables"},
          "assignee": {"type": "string", "description": "who it is waiting for"},
          "limit": {"type": "integer", "description": "at most this many (default 10, max 25)"}}}},
@@ -110,25 +110,67 @@ class RecordTools:
         return v
 
     # --- the tools
+    DONE_STATES = {"closed", "rejected", "cancelled", "posted", "released", "effective", "accepted", "received", "completed",
+                   "superseded", "obsolete", "ordered", "issued", "filed", "active", "done"}
+
+    def _type_of(self, given: str) -> str | None:
+        """'ncr', 'NCRs', 'nonconformance', 'purchase requests' -> the record type."""
+        if not given:
+            return None
+        from .shell.text import TYPE_NAMES
+
+        g = given.strip().lower().replace("_", "-")
+        g1 = g.rstrip("s")
+        types = set(self.hub.kernel.types)
+        for cand in (g, g1, g.replace(" ", "-"), g1.replace(" ", "-")):
+            if cand in types:
+                return cand
+        for t, name in TYPE_NAMES.items():
+            n = name.lower()
+            if g in (n, n + "s") or g1 == n or g.replace("-", " ") in (n, n + "s"):
+                return t
+        return g
+
+    def _state_ok(self, state: str, want: str) -> bool:
+        if not want:
+            return True
+        w = want.strip().lower()
+        if w == state:
+            return True
+        if w in ("open", "active", "pending", "waiting", "in progress", "not closed", "unfinished"):
+            return state not in self.DONE_STATES
+        words = [x for x in re.split(r"[\s_-]+", w) if x and x not in ("the", "a", "for")]
+        return all(x in state for x in words)
+
     def search_records(self, query: str = "", type: str = "", state: str = "", folder: str = "", assignee: str = "", limit: int = 10) -> dict:
+        from .shell.text import TYPE_NAMES
+
         limit = max(1, min(int(limit or 10), 25))
-        recs = self.hub.kernel.query(type_=type or None, state=state or None, assignee=assignee or None)
-        words = [w for w in re.split(r"\s+", (query or "").lower()) if w]
-        out = []
+        rtype = self._type_of(type)
+        recs = self.hub.kernel.query(type_=rtype or None, assignee=assignee or None)
+        type_words = {rtype or "", (TYPE_NAMES.get(rtype or "") or "").lower()} if rtype else set()
+        words = [w for w in re.split(r"\s+", (query or "").lower()) if w and w.rstrip("s") not in {t.rstrip("s") for t in type_words if t}]
+        out, states = [], {}
         for r in sorted(recs, key=lambda r: r.get("updated_at") or r.get("created_at") or "", reverse=True):
             if folder and not (r["folder"] == folder or r["folder"].startswith(folder + "/")):
                 continue
             if not self.may_read(r["folder"]):
                 continue
+            states[r["state"]] = states.get(r["state"], 0) + 1
+            if not self._state_ok(r["state"], state):
+                continue
             if words:
-                hay = (r["number"] + " " + r["type"] + " " + json.dumps({k: v for k, v in r["fields"].items() if k not in ("office_comments",)}, default=str)).lower()
-                if not all(w in hay for w in words):
+                hay = (r["number"] + " " + r["type"] + " " + (TYPE_NAMES.get(r["type"]) or "") + " " + r["state"].replace("-", " ") + " "
+                       + json.dumps({k: v for k, v in r["fields"].items() if k not in ("office_comments",)}, default=str)).lower()
+                if not all(w.rstrip("s") in hay for w in words):
                     continue
             out.append(self._brief(r))
             if len(out) >= limit:
                 break
         hidden = sum(1 for f in {r["folder"] for r in recs} if not self.may_read(f))
         res = {"count": len(out), "records": out}
+        if not out and states:
+            res["hint"] = "no match; the states these records are in: " + ", ".join(f"{k} ({v})" for k, v in sorted(states.items()))
         if hidden:
             res["note"] = (f"only records in folders {self.principal} may read are searched; {hidden} folder(s) with matching types are "
                            "closed to them, so say 'none that you can see' rather than 'none'")

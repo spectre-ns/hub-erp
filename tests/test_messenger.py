@@ -174,3 +174,17 @@ def test_the_record_tools_over_mcp(shell):
     assert called["result"]["isError"] is False and "types" in json.loads(called["result"]["content"][0]["text"])
     status, refused = rpc({"jsonrpc": "2.0", "id": 4, "method": "tools/list"}, who="nobody")
     assert refused["error"]["code"] == -32001
+
+
+def test_search_forgives_how_a_model_names_types_and_states(shell):
+    from hubproto.tools import RecordTools
+
+    hub = shell["hub"]
+    ncr = hub.kernel.create("ncr", "Quality/Nonconformances", {"title": "Loose bracket", "description": "found at inspection"}, by="carol")
+    hub.kernel.transition(ncr["locator"], "awaiting-disposition-the-nonconformance", by="hub")
+    t = RecordTools(hub, "carol")
+    for args in ({"query": "nonconformance", "type": "ncr", "state": "open"}, {"type": "nonconformances", "state": "awaiting disposition"},
+                 {"query": "loose", "type": "NCRs"}):
+        assert ncr["number"] in [r["number"] for r in t.search_records(**args, limit=25)["records"]], args
+    miss = t.search_records(type="ncr", state="frozen")
+    assert miss["count"] == 0 and "awaiting-disposition-the-nonconformance" in miss["hint"]
