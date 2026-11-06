@@ -710,3 +710,12 @@ def test_escalated_cards_quote_the_escalation_and_the_original_route(shell):
     assert "escalated to bob on" in card and "Overdue items in purchase-request go to the controller." in card
     assert "originally routed by purchasing-policy line" in card and "go to the buyer." in card
     assert "2099" not in card.split("originally routed")[0].split("escalated to bob")[0]
+
+
+def test_inbox_survives_odd_field_shapes_from_the_json_box(shell):
+    """A title set to a list through the JSON box (hostile-user data) must not 500 anyone's inbox."""
+    hub = shell["hub"]
+    run_id, state = start_task(shell, "List title later")
+    hub.kernel.set_fields(state["record"], {"title": ["a", "list"], "lot": {"odd": 1}}, by="alice")
+    status, text, _ = get(shell, "/inbox", **{"as": "carol"})
+    assert status == 200 and "Waiting for me" in text and "a list" in text

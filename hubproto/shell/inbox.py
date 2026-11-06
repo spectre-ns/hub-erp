@@ -58,10 +58,17 @@ class InboxMixin:
         if rec is None:
             return None
         f = rec["fields"]
-        if f.get("amount") is not None:
-            return (rec["type"], str(f.get("supplier") or ""), float(f["amount"]))
-        title = (f.get("title") or f.get("statement") or "").strip().lower()
-        return (rec["type"], title, str(f.get("lot") or "")) if title else None
+
+        def text(v) -> str:  # fields may hold anything a form or the JSON box put there
+            return " ".join(str(x) for x in v) if isinstance(v, (list, tuple)) else ("" if v is None else str(v))
+
+        if f.get("amount") not in (None, ""):
+            try:
+                return (rec["type"], text(f.get("supplier")), float(f["amount"]))
+            except (TypeError, ValueError):
+                return None
+        title = text(f.get("title") or f.get("statement")).strip().lower()
+        return (rec["type"], title, text(f.get("lot"))) if title else None
 
     def _duplicates(self, waiting: list[dict]) -> dict[str, list[str]]:
         """Run id -> numbers of other waiting items with the same type, supplier and amount (or title)."""
