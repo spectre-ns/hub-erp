@@ -6,7 +6,7 @@ import re
 
 from .. import authz
 from ..runner import RunError
-from .forms import ShellError, file_input, text_input, widget
+from .forms import file_input, text_input, widget
 from .handler import details, hidden_as, href, kv, table
 from .pages import next_state_for
 from .text import (BLOB_FIELDS, MEANING_EXAMPLES, NOTIFICATION_KINDS, chip, day, esc, join_words, money, notification_sentence,
@@ -202,6 +202,8 @@ class InboxMixin:
         on_reject = next((t.get("on_reject") for t in (r.get("workflow") or {}).get("transitions", []) if t["kind"] == "human" and t["step"] == p["checkpoint"]), "rejected")
         mine = self.err is not None and self.vals.get("run") == r["id"] and self.route == "/decide"
         values = dict(self.vals) if mine else {}
+        candidates = ["meaning", "reason"] + (self.hub.runner.allowed_decision_fields(r) if rec else [])
+        err = self._form_error(candidates) if mine else ""  # attributes the message to its field before the controls render
         inputs, missing, optional = self._decision_inputs(r, rec, values)
         problems = self._guard_problems(r)
         brief = self._brief(rec, self._payload_of(r)) if rec else "<span class='muted'>no item</span>"
@@ -232,7 +234,6 @@ class InboxMixin:
             checks = "<div class='card quiet'><b>Checks:</b><ul>" + "".join(f"<li>{chip(sev if sev != 'error' else 'error')} {esc(check)}: {esc(detail)}</li>" for sev, check, detail in problems) + "</ul></div>"
         blocked_html = f"<div class='card crit' role='status'><b>{blocked}</b> Approve is disabled until then.</div>" if blocked else ""
         needs = f"<p class='why'>To approve, also give: {esc(', '.join(missing))}.</p>" if missing else ""
-        err = self._form_error(["meaning", "confirm", "reason", *missing, *optional]) if mine else ""
         examples = MEANING_EXAMPLES.get(rt) or ("reviewed and approved as presented", "approved with the stated condition")
         meaning_hint = (f"Say in your own words what you are confirming. It is stored with your signature and shown to {esc(r['owner'])}. "
                         f"For example: “{esc(examples[0])}” or “{esc(examples[1])}”.")
@@ -410,10 +411,10 @@ class InboxMixin:
         mine = self.err is not None and self.route == "/retry" and self.vals.get("run") == run["id"]
         values = dict(self.vals) if mine else {}
         base = {k: values.get(k, rec["fields"].get(k, "")) for k, _, _ in self._start_spec(rt)}
+        err = self._form_error([n for n, _, _ in self._start_spec(rt)] + ["note", "json"]) if mine else ""
         errors = {k: v for k, v in failing.items()}
         if mine and self.err and self.err[1]:
             errors[self.err[1]] = self.err[0]
-        err = self._form_error([n for n, _, _ in self._start_spec(rt)] + ["note", "json"]) if mine else ""
         form = f"""<h3>Fix and retry</h3><p class="why">Change what the step complained about (marked in red), add files if needed, and retry from that step. You, as the owner, or an approver of this item may do this.</p>{err}
 <form method="post" action="/retry" enctype="multipart/form-data">{hidden_as(user)}{self._once()}<input type="hidden" name="run" value="{esc(run['id'])}">
 <div class="fields">{self._start_inputs(rt, base, required=self._required_at_start(run['process'], rt), errors=errors)}</div>
@@ -590,7 +591,7 @@ class InboxMixin:
         to = self._val("to") if mine else (people[0][0] if people else "")
         return f"""<h2 id="send">Send a message</h2><form method="post" action="/msg" class="card">{hidden_as(user)}{self._once()}{err}
 <div class="fields">{widget("to", "text", to, label="To", required=True, options=people + cogs, hint="people first; automatic reviewers answer with what they filed", error=self._field_error("to") if mine else None)}
-{widget("channel", "enum:dm,email", self._val("channel") if mine else "dm", label="Via", hint="", blank="dm")}
+{widget("channel", "enum:dm,email", self._val("channel") if mine else "dm", label="Via", hint="", blank="dm", error=self._field_error("channel") if mine else None)}
 {text_input("subject", "Subject", self._val("subject") if mine else "", required=True, error=self._field_error("subject") if mine else None)}
 {text_input("body", "Message", self._val("body") if mine else "", required=True, textarea=True, error=self._field_error("body") if mine else None)}</div>
 <div class="actions"><button>Send</button></div></form>"""

@@ -9,7 +9,7 @@ from .. import authz
 from ..runner import FIELD_ROLES
 from .forms import DEFAULT_START_INPUTS, REQUIRED_EXTRA, START_INPUTS, ShellError, file_input, text_input, widget
 from .handler import details, hidden_as, href, kv, table
-from .text import (BLOB_FIELDS, chip, day, esc, event_sentence, field_label, fmt, money, owner_of, short, state_name,
+from .text import (BLOB_FIELDS, chip, day, esc, event_sentence, field_label, fmt, owner_of, short, state_name,
                    summary_of_record, tag, track_sentence, type_name, value_text, verb_for, when)
 
 MERMAID_URL = "https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.4.1/mermaid.min.js"

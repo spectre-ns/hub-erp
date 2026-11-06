@@ -30,9 +30,8 @@ from ..frames import FrameError, FrameStore
 from ..kernel import KernelGuardError
 from ..runner import RunError
 from .css import CSS
-from .forms import RESERVED_KEYS, ShellError, error_field
-from .text import (chip, clean, day, esc, friendly, humanize, short, summary_of_record, tag, type_name, version_label,
-                   why_sentence)
+from .forms import ShellError, error_field
+from .text import clean, esc, friendly, humanize, short, summary_of_record, tag, type_name, version_label, why_sentence
 
 DEFAULT_MAX_UPLOAD = 25 * 1024 * 1024
 RAIL_MAIN = [("Home", "/"), ("Inbox", "/inbox"), ("Files", "/files"), ("Boards", "/boards")]
@@ -75,7 +74,8 @@ def kv(items: list[tuple[str, str]]) -> str:
 
 
 def details(summary: str, body: str, open_: bool = False, cls: str = "") -> str:
-    return f'<details{" open" if open_ else ""}{(" class=&quot;" + cls + "&quot;") if cls else ""}><summary>{summary}</summary>{body}</details>'
+    attrs = (" open" if open_ else "") + (f' class="{cls}"' if cls else "")
+    return f"<details{attrs}><summary>{summary}</summary>{body}</details>"
 
 
 def folder_tree(folders: list[str]) -> dict:
@@ -358,7 +358,7 @@ class BaseHandler(BaseHTTPRequestHandler):
         if field is None:
             field = error_field(msg, candidates)
             self.err = (msg, field)
-        if field and field in candidates:
+        if field and field in candidates and field not in ("confirm", "file", "files"):  # those controls show no inline message
             self._err_shown = True  # the control carries it
             return ""
         self._err_shown = True
@@ -382,8 +382,8 @@ class BaseHandler(BaseHTTPRequestHandler):
         members = bundle["members"] if bundle else {}
 
         def item(n, p):
-            cur = self.route == p or (p != "/" and self.route.startswith(p))
-            return f'<li><a{" aria-current=&quot;page&quot;" if cur else ""} href="{href(p, user)}">{esc(n)}</a></li>'
+            cur = ' aria-current="page"' if (self.route == p or (p != "/" and self.route.startswith(p))) else ""
+            return f'<li><a{cur} href="{href(p, user)}">{esc(n)}</a></li>'
 
         out = '<nav class="rail" aria-label="Workspace"><ul class="main">' + "".join(item(n, p) for n, p in RAIL_MAIN) + "</ul>"
         if self._policy_owner():
@@ -407,7 +407,7 @@ class BaseHandler(BaseHTTPRequestHandler):
         action = self.route if self.route in ("/", "/inbox", "/files", "/boards", "/runs", "/releases", "/frames", "/why", "/admin", "/conformance") \
             or self.route.startswith(("/record/", "/document/", "/run/", "/frame/", "/release/")) else "/"
         crumb_items = [("Hub", href("/", user) if user else "/")] + list(crumbs or [(title, None)])
-        crumb = "".join(f'<li>{f"<a href=&quot;{esc(h)}&quot;>{esc(n)}</a>" if h else esc(n)}</li>' for n, h in crumb_items)
+        crumb = "".join(f'<li><a href="{esc(h)}">{esc(n)}</a></li>' if h else f"<li>{esc(n)}</li>" for n, h in crumb_items)
         done = self.q.get("done", [""])[0]
         status_line = f'<p class="status" role="status">{esc(short(done, 300))}</p>' if done else ""
         if self.err and not getattr(self, "_err_shown", False):  # the form that was refused is not on this page: say it up front
@@ -446,10 +446,10 @@ class BaseHandler(BaseHTTPRequestHandler):
     # --- shared lookups -------------------------------------------------------
     def _refresh_frames(self) -> None:
         """Re-read the Frames when a file changed on disk, so /frame pages and citations show what is there now."""
-        root = self.hub.frames.root
         try:
+            root = getattr(self.hub, "_frames_dir", None) or self.hub.frames.root
             stamp = max((p.stat().st_mtime for p in root.rglob("*.frame.md")), default=0.0)
-        except OSError:
+        except (OSError, FrameError):
             return
         if stamp != type(self)._frames_stamp:
             try:
@@ -457,6 +457,12 @@ class BaseHandler(BaseHTTPRequestHandler):
             except FrameError as e:
                 log_line(f"frames not reloaded: {e}")
             type(self)._frames_stamp = stamp
+
+    def _frame_names(self) -> set[str]:
+        try:
+            return set(self.hub.frames.frames)
+        except FrameError:
+            return set()
 
     def _need_release(self) -> dict:
         if not self.bundle:
@@ -493,7 +499,7 @@ class BaseHandler(BaseHTTPRequestHandler):
     def _rule_link(self, src: dict | None) -> str:
         src = src or {}
         frame, line = src.get("frame", ""), src.get("line", 0)
-        if frame and not frame.startswith("(") and frame in self.hub.frames.frames:
+        if frame and not frame.startswith("(") and frame in self._frame_names():
             return f'<a href="{href("/frame/" + frame, self.user)}#L{line}">{esc(frame)} line {esc(line)}</a>'
         return esc(f"{frame} line {line}" if line else frame)
 

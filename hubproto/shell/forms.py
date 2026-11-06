@@ -169,7 +169,8 @@ def widget(name: str, spec: str | None, value="", required: bool = False, kind: 
     spec = spec or "text"
     text = label or field_label(name)
     h = hint if hint is not None else ("" if options is not None else format_hint(spec, kind, name))
-    lab = f"<span>{esc(text)}{' <b aria-hidden=&quot;true&quot;>*</b>' if required else ''}{(' <i>(' + esc(h) + ')</i>') if h else ''}</span>"
+    star = ' <b aria-hidden="true">*</b>' if required else ""
+    lab = f"<span>{esc(text)}{star}{(' <i>(' + esc(h) + ')</i>') if h else ''}</span>"
     eid = f"err-{re.sub(r'[^a-z0-9_-]', '', name.lower())}"
     aria = f' aria-invalid="true" aria-describedby="{eid}"' if error else ""
     cls = ' class="f bad"' if error else ' class="f"'
@@ -220,7 +221,8 @@ def text_input(name: str, label: str, value: str = "", required: bool = False, e
 
 def file_input(name: str, label: str, multiple: bool = False, required: bool = False, hint: str = "") -> str:
     h = f" <i>({esc(hint)})</i>" if hint else ""
-    return (f'<label class="f"><span>{esc(label)}{" <b aria-hidden=&quot;true&quot;>*</b>" if required else ""}{h}</span>'
+    star = ' <b aria-hidden="true">*</b>' if required else ""
+    return (f'<label class="f"><span>{esc(label)}{star}{h}</span>'
             f'<input type="file" name="{esc(name)}"{" multiple" if multiple else ""}{" required" if required else ""}></label>')
 
 

@@ -8,7 +8,7 @@ from ..frames import FrameError
 from ..rules import rule_key
 from .forms import ShellError
 from .handler import details, hidden_as, href, table
-from .text import chip, day, esc, join_words, money, role_words, tag, type_name, version_label, when
+from .text import chip, esc, join_words, money, role_words, tag, type_name, version_label, when
 
 RULE_WORDS = {"permission": "permission", "routing": "routing", "threshold": "threshold", "sla": "deadline", "approval_criteria": "automatic approval",
               "member": "member", "role": "role", "folder": "folder", "process": "process", "sod": "segregation of duties"}
@@ -158,8 +158,12 @@ proposal <code>{esc(meta.get('proposal_id') or '-')}</code>{(' reviewed by ' + e
         user = self.user
         if not self._is_member():
             raise ShellError(f"{user} is not a member of the organization; the policies are not shown.", 403)
+        try:
+            frames = list(self.hub.frames.frames.values())
+        except FrameError as e:
+            raise ShellError(f"The policies on disk could not be read: {e}. Fix that file; the release in effect still applies.", 503) from None
         rows = [[f"<a href='{href('/frame/' + f.name, user)}'>{esc(f.name)}</a>", esc(f.version), esc(f.scope), esc(f.maintainer), esc(", ".join(f.inherits) or "-"), esc(f.description)]
-                for f in self.hub.frames.frames.values()]
+                for f in frames]
         self._page("Policies", "<h1>Policies</h1><p class='why'>The policy and procedure documents (Frames) the release is compiled from, as they are on disk now.</p>"
                    + table(["Policy", "Version", "Scope", "Maintainer", "Inherits", "Description"], rows), crumbs=[("Policies", None)])
 
@@ -168,8 +172,10 @@ proposal <code>{esc(meta.get('proposal_id') or '-')}</code>{(' reviewed by ' + e
             raise ShellError(f"{self.user} is not a member of the organization; the policies are not shown.", 403)
         try:
             frame = self.hub.frames.get(self.arg)
-        except (FrameError, Exception):
-            raise ShellError(f"There is no policy named '{self.arg}'. The list is under Policies.", 404) from None
+        except FrameError as e:
+            if "unknown Frame" in str(e):
+                raise ShellError(f"There is no policy named '{self.arg}'. The list is under Policies.", 404) from None
+            raise ShellError(f"The policies on disk could not be read: {e}. Fix that file; the release in effect still applies.", 503) from None
         lines = "".join(f"<tr id='L{i}'><th scope='row'><a href='#L{i}' aria-label='line {i}'>{i}</a></th><td><pre class='src'>{esc(line) or ' '}</pre></td></tr>"
                         for i, line in enumerate(frame.file_lines, start=1))
         body = (f"<h1>{esc(frame.name)} {tag('v' + str(frame.version))}</h1><div class='card'>{esc(frame.description)}<br><span class='why'>scope {esc(frame.scope)}; maintained by {esc(frame.maintainer)}; "

@@ -76,7 +76,6 @@ label.f.bad>span{{color:var(--crit);font-weight:700}}label.f.bad input,label.f.b
 .msg{{white-space:pre-line}}.diff ins{{background:var(--ok-bg);color:var(--ok);text-decoration:none}}.diff del{{background:var(--crit-bg);color:var(--crit)}}
 .who{{display:flex;gap:var(--sp-3);flex-wrap:wrap}}.who .card{{min-width:12em}}
 @media(max-width:900px){{.layout{{grid-template-columns:1fr}}nav.rail{{border-right:0;border-bottom:1px solid var(--line);padding:var(--sp-2) var(--sp-3)}}
-nav.rail ul.main{{display:flex;flex-wrap:wrap;gap:var(--sp-1)}}nav.rail .tree,nav.rail h2{{display:none}}nav.rail details.more{{display:block}}
+nav.rail ul.main{{display:flex;flex-wrap:wrap;gap:var(--sp-1)}}nav.rail .tree,nav.rail h2{{display:none}}
 main{{padding:var(--sp-3) var(--sp-4)}}.grid2{{grid-template-columns:1fr}}.counts .card{{min-width:120px}}}}
-@media(min-width:901px){{nav.rail details.more>summary{{display:none}}}}
 """
