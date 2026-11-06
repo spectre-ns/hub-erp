@@ -328,3 +328,78 @@ def test_a_live_seat_marks_an_answer_as_applied_so_the_hub_does_not_write_it_twi
     assert json.loads(get(shell, "/editor-replies/" + quote(loc, safe=":"), **{"as": "carol"})[1])["pending"] == 0
     assert json.loads(post(shell, "/apply-replies", {"as": "carol", "doc": loc})[2])["applied"] == 0
     hub.dms.undo_checkout(loc, by="carol")
+
+
+def docx_thread(root_author: str, root_text: str, replies: list[tuple[str, str]]) -> bytes:
+    """A docx whose comment thread has a root and threaded replies (Word's commentsExtended threading)."""
+    import io
+    import zipfile
+
+    ids = list(range(len(replies) + 1))
+    paras = [f"{0x1000 + i:08X}" for i in ids]
+    comments = f'<w:comment w:id="0" w:author="{root_author}" w:date="2026-11-06T19:00:00Z"><w:p w14:paraId="{paras[0]}"><w:r><w:t>{root_text}</w:t></w:r></w:p></w:comment>'
+    exts = ""
+    for i, (author, text) in enumerate(replies, start=1):
+        comments += f'<w:comment w:id="{i}" w:author="{author}" w:date="2026-11-06T19:0{i}:00Z"><w:p w14:paraId="{paras[i]}"><w:r><w:t>{text}</w:t></w:r></w:p></w:comment>'
+        exts += f'<w15:commentEx w15:paraId="{paras[i]}" w15:paraIdParent="{paras[i - 1]}" w15:done="0"/>'
+    refs = "".join(f'<w:r><w:commentReference w:id="{i}"/></w:r>' for i in ids)
+    starts = "".join(f'<w:commentRangeStart w:id="{i}"/>' for i in ids)
+    ends = "".join(f'<w:commentRangeEnd w:id="{i}"/>' for i in ids)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/comments.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"/><Override PartName="/word/commentsExtended.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtended+xml"/></Types>')
+        z.writestr("_rels/.rels", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>')
+        z.writestr("word/_rels/document.xml.rels", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="comments.xml"/><Relationship Id="rId2" Type="http://schemas.microsoft.com/office/2011/relationships/commentsExtended" Target="commentsExtended.xml"/></Relationships>')
+        z.writestr("word/document.xml", f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Inspection plan. </w:t></w:r>{starts}<w:r><w:t>Torque 2 Nm.</w:t></w:r>{ends}{refs}</w:p><w:sectPr/></w:body></w:document>')
+        z.writestr("word/comments.xml", f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml">{comments}</w:comments>')
+        z.writestr("word/commentsExtended.xml", f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w15:commentsEx xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml">{exts}</w15:commentsEx>')
+    return buf.getvalue()
+
+
+def test_a_reply_in_a_cogs_thread_triggers_the_cog_without_a_mention(shell):
+    hub = shell["hub"]
+    from hubproto import office
+
+    content, mime = wopi.blank_document("docx")
+    doc = hub.dms.create(title="Thread test", doc_class="working", folder="Quality/Controlled Documents", by="carol", content=content,
+                         filename="thread.docx", mime=mime, doc_type="document")
+    number, loc = doc["number"], doc["locator"]
+    hub.dms.checkout(loc, by="carol", via="editor")
+    token = wopi.issue_token("carol", number, can_write=True, root=shell["root"])
+    # Save 1: carol asks the cog; it answers (pending for the seat).
+    first = docx_thread("carol", "@quality-assistant please review this document.", [])
+    assert wopi_call(shell, f"/wopi/files/{number}/contents", token, "POST", first, {"X-WOPI-Override": "PUT"})[0] == 200
+    pending = wopi.WopiHost(hub).pending_replies(hub.kernel.get(loc))
+    assert len(pending) == 1
+    post(shell, "/mark-applied", {"as": "carol", "doc": loc, "ids": pending[0]["id"]})
+    # Save 2: the editor saved the thread with the cog's reply, and carol replied in it without any @mention.
+    second = docx_thread("carol", "@quality-assistant please review this document.",
+                         [("quality-assistant", "Review: pass. Torque is within the procedure."), ("carol", "Which procedure gives the torque limit?")])
+    assert wopi_call(shell, f"/wopi/files/{number}/contents", token, "POST", second, {"X-WOPI-Override": "PUT"})[0] == 200
+    comments = office.extract_comments(second, "docx")
+    assert [c["parent"] for c in comments] == [None, "0", "1"], "the thread is read from Word's threading data"
+    chatter = hub.inbox.on_record(loc)
+    asked = [m for m in chatter if m["kind"] == "message"]
+    assert len(asked) == 2 and asked[-1]["comment_id"] == "2" and "reply in a thread" in asked[-1]["subject"]
+    answers = [m for m in chatter if m["kind"] == "reply" and m.get("in_reply_to") == asked[-1]["id"]]
+    assert answers and answers[0]["from"] == "quality-assistant" and "Review of" not in answers[0]["body"], "a question in the thread gets an answer, not another full review"
+    pending = wopi.WopiHost(hub).pending_replies(hub.kernel.get(loc))
+    assert [m["comment_id"] for m in pending] == ["2"], "the answer threads under carol's reply"
+    # Save 3: the same thread saved again does not trigger anything; the cog's own words never do.
+    assert wopi_call(shell, f"/wopi/files/{number}/contents", token, "POST", second, {"X-WOPI-Override": "PUT"})[0] == 200
+    assert len([m for m in hub.inbox.on_record(loc) if m["kind"] == "message"]) == 2
+    hub.dms.undo_checkout(loc, by="carol")
+
+
+def test_the_hub_writes_formatted_content_into_a_docx():
+    from hubproto import office
+
+    content, _ = wopi.blank_document("docx")
+    new = office.insert_paragraphs(content, "docx", ["# Quality header", "Prepared under **ISO 9001** procedures.", "- first check", "- second check",
+                                                     "| Item | Limit |", "|---|---|", "| Torque | 2 Nm |"], "start")
+    import zipfile, io
+
+    xml = zipfile.ZipFile(io.BytesIO(new)).read("word/document.xml").decode()
+    assert '<w:pStyle w:val="Heading1"/>' in xml and "<w:b/>" in xml and "ISO 9001" in xml
+    assert xml.count("• ") == 2 and "<w:tbl>" in xml and xml.count("<w:tr>") == 2 and "Torque" in xml
+    assert office.extract_text(new, "docx").startswith("Quality header")

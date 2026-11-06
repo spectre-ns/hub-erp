@@ -212,7 +212,7 @@ class WopiHost:
         text = office.extract_text(content, ext)
         comments = office.extract_comments(content, ext)
         seen = {c.get("digest") for c in (rec["fields"].get("office_comments") or [])}
-        fields = {"office_comments": [{k: c[k] for k in ("id", "author", "date", "text", "digest")} for c in comments]}
+        fields = {"office_comments": [{k: c.get(k) for k in ("id", "author", "date", "text", "digest", "parent")} for c in comments]}
         if text:
             fields["text"] = text
         try:
@@ -221,12 +221,23 @@ class WopiHost:
             pass
         posted = []
         members = (self.hub.releases.bundle(self.hub.releases.current()["digest"]) if self.hub.releases.current() else {}).get("members", {})
+        cog_names = {n for n, m in members.items() if m.get("type") == "cog"}
         for c in comments:
-            if c["digest"] in seen or not office.mentions_in(c["text"]):
+            if c["digest"] in seen:
                 continue
             author = c["author"].strip().lower() if c["author"] and c["author"].strip().lower() in members else user
+            if author in cog_names:
+                continue  # a cog's own words never trigger a cog
+            subject = f"Comment in {rec['number']}"
+            if not office.mentions_in(c["text"]):
+                # A reply in a thread where a cog has spoken is addressed to that cog, mention or not.
+                thread = office.thread_of(comments, c["id"])
+                spoken = [t["author"].strip().lower() for t in thread if t["author"].strip().lower() in cog_names and t["id"] != c["id"]]
+                if not spoken or len(thread) < 2:
+                    continue
+                subject = f"@{spoken[-1]} reply in a thread in {rec['number']}"
             try:
-                reply = self.hub.send(author, author, f"Comment in {rec['number']}", c["text"], record=rec["locator"], comment_id=c["id"])
+                reply = self.hub.send(author, author, subject, c["text"], record=rec["locator"], comment_id=c["id"])
                 posted.append(reply)
             except Exception as e:  # a comment that cannot be routed never breaks the save
                 posted.append({"error": str(e)})
@@ -284,7 +295,7 @@ class WopiHost:
         for m in applied:
             self.hub.inbox.mark(m["id"], applied_in=version.get("version"))
         comments = office.extract_comments(content, ext)
-        self.hub.kernel.set_fields(rec["locator"], {"office_comments": [{k: c[k] for k in ("id", "author", "date", "text", "digest")} for c in comments],
+        self.hub.kernel.set_fields(rec["locator"], {"office_comments": [{k: c.get(k) for k in ("id", "author", "date", "text", "digest", "parent")} for c in comments],
                                                     "text": office.extract_text(content, ext)}, by=by)
         return applied
 

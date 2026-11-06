@@ -113,6 +113,15 @@ def handle(hub, msg: dict, bundle: dict) -> list[dict]:
             hub.inbox.mark(reply["id"], edit={"paragraphs": r["paragraphs"], "position": r.get("position") or "start"})
             out.append(reply)
             continue
+        if record and record["type"] == "document" and intent == "message" and msg.get("comment_id") not in (None, "") and "answer" in cog.tasks:
+            from . import office
+
+            comments = record["fields"].get("office_comments") or []
+            thread = [t for t in office.thread_of(comments, str(msg["comment_id"])) if t["id"] != str(msg["comment_id"])]
+            env = cog.invoke("answer", {"record": record["locator"], "question": msg.get("body") or "", "thread": thread}, ctx)
+            body = (env.get("payload") or {}).get("text") or f"{cog_id} could not answer."
+            out.append(hub.inbox.reply(msg, sender=cog_id, body=body, record=record["locator"], envelope=env))
+            continue
         if record and "review-document" in cog.tasks:
             env = cog.invoke("review-document", {"record": record["locator"], "question": msg.get("body") or msg.get("subject")}, ctx)
             r = env.get("payload") or {}

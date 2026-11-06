@@ -70,17 +70,44 @@ def extract_comments(content: bytes, extension: str) -> list[dict]:
     try:
         if ext == "docx" and "word/comments.xml" in z.namelist():
             root = ElementTree.fromstring(z.read("word/comments.xml"))
+            W14 = "{http://schemas.microsoft.com/office/word/2010/wordml}"
+            para_of: dict[str, str] = {}  # comment id -> its first paragraph id (threads refer to paragraph ids)
             for c in root.iter(W + "comment"):
                 text = "\n".join("".join(t.text or "" for t in p.iter(W + "t")) for p in c.iter(W + "p")).strip()
-                out.append({"id": c.get(W + "id") or "", "author": c.get(W + "author") or "", "date": c.get(W + "date") or "", "text": text})
+                cid = c.get(W + "id") or ""
+                first = next(iter(c.iter(W + "p")), None)
+                if first is not None and first.get(W14 + "paraId"):
+                    para_of[cid] = first.get(W14 + "paraId").upper()
+                out.append({"id": cid, "author": c.get(W + "author") or "", "date": c.get(W + "date") or "", "text": text, "parent": None})
+            if "word/commentsExtended.xml" in z.namelist():
+                W15 = "{http://schemas.microsoft.com/office/word/2012/wordml}"
+                ext_root = ElementTree.fromstring(z.read("word/commentsExtended.xml"))
+                parent_para = {e.get(W15 + "paraId", "").upper(): (e.get(W15 + "paraIdParent") or "").upper() for e in ext_root.iter(W15 + "commentEx")}
+                by_para = {v: k for k, v in para_of.items()}
+                for c in out:
+                    pp = parent_para.get(para_of.get(c["id"], ""), "")
+                    if pp and pp in by_para:
+                        c["parent"] = by_para[pp]
+            # Without threading data, comments anchored on the same range are one thread (a reply the hub wrote).
+            if "word/document.xml" in z.namelist():
+                doc = z.read("word/document.xml").decode("utf-8", "replace")
+                starts = re.findall(r'<w:commentRangeStart w:id="(\d+)"/>', doc)
+                prev = None
+                for cid in starts:
+                    c = next((x for x in out if x["id"] == cid), None)
+                    if c is not None and c["parent"] is None and prev is not None and doc.find(f'<w:commentRangeStart w:id="{cid}"/>') == doc.find(f'<w:commentRangeStart w:id="{prev}"/>') + len(f'<w:commentRangeStart w:id="{prev}"/>'):
+                        c["parent"] = prev
+                    prev = cid
         elif ext in ("odt", "ods", "odp") and "content.xml" in z.namelist():
             root = ElementTree.fromstring(z.read("content.xml"))
+            LOEXT = "{urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0}"
             for i, a in enumerate(root.iter(OFFICE + "annotation")):
                 creator = a.find(DC + "creator")
                 date = a.find(DC + "date")
                 text = "\n".join(_itertext(p) for p in a.iter(TEXT + "p")).strip()
                 out.append({"id": a.get(OFFICE + "name") or str(i), "author": (creator.text if creator is not None else "") or "",
-                            "date": (date.text if date is not None else "") or "", "text": text})
+                            "date": (date.text if date is not None else "") or "", "text": text,
+                            "parent": a.get(LOEXT + "parent-name") or None})
         elif ext == "xlsx":
             ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
             for name in sorted(n for n in z.namelist() if n.startswith("xl/comments") and n.endswith(".xml")):
@@ -91,7 +118,7 @@ def extract_comments(content: bytes, extension: str) -> list[dict]:
                         author = authors[int(c.get("authorId") or 0)]
                     except (ValueError, IndexError):
                         author = ""
-                    out.append({"id": f"{name}:{c.get('ref') or i}", "author": author, "date": "", "text": _itertext(c).strip()})
+                    out.append({"id": f"{name}:{c.get('ref') or i}", "author": author, "date": "", "text": _itertext(c).strip(), "parent": None})
     except ElementTree.ParseError:
         return []
     for c in out:
@@ -187,15 +214,7 @@ def insert_paragraphs(content: bytes, extension: str, paragraphs: list[str], pos
     files = {n: z.read(n) for n in names}
     if ext == "docx" and "word/document.xml" in files:
         xml = files["word/document.xml"].decode("utf-8")
-        out = []
-        for line in paragraphs:
-            if line.startswith("# "):
-                out.append(f'<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:rPr><w:b/><w:sz w:val="32"/></w:rPr><w:t xml:space="preserve">{_escape(line[2:].strip())}</w:t></w:r></w:p>')
-            elif line.startswith("## "):
-                out.append(f'<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:rPr><w:b/><w:sz w:val="28"/></w:rPr><w:t xml:space="preserve">{_escape(line[3:].strip())}</w:t></w:r></w:p>')
-            else:
-                out.append(f'<w:p><w:r><w:t xml:space="preserve">{_escape(line)}</w:t></w:r></w:p>')
-        block = "".join(out)
+        block = "".join(docx_blocks(paragraphs))
         if position == "start":
             xml = re.sub(r"(<w:body[^>]*>)", lambda m: m.group(1) + block, xml, count=1)
         else:
@@ -227,3 +246,80 @@ def insert_paragraphs(content: bytes, extension: str, paragraphs: list[str], pos
             else:
                 outz.writestr(n, files[n])
     return buf.getvalue()
+
+
+def thread_of(comments: list[dict], comment_id: str) -> list[dict]:
+    """Every comment in the same thread as the given one (the root and all its descendants), in document order."""
+    by_id = {c["id"]: c for c in comments}
+    root_id = comment_id
+    seen = set()
+    while by_id.get(root_id, {}).get("parent") and root_id not in seen:
+        seen.add(root_id)
+        root_id = by_id[root_id]["parent"]
+    members = {root_id}
+    changed = True
+    while changed:
+        changed = False
+        for c in comments:
+            if c["id"] not in members and c.get("parent") in members:
+                members.add(c["id"])
+                changed = True
+    return [c for c in comments if c["id"] in members]
+
+
+def _docx_runs(text: str, extra_rpr: str = "") -> str:
+    """Runs for a line with **bold** and *italic* segments."""
+    out = []
+    for i, part in enumerate(re.split(r"(\*\*[^*]+\*\*|\*[^*]+\*)", text)):
+        if not part:
+            continue
+        if part.startswith("**") and part.endswith("**") and len(part) > 4:
+            out.append(f'<w:r><w:rPr><w:b/>{extra_rpr}</w:rPr><w:t xml:space="preserve">{_escape(part[2:-2])}</w:t></w:r>')
+        elif part.startswith("*") and part.endswith("*") and len(part) > 2:
+            out.append(f'<w:r><w:rPr><w:i/>{extra_rpr}</w:rPr><w:t xml:space="preserve">{_escape(part[1:-1])}</w:t></w:r>')
+        else:
+            out.append(f'<w:r>{("<w:rPr>" + extra_rpr + "</w:rPr>") if extra_rpr else ""}<w:t xml:space="preserve">{_escape(part)}</w:t></w:r>')
+    return "".join(out) or '<w:r><w:t xml:space="preserve"></w:t></w:r>'
+
+
+def docx_blocks(lines: list[str]) -> list[str]:
+    """Paragraphs and tables for lines written like Markdown: '# ' and '## ' headings, '- ' bullets, '**bold**',
+    '*italic*', and '| a | b |' table rows (a '|---|' line is skipped)."""
+    out: list[str] = []
+    table: list[list[str]] = []
+
+    def flush_table():
+        if not table:
+            return
+        rows = ""
+        for r, cells in enumerate(table):
+            tcs = "".join(f'<w:tc><w:tcPr><w:tcW w:w="0" w:type="auto"/></w:tcPr><w:p>{_docx_runs(c.strip(), "<w:b/>" if r == 0 else "")}</w:p></w:tc>' for c in cells)
+            rows += f"<w:tr>{tcs}</w:tr>"
+        out.append('<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="0" w:type="auto"/><w:tblBorders>'
+                   + "".join(f'<w:{b} w:val="single" w:sz="4" w:space="0" w:color="808080"/>' for b in ("top", "left", "bottom", "right", "insideH", "insideV"))
+                   + f'</w:tblBorders></w:tblPr><w:tblGrid>{"".join("<w:gridCol/>" for _ in table[0])}</w:tblGrid>{rows}</w:tbl>')
+        table.clear()
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("|") and stripped.endswith("|"):
+            if re.fullmatch(r"\|[\s:|-]+\|", stripped):
+                continue
+            table.append(stripped.strip("|").split("|"))
+            continue
+        flush_table()
+        if stripped.startswith("# "):
+            out.append(f'<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr>{_docx_runs(stripped[2:].strip(), "<w:b/><w:sz w:val=\"32\"/>")}</w:p>')
+        elif stripped.startswith("## "):
+            out.append(f'<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr>{_docx_runs(stripped[3:].strip(), "<w:b/><w:sz w:val=\"28\"/>")}</w:p>')
+        elif stripped.startswith("### "):
+            out.append(f'<w:p><w:pPr><w:pStyle w:val="Heading3"/></w:pPr>{_docx_runs(stripped[4:].strip(), "<w:b/>")}</w:p>')
+        elif re.match(r"^[-*•] ", stripped):
+            out.append(f'<w:p><w:pPr><w:pStyle w:val="ListParagraph"/><w:ind w:left="720" w:hanging="360"/></w:pPr>{_docx_runs("• " + stripped[2:].strip())}</w:p>')
+        elif re.match(r"^\d+[.)] ", stripped):
+            n, _, rest = stripped.partition(" ")
+            out.append(f'<w:p><w:pPr><w:pStyle w:val="ListParagraph"/><w:ind w:left="720" w:hanging="360"/></w:pPr>{_docx_runs(n + " " + rest.strip())}</w:p>')
+        else:
+            out.append(f"<w:p>{_docx_runs(stripped)}</w:p>")
+    flush_table()
+    return out

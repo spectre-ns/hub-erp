@@ -643,7 +643,7 @@ class ReviewerCog(Cog):
     answers its inbox, and files records it is asked to file."""
 
     kind = "context"
-    tasks = ["review", "inbox", "review-document", "edit-document"]
+    tasks = ["review", "inbox", "review-document", "edit-document", "answer"]
     reaches = ["kernel:records", "kernel:documents"]
     files_process = ""
 
@@ -676,6 +676,29 @@ class ReviewerCog(Cog):
         position = "end" if re.search(r"\b(end|bottom|append|footer|conclusion)\b", request.lower()) else "start"
         return self.ok("edit-document", {"paragraphs": lines[:40], "position": position, "model": model, "stand_in": stand_in,
                                          "explanation": f"I wrote {len(lines[:40])} line(s) at the {position} of the document as asked."})
+
+    def task_answer(self, input: dict, ctx: RunContext) -> dict:
+        """Answer a question or remark in a document's comment thread from the cog's SOPs, the document's text and
+        the thread so far; no review, no filing."""
+        rec = ctx.kernel.get(input.get("record") or ctx.record) if (input.get("record") or ctx.record) else None
+        question = input.get("question") or ""
+        thread = input.get("thread") or []
+        sops = ctx.sop_texts()
+        per = max(1500, 10000 // max(1, len(sops)))
+        system = (ctx.profile.get("prompt") or f"You are {self.id}.") + "\n\nAnswer from these procedures, briefly and concretely:\n\n" + \
+            "\n\n".join(f"# {n}\n{t[:per]}" for n, t in sops.items())
+        doc_text = ((rec or {}).get("fields") or {}).get("text") or ""
+        user = ("Thread so far:\n" + "\n".join(f"- {t.get('author')}: {t.get('text')}" for t in thread) + "\n\n" if thread else "") + \
+            (f"Document {rec['number']} ({rec['fields'].get('title')}) reads:\n{doc_text[:4000] or '(empty)'}\n\n" if rec else "") + \
+            f"Reply to this:\n{question}\n\nAnswer in a few sentences a colleague can act on."
+        text, model, stand_in = "", ctx.profile.get("model") or "stand-in", True
+        if ctx.model is not None:
+            out = ctx.model.complete(model=model, system=system, user=user, by=self.id, max_tokens=500)
+            text, stand_in = out["text"], out["stand_in"]
+        if stand_in or not text.strip():
+            text = (f"Noted. I follow {', '.join(sorted(sops)) or 'the quality procedures'}; "
+                    "configure a model for a worded answer, or ask me to review or edit the document.")
+        return self.ok("answer", {"text": text.strip(), "model": model, "stand_in": stand_in})
 
     def task_review_document(self, input: dict, ctx: RunContext) -> dict:
         """Review an item against the SOPs this cog follows and file the review as evidence."""
