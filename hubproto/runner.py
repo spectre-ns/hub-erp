@@ -166,6 +166,11 @@ class Runner:
             if rec["folder"] != manifest["folder"]:
                 rec = self.kernel.move(record, manifest["folder"], by=owner_name, run_id=run_id, release=release["digest"],
                                        reason=f"filed by {process}")
+            # The existing item is the submission: its fields seed the steps, under whatever the caller supplied.
+            td = self.kernel.types.get(rec["type"], {})
+            skip = set(td.get("system_fields") or []) | {"text", "office_comments", "checked_out_by", "checked_out_via", "editors", "wopi_lock", "content_sha"}
+            seeded = {k: v for k, v in rec["fields"].items() if k not in skip and v not in (None, "", [], {})}
+            inputs = {**inputs, "record": {**seeded, **(inputs.get("record") or {})}}
         else:
             fields = dict(inputs.get("record") or {})
             fields.pop("locator", None)

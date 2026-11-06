@@ -250,3 +250,12 @@ def test_an_approval_request_files_a_working_document_into_the_process_folder_an
     assert rec["folder"] == "Quality/Controlled Documents", "filed where document-control files its records"
     assert "started document-control" in reply["body"]
     assert any(e["type"] == "record.moved" for e in released.kernel.events(aggregate=doc["locator"]))
+
+
+def test_a_process_started_on_an_existing_document_reads_its_fields(released):
+    doc = released.dms.create(title="Draft WI 9", doc_class="working", folder="Tasks", by="carol", content=b"# WI 9\nbody",
+                              filename="wi9.md", mime="text/markdown", doc_type="wi")
+    released.send("carol", "quality-assistant", "Approval", "Please move this document to approval", record=doc["locator"])
+    run = released.runner.run_for_record(doc["locator"])
+    assert run["status"] != "failed", [e.get("reason") for e in released.runner.track(run["id"]) if e["type"] == "run.failed"]
+    assert run["inputs"]["record"]["title"] == "Draft WI 9"
