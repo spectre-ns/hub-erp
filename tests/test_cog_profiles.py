@@ -31,7 +31,7 @@ def test_a_cog_profile_must_name_a_cog_member_and_real_frames(released):
     edit_frame(released, "cog-profiles", "## Cog: ap-reviewer", "## Cog: nobody-cog", bump="1.1.0")
     proposal = released.compile()
     errors = [f["detail"] for f in proposal["findings"] if f["severity"] == "error"]
-    assert any("nobody-cog" in d and "Cog catalog" in d for d in errors)
+    assert any("nobody-cog" in d and "no matching cog member" in d for d in errors)
     edit_frame(released, "cog-profiles", "## Cog: nobody-cog", "## Cog: ap-reviewer")
     edit_frame(released, "cog-profiles", "Follows: finance-policy\n", "Follows: finance-policy, no-such-sop\n", bump="1.2.0")
     proposal = released.compile()

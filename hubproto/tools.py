@@ -37,7 +37,7 @@ TOOLS = [
                                                     "max_chars": {"type": "integer", "description": "default 6000"}}, "required": ["number"]}},
     {"name": "waiting_for",
      "description": "What is waiting for a person or a cog to decide or rework (their queue).",
-     "parameters": {"type": "object", "properties": {"who": {"type": "string", "description": "a member's name; default: the person asking"}}}},
+     "parameters": {"type": "object", "properties": {"who": {"type": "string", "description": "a member's name or a role (e.g. payables-reviewer); default: the person asking"}}}},
     {"name": "record_history",
      "description": "The history of a record: who created it, changed it, moved it on, and the run it is in.",
      "parameters": {"type": "object", "properties": {"number": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["number"]}},
@@ -174,7 +174,25 @@ class RecordTools:
         return out
 
     def waiting_for(self, who: str = "") -> dict:
-        who = who or self.principal
+        """A member's queue; a role (e.g. payables-reviewer) means every member holding it."""
+        from .routing import principals_for
+
+        who = (who or self.principal).strip()
+        members = self.bundle.get("members") or {}
+        role = who.lower().replace(" ", "-").rstrip("s")
+        if who not in members and (role in (self.bundle.get("roles") or []) or who.lower().replace(" ", "-") in (self.bundle.get("roles") or [])):
+            role = role if role in (self.bundle.get("roles") or []) else who.lower().replace(" ", "-")
+            names = principals_for(self.bundle, f"role:{role}")
+            merged = {"who": f"the {role.replace('-', ' ')}s ({', '.join(names)})", "count": 0, "items": []}
+            for n in names:
+                q = self.waiting_for(n)
+                for i in q["items"]:
+                    i["waiting_for"] = n
+                merged["items"] += q["items"]
+            merged["count"] = len(merged["items"])
+            return merged
+        if who not in members:
+            return {"error": f"{who!r} is neither a member nor a role; members: {', '.join(sorted(members))}"}
         items = []
         for r in self.hub.runner.pending_for(who):
             rec = self.hub.kernel.get(r["record"]) if r.get("record") else None

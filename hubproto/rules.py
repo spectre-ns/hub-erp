@@ -21,7 +21,7 @@ KINDS = {
     "approval_criteria": {"approver", "process", "max_amount", "currency", "conditions"},
     "sod": {"object", "roles"},
     "process": {"name", "folder", "steps", "terminal", "reject_to"},
-    "cog": {"name", "model", "prompt", "follows", "reviews", "prompt_from", "references"},
+    "cog": {"name", "model", "prompt", "follows", "reviews", "prompt_from", "references", "autonomy", "duties"},
 }
 
 CONDITION_VOCABULARY = {

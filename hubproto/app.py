@@ -35,6 +35,11 @@ class Hub:
         self.proposals = ProposalStore(state / "proposals")
         self.kernel = Kernel(state / "kernel.db")
         self.registry = CogRegistry()
+        try:
+            meta = self.releases.current()
+            self.registry.install_profiles(self.releases.bundle(meta["digest"]) if meta else None)
+        except Exception:
+            pass
         self.inbox = Inbox(state / "inbox")
         self.dms = DMS(self.kernel, BlobStore(state / "blobs"))
         self.runner = Runner(state / "runs", self.kernel, self.releases, self.registry, self.inbox, self.dms)
@@ -171,6 +176,70 @@ class Hub:
         self.kernel.link(draft["locator"], "references", doc["locator"], by=by)
         return self.kernel.get(draft["locator"])
 
+    def propose_new_person(self, *, name: str, roles: list[str], by: str) -> dict:
+        """A new person as a policy proposal: the member and their roles in the organization model. (In production
+        people come from the identity provider; their roles still come from this Frame.)"""
+        return self.propose_new_member(kind="person", name=name, roles=roles, by=by)
+
+    def propose_new_cog(self, *, name: str, roles: list[str], model: str, prompt: str, follows: list[str], autonomy: str,
+                        duties: list[str], by: str) -> dict:
+        """A new cog as one policy proposal: the member in the organization model and its profile, drafted as changes
+        to those two Frames. The policy owners review and release it; on release the hub installs it."""
+        return self.propose_new_member(kind="cog", name=name, roles=roles, model=model, prompt=prompt, follows=follows,
+                                       autonomy=autonomy, duties=duties, by=by)
+
+    def propose_new_member(self, *, kind: str, name: str, roles: list[str], by: str, model: str = "", prompt: str = "",
+                           follows: list[str] | None = None, autonomy: str = "propose", duties: list[str] | None = None) -> dict:
+        import re as _re
+
+        follows, duties = list(follows or []), list(duties or [])
+        meta = self.releases.current()
+        bundle = self.releases.bundle(meta["digest"]) if meta else {}
+        name = (name or "").strip().lower()
+        if not _re.fullmatch(r"[a-z][a-z0-9-]{1,40}", name):
+            raise ValueError("a name is lower case letters, digits and hyphens, e.g. erin or calibration-assistant")
+        if name in (bundle.get("members") or {}):
+            raise ValueError(f"{name} is already a member")
+        unknown = [r for r in roles if r not in (bundle.get("roles") or [])]
+        if unknown or not roles:
+            raise ValueError("choose at least one role" if not roles else f"no such role: {', '.join(unknown)}")
+        bad = [f for f in follows if f not in self.frames.frames]
+        if bad:
+            raise ValueError(f"no such Frame: {', '.join(bad)}")
+        if kind == "cog" and autonomy not in ("read", "propose", "act"):
+            raise ValueError("autonomy is read, propose or act")
+        org = self.frames.get("org-model")
+        cogs_frame = next((f for f in self.frames.frames.values() if "## Cog:" in f.text), None) if kind == "cog" else None
+        if kind == "cog" and cogs_frame is None:
+            raise ValueError("there is no Frame with cog profiles to add the profile to")
+        lines = org.text.splitlines()
+        members_at = next(i for i, ln in enumerate(lines) if ln.strip().lower() == "## members")
+        last = members_at
+        for i in range(members_at + 1, len(lines)):
+            if lines[i].startswith("## "):
+                break
+            if lines[i].startswith("- "):
+                last = i
+        if kind == "person":
+            # people are listed before the cogs
+            first_cog = next((i for i in range(members_at + 1, last + 1) if "(cog)" in lines[i]), last + 1)
+            lines.insert(first_cog, f"- {name} (person): {', '.join(roles)}")
+        else:
+            lines.insert(last + 1, f"- {name} (cog): {', '.join(roles)}")
+        org_text = "\n".join(lines) + ("\n" if org.text.endswith("\n") else "")
+        texts = {"org-model": org_text}
+        if kind == "cog":
+            prof = [f"## Cog: {name}", f"Model: {model or 'claude-sonnet-5-5'}", f"Prompt: {' '.join((prompt or '').split()) or f'You are {name}.'}",
+                    f"Follows: {', '.join(follows)}" if follows else "Follows:", f"Autonomy: {autonomy}"] + [f"Duty: {d.strip()}" for d in duties if d.strip()]
+            texts[cogs_frame.name] = cogs_frame.text.rstrip("\n") + "\n\n" + "\n".join(prof) + "\n"
+        drafts = {}
+        for frame_name, text in texts.items():
+            d = self.frame_draft(frame_name, by=by)
+            self.dms.add_version(d["locator"], text.encode("utf-8"), by=by, filename=self.frames.get(frame_name).path.name, mime="text/markdown",
+                                 note=f"new {kind} {name}")
+            drafts[frame_name] = d["locator"]
+        return self.compile(overrides=texts, drafts=drafts)
+
     def draft_text(self, draft: dict) -> str:
         content, _ = self.dms.content(draft["locator"])
         return content.decode("utf-8", "replace")
@@ -193,6 +262,7 @@ class Hub:
         proposal = self.proposals.load(proposal_id)
         meta = finalize(proposal, self.releases, by=by, effective_from=effective_from, now=now)
         self.proposals.save(proposal)
+        self.registry.install_profiles(self.releases.bundle(meta["digest"]))
         overrides = proposal.get("overrides") or {}
         if overrides:
             # The drafts become the Frames: written in place, then every Frame document follows its file.

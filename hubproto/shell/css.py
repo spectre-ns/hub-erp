@@ -225,4 +225,6 @@ main{{padding:var(--sp-3) var(--sp-4)}}.grid2{{grid-template-columns:1fr}}.sheet
 
 pre.diff{{font:12px/1.45 ui-monospace,monospace;background:var(--chip);border:1px solid var(--line);border-radius:6px;padding:8px;overflow-x:auto;white-space:pre}}
 pre.diff .add{{color:var(--ok);background:color-mix(in srgb,var(--ok) 12%,transparent);display:inline-block;width:100%}}pre.diff .del{{color:var(--crit);background:color-mix(in srgb,var(--crit) 10%,transparent);display:inline-block;width:100%}}pre.diff .hunk{{color:var(--muted)}}
+
+.checks{{display:flex;flex-wrap:wrap;gap:4px 14px}}.checks label.check{{display:inline-flex;align-items:center;gap:4px;font-size:var(--fs-s)}}fieldset{{border:1px solid var(--line);border-radius:6px;margin:8px 0;padding:6px 10px}}legend{{font-size:var(--fs-s);color:var(--muted)}}
 """

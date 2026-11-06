@@ -482,6 +482,7 @@ class ViewsMixin:
         body += f"<h2>People <span class='muted'>{len(people)}</span></h2><div class='people'>{''.join(card(n, members[n]) for n in people)}</div>"
         body += (f"<h2>Cogs <span class='muted'>{len(cogs)}</span></h2><p class='why'>Cogs are team members that review, approve within fixed criteria, answer messages and file records. "
                  f"Open one to see what it is doing.</p><div class='people'>{''.join(card(n, members[n]) for n in cogs)}</div>")
+        body += self._new_member_forms()
         self._page("People", body, crumbs=[("People", None)])
 
     def page_user(self):
@@ -531,6 +532,8 @@ class ViewsMixin:
             body += (f"<div class='card'><h2 style='margin-top:0;border:0'>{icon('robot')} About this cog</h2><p>{esc(desc)}</p>"
                      f"<p class='why'>A cog is routed work only from the procedures it follows; a model drafts its words and never signs.</p>"
                      + kv(profile + about + [("Models", esc(models))]) + "</div>")
+        if m.get("type") == "cog" and name in self.hub.registry.ids():
+            body += self._agent_section(name, prof if 'prof' in locals() else ((self.bundle.get("cogs") or {}).get(name) or {}))
         body += f"<h2>{icon('check-circle')} May approve</h2><ul>" + "".join(f"<li>{esc(s)}</li>" for s in self._may_approve_words(name)) + "</ul>"
         waiting = [r for r in self.hub.runner.pending_for(name)]
         body += f"<h2>{icon('inbox')} Waiting for {esc(name)} <span class='muted'>{len(waiting)}</span></h2>"

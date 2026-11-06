@@ -63,7 +63,7 @@ MEANING_EXAMPLES = {
     "audit": ("findings recorded as observed", "findings accepted; CAPA to follow"),
     "change-request": ("approved; impact on WI-7 understood", "verified on the first batch"),
 }
-NOTIFICATION_KINDS = ("escalation", "failure", "returned", "rejection", "auto-decided", "request", "review", "mention")
+NOTIFICATION_KINDS = ("escalation", "failure", "returned", "rejection", "auto-decided", "request", "review", "mention", "agent-run")
 MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 _LOCATOR = re.compile(r"rec:[a-z-]+:([A-Z]+-[0-9A-Z-]+)")
 _TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:\+00:00|Z)?")

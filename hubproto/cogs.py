@@ -933,6 +933,16 @@ class Swarm(Cog):
         return self.ok("run", out, problems)
 
 
+class ProfileCog(ReviewerCog):
+    """A cog defined entirely by its Frame profile (model, prompt, the SOPs it follows, autonomy, duties): no code.
+    It reviews, edits, answers, chats, approves within the approval-criteria sentences written for it, and works
+    on its own through the agent harness."""
+
+    def __init__(self, cog_id: str, description: str = ""):
+        self.id = cog_id
+        self.description = description or f"{cog_id}: a cog defined by its profile in the policy (model, prompt, procedures it follows)."
+
+
 class APReviewer(ReviewerCog):
     id = "ap-reviewer"
     files_process = "purchase-to-pay"
@@ -983,6 +993,16 @@ class CogRegistry:
 
     def ids(self) -> set[str]:
         return set(self.cogs)
+
+    def install_profiles(self, bundle: dict | None) -> list[str]:
+        """Every cog member with a profile in the release that has no code of its own becomes a ProfileCog."""
+        added = []
+        members = (bundle or {}).get("members") or {}
+        for name, prof in ((bundle or {}).get("cogs") or {}).items():
+            if name not in self.cogs and members.get(name, {}).get("type") == "cog":
+                self.register(ProfileCog(name, (prof.get("prompt") or "")[:160]))
+                added.append(name)
+        return added
 
     def cards(self) -> list[dict]:
         return [{"id": c.id, "version": c.version, "kind": c.kind, "reaches": c.reaches, "tasks": c.tasks,

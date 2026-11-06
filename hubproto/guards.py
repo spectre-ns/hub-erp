@@ -76,6 +76,8 @@ def grounding_guard(rules: list[dict], frames: dict[str, Frame]) -> list[Finding
 
 def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict | None = None) -> list[Finding]:
     out: list[Finding] = []
+    # A cog with a profile and no code of its own is a profile cog: the hub installs it from the release.
+    cog_ids = set(cog_ids) | {r["name"] for r in rules if r.get("kind") == "cog"}
     roles = {r["name"] for r in rules if r["kind"] == "role"}
     members: dict[str, dict] = {}
     for r in rules:
@@ -131,6 +133,8 @@ def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict |
                 out.append(Finding("consistency", "error", f"cog profile {rule['name']!r} has no matching cog member in the org model", key, frame, line))
             if not rule.get("follows"):
                 out.append(Finding("consistency", "warning", f"cog {rule['name']} follows no SOP; it will be routed nothing", key, frame, line))
+            if rule.get("autonomy") and rule["autonomy"] not in ("read", "propose", "act"):
+                out.append(Finding("consistency", "error", f"cog {rule['name']}: Autonomy must be read, propose or act, not {rule['autonomy']!r}", key, frame, line))
         elif kind == "permission":
             if not ref_ok(rule["subject"]):
                 out.append(Finding("consistency", "error", f"permission subject {rule['subject']!r} is unknown", key, frame, line))

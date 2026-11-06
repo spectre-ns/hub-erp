@@ -89,7 +89,7 @@ _PROCESS_STEP = re.compile(
     r"^(?P<n>\d+)\. \[(?P<role>[a-z][\w-]*)\] (?P<title>[^()]+?)(?: \((?P<cog>[a-z][\w-]*(?:, ?[a-z][\w-]*)*)\))?$"
 )
 _COG_HEAD = re.compile(r"^## Cog: (?P<name>[a-z0-9][\w-]*)$")
-_COG_KEY = re.compile(r"^(?P<key>Model|Prompt from|Prompt|Follows|Reviews|References): ?(?P<rest>.*)$")
+_COG_KEY = re.compile(r"^(?P<key>Model|Prompt from|Prompt|Follows|Reviews|References|Autonomy|Duty): ?(?P<rest>.*)$")
 _DOC_REF = re.compile(r"\b[A-Z]{2,}-\d[\w-]*\b")
 _OPS = {"over": ">", "above": ">", "under": "<", "below": "<", "at or under": "<=", "at or over": ">="}
 
@@ -173,7 +173,7 @@ class ConventionExtractor:
                 close_cog()
                 section = "cog"
                 cog_profile = {"kind": "cog", "name": m.group("name"), "model": "", "prompt": [], "follows": [], "reviews": [],
-                               "prompt_from": "", "references": [],
+                               "prompt_from": "", "references": [], "autonomy": "", "duties": [],
                                "source": src(n, line)}
                 continue
             if section == "cog" and cog_profile is not None and not line.startswith("#"):
@@ -186,6 +186,13 @@ class ConventionExtractor:
                     elif cog_key == "prompt from":
                         refs = _DOC_REF.findall(rest)
                         cog_profile["prompt_from"] = refs[0] if refs else rest.strip().rstrip(".")
+                        cog_key = ""
+                    elif cog_key == "autonomy":
+                        cog_profile["autonomy"] = rest.strip().rstrip(".").lower()
+                        cog_key = ""
+                    elif cog_key == "duty":
+                        if rest.strip():
+                            cog_profile["duties"].append(rest.strip())
                         cog_key = ""
                     elif cog_key == "references":
                         cog_profile["references"] = _DOC_REF.findall(rest) or [x.strip() for x in rest.rstrip(".").split(",") if x.strip()]

@@ -936,6 +936,49 @@ def cmd_tick(args) -> int:
     return 0
 
 
+def cmd_agent(args) -> int:
+    from .agent import Agent
+
+    hub = _hub(args)
+    require_member(hub, args.as_user, flag="--as", members=members_of(hub))
+    agent = Agent(hub, args.cog)
+    if args.confirm:
+        try:
+            out = agent.confirm(args.confirm, args.as_user)
+        except ValueError as e:
+            fail(str(e), 1)
+        for r in out["results"]:
+            print(f"  {r['tool']}: {clean(json.dumps(r['result'], default=str), 200)}")
+        return 0
+    if not args.goal:
+        fail("give the cog a --goal", 2)
+    try:
+        res = agent.run(args.goal, by=args.as_user, max_actions=args.actions)
+    except ValueError as e:
+        fail(str(e), 1)
+    print(f"run {res['run']}: {res['status']}, {res['actions']} action(s)")
+    print(clean(res["summary"], 1200))
+    for p in res["proposed"]:
+        print(f"  proposed {p['tool']}: {clean(json.dumps(p['arguments'], default=str), 200)}")
+    if res["proposed"]:
+        print(f"confirm with: hubproto agent --cog {args.cog} --as {args.as_user} --confirm {res['run']}")
+    return 0
+
+
+def cmd_agent_duties(args) -> int:
+    from .agent import run_duties
+
+    hub = _hub(args)
+    while True:
+        done = run_duties(hub, args.cog)
+        for d in done:
+            print(f"{d['cog']} took up a duty ({d['status']}, {d['actions']} action(s)): {clean(d['duty'], 80)}\n  {clean(d['summary'], 300)}")
+        if not args.loop:
+            print(f"agent-duties done: {len(done)} duty run(s)")
+            return 0
+        time.sleep(args.loop)
+
+
 def cmd_cog_users(args) -> int:
     """Cogs as users: each cog takes its turn on the items assigned to it, deciding through the same path as a
     person. The shell does this inline unless HUBPROTO_COG_USERS=service, in which case this verb (or the
@@ -1231,6 +1274,17 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("tick", help="escalate overdue Gates as the routing sentences say")
     s.add_argument("--today", type=iso_date, metavar="YYYY-MM-DD", help="treat this date as today (default: today)")
     s.set_defaults(fn=cmd_tick)
+    s = sub.add_parser("agent", help="give a cog a task: it plans and acts on its own within its autonomy (read, propose or act)")
+    s.add_argument("--cog", required=True, metavar="COG", help="the cog to give the task to")
+    s.add_argument("--goal", metavar="TEXT", help="what it should do")
+    s.add_argument("--as", dest="as_user", required=True, metavar="PERSON", help="who hands over the task (is told the outcome)")
+    s.add_argument("--actions", type=int, metavar="N", help="at most N actions (default 5)")
+    s.add_argument("--confirm", metavar="RUN", help="confirm a run's proposed actions instead of starting one")
+    s.set_defaults(fn=cmd_agent)
+    s = sub.add_parser("agent-duties", help="let the cogs take up the duties in their profiles (once a day each)")
+    s.add_argument("--cog", metavar="COG", help="only this cog")
+    s.add_argument("--loop", type=int, metavar="SECONDS", help="keep checking every SECONDS")
+    s.set_defaults(fn=cmd_agent_duties)
     s = sub.add_parser("cog-users", help="let the cogs take the items waiting for them (service mode: HUBPROTO_COG_USERS=service)")
     s.add_argument("--as", dest="cogs", action="append", metavar="COG", help="only this cog (repeatable); default: every cog")
     s.add_argument("--loop", type=int, metavar="SECONDS", help="keep working every SECONDS until stopped")

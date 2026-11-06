@@ -227,14 +227,16 @@ class BaseHandler(BaseHTTPRequestHandler):
             for prefix, fn in (("/record/", self.page_record), ("/document/", self.page_document), ("/doc/", self.page_document),
                                ("/run/", self.page_run), ("/frame/", self.page_frame), ("/release/", self.page_release),
                                ("/edit/", self.page_edit), ("/editor-replies/", self.page_editor_replies), ("/cog-seat/", self.page_cog_seat), ("/frame-doc/", self.page_frame_doc),
-                               ("/text-edit/", self.page_text_edit), ("/frame-check/", self.page_frame_check), ("/proposal/", self.page_proposal), ("/items/", self.page_items), ("/app/", self.page_app), ("/user/", self.page_user)):
+                               ("/text-edit/", self.page_text_edit), ("/frame-check/", self.page_frame_check), ("/proposal/", self.page_proposal),
+                               ("/agent-run/", self.page_agent_run), ("/items/", self.page_items), ("/app/", self.page_app), ("/user/", self.page_user)):
                 if r.startswith(prefix) and len(r) > len(prefix):
                     self.arg = r[len(prefix):]
                     return fn
             return None
         posts = {"/start": self.post_start, "/decide": self.post_decide, "/msg": self.post_msg, "/attach": self.post_attach,
                  "/finish-edit": self.post_finish_edit, "/new-document": self.post_new_document, "/working-copy": self.post_working_copy, "/apply-replies": self.post_apply_replies, "/start-on": self.post_start_on, "/chat": self.post_chat, "/chat-clear": self.post_chat_clear, "/frame-draft": self.post_frame_draft, "/text-save": self.post_text_save,
-                 "/frame-propose": self.post_frame_propose, "/proposal-review": self.post_proposal_review, "/proposal-release": self.post_proposal_release, "/mark-applied": self.post_mark_applied, "/editor-debug": self.post_editor_debug,
+                 "/frame-propose": self.post_frame_propose, "/proposal-review": self.post_proposal_review, "/proposal-release": self.post_proposal_release,
+                 "/agent-task": self.post_agent_task, "/agent-confirm": self.post_agent_confirm, "/new-person": self.post_new_person, "/new-cog": self.post_new_cog, "/mark-applied": self.post_mark_applied, "/editor-debug": self.post_editor_debug,
                  "/upload": self.post_upload, "/checkout": self.post_checkout, "/checkin": self.post_checkin, "/link": self.post_link,
                  "/snapshot": self.post_snapshot, "/hold": self.post_hold, "/resubmit": self.post_resubmit, "/retry": self.post_retry,
                  "/cancel": self.post_cancel, "/undo-checkout": self.post_undo_checkout, "/bulk-hold": self.post_bulk_hold}

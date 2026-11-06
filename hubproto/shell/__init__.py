@@ -27,6 +27,7 @@ from .editor import EditorMixin
 from .messenger import MessengerMixin
 from .policy_docs import PolicyDocsMixin
 from .mcp import McpMixin
+from .agents import AgentsMixin, NewMemberMixin
 from .css import AVATAR_COLOURS, AVATAR_FG, CONTRAST_PAIRS, DARK, LIGHT  # noqa: F401  (public: the contrast tests)
 from .forms import START_INPUTS, ShellError, coerce, prefill, widget  # noqa: F401  (public: cli_records, tests)
 from .handler import DEFAULT_MAX_UPLOAD, BaseHandler, href, log_line, table  # noqa: F401
@@ -41,7 +42,7 @@ __all__ = ["Handler", "ShellError", "coerce", "make_server", "serve", "serve_in_
            "when", "why_sentence", "sentence_diff", "widget", "prefill", "chip", "esc", "href", "table"]
 
 
-class Handler(PagesMixin, ViewsMixin, InboxMixin, PolicyMixin, ActionsMixin, EditorMixin, MessengerMixin, PolicyDocsMixin, McpMixin, BaseHandler):
+class Handler(PagesMixin, ViewsMixin, InboxMixin, PolicyMixin, ActionsMixin, EditorMixin, MessengerMixin, PolicyDocsMixin, McpMixin, AgentsMixin, NewMemberMixin, BaseHandler):
     """The request handler: the plumbing in BaseHandler, the pages and actions in the mixins."""
 
 

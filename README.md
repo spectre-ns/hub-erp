@@ -137,6 +137,31 @@ The messenger in the bottom-right corner of every page is an informal chat with 
 are on, the procedures it follows and its queue, remembers the conversation, and changes nothing; reviews,
 edits and approvals go through the item's chatter, comments or Ops.
 
+## The agent harness: cogs working on their own
+
+A cog can be handed a task ("find nonconformances older than a week and remind their owners") from its profile
+page or `hubproto agent --cog quality-assistant --as carol --goal "..."`, and takes up the `Duty:` lines in its
+profile once a day (`hubproto agent-duties`, or the `agents` compose profile). Its model plans and calls tools:
+the record tools to look (search, read records and documents, queues, history, counts) and action tools to act.
+It acts **as itself** and only through governed paths: commenting on an item, messaging a person, starting a
+process (the runner checks it may), taking its own turn at a Gate (bound by its approval criteria), reviewing a
+document (filed as evidence) and editing a working document. It never writes record fields directly; when the
+system refuses, the run says so.
+
+- **Autonomy** is a line in the cog's profile: `read` (look and report), `propose` (actions wait for the person
+  who gave the task, or a policy owner, to confirm them on the run page) or `act`. Changing it is a widening.
+- **Budget**: at most 5 actions and 10 steps a run (`HUBPROTO_AGENT_ACTIONS`, `HUBPROTO_AGENT_ROUNDS`).
+- **Audit**: every step of a run is on its Track (`state/agents/<run>.jsonl`, the run page); the person who gave
+  the task is told what was done.
+- **Kill switch**: `HUBPROTO_AGENTS=off`.
+
+The same record tools are served over MCP at `POST /mcp?as=<member>` (JSON-RPC: initialize, tools/list,
+tools/call), trimmed to what that member may read, so any MCP client can look at the record space.
+
+**New cogs and people** are added from the People page (or `hub.propose_new_cog` / `propose_new_person`): the
+form drafts the change to the organization model (and, for a cog, its profile) as one policy proposal for the
+policy owners. A cog needs no code: a profile is enough; on release the hub installs it as a working cog.
+
 ## The integrated editor
 
 Documents open in Collabora Online inside the hub: the hub is a WOPI host (`hubproto/wopi.py`; the
