@@ -259,3 +259,17 @@ def test_a_process_started_on_an_existing_document_reads_its_fields(released):
     run = released.runner.run_for_record(doc["locator"])
     assert run["status"] != "failed", [e.get("reason") for e in released.runner.track(run["id"]) if e["type"] == "run.failed"]
     assert run["inputs"]["record"]["title"] == "Draft WI 9"
+
+
+def test_proposing_an_existing_docx_for_approval_keeps_its_content(released):
+    from hubproto import wopi, office
+
+    content, mime = wopi.blank_document("docx")
+    content = office.insert_paragraphs(content, "docx", ["# WI 20", "Torque to 2 Nm."], "start")
+    doc = released.dms.create(title="WI 20", doc_class="working", folder="Tasks", by="carol", content=content, filename="wi20.docx", mime=mime, doc_type="wi")
+    released.runner.submit("document-control", {"record": {}}, owner="carol", record=doc["locator"])
+    run = released.runner.run_for_record(doc["locator"])
+    assert run["status"] == "waiting", [e.get("reason") for e in released.runner.track(run["id"]) if e["type"] == "run.failed"]
+    latest = released.dms.versions(doc["locator"])[-1]
+    assert latest["filename"] == "wi20.docx" and latest["version"] == 1, "no markdown draft replaced the docx"
+    assert "Torque to 2 Nm." in office.extract_text(released.dms.content(doc["locator"])[0], "docx")

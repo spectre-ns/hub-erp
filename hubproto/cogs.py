@@ -454,13 +454,23 @@ class DocumentDrafter(Cog):
         change_type = rec.get("change_type", "major")
         if change_type not in ("minor", "major"):
             problems.append(problem("change-type", "change_type must be minor or major"))
-        body = rec.get("body") or f"# {rec.get('title', '')}\n\n(draft body)"
-        out = {"title": rec.get("title", ""), "body": body, "change_type": change_type,
+        existing = ctx.dms.versions(ctx.record) if (ctx.dms is not None and ctx.record) else []
+        body = rec.get("body") or ""
+        out = {"title": rec.get("title", ""), "change_type": change_type,
                "doc_type": rec.get("doc_type", "sop"), "doc_class": "controlled",
                "training_roles": rec.get("training_roles", [])}
-        if ctx.dms is not None and ctx.record:
-            ctx.dms.add_version(ctx.record, body.encode("utf-8"), by=ctx.owner, filename=f"{rec.get('title', 'draft')}.md",
-                                mime="text/markdown", note="draft", run_id=ctx.run_id, release=ctx.release)
+        if body:  # a body in the submission is the draft's content
+            out["body"] = body
+            if ctx.dms is not None and ctx.record:
+                ctx.dms.add_version(ctx.record, body.encode("utf-8"), by=ctx.owner, filename=f"{rec.get('title', 'draft')}.md",
+                                    mime="text/markdown", note="draft", run_id=ctx.run_id, release=ctx.release)
+        elif existing:  # an existing document (a docx edited online, an upload) is proposed as it is: its content stays
+            out["body"] = ""
+        else:
+            out["body"] = f"# {rec.get('title', '')}\n\n(draft body)"
+            if ctx.dms is not None and ctx.record:
+                ctx.dms.add_version(ctx.record, out["body"].encode("utf-8"), by=ctx.owner, filename=f"{rec.get('title', 'draft')}.md",
+                                    mime="text/markdown", note="draft", run_id=ctx.run_id, release=ctx.release)
         return self.ok("run", out, problems)
 
 
