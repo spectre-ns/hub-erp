@@ -527,3 +527,18 @@ def test_hot_keys_need_the_leader_and_a_cogs_answer_lands_in_the_file_when_no_ed
     md = next(d for d in hub.kernel.query(type_="document") if d["fields"].get("title") == "Notes")
     hub.send("carol", "quality-assistant", "Edit", "@quality-assistant please add a short quality header", record=md["locator"])
     assert hub.dms.content(md["locator"])[0].decode().startswith("# "), "a cog writes markdown as text"
+
+
+def test_every_version_of_an_office_file_updates_the_text_the_cogs_read(shell):
+    hub = shell["hub"]
+    from hubproto import office
+
+    content, mime = wopi.blank_document("docx")
+    content = office.insert_paragraphs(content, "docx", ["# Torque spec", "Torque the M4 screws to 2 Nm."], "start")
+    doc = hub.dms.create(title="Torque spec 2", doc_class="working", folder="Quality/Controlled Documents", by="carol", content=content,
+                         filename="torque2.docx", mime=mime, doc_type="document")
+    assert "Torque the M4 screws to 2 Nm." in hub.kernel.get(doc["locator"])["fields"]["text"], "created through the DMS, not the editor"
+    newer = office.insert_paragraphs(content, "docx", ["Record the value on the traveller."], "end")
+    hub.dms.checkout(doc["locator"], by="carol")
+    hub.dms.checkin(doc["locator"], newer, by="carol", filename="torque2.docx", mime=mime)
+    assert "traveller" in hub.kernel.get(doc["locator"])["fields"]["text"], "a manual check-in too"

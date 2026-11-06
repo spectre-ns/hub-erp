@@ -45,12 +45,26 @@ class BlobStore:
         return (self.root / sha).exists()
 
 
-def extract_text(content: bytes, mime: str) -> str:
-    """Plain-text extraction for search. Production uses Tika and OCR."""
+def extract_text(content: bytes, mime: str, filename: str = "") -> str:
+    """Plain-text extraction for search and for the cogs: text files as they are; office files (docx, xlsx, odt,
+    ods, pptx) through the office reader. Production uses Tika and OCR."""
     if any(mime.startswith(t) for t in TEXT_MIMES):
         try:
             return content.decode("utf-8", errors="replace")[:20000]
         except Exception:  # pragma: no cover
+            return ""
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if not ext:
+        ext = {"application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+               "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+               "application/vnd.oasis.opendocument.text": "odt", "application/vnd.oasis.opendocument.spreadsheet": "ods"}.get(mime, "")
+    if ext in ("docx", "xlsx", "pptx", "odt", "ods", "odp"):
+        from . import office
+
+        try:
+            return office.extract_text(content, ext)
+        except Exception:
             return ""
     return ""
 
@@ -108,7 +122,7 @@ class DMS:
         mime = mime or (mimetypes.guess_type(filename)[0] if filename else "") or (rec["fields"].get("mime") if self.versions(ref) else "") or "application/octet-stream"
         sha = self.blobs.put(content)
         n = len(self.versions(ref)) + 1
-        text = extract_text(content, mime)
+        text = extract_text(content, mime, filename)
         self.kernel.append("document.version_added", rec["locator"],
                            {"version": n, "sha256": sha, "filename": filename, "mime": mime, "size": len(content),
                             "note": note, "text_excerpt": text[:2000]}, run_id=run_id, release=release, by=by)

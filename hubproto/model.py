@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -42,6 +43,7 @@ def backend_for(model: str) -> str:
 class ModelGateway:
     def __init__(self):
         self.calls: list[dict] = []
+        self._last_usage = None
 
     def available(self, model: str) -> bool:
         return backend_for(model) != "stand-in"
@@ -62,10 +64,18 @@ class ModelGateway:
             text = f"[{backend} model {model} did not answer: {e}]\n" + self._stand_in(system, user)
             backend = "stand-in"
         stand_in = backend == "stand-in"
+        usage = getattr(self, "_last_usage", None) if backend == "ollama" else None
+        self._last_usage = None
         out = {"text": text, "model": model, "backend": backend, "stand_in": stand_in, "by": by, "at": utcnow(),
+               "prompt_chars": len(system) + len(user), "usage": usage,
                "prompt_digest": sha256_of({"system": system, "user": user})[:16], "response_digest": sha256_of(text)[:16],
                "ms": int((time.monotonic() - t0) * 1000)}
         self.calls.append(out)
+        u = usage or {}
+        sys.stdout.write(f"model call by={by or '-'} model={model} backend={backend} prompt_chars={out['prompt_chars']}"
+                         + (f" prompt_tokens={u.get('prompt_tokens')} output_tokens={u.get('output_tokens')} done={u.get('done_reason')}" if u else "")
+                         + f" ms={out['ms']}\n")
+        sys.stdout.flush()
         return out
 
     @staticmethod
@@ -78,12 +88,15 @@ class ModelGateway:
             data = json.load(r)
         return "".join(part.get("text", "") for part in data.get("content", []) if part.get("type") == "text")
 
-    @staticmethod
-    def _ollama(model: str, system: str, user: str, max_tokens: int) -> str:
+    def _ollama(self, model: str, system: str, user: str, max_tokens: int) -> str:
         """A local model through Ollama's chat API (``ollama/<name>`` or any name when HUBPROTO_OLLAMA_URL is set)."""
         name = model.split("/", 1)[1] if model.startswith("ollama/") else (os.environ.get("HUBPROTO_OLLAMA_MODEL") or model)
         if model.startswith("claude"):
             name = os.environ.get("HUBPROTO_OLLAMA_MODEL") or "llama3.1"
+        ceiling = int(os.environ.get("HUBPROTO_MODEL_MAX_CHARS") or 90000)  # ~22k tokens; under the 32k window with room to answer
+        if len(system) + len(user) > ceiling:
+            keep = max(ceiling - len(user) - 200, 2000)
+            system = system[:keep] + "\n[... context trimmed to fit the model's window]"
         payload = {"model": name, "stream": False,
                    "options": {"num_predict": max_tokens, "num_ctx": int(os.environ.get("HUBPROTO_MODEL_CTX") or 32768)},
                    "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
@@ -103,6 +116,8 @@ class ModelGateway:
                     continue  # this model does not take the flag; ask again without it
                 raise RuntimeError(f"HTTP {e.code} from Ollama for model {name!r}: {detail}") from None
         msg = (data or {}).get("message") or {}
+        self._last_usage = {"prompt_tokens": (data or {}).get("prompt_eval_count"), "output_tokens": (data or {}).get("eval_count"),
+                            "done_reason": (data or {}).get("done_reason")}
         return msg.get("content") or (data or {}).get("response") or msg.get("thinking") or ""
 
     @staticmethod
