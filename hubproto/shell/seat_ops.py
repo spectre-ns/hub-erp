@@ -1,9 +1,11 @@
 """The cog's seat performing edit operations live in the editor (Collabora, through UNO commands), and the check
 after: once the session has saved, the hub verifies each operation in the file and finishes any that did not take.
 
-Live: inserting headings and paragraphs at the start, the end, or after/before a paragraph; replacing or deleting
-text (find and replace); deleting a paragraph; in a sheet, setting cells and appending rows. Everything else
-(sections, tables, lists, row moves, rewrites) is done by the hub in the file, and the editor reloads."""
+Live, only what is atomic or proven safe: replacing or deleting text (find and replace all) and inserting headings
+and paragraphs at the very start or end of the document; in a sheet, setting cells and appending rows. Positioning
+the cursor at a paragraph found by search is not reliable from outside the editor (whatever stays selected is typed
+over), so inserting after/before a paragraph, deleting paragraphs and sections, tables, lists, row moves and
+rewrites are done by the hub in the file, and the editor reloads."""
 
 SEAT_OPS_JS = r"""
 window.HubSeatOps = (function () {
@@ -13,8 +15,8 @@ window.HubSeatOps = (function () {
     if (!ops.length) return false;
     if (edit.kind === 'sheet') return ops.every(function (o) { return o.op === 'set' || (o.op === 'append_rows' && o.rows && edit.start_row); });
     return ops.every(function (o) {
-      if (o.op === 'replace' || o.op === 'delete' || o.op === 'delete_paragraph') return true;
-      if (o.op === 'insert' && !o.section_end) return (o.lines || []).every(isPlainLine);
+      if (o.op === 'replace' || o.op === 'delete') return o.op === 'delete' || (o['with'] !== null && o['with'] !== undefined);
+      if (o.op === 'insert' && (o.at === 'start' || o.at === 'end')) return (o.lines || []).every(isPlainLine);
       return false;
     });
   }
@@ -47,32 +49,23 @@ window.HubSeatOps = (function () {
   }
   function textSteps(o, uno) {
     var s = [], lines = (o.lines || []).filter(function (x) { return x.trim(); });
-    var findIt = function (t) { s.push(function () { uno('.uno:GoToStartOfDoc'); return 120; }); s.push(function () { search(uno, t, null, 0); return 350; }); };
     var typeAll = function (paraFirst) {
       lines.forEach(function (ln, k) {
         if (paraFirst || k > 0) s.push(function () { uno('.uno:InsertPara'); return 140; });
         s.push(function () { return typeLine(uno, ln); });
       });
     };
-    if (o.op === 'insert') {
-      if (o.at === 'end') { s.push(function () { uno('.uno:GoToEndOfDoc'); return 120; }); typeAll(true); }
-      else if (o.after) { findIt(o.after); s.push(function () { uno('.uno:GotoEndOfPara'); return 120; }); typeAll(true); }
-      else {  // at the start, or before a paragraph: open an empty paragraph above and write there
-        if (o.before) { findIt(o.before); s.push(function () { uno('.uno:GotoStartOfPara'); return 120; }); }
-        else s.push(function () { uno('.uno:GoToStartOfDoc'); return 120; });
-        s.push(function () { uno('.uno:InsertPara'); return 140; });
-        s.push(function () { uno('.uno:GoUp'); return 140; });
-        typeAll(false);
-      }
+    if (o.op === 'insert' && o.at === 'end') {
+      s.push(function () { uno('.uno:GoToEndOfDoc'); return 120; });
+      typeAll(true);
+    } else if (o.op === 'insert' && o.at === 'start') {  // open an empty paragraph above the first and write there
+      s.push(function () { uno('.uno:GoToStartOfDoc'); return 120; });
+      s.push(function () { uno('.uno:InsertPara'); return 140; });
+      s.push(function () { uno('.uno:GoUp'); return 140; });
+      typeAll(false);
     } else if (o.op === 'replace' || o.op === 'delete') {
       var w = o.op === 'delete' ? '' : (o['with'] || '');
       s.push(function () { search(uno, o.target, w, 3); return 450; });
-    } else if (o.op === 'delete_paragraph') {
-      findIt(o.target);
-      s.push(function () { uno('.uno:GotoStartOfPara'); return 100; });
-      s.push(function () { uno('.uno:EndOfParaSel'); return 100; });
-      s.push(function () { uno('.uno:CharRightSel'); return 100; });
-      s.push(function () { uno('.uno:Delete'); return 200; });
     }
     return s;
   }

@@ -234,6 +234,8 @@ def test_what_a_live_edit_is_checked_against():
     assert edits.op_applied({"op": "insert", "at": "start", "lines": ["# Purpose"]}, t)
     assert edits.op_applied({"op": "replace", "target": "audit", "with": "audit and review"}, t + " audit and review")
     assert edits.live_capable({"kind": "text", "ops": [{"op": "replace", "target": "a", "with": "b"}, {"op": "insert", "at": "end", "lines": ["# X", "y"]}]})
+    assert not edits.live_capable({"kind": "text", "ops": [{"op": "insert", "after": "a", "lines": ["y"]}]})  # needs the cursor at a found paragraph
+    assert not edits.live_capable({"kind": "text", "ops": [{"op": "delete_paragraph", "target": "a"}]})
     assert not edits.live_capable({"kind": "text", "ops": [{"op": "delete_section", "target": "a"}]})
     assert not edits.live_capable({"kind": "text", "ops": [{"op": "insert", "at": "end", "lines": ["- bullet"]}]})
     assert edits.live_capable({"kind": "sheet", "ops": [{"op": "set", "cell": "A1", "value": "1"}]})
@@ -281,8 +283,8 @@ def test_after_a_live_edit_the_hub_finishes_what_did_not_take(shell, monkeypatch
     doc = _doc(hub, title="Live target")
     loc = doc["locator"]
     hub.dms.checkout(loc, by="carol", via="editor")  # carol is in the editor: the seat edits live
-    monkeypatch.setattr(hub, "model", FakeModel("@@ replace: shall\n@@ with: must\n@@ delete paragraph: Old line"))
-    hub.send("carol", "carol", "Comment", "@quality-assistant change shall to must and remove the old line", record=loc)
+    monkeypatch.setattr(hub, "model", FakeModel("@@ replace: shall\n@@ with: must\n@@ delete: Old line to"))
+    hub.send("carol", "carol", "Comment", "@quality-assistant change shall to must and remove the words old line to", record=loc)
     j = json.loads(get(shell, "/editor-replies/" + quote(loc, safe=":"), **{"as": "carol"})[1])
     [reply] = j["replies"]
     assert reply["edit"]["ops"][0]["op"] == "replace" and edits.live_capable(reply["edit"])
@@ -296,7 +298,7 @@ def test_after_a_live_edit_the_hub_finishes_what_did_not_take(shell, monkeypatch
     content, version = hub.dms.content(loc)
     assert version["by"] == "hub" and "finished in the file" in version["note"]
     t = text_of(content, "docx")
-    assert "must be audited" in t and "Old line" not in t and t.count("must") == 1
+    assert "must be audited" in t and "Old line to" not in t and "delete." in t and t.count("must") == 1
     m = hub.inbox.find(reply["id"])
     assert m["applied_in"] and [r["detail"].endswith("(by the hub, in the file)") for r in m["edit_report"]] == [False, True]
     again = json.loads(post(shell, "/verify-edit", {"as": "carol", "doc": loc, "id": reply["id"]})[2])
@@ -326,3 +328,43 @@ def test_the_agent_tool_edits_with_operations(shell, monkeypatch):
     assert out["ok"] and [c["ok"] for c in out["changes"]] == [True, True]
     t = hub.dms.content(doc["locator"])[0].decode()
     assert "Records" not in t and t.rstrip().endswith("Reviewed yearly.")
+
+
+def test_an_insert_in_the_wrong_place_is_caught_and_moved(shell, monkeypatch):
+    hub = shell["hub"]
+    doc = _doc(hub, title="Misplaced target")
+    loc = doc["locator"]
+    hub.dms.checkout(loc, by="carol", via="editor")
+    monkeypatch.setattr(hub, "model", FakeModel("@@ insert after: Audit suppliers yearly.\nCritical suppliers twice a year."))
+    hub.send("carol", "carol", "Comment", "@quality-assistant please add a line after the purpose", record=loc)
+    [reply] = json.loads(get(shell, "/editor-replies/" + quote(loc, safe=":"), **{"as": "carol"})[1])["replies"]
+    # Live, the seat put the line after the next heading instead.
+    content, _ = hub.dms.content(loc)
+    wrong, _ = edits.apply_ops(content, "docx", ops("@@ insert after: Scope\nCritical suppliers twice a year."))
+    assert not edits.op_applied(reply["edit"]["ops"][0], text_of(wrong, "docx"))
+    hub.dms.add_version(loc, wrong, by="carol", filename="Misplaced target.docx", mime=wopi.EDITABLE_EXTENSIONS["docx"], note="saved in the editor")
+    out = json.loads(post(shell, "/verify-edit", {"as": "carol", "doc": loc, "id": reply["id"]})[2])
+    assert out["fixed"] == 1
+    lines = [x for x in text_of(hub.dms.content(loc)[0], "docx").splitlines() if x.strip()]
+    assert lines.count("Critical suppliers twice a year.") == 1
+    assert lines[lines.index("Audit suppliers yearly.") + 1] == "Critical suppliers twice a year."
+    hub.dms.undo_checkout(loc, by="carol")
+
+
+def test_content_written_on_the_operation_line_is_split_off():
+    got = ops("@@ insert after: Audit suppliers yearly.      Critical suppliers twice a year.\n"
+              "@@ replace: Keep records for 3 years.        Keep records for 5 years.\n"
+              "@@ replace: shall -> must\n@@ replace: colour → color\n@@ replace: lonely")
+    assert got[0]["after"] == "Audit suppliers yearly." and got[0]["lines"] == ["Critical suppliers twice a year."]
+    assert (got[1]["target"], got[1]["with"]) == ("Keep records for 3 years.", "Keep records for 5 years.")
+    assert (got[2]["target"], got[2]["with"]) == ("shall", "must") and (got[3]["target"], got[3]["with"]) == ("colour", "color")
+    assert got[4]["with"] is None and edits.describe(got[4]) == "replace “lonely” (no new text given)"
+
+
+
+def test_a_new_docx_carries_heading_styles():
+    blank, _ = wopi.blank_document("docx")
+    z = zipfile.ZipFile(io.BytesIO(blank))
+    styles = z.read("word/styles.xml").decode()
+    assert 'w:styleId="Heading1"' in styles and 'w:styleId="Heading3"' in styles and 'w:styleId="TableGrid"' in styles
+    assert "styles.xml" in z.read("word/_rels/document.xml.rels").decode() and "/word/styles.xml" in z.read("[Content_Types].xml").decode()

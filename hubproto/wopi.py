@@ -350,6 +350,18 @@ class WopiHost:
         report = [{"op": edits.describe(o), "ok": True, "detail": "done live in the editor"} for o in ops if o not in missing]
         fixed = 0
         if missing:
+            # An insert that landed in the wrong place live: take that copy out before the hub puts it where it belongs.
+            cleanup = []
+            if m["edit"].get("before_text") is not None:
+                before = {edits.squash(x) for x in m["edit"]["before_text"].splitlines() if x.strip()}
+                now = {edits.squash(x) for x in text.splitlines() if x.strip()}
+                for o in missing:
+                    for ln in (o.get("lines") or []) if o["op"] == "insert" else []:
+                        pl = edits.plain_line(ln)
+                        if pl and edits.squash(pl) in now and edits.squash(pl) not in before:
+                            cleanup.append({"op": "delete_paragraph", "target": pl})
+            if cleanup:
+                content = edits.apply_ops(content, ext, cleanup)[0] or content
             new, rep = edits.apply_ops(content, ext, missing)
             report += [dict(r, detail=r["detail"] + " (by the hub, in the file)") for r in rep]
             if new is not None:
@@ -462,6 +474,21 @@ def editor_frame_url(rec: dict, token: str, *, browser_url: str, host_url: str, 
 
 
 # ---------------------------------------------------------------- blank documents
+# The paragraph styles the writing markup uses (headings, list paragraphs, a bordered table): without a styles part an
+# editor maps 'Heading1' to the default style and headings lose their look.
+DOCX_STYLES = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+               '<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/>'
+               '<w:pPr><w:spacing w:after="120" w:line="264" w:lineRule="auto"/></w:pPr><w:rPr><w:sz w:val="22"/></w:rPr></w:style>'
+               + "".join(f'<w:style w:type="paragraph" w:styleId="Heading{n}"><w:name w:val="heading {n}"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/>'
+                         f'<w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="{360 - 80 * n}" w:after="120"/><w:outlineLvl w:val="{n - 1}"/></w:pPr>'
+                         f'<w:rPr><w:b/><w:sz w:val="{36 - 4 * n}"/></w:rPr></w:style>' for n in (1, 2, 3))
+               + '<w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:basedOn w:val="Normal"/><w:qFormat/><w:rPr><w:b/><w:sz w:val="40"/></w:rPr></w:style>'
+               '<w:style w:type="paragraph" w:styleId="ListParagraph"><w:name w:val="List Paragraph"/><w:basedOn w:val="Normal"/><w:pPr><w:ind w:left="720"/></w:pPr></w:style>'
+               '<w:style w:type="table" w:styleId="TableGrid"><w:name w:val="Table Grid"/><w:tblPr><w:tblBorders>'
+               + "".join(f'<w:{b} w:val="single" w:sz="4" w:space="0" w:color="808080"/>' for b in ("top", "left", "bottom", "right", "insideH", "insideV"))
+               + '</w:tblBorders></w:tblPr></w:style></w:styles>')
+
+
 def blank_document(extension: str) -> tuple[bytes, str]:
     """A minimal, valid empty file for a new document: docx, xlsx, odt, ods, txt or md. Returns (bytes, mime)."""
     ext = extension.lower()
@@ -470,8 +497,10 @@ def blank_document(extension: str) -> tuple[bytes, str]:
     buf = io.BytesIO()
     if ext == "docx":
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-            z.writestr("[Content_Types].xml", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>')
+            z.writestr("[Content_Types].xml", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>')
             z.writestr("_rels/.rels", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>')
+            z.writestr("word/_rels/document.xml.rels", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>')
+            z.writestr("word/styles.xml", DOCX_STYLES)
             z.writestr("word/document.xml", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p/><w:sectPr/></w:body></w:document>')
         return buf.getvalue(), EDITABLE_EXTENSIONS["docx"]
     if ext == "xlsx":

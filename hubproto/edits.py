@@ -47,6 +47,7 @@ after it (until the next '@@') are its content, written in the markup below.
 @@ delete paragraph: <text from the paragraph>
 @@ delete section: <heading>             (the heading and everything under it, up to the next heading of its level)
 @@ rewrite                               then the WHOLE document (only when asked to rewrite all of it)
+Put content on the lines AFTER the '@@' line, never on the same line: the '@@' line holds only the operation and its target.
 Quote text EXACTLY as it appears in the document above (copy it, short but unique). Use the fewest operations that do
 what was asked; never rewrite to make a small change. No explanation, no code fences.
 MARKUP for content lines: '# ', '## ', '### ' headings; a plain line is a paragraph; '- item' bullets; '1. item' numbers;
@@ -96,6 +97,27 @@ def _unquote(s: str) -> str:
     return s
 
 
+def _split_inline(op: dict) -> None:
+    """A model sometimes writes the content on the operation's own line: '@@ insert after: X      New text' or
+    '@@ replace: old -> new'. A wide gap (3+ spaces or a tab) or an arrow separates the target from the content."""
+    key = next((k for k in ("after", "before", "section_end", "target") if isinstance(op.get(k), str)), None)
+    if key is None:
+        return
+    val = op[key]
+    if op["op"] == "replace":
+        m = re.match(r"^(.*?)\s*(?:->|=>|→)\s*(.*)$", val)
+        if m and m.group(1).strip():
+            op[key], op["with"] = _unquote(m.group(1)), _unquote(m.group(2))
+            return
+    parts = re.split(r"\t+|\s{3,}", val.strip(), maxsplit=1)
+    if len(parts) == 2 and parts[1].strip():
+        op[key] = _unquote(parts[0])
+        if op["op"] == "replace":
+            op["with"] = _unquote(parts[1])
+        elif "lines" in op:
+            op["lines"].append(parts[1].strip())
+
+
 def parse_ops(text: str) -> list[dict]:
     """The operations in a model's answer. Lines before any '@@' are ignored unless there is no operation at all,
     in which case they are returned as one 'insert at start' (an older answer style)."""
@@ -125,6 +147,7 @@ def parse_ops(text: str) -> list[dict]:
                         op["value"] = _unquote(op["value"])
                     if op["op"] in TAKES_LINES:
                         op["lines"] = []
+                    _split_inline(op)
                     ops.append(op)
                     cur = op
                     break
@@ -158,7 +181,9 @@ def describe(op: dict) -> str:
                  f"at the end of section “{_short(op['section_end'])}”")
         return f"insert {n} line(s) {where}"
     if o == "replace":
-        return f"replace “{_short(op['target'])}” with “{_short(op.get('with') or '')}”" if op.get("with") else f"remove “{_short(op['target'])}”"
+        if op.get("with") is None:
+            return f"replace “{_short(op['target'])}” (no new text given)"
+        return f"replace “{_short(op['target'])}” with “{_short(op['with'])}”" if op["with"] else f"remove “{_short(op['target'])}”"
     if o in ("delete", "delete_paragraph", "delete_section", "replace_paragraph", "replace_section"):
         return f"{o.replace('_', ' ')} “{_short(op['target'])}”" + (f" ({n} line(s))" if n else "")
     if o == "rewrite":
@@ -1042,6 +1067,23 @@ def op_applied(op: dict, text: str, grid: dict | None = None) -> bool:
     t = squash(text)
     o = op["op"]
     first = next((plain_line(x) for x in op.get("lines") or [] if plain_line(x)), "")
+    if o == "insert" and not op.get("section_end"):
+        # Where it landed matters, not only that it exists: right after/before its target, at the very start or end.
+        paras = [squash(x) for x in (text or "").splitlines() if x.strip()]
+        new = [squash(plain_line(x)) for x in op.get("lines") or [] if plain_line(x)]
+        if not new:
+            return False
+        if op.get("at") == "start":
+            return paras[: len(new)] == new
+        if op.get("at") == "end":
+            return paras[-len(new):] == new
+        target = squash(op.get("after") or op.get("before") or "")
+        idx = next((i for i, p in enumerate(paras) if target and target in p and p not in new), None)
+        if idx is None:
+            return False
+        if op.get("after") is not None:
+            return paras[idx + 1: idx + 1 + len(new)] == new
+        return idx >= len(new) and paras[idx - len(new): idx] == new
     if o in ("insert", "replace_paragraph", "replace_section", "rewrite"):
         ok = bool(first) and squash(first) in t
         if o == "replace_paragraph" and squash(op["target"]) not in squash(" ".join(plain_line(x) for x in op.get("lines") or [])):
@@ -1074,11 +1116,11 @@ def live_capable(edit: dict) -> bool:
     if edit.get("kind") == "sheet":
         return all(o["op"] in ("append_rows", "set") for o in ops)
     for o in ops:
-        if o["op"] in ("replace", "delete", "delete_paragraph"):
+        if o["op"] == "delete" or (o["op"] == "replace" and o.get("with") is not None):
+            continue  # find and replace all: atomic in the editor
+        if o["op"] == "insert" and o.get("at") in ("start", "end") and not any(re.match(r"^\s*(\||[-*•]\s|\d+[.)]\s|---\s*$)", x) for x in o.get("lines") or []):
             continue
-        if o["op"] == "insert" and not any(re.match(r"^\s*(\||[-*•]\s|\d+[.)]\s|---\s*$)", x) for x in o.get("lines") or []):
-            continue
-        return False
+        return False  # needs the cursor at a found paragraph: the hub does it in the file
     return True
 
 
