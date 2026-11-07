@@ -12,7 +12,7 @@ from .text import esc, type_name, verb_for
 APP_TABLE: list[tuple[str, str, str, list[str]]] = [
     ("inbox", "Inbox", "inbox", ["task"]),
     ("documents", "Documents", "folder", ["document"]),
-    ("quality", "Quality", "shield", ["ncr", "capa", "audit", "calibration", "complaint", "management-review", "training", "change-request",
+    ("quality", "Quality", "shield", ["ncr", "capa", "audit", "calibration", "complaint", "management-review", "training", "change-request", "change-order",
                                        "supplier-evaluation", "asset"]),
     ("engineering", "Engineering", "tool", ["design", "requirement", "part", "item"]),
     ("purchasing", "Purchasing", "cart", ["purchase-request", "purchase-order", "receipt"]),
@@ -31,15 +31,16 @@ APP_PAGES: dict[str, list[tuple[str, str, str]]] = {
     "documents": [("Files by folder", "/files", "folder"), ("Controlled documents", "/items/document?filter=controlled", "file-text"),
                   ("Templates", "/templates", "clipboard")],
     "purchasing": [("Suppliers", "/suppliers", "truck")],
+    "quality": [("Change orders", "/change-orders", "layers")],
     "people": [("Members and cogs", "/people", "users")],
     "settings": [("Your changes", "/settings", "edit"), ("People and roles", "/settings/people", "users"), ("Permissions", "/settings/permissions", "lock"),
                  ("Limits and due dates", "/settings/limits", "clock"), ("Cog rails", "/settings/rails", "robot"),
                  ("Segregation of duties", "/settings/sod", "shield"), ("Workflows", "/settings/workflows", "activity")],
-    "policy": [("Policy versions", "/releases", "layers"), ("Policies", "/frames", "book"), ("Why", "/why", "help"),
+    "policy": [("Policy versions", "/releases", "layers"), ("Policies", "/frames", "book"), ("Automation", "/automation", "activity"), ("Why", "/why", "help"),
                ("Conformance", "/conformance", "check-circle"), ("People and roles", "/admin", "users")],
 }
 PLURALS = {"ncr": "Nonconformances", "capa": "CAPAs", "audit": "Audits", "calibration": "Calibration", "complaint": "Complaints",
-           "management-review": "Management reviews", "training": "Training", "change-request": "Change requests", "supplier-evaluation": "Supplier evaluations",
+           "management-review": "Management reviews", "training": "Training", "change-request": "Change requests", "change-order": "Change orders", "supplier-evaluation": "Supplier evaluations",
            "asset": "Assets", "design": "Designs", "requirement": "Requirements", "part": "Parts", "item": "Items", "purchase-request": "Purchase requests",
            "purchase-order": "Purchase orders", "receipt": "Receipts", "bill": "Supplier bills", "journal": "Journals", "journal-reversal": "Reversals",
            "document": "Documents", "task": "Tasks"}
@@ -141,7 +142,10 @@ def appbar_html(app: dict | None, user: str, href, route: str, rt: str = "", sta
         params = dict(p.split("=") for p in path.split("?")[1].split("&")) if "?" in path else {}
         cur = ' aria-current="page"' if route == base and not params else ""
         items += f'<a{cur} href="{href(base, user, **params)}">{icon(ic)}{esc(label)}</a>'
-    starts = "".join(f'<a href="{href("/", user, start=p)}#start-{esc(p)}">{icon("plus")}{esc(verb_for(t, p))}</a>' for p, t in app["processes"][:4])
+    from .text import PREPARED_FIRST
+
+    starts = "".join(f'<a href="{(href(PREPARED_FIRST[p], user) + "#new") if p in PREPARED_FIRST else (href("/", user, start=p) + "#start-" + esc(p))}">'
+                     f'{icon("plus")}{esc(verb_for(t, p))}</a>' for p, t in app["processes"][:4])
     return (f'<nav class="appbar" aria-label="{esc(app["name"])} app"><a class="appname" href="{href("/app/" + app["key"], user)}">{icon(app["icon"])}{esc(app["name"])}</a>'
             f'{items}{starts}</nav>')
 

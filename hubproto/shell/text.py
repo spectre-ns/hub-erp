@@ -15,7 +15,7 @@ BLOB_FIELDS = ("text", "body", "citations", "text_excerpt")
 TYPE_NAMES = {
     "bill": "Supplier bill", "purchase-request": "Purchase request", "purchase-order": "Purchase order", "ncr": "Nonconformance",
     "capa": "Corrective action (CAPA)", "design": "Design", "document": "Document", "task": "Task", "requirement": "Requirement",
-    "receipt": "Goods receipt", "calibration": "Calibration", "complaint": "Complaint", "change-request": "Change request",
+    "receipt": "Goods receipt", "calibration": "Calibration", "complaint": "Complaint", "change-request": "Change request", "change-order": "Change order",
     "audit": "Internal audit", "management-review": "Management review", "supplier-evaluation": "Supplier evaluation",
     "item": "Item", "part": "Part", "asset": "Asset", "journal": "Journal", "journal-reversal": "Journal reversal",
     "training": "Training sign-off",
@@ -25,11 +25,14 @@ VERBS = {
     "bill": "File a supplier bill", "purchase-request": "Raise a purchase request", "ncr": "Report a nonconformance",
     "capa": "Open a corrective action", "design": "Submit a design for release", "document": "New controlled document",
     "task": "Create a task", "requirement": "Capture a requirement", "receipt": "Record a goods receipt",
-    "calibration": "Record a calibration", "complaint": "Log a complaint", "change-request": "Raise a change request",
+    "calibration": "Record a calibration", "complaint": "Log a complaint", "change-request": "Raise a change request", "change-order": "Prepare a change order",
     "audit": "Plan an internal audit", "management-review": "Prepare a management review",
     "supplier-evaluation": "Evaluate a supplier", "item": "Request an item", "journal-reversal": "Request a journal reversal",
     "training": "Assign a training sign-off",
 }
+# Processes whose item is prepared before the process starts (a change order gathers its revisions first): their
+# "new" link opens that page instead of a start form.
+PREPARED_FIRST = {"change-order": "/change-orders"}
 # Field labels in words; anything missing is the field name with underscores as spaces, capitalised.
 FIELD_LABELS = {
     "po_ref": "Purchase order", "po": "Purchase order", "mpn": "Manufacturer part number", "doc_type": "Document type",

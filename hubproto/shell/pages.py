@@ -123,11 +123,15 @@ class PagesMixin:
         if not startable:
             body += "<p class='muted'>Nothing under the release in effect.</p>"
         else:
+            from .text import PREPARED_FIRST
+
             body += '<div class="quick" aria-label="Quick actions">' + "".join(
-                f'<a href="{href("/", user, start=name)}#start-{esc(name)}">{type_icon(op.get("record_type"))}{esc(verb_for(op.get("record_type"), name))}</a>'
+                f'<a href="{(href(PREPARED_FIRST[name], user) + "#new") if name in PREPARED_FIRST else (href("/", user, start=name) + "#start-" + esc(name))}">'
+                f'{type_icon(op.get("record_type"))}{esc(verb_for(op.get("record_type"), name))}</a>'
                 for name, op, _ in startable) + "</div>"
         for name, op, d in startable:
-            body += self._start_entry(name, op, d, open_=(name == open_process))
+            if name not in PREPARED_FIRST:
+                body += self._start_entry(name, op, d, open_=(name == open_process))
         if unavailable:
             rows = [[esc(verb_for(op.get("record_type"), n)), esc(op["folder"]), f'<span class="why">{w}</span>'] for n, op, w in unavailable]
             body += details("Not available to you", table(["Process", "Filed in", "Why"], rows), cls="card")
@@ -662,6 +666,8 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
                 body += f"<div id='decide'>{self._decision_card(run, standalone=True)}</div>"
             else:
                 body += f"<div class='card warn'>Waiting for {' '.join(self._avatar(a, size='sm', named=True) for a in pending['assignees'])} at <b>{esc(pending['title'])}</b>{' (approval due ' + esc(day(pending['due'])) + ')' if pending.get('due') else ''}.</div>"
+        if rec["type"] == "change-order":
+            body += self._eco_panel(rec)
         tabs = [("details", "Details", "form"), ("documents", "Documents", "paperclip"), ("links", "Links", "link")] + \
                ([("reviews", "Reviews", "eye")] if reviews else []) + [("history", "History", "activity"), ("workflow", "Workflow and decisions", "workflow")]
         body += '<nav class="tabs" role="tablist" aria-label="Sections">' + "".join(
@@ -918,6 +924,7 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
                                                 if v["version"] > 1 else "")] for v in versions], "No content yet.")
         if f.get("text"):
             body += f"<h2>Text</h2><pre>{esc(short(f['text'], 20000))}</pre>"
+        body += self._sop_doc_html(rec)
         body += "<h2 id='checkout'>Check-out and check-in</h2><div class='card'>"
         err = self._form_error(["file", "note"]) if self.route in ("/checkout", "/checkin", "/undo-checkout") else ""
         body += err
@@ -927,6 +934,9 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
             body += f"<span class='why'>{esc(f.get('doc_class'))} documents are never edited; file a new one that supersedes it.</span>"
         elif rec["state"] not in EDITABLE_DOC_STATES and f.get("doc_class") == "template":
             body += self._template_revision_html(rec)
+        elif rec["state"] not in EDITABLE_DOC_STATES and str(f.get("lineage", "")).startswith("sop:"):
+            body += (f"<span class='why'>{esc(rec['number'])} is {esc(state_name(rec['state']).lower())}; it changes only through a new revision "
+                     "carried by a change order (above).</span>")
         elif rec["state"] not in EDITABLE_DOC_STATES:
             body += (f"<span class='why'>{esc(rec['number'])} is {esc(state_name(rec['state']).lower())}; a controlled document changes only through a new revision "
                      f"(propose a document change with the same title).</span>")

@@ -34,7 +34,7 @@ from .kernel import utcnow
 
 KINDS = {"mention": "answer a mention", "message": "answer a message", "gate": "take its turn at a Gate",
          "task": "do a task", "duty": "do a standing duty", "assigned": "work an item assigned to it", "chat": "answer a chat",
-         "lens": "do an adversarial review"}
+         "lens": "do an adversarial review", "automation": "run an automation"}
 PRIORITY = {"chat": 10}  # higher is taken first; everything else is 0 (oldest first)
 OPEN = ("queued", "working")
 MAX_ATTEMPTS = 3
@@ -402,6 +402,11 @@ def execute(hub, task: dict) -> dict:
                 "waiting_for": (after.get("pending") or {}).get("assignees", [])}
     if kind == "assigned":
         return assigned_work(hub, task)
+    if kind == "automation":
+        from . import automation
+
+        job = automation.run(hub, p["job"])
+        return {"job": job["id"], "status": job["status"], "outcome": job.get("outcome")}
     if kind == "lens":
         return hub.runner.cog_lens(p["run"], cog, p["lens"], int(p.get("i") or 1), int(p.get("n") or 1), list(p.get("lenses") or [p["lens"]]))
     if kind == "chat":

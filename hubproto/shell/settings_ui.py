@@ -532,6 +532,13 @@ class SettingsMixin:
             p = self.hub.settings_propose(self.user, reason=self._f("reason") or "")
         except ValueError as e:
             raise ShellError(str(e)[:1].upper() + str(e)[1:] + ".", 400) from None
+        if p.get("change_order"):
+            bad = [r for r in p["report"] if not r["ok"]]
+            msg = (f"Written into the SOPs on {p['change_order']}: {len(p['report']) - len(bad)} sentence(s) changed"
+                   + (f"; {len(bad)} could not be placed, see the change order" if bad else "")
+                   + ". Get each revision approved, then send the change order for approval.")
+            log_line(f"settings change order {p['change_order']} by={self.user} edits={len(p['report'])}")
+            return self._redirect(self._once_finish(href("/record/" + quote(p["change_order"]), self.user, done=msg)))
         errors = sum(1 for x in p["findings"] if x.get("severity") == "error")
         msg = f"Proposed as #{p['number']}: {len(p['changes'])} change(s); the policy owners review it." + (f" {errors} problem(s) stop a release until fixed." if errors else "")
         log_line(f"settings proposal #{p['number']} by={self.user} changes={len(p['changes'])}")

@@ -69,10 +69,10 @@ def test_a_change_order_stages_the_frame_and_releases_it_with_its_revisions(hub)
     assert eco.add_sop(hub, co["number"], "finance-policy", by="alice")["locator"] == draft["locator"], "one draft per SOP"
     write(hub, draft, OLD, NEW, "alice")
     st = eco.status(hub, co["number"])
-    staged = st["proposal"]
-    assert staged and staged["eco"] == co["number"] and any("1,500" in (c["rule"].get("source") or {}).get("text", "") for c in staged["changes"])
-    assert not st["co"]["fields"]["staged_errors"]
-    assert any("must be approved first" in r for r in eco.check_approval(hub, co["number"]))
+    assert st["proposal"] is None, "nothing is compiled until a revision is approved"
+    pv = eco.preview(hub, co["number"])
+    assert any("1,500" in (c["rule"].get("source") or {}).get("text", "") for c in pv["changes"]) and not pv["errors"]
+    assert any("must be approved through document control first" in r for r in eco.check_approval(hub, co["number"]))
     assert ap_limit(hub) == 2000.0, "nothing is in force yet"
 
     # The revision is approved through document control (a policy goes to a policy owner) and then held.
@@ -84,13 +84,24 @@ def test_a_change_order_stages_the_frame_and_releases_it_with_its_revisions(hub)
     assert after["status"] == "completed" and held["state"] == "approved" and held["fields"]["held_for"] == co["number"]
     assert held["folder"] == "Policy", "a policy stays in Policy"
     assert sopdocs.in_force(hub.kernel, "finance-policy")["locator"] == policy["locator"] and ap_limit(hub) == 2000.0
+    # The approval triggered the compile-frame automation: the Frame is compiled from the approved revision and staged.
+    [job] = [j for j in hub.automation.of(co["locator"]) if j["automation"] == "compile-frame"]
+    assert job["status"] == "success" and [s["status"] for s in job["steps"]] == ["done"] * 5, job
+    assert f"{draft['number']} was approved" in job["trigger"]
+    st = eco.status(hub, co["number"])
+    assert st["proposal"]["eco"] == co["number"] and any("1,500" in (c["rule"].get("source") or {}).get("text", "") for c in st["proposal"]["changes"])
+    assert eco.check_approval(hub, co["number"]) == [], "the compiled Frame is ready"
 
-    # The change order: staged, approved by the quality manager, released.
+    # The change order: checked, approved by the quality manager, then released by the release automation.
     corun = hub.runner.submit("change-order", {"record": {}}, owner="alice", record=co["locator"])
     cos = hub.runner.load(corun)
     assert cos["status"] == "waiting" and cos["pending"]["assignees"] == ["carol"]
     done = approve(hub, corun, "carol")
     assert done["status"] == "completed", hub.runner.track(corun)[-3:]
+    [rel] = [j for j in hub.automation.of(co["locator"]) if j["automation"] == "release-change-order"]
+    assert rel["status"] == "success", rel
+    assert [s["name"] for s in rel["steps"]][:3] == ["Check the change order is ready", "Bring the Frame into force", "Publish the revisions"]
+    assert "approved by carol" in rel["acting_on"]
     assert ap_limit(hub) == 1500.0
     new = hub.kernel.get(draft["locator"])
     assert new["state"] == "effective" and hub.kernel.get(policy["locator"])["state"] == "obsolete"
@@ -102,10 +113,14 @@ def test_a_change_order_with_a_broken_sop_cannot_be_approved(hub):
     co = hub.kernel.create("change-order", "Quality/Changes", {"title": "Broken", "description": "x", "requested_by": "carol"}, by="carol")
     draft = eco.add_sop(hub, co["number"], "document-control-sop", by="carol")
     write(hub, draft, "Approvals in document-control go to the reviewer.", "Approvals in document-control go to the wizard.", "carol")
-    st = eco.status(hub, co["number"])
-    assert st["co"]["fields"]["staged_errors"] or not st["ready"]
+    pv = eco.preview(hub, co["number"])
+    assert pv["errors"], "the preview shows the drafts do not compile"
+    assert not eco.status(hub, co["number"])["ready"]
     with pytest.raises(ValueError):
         eco.release(hub, co["number"], by="carol")
+    # Staging the broken draft (as the automation would once it were approved) records why it does not compile.
+    fields = eco.stage(hub, co["number"], drafts={"document-control-sop": draft["locator"]})
+    assert fields["staged_errors"]
 
 
 def test_frames_are_not_compiled_from_disk_once_the_sops_are_documents(hub):
@@ -113,3 +128,31 @@ def test_frames_are_not_compiled_from_disk_once_the_sops_are_documents(hub):
     path.write_text(path.read_text().replace(OLD, NEW))
     hub._frames = None
     assert hub.compile(save=False)["changes"] == [], "an edit to the Frame file is not policy: the documents are the source"
+
+
+def test_a_settings_change_is_written_into_its_sop_on_a_change_order(hub):
+    from hubproto.rules import rule_key
+
+    rules = hub.settings_draft("bob")["rules"]
+    ap = next(r for r in rules if r["kind"] == "approval_criteria" and r["approver"] == "cog:ap-reviewer" and r["process"] == "purchase-to-pay")
+    hub.settings_edit("bob", {"action": "replace", "key": rule_key(ap), "rule": {**{k: v for k, v in ap.items() if k != "source"}, "max_amount": 3000.0}})
+    th = next(r for r in rules if r["kind"] == "threshold" and r["name"] == "purchase-approval-threshold")
+    hub.settings_edit("bob", {"action": "replace", "key": rule_key(th), "rule": {**{k: v for k, v in th.items() if k != "source"}, "value": 8000.0}})
+    out = hub.settings_propose("bob", reason="tune limits")
+    assert out["change_order"] and all(r["ok"] for r in out["report"]), out["report"]
+    co = hub.kernel.get(out["locator"])
+    assert co["fields"]["from_settings"] and co["state"] == "open"
+    st = eco.status(hub, co["number"])
+    names = sorted(c["name"] for c in st["carried"])
+    assert names == ["finance-policy", "purchasing-policy"], names
+    fin = sopdocs.frame_text(hub, next(c["draft"] for c in st["carried"] if c["name"] == "finance-policy"))
+    assert "under 3,000 USD" in fin and "under 2,000 USD when the three-way" not in fin
+    pv = eco.preview(hub, co["number"])
+    texts = [(c["rule"].get("source") or {}).get("text", "") for c in pv["changes"] if c["op"] == "add"]
+    assert any("under 3,000 USD" in t for t in texts) and any("8,000 USD" in t for t in texts), texts
+    assert any(c.get("widening") and c["op"] != "text" for c in pv["changes"]), "a higher cog limit is a widening"
+    assert hub.settings_drafts.load("bob") is None
+    again = hub.settings_draft("bob")
+    hub.settings_edit("bob", {"action": "remove", "key": rule_key(next(r for r in again["rules"] if r["kind"] == "sla" and r["process"] == "document-control"))})
+    second = hub.settings_propose("bob")
+    assert second["change_order"] == co["number"], "the same open settings change order collects the next changes"

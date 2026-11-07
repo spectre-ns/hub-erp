@@ -57,6 +57,8 @@ class PolicyDocsMixin:
         """Buttons for a Frame's document and for a Frame draft, on the document page."""
         user, f, loc = self.user, rec["fields"], rec["locator"]
         out = ""
+        if f.get("doc_type") in ("frame", "frame-draft") and self.hub.sop_source():
+            return self._frame_derived_html(f.get("frame_name") or "")
         if f.get("doc_type") == "frame":
             out += (f'<form method="post" action="/frame-draft" class="inline">{hidden_as(user)}{self._once()}<input type="hidden" name="frame" value="{esc(f.get("frame_name"))}">'
                     f'<button>{icon("edit")}Edit this policy</button></form>'
@@ -495,6 +497,14 @@ class PolicyDocsMixin:
                 out.append({"proposal": q, "todo": todo})
         return sorted(out, key=lambda x: x["proposal"].get("created_at") or "", reverse=True)
 
+    def _staged_by(self, q: dict) -> str:
+        """'staged by CO-2026-0001' for a change order's staged Frame."""
+        if not q.get("eco"):
+            return ""
+        co = next((r for r in self.hub.kernel.query(type_="change-order") if r["number"] == q["eco"]), None)
+        name = esc(q["eco"])
+        return "staged by " + (f"<a href='{self._co_href(co)}'>{name}</a>" if co and self._can_read(co["folder"])["allowed"] else name)
+
     def page_proposals(self):
         user = self.user
         self._need_release()
@@ -511,7 +521,7 @@ class PolicyDocsMixin:
             for q in qs:
                 rows.append([f"<a href='{href('/proposal/' + q['id'], user)}'>#{esc(q.get('number'))}</a>"
                              + (" <span class='chip warn'>your decision</span>" if q["id"] in mine else ""),
-                             esc(when(q.get("created_at"))), esc(q.get("proposed_by") or ", ".join(sorted((q.get("overrides") or {}).keys())) or "compile"),
+                             esc(when(q.get("created_at"))), (self._staged_by(q) or esc(q.get("proposed_by") or ", ".join(sorted((q.get("overrides") or {}).keys())) or "compile")),
                              str(len([c for c in q.get("changes") or [] if not (c["op"] == "remove" and c.get("changed_to"))])),
                              str(sum(1 for c in q.get("changes") or [] if c.get("widening")))])
             body += f"<h2>{esc(title)} <span class='muted'>{len(qs)}</span></h2>" + table(["Proposal", "Made", "From", "Changes", "Widenings"], rows, "None.")

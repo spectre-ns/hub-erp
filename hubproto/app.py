@@ -56,6 +56,10 @@ class Hub:
         self.queue = CogQueue(state / "queue.db", hub=self)
         self.runner.queue = self.queue
         self.runner.hub = self  # for the change-order steps (hubproto.eco), which compile and release
+        from . import automation as _automation
+
+        self.automation = _automation.JobStore(Path(self.root) / "state" / "automation")
+        self.runner.on_completed = [lambda state, rec: _automation.on_run_completed(self, state, rec)]
         self.runner.frames_store = lambda: self.released_frames()  # cogs read the SOPs as released, not the files on disk
         self.runner.frames_for_release = lambda d: self.released_frames(d)
         self._released_cache: dict = {}
@@ -79,6 +83,28 @@ class Hub:
 
     # --- policy lifecycle ---------------------------------------------------
     # --- settings: the rules edited on screen (hubproto.settings) ------------------------------------
+    def settings_to_change_order(self, user: str, reason: str = "") -> dict:
+        """The person's Settings changes written into the SOPs they belong to, as draft revisions on their open
+        settings change order (one is started when they have none). Returns {"change_order", "locator", "report"}."""
+        from . import eco, sop_settings
+
+        d = self.settings_draft(user)
+        meta = self.releases.current()
+        bundle = self.releases.bundle(meta["digest"])
+        planned = sop_settings.plan(self.settings_rules(), d["rules"], bundle.get("processes") or {})
+        if not planned:
+            raise ValueError("your draft changes nothing")
+        co = next((r for r in self.kernel.query(type_="change-order") if r["state"] in eco.OPEN_STATES
+                   and r["fields"].get("requested_by") == user and r["fields"].get("from_settings")), None)
+        if co is None:
+            co = self.kernel.create("change-order", "Quality/Changes",
+                                    {"title": f"Settings changes by {user}", "description": reason or "Changes made in Settings.",
+                                     "requested_by": user, "from_settings": True}, by=user)
+        report = sop_settings.apply_plan(self, co["locator"], planned, by=user)
+        eco.stage(self, co["locator"])
+        self.settings_drafts.discard(user)
+        return {"change_order": co["number"], "locator": co["locator"], "report": report}
+
     def sop_source(self) -> bool:
         """True once the SOPs and policies are documents in the library: the Frame is then compiled from them."""
         from . import sopdocs
@@ -148,10 +174,13 @@ class Hub:
         return self._settings_proposal(d["rules"], d["base"], user)
 
     def settings_propose(self, user: str, reason: str = "") -> dict:
-        """The draft becomes a proposal the policy owners review and release (two owners for widenings)."""
+        """The draft becomes a proposal the policy owners review and release (two owners for widenings). Once the
+        SOPs are the source, it becomes SOP edits on a change order instead (settings_to_change_order)."""
         d = self.settings_draft(user)
         if d["stale"]:
             raise ValueError("the policy changed since you started these edits; discard your draft and start again")
+        if self.sop_source():
+            return self.settings_to_change_order(user, reason)
         p = self._settings_proposal(d["rules"], d["base"], user, reason)
         if not p["changes"]:
             raise ValueError("your draft changes nothing")
@@ -319,7 +348,14 @@ class Hub:
         return [d for d in (self.frame_document(n, create=create) for n in sorted(self.frames.frames)) if d]
 
     def frame_draft(self, name: str, by: str) -> dict:
-        """A working draft of a Frame: the current text, edited in the hub and proposed for release. One per person."""
+        """A working draft of a Frame: the current text, edited in the hub and proposed for release. One per person.
+        Once the SOPs are documents the Frame is derived from them: it changes through a change order instead."""
+        if self.sop_source():
+            from . import sopdocs
+
+            doc = sopdocs.in_force(self.kernel, name)
+            raise ValueError(f"the {name} Frame is compiled from " + (f"{doc['number']}" if doc else "its SOP document")
+                             + ": change that document on a change order")
         doc = self.frame_document(name)
         for d in self.kernel.query(type_="document"):
             f = d["fields"]

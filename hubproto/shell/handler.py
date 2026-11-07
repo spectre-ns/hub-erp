@@ -41,7 +41,7 @@ RAIL_MAIN = [("Home", "/", "home"), ("Inbox", "/inbox", "inbox"), ("Documents", 
 RAIL_POLICY = [("Runs", "/runs", "activity"), ("Policy versions", "/releases", "layers"), ("Policies", "/frames", "book"),
                ("Conformance", "/conformance", "check-circle"), ("People and roles", "/admin", "users")]
 # Routes the identity switcher may stay on (anything else goes home).
-STAY_ROUTES = ("/", "/inbox", "/files", "/documents", "/templates", "/boards", "/runs", "/releases", "/frames", "/why", "/admin", "/conformance", "/people", "/suppliers",
+STAY_ROUTES = ("/", "/inbox", "/files", "/documents", "/templates", "/change-orders", "/boards", "/runs", "/releases", "/frames", "/why", "/admin", "/conformance", "/people", "/suppliers",
                "/settings")
 STAY_PREFIXES = ("/record/", "/document/", "/run/", "/frame/", "/release/", "/items/", "/app/", "/user/", "/settings/")
 # The small script: tabs show one panel at a time (every panel is visible without it) and the print button prints.
@@ -225,7 +225,9 @@ class BaseHandler(BaseHTTPRequestHandler):
             fixed = {"/chat-thread": self.page_chat_thread, "/queue-status": self.page_queue_status, "/queue": self.page_queue, "/proposals": self.page_proposals, "/": self.page_home, "/files": self.page_files, "/documents": self.page_files, "/boards": self.page_boards, "/inbox": self.page_inbox,
                      "/runs": self.page_runs, "/releases": self.page_releases, "/frames": self.page_frames, "/why": self.page_why,
                      "/admin": self.page_admin, "/conformance": self.page_conformance, "/download": self.page_download,
-                     "/start": self.page_start, "/people": self.page_people, "/suppliers": self.page_suppliers, "/settings": self.page_settings, "/templates": self.page_templates}
+                     "/start": self.page_start, "/people": self.page_people, "/suppliers": self.page_suppliers, "/settings": self.page_settings, "/templates": self.page_templates,
+                     "/change-orders": self.page_change_orders, "/automation": self.page_automation,
+                     "/automation-status": self.page_automation_status}
             if r in fixed:
                 return fixed[r]
             for prefix, fn in (("/record/", self.page_record), ("/document/", self.page_document), ("/doc/", self.page_document),
@@ -233,16 +235,18 @@ class BaseHandler(BaseHTTPRequestHandler):
                                ("/edit/", self.page_edit), ("/compare/", self.page_compare), ("/editor-replies/", self.page_editor_replies), ("/cog-seat/", self.page_cog_seat), ("/frame-doc/", self.page_frame_doc),
                                ("/text-edit/", self.page_text_edit), ("/frame-check/", self.page_frame_check), ("/proposal/", self.page_proposal),
                                ("/agent-run/", self.page_agent_run), ("/items/", self.page_items), ("/app/", self.page_app), ("/user/", self.page_user),
-                               ("/settings/", self.page_settings)):
+                               ("/settings/", self.page_settings), ("/automation/", self.page_automation)):
                 if r.startswith(prefix) and len(r) > len(prefix):
                     self.arg = r[len(prefix):]
                     return fn
             return None
-        posts = {"/start": self.post_start, "/decide": self.post_decide, "/msg": self.post_msg, "/attach": self.post_attach,
+        posts = {"/automation-retry": self.post_automation_retry, "/automation-start": self.post_automation_start, "/start": self.post_start, "/decide": self.post_decide, "/msg": self.post_msg, "/attach": self.post_attach,
                  "/finish-edit": self.post_finish_edit, "/new-document": self.post_new_document, "/working-copy": self.post_working_copy, "/apply-replies": self.post_apply_replies, "/start-on": self.post_start_on, "/chat": self.post_chat, "/chat-clear": self.post_chat_clear, "/frame-draft": self.post_frame_draft, "/text-save": self.post_text_save,
                  "/frame-propose": self.post_frame_propose, "/frame-withdraw": self.post_frame_withdraw, "/proposal-review": self.post_proposal_review, "/proposal-release": self.post_proposal_release,
                  "/agent-task": self.post_agent_task, "/settings-edit": self.post_settings_edit, "/settings-check": self.post_settings_check,
-                 "/settings-propose": self.post_settings_propose, "/settings-discard": self.post_settings_discard, "/queue-withdraw": self.post_queue_withdraw, "/template-revise": self.post_template_revise, "/assign": self.post_assign, "/agent-confirm": self.post_agent_confirm, "/new-person": self.post_new_person, "/new-cog": self.post_new_cog, "/cog-model": self.post_cog_model, "/restart": self.post_restart, "/mark-applied": self.post_mark_applied, "/verify-edit": self.post_verify_edit, "/editor-debug": self.post_editor_debug,
+                 "/settings-propose": self.post_settings_propose, "/settings-discard": self.post_settings_discard, "/queue-withdraw": self.post_queue_withdraw, "/template-revise": self.post_template_revise,
+                 "/co-new": self.post_co_new, "/co-add-sop": self.post_co_add_sop, "/co-remove-sop": self.post_co_remove_sop,
+                 "/co-implements": self.post_co_implements, "/co-send": self.post_co_send, "/sop-revise": self.post_sop_revise, "/assign": self.post_assign, "/agent-confirm": self.post_agent_confirm, "/new-person": self.post_new_person, "/new-cog": self.post_new_cog, "/cog-model": self.post_cog_model, "/restart": self.post_restart, "/mark-applied": self.post_mark_applied, "/verify-edit": self.post_verify_edit, "/editor-debug": self.post_editor_debug,
                  "/upload": self.post_upload, "/checkout": self.post_checkout, "/checkin": self.post_checkin, "/link": self.post_link,
                  "/snapshot": self.post_snapshot, "/hold": self.post_hold, "/resubmit": self.post_resubmit, "/retry": self.post_retry,
                  "/cancel": self.post_cancel, "/undo-checkout": self.post_undo_checkout, "/bulk-hold": self.post_bulk_hold}

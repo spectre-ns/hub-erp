@@ -401,7 +401,10 @@ class ViewsMixin:
             rows.append((plural(rt), [(b, buckets[b], href("/items/" + rt, user, bucket=key)) for b, key in legend]))
             open_n = buckets["Open"] + buckets["Waiting"] + buckets["Returned or stopped"]
             process = next((p for p, t in app["processes"] if t == rt), None)
-            start = f'<a class="button ghost" href="{href("/", user, start=process)}#start-{esc(process)}">{icon("plus")}{esc(verb_for(rt, process))}</a>' if process else ""
+            from .text import PREPARED_FIRST
+
+            target = (href(PREPARED_FIRST[process], user) + "#new") if process in PREPARED_FIRST else (href("/", user, start=process) + "#start-" + esc(process))
+            start = f'<a class="button ghost" href="{target}">{icon("plus")}{esc(verb_for(rt, process))}</a>' if process else ""
             cards += (f'<div class="card"><h3>{type_icon(rt)} <a href="{href("/items/" + rt, user)}">{esc(plural(rt))}</a></h3>'
                       f'<b class="n">{open_n}</b> <span class="muted">open of {len(recs)}</span>'
                       f'<div class="actions"><a class="button ghost" href="{href("/items/" + rt, user)}">{icon("list")}List</a>'

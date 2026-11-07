@@ -198,8 +198,12 @@ proposal <code>{esc(meta.get('proposal_id') or '-')}</code>{(' reviewed by ' + e
         proposed = [q for q in self.hub.proposals.list() if q.get("status") == "open" and frame.name in (q.get("overrides") or {})]
         banner = "".join(f"<div class='card warn' role='status'>A change to this policy is proposed: <a href='{href('/proposal/' + q['id'], self.user)}'>"
                          f"proposal #{esc(q.get('number'))}</a>.</div>" for q in proposed)
-        body = banner + (f"<p><a class='button' href='{href('/frame-doc/' + frame.name, self.user)}'>{icon('file')}Open as a document</a> "
-                f"<span class='why'>to propose a change: Edit this policy makes a draft the policy owners review and release.</span></p>") + body
+        derived = self._frame_derived_html(frame.name)
+        if derived:
+            body = derived + body
+        else:
+            body = banner + (f"<p><a class='button' href='{href('/frame-doc/' + frame.name, self.user)}'>{icon('file')}Open as a document</a> "
+                    f"<span class='why'>to propose a change: Edit this policy makes a draft the policy owners review and release.</span></p>") + body
         self._page(frame.name, body, crumbs=[("Policies", href("/frames", self.user)), (frame.name, None)])
 
     # ----------------------------------------------------------------- why

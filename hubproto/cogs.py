@@ -256,48 +256,27 @@ class DocumentRenderer(Cog):
 
 
 class FrameStager(Cog):
-    """Stages the Frame a change order's SOP drafts compile into (hubproto.eco), and stops the run when it cannot."""
+    """Checks a change order's compiled Frame before it goes for approval (hubproto.eco): every revision it carries
+    approved, the Frame compiled from exactly those by the compile-frame automation, nothing that stops it."""
 
     id = "frame-stager"
     reaches = ["kernel:records", "kernel:documents"]
-    description = "Compiles the Frame a change order's carried SOP and policy drafts make, and shows the rule changes on the change order."
+    description = "Checks that a change order's compiled Frame is ready: its revisions approved, compiled from them, with no problem that stops it."
 
     def task_run(self, input: dict, ctx: RunContext) -> dict:
         from . import eco
 
         hub = getattr(ctx.runner, "hub", None)
         if hub is None or not ctx.record:
-            return make_envelope(self.id, self.version, "run", error={"code": "no-hub", "detail": "no change order to stage"})
-        st = eco.status(hub, ctx.record)
-        if not st["carried"]:
-            return make_envelope(self.id, self.version, "run", error={"code": "nothing-carried",
-                                 "detail": "the change order carries no SOP or policy revision: add the SOPs it changes first"})
-        errors = list(st["co"]["fields"].get("staged_errors") or [])
-        if errors:
-            return make_envelope(self.id, self.version, "run", error={"code": "compile", "detail": "the staged Frame does not compile: " + "; ".join(errors[:3])})
-        f = st["co"]["fields"]
+            return make_envelope(self.id, self.version, "run", error={"code": "no-hub", "detail": "no change order to check"})
+        co = hub.kernel.get(ctx.record)
+        reasons = eco.frame_reasons(hub, co)
+        if reasons:
+            return make_envelope(self.id, self.version, "run", error={"code": "frame-not-ready",
+                                 "detail": "the compiled Frame is not ready: " + "; ".join(reasons[:4])})
+        f = co["fields"]
         return self.ok("run", {**self._prior(input, ctx), "staged_proposal": f.get("staged_proposal"), "staged_changes": f.get("staged_changes"),
                                "staged_widenings": f.get("staged_widenings")})
-
-
-class ChangeOrderReleaser(Cog):
-    """Releases an approved change order: its staged Frame comes into force and its revisions become effective."""
-
-    id = "change-order-releaser"
-    reaches = ["kernel:records", "kernel:documents"]
-    description = "Brings an approved change order's staged Frame into force and makes the SOP and policy revisions it carries effective, together."
-
-    def task_run(self, input: dict, ctx: RunContext) -> dict:
-        from . import eco
-
-        hub = getattr(ctx.runner, "hub", None)
-        if hub is None or not ctx.record:
-            return make_envelope(self.id, self.version, "run", error={"code": "no-hub", "detail": "no change order to release"})
-        try:
-            meta = eco.release(hub, ctx.record, by=self.id)
-        except Exception as e:
-            return make_envelope(self.id, self.version, "run", error={"code": "release", "detail": str(e)})
-        return self.ok("run", {**self._prior(input, ctx), "release": meta["digest"]})
 
 
 class RiskScorer(Cog):
@@ -1506,7 +1485,7 @@ class CogRegistry:
         for cls in (RecordFiler, BillFiler, DocumentFiler, Linker, Notifier, DocumentRenderer, RiskScorer,
                     InvoiceExtractor, ThreeWayMatcher, LedgerPoster, JournalReverser, DocumentDrafter, DocumentPublisher,
                     NCRClassifier, CAPAOpener, NCROpener, CAPADrafter, EffectivenessScheduler, AuditChecklistDrafter,
-                    DocumentClassifier, APReviewer, DocReviewer, QualityAssistant, QAManager, Swarm, FrameStager, ChangeOrderReleaser):
+                    DocumentClassifier, APReviewer, DocReviewer, QualityAssistant, QAManager, Swarm, FrameStager):
             self.register(cls())
         from . import cad, procurement  # CAD/ECAD and procurement cogs live in their own modules
 

@@ -865,7 +865,10 @@
    "staged_errors": "list",
    "staged_sig": "text",
    "staged_base": "text",
-   "released_release": "text"
+   "released_release": "text",
+   "from_settings": "bool",
+   "staged_from": "object",
+   "staged_at": "text"
   },
   "required_by_state": {
    "awaiting-approve-the-change-order": [
@@ -886,7 +889,10 @@
    "staged_errors",
    "staged_sig",
    "staged_base",
-   "released_release"
+   "released_release",
+   "from_settings",
+   "staged_from",
+   "staged_at"
   ],
   "decision_fields": [
    "description",

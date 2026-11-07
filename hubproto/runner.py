@@ -475,10 +475,16 @@ class Runner:
     def _complete(self, state: dict, track: Track) -> None:
         if state.get("record") and not self._close_record(state, track):
             return
+        rec = self.kernel.get(state["record"]) if state.get("record") else None
         track.append({"type": "run.completed", "run_id": state["id"], "record": state.get("record"),
-                      "state": state["workflow"]["terminal"],
+                      "state": rec["state"] if rec else state["workflow"]["terminal"],
                       "outputs_digest": sha256_of({k: v["envelope"]["payload"] for k, v in state["steps"].items()})})
         self._save(state)
+        for hook in list(self.on_completed):  # automations triggered by a process completing (hubproto.automation)
+            try:
+                hook(self.load(state["id"]), rec)
+            except Exception as e:  # an automation that cannot start never undoes the run; it says why
+                track.append({"type": "automation.not_started", "run_id": state["id"], "reason": f"{type(e).__name__}: {e}"})
 
     # ------------------------------------------------------------ human gates
     def _routing_ctx(self, payload: dict, rec: dict | None = None) -> dict:
@@ -686,6 +692,7 @@ class Runner:
     # ------------------------------------------------------------ cogs as users
     cog_users_inline = True  # False: an item waiting for a cog is not put in its queue (a sweep gives it later)
     queue = None  # the cogs' work queue (hubproto.workqueue.CogQueue), set by the Hub
+    on_completed: list = []  # callables (state, record) run after a run completes: automation triggers, set by the Hub
 
     def give_to_cog(self, state: dict) -> dict:
         """An item now waits for a cog: it goes in that cog's queue, like a task in a person's tray. In inline mode the

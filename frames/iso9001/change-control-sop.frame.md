@@ -15,9 +15,11 @@ compile: convention
 A change request asks for a change and says why. A change order carries the
 change: a draft revision of every SOP and policy it changes, approved one by
 one through document control, and the change requests it implements. The hub
-stages the Frame those drafts make, so the rule changes show next to the text;
-the approved revisions come into force only when the change order is released,
-together with the Frame.
+compiles the Frame when a revision is approved (the compile-frame automation),
+so the rule changes show next to the text; the change order goes for approval
+only when that compiled Frame is ready, and its approval releases it: the
+release automation brings the Frame into force and the approved revisions into
+effect together.
 
 Changes to the QMS, to processes and to production or service provision are
 planned (6.3) and controlled (8.5.6). Any member of staff raises a change
@@ -60,8 +62,7 @@ The record type is change-request.
 ## Process: change-order
 Records are filed in Quality/Changes.
 The record type is change-order.
-Closes as released.
+Closes as approved.
 1. [staff] Prepare the change order (record-filer)
-2. [system] Stage the Frame (frame-stager)
+2. [system] Check the compiled Frame (frame-stager)
 3. [quality-manager] Approve the change order
-4. [system] Release the change order (change-order-releaser)
