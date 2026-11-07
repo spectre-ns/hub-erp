@@ -81,6 +81,9 @@ class EditorMixin:
         mentions = json.dumps(people + roles)
         parts = browser_url.split("/")
         origin = parts[0] + "//" + parts[2] if len(parts) > 2 and "//" in browser_url else browser_url
+        from .seat_ops import SEAT_OPS_JS
+
+        body += "<script>" + SEAT_OPS_JS + "</script>"
         body += rf"""<script>(function(){{var frame=document.getElementById('editor');var list={mentions};var origin={json.dumps(origin)};
 function post(o){{try{{frame.contentWindow.postMessage(JSON.stringify(o),'*')}}catch(e){{}}}}
 window.addEventListener('message',function(ev){{if(origin&&ev.origin!==origin)return;var m;try{{m=JSON.parse(ev.data)}}catch(e){{return}}
@@ -93,7 +96,7 @@ if(m.MessageId==='Doc_ModifiedStatus'&&m.Values&&m.Values.Modified===true){{clea
 var repliesUrl={json.dumps(href("/editor-replies/" + quote(rec["locator"], safe=":"), user))};var applyUrl={json.dumps(href("/apply-replies", user))};var loc={json.dumps(rec["locator"])};var busy=false;var loadedVersion={len(self.hub.dms.versions(rec["locator"]))};
 function reloadFrame(why){{var s=document.getElementById('editstatus');if(s)s.textContent=why+'; reloading…';loadedVersion=1e9;frame.src=frame.src.replace(/&reload=\d+/,'')+'&reload='+Date.now();setTimeout(function(){{fetch(repliesUrl).then(function(r){{return r.json()}}).then(function(j){{loadedVersion=j.version;busy=false}})}},3000)}}
 function applyReplies(){{var fd=new FormData();fd.append('as',{json.dumps(user)});fd.append('doc',loc);fetch(applyUrl,{{method:'POST',body:fd}}).then(function(r){{return r.json()}}).then(function(j){{busy=false;if(j.applied>0){{var s=document.getElementById('editstatus');if(s)s.textContent='Replies from '+j.by.join(', ')+' written into the document; reloading…';frame.src=frame.src.replace(/&reload=\d+/,'')+'&reload='+Date.now()}}}}).catch(function(){{busy=false}})}}
-var seatUrl={json.dumps(href("/cog-seat/" + quote(rec["locator"], safe=":"), user))};var markUrl={json.dumps(href("/mark-applied", user))};var debugUrl={json.dumps(href("/editor-debug", user))};
+var verifyUrl={json.dumps(href("/verify-edit", user))};var seatUrl={json.dumps(href("/cog-seat/" + quote(rec["locator"], safe=":"), user))};var markUrl={json.dumps(href("/mark-applied", user))};var debugUrl={json.dumps(href("/editor-debug", user))};
 var seats={{}};var inflight={{}};
 function dbg(line){{var fd=new FormData();fd.append('as',{json.dumps(user)});fd.append('line',line);fetch(debugUrl,{{method:'POST',body:fd}}).catch(function(){{}})}}
 function seatPost(cog,o){{var f=seats[cog]&&seats[cog].frame;if(f)try{{f.contentWindow.postMessage(JSON.stringify(o),'*')}}catch(e){{}}}}
@@ -109,6 +112,8 @@ if(m.MessageId==='Get_Comments_Resp'){{var cb=st.onComments;st.onComments=null;i
 function norm(t){{return String(t||'').replace(/\s+/g,' ').trim().toLowerCase()}}
 function actLive(reply,done){{seat(reply.from,function(st){{if(!st){{done(false);return}}
 var finish=function(ok){{done(ok)}};
+if(reply.edit&&reply.edit.ops){{if(!HubSeatOps.liveCapable(reply.edit)){{dbg('seat '+reply.from+': '+reply.edit.ops.length+' change(s) done by the hub in the file');done(false);return}}
+HubSeatOps.run(reply.edit,function(c,a){{seatPost(reply.from,{{MessageId:'Send_UNO_Command',Values:a?{{Command:c,Args:a}}:{{Command:c}}}})}},function(){{dbg('seat '+reply.from+' made '+reply.edit.ops.length+' change(s) live');replyLive()}});return}}
 if(reply.edit&&reply.edit.kind==='sheet'&&reply.edit.rows&&reply.edit.rows.length){{var rows=reply.edit.rows;var r0=reply.edit.start_row||1;var uno=function(c,a){{seatPost(reply.from,{{MessageId:'Send_UNO_Command',Values:a?{{Command:c,Args:a}}:{{Command:c}}}})}};var col=function(n){{var s='';n++;while(n){{var q=Math.floor((n-1)/26);var r=(n-1)%26;s=String.fromCharCode(65+r)+s;n=q}}return s}};
 var ri=0;var rowStep=function(){{if(ri>=rows.length){{dbg('seat '+reply.from+' wrote '+rows.length+' row(s) live into the sheet from row '+r0);replyLive();return}}var cells=rows[ri];var rr=r0+ri;ri++;var ci=0;var cellStep=function(){{if(ci>=cells.length){{setTimeout(rowStep,120);return}}var addr=col(ci)+rr;var val=cells[ci];ci++;uno('.uno:GoToCell',{{ToPoint:{{type:'string',value:addr}}}});setTimeout(function(){{uno('.uno:EnterString',{{StringName:{{type:'string',value:val}}}});setTimeout(cellStep,110)}},90)}};cellStep()}};setTimeout(rowStep,300)}}
 else if(reply.edit&&reply.edit.position==='replace'){{dbg('seat '+reply.from+': a revision replaces the body; written by the hub');done(false);return}}
@@ -134,7 +139,10 @@ setTimeout(ask,2500)}}}})}}
 function poll(){{if(busy)return;fetch(repliesUrl).then(function(r){{return r.json()}}).then(function(j){{
 var cw=document.getElementById('cogwork');if(cw){{var t=(j.queue||[]).join('; ');cw.textContent=t?'⏳ '+t+'…':''}}
 if(j.pending>0&&!busy){{busy=true;var list=j.replies.filter(function(x){{return !inflight[x.id]}});if(!list.length){{busy=false;return}}var r0=list[0];inflight[r0.id]=true;
-actLive(r0,function(ok){{if(ok){{var fd=new FormData();fd.append('as',{json.dumps(user)});fd.append('doc',loc);fd.append('ids',r0.id);fetch(markUrl,{{method:'POST',body:fd}}).then(function(){{busy=false;var s=document.getElementById('editstatus');if(s)s.textContent=r0.from+' answered in the document.';setTimeout(function(){{post({{MessageId:'Action_Save',Values:{{DontTerminateEdit:true,DontSaveIfUnmodified:false,Notify:true}}}})}},1500)}}).catch(function(){{busy=false}})}}
+actLive(r0,function(ok){{if(ok&&r0.edit&&r0.edit.ops){{var s0=document.getElementById('editstatus');if(s0)s0.textContent=r0.from+' made the change; checking it…';
+HubSeatOps.verifyAfterSave({{repliesUrl:repliesUrl,verifyUrl:verifyUrl,user:{json.dumps(user)},loc:loc,id:r0.id,post:post}},function(v){{var st2=document.getElementById('editstatus');
+if(v&&v.fixed>0){{reloadFrame(r0.from+' finished '+v.fixed+' change(s) in the file')}}else{{busy=false;if(v&&v.version)loadedVersion=v.version;if(st2)st2.textContent=r0.from+' made the change'+(v&&v.failed&&v.failed.length?'; some of it could not be done (see the chatter)':'')+'.'}}}});return}}
+if(ok){{var fd=new FormData();fd.append('as',{json.dumps(user)});fd.append('doc',loc);fd.append('ids',r0.id);fetch(markUrl,{{method:'POST',body:fd}}).then(function(){{busy=false;var s=document.getElementById('editstatus');if(s)s.textContent=r0.from+' answered in the document.';setTimeout(function(){{post({{MessageId:'Action_Save',Values:{{DontTerminateEdit:true,DontSaveIfUnmodified:false,Notify:true}}}})}},1500)}}).catch(function(){{busy=false}})}}
 else{{delete inflight[r0.id];window.__applyAfterSave=true;post({{MessageId:'Action_Save',Values:{{DontTerminateEdit:true,DontSaveIfUnmodified:true,Notify:true}}}});setTimeout(function(){{if(window.__applyAfterSave){{window.__applyAfterSave=false;applyReplies()}}}},2500)}}}})}}
 else if(j.version>loadedVersion&&j.machine&&!busy){{busy=true;reloadFrame(j.version_by+' wrote version '+j.version)}}else if(j.version>loadedVersion){{loadedVersion=j.version}}}}).catch(function(){{}})}}
 setInterval(poll,4000);}})();</script>"""
@@ -196,6 +204,18 @@ setInterval(poll,4000);}})();</script>"""
             self.hub.inbox.mark(i, applied_in="live", applied_by=self.user)
         log_line(f"editor live-applied doc={rec['number']} ids={','.join(done)} by={self.user}")
         return self._json({"applied": len(done)})
+
+    def post_verify_edit(self):
+        """The cog's seat made its changes live and the session saved: check each in the file, finish the rest."""
+        self._need_release()
+        rec = self.hub.kernel.require(self._f("doc"))
+        self._require_read(rec["folder"])
+        try:
+            out = wopi.WopiHost(self.hub).verify_edit(rec, self._f("id") or "", self.user)
+        except KernelGuardError as e:
+            return self._json({"error": str(e)}, 400)
+        log_line(f"editor verify doc={rec['number']} id={self._f('id')} fixed={out['fixed']} failed={len(out['failed'])} by={self.user}")
+        return self._json(out)
 
     def post_editor_debug(self):
         """The editor page reports what the cog seat did (for the log; no state changes)."""

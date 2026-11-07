@@ -705,7 +705,12 @@ def cog_context(ctx: RunContext, rec: dict | None, *, sop_chars: int | None = No
         if task == "edit":
             fn = ((rec or {}).get("fields") or {}).get("filename") or ""
             kind = "sheet" if _office.is_sheet(fn.rsplit(".", 1)[-1] if "." in fn else "") else "text"
-        iface = _office.writing_interface(kind)
+        if task == "edit":
+            from .edits import EDIT_INTERFACE
+
+            iface = EDIT_INTERFACE[kind]
+        else:
+            iface = _office.writing_interface(kind)
         if iface:
             parts.append(iface)
     return "\n\n".join(parts)
@@ -743,8 +748,9 @@ class ReviewerCog(Cog):
     files_process = ""
 
     def task_edit_document(self, input: dict, ctx: RunContext) -> dict:
-        """Draft what a comment asks for ("include a quality header") from the cog's SOPs and the document's text;
-        the hub writes it into the document. Returns {"paragraphs", "position", "explanation", "model", "stand_in"}."""
+        """Turn what a comment asks for ("include a quality header", "delete the Records section", "change shall to
+        must") into edit operations (hubproto.edits), from the cog's SOPs and the whole document. The cog's seat
+        performs them live where it can and the hub in the file otherwise. Returns {"ops", "kind", "explanation", ...}."""
         rec = ctx.kernel.get(input.get("record") or ctx.record) if (input.get("record") or ctx.record) else None
         if rec is None:
             return make_envelope(self.id, self.version, "edit-document", error={"code": "no-record", "detail": "nothing to edit"})
@@ -754,54 +760,58 @@ class ReviewerCog(Cog):
         system = cog_context(ctx, rec, task="edit")
         from . import office as _office
 
-        sheet = _office.is_sheet((f.get("filename") or "").rsplit(".", 1)[-1] if "." in (f.get("filename") or "") else "")
+        from . import edits as _edits
+
+        ext = (f.get("filename") or "").rsplit(".", 1)[-1].lower() if "." in (f.get("filename") or "") else ""
+        sheet = _office.is_sheet(ext)
+        grid = ""
         if sheet:
             try:
                 content, _ = ctx.dms.content(rec["locator"]) if ctx.dms is not None else (b"", {})
-                next_row = _office.sheet_rows_used(content, (f.get("filename") or "").rsplit(".", 1)[-1]) + 1
+                grid = _edits.sheet_grid_text(content, ext)
             except Exception:
-                next_row = 1
-            user = (f"A colleague wrote this comment in the spreadsheet above:\n{request}\n\n"
-                    f"Your rows will be written starting at row {next_row}. Write the rows now, in the output format.")
-        elif re.search(r"\b(revise|rewrite|reformat|format|replace|clean up|tidy|restructure|rework|redo|duplicate)\b", request.lower()):
-            user = (f"A colleague wrote this comment in the document above:\n{request}\n\n"
-                    "Write the WHOLE document as it should now read, in the output format: keep what is right, remove duplicates, "
-                    "add what is asked. Your text replaces the current body.")
-        else:
-            user = (f"A colleague wrote this comment in the document above:\n{request}\n\n"
-                    "Write the content to insert now, in the output format.")
+                grid = ""
+        user = ((f"THE SHEET WITH CELL ADDRESSES:\n{grid}\n\n" if grid else "")
+                + f"A colleague asks you, about the {'spreadsheet' if sheet else 'document'} above:\n{request}\n\n"
+                + "Write the operations that make exactly this change, in the output format.")
         text, model, stand_in = "", ctx.profile.get("model") or "stand-in", True
         if ctx.model is not None:
-            out = ctx.model.complete(model=model, system=system, user=user, by=self.id)
+            out = ctx.model.complete(model=model, system=system, user=user, by=self.id, max_tokens=1600)
             text, stand_in = out["text"], out["stand_in"]
-        lines = [ln.rstrip() for ln in text.splitlines() if ln.strip()]
-        if stand_in or not lines:
+        ops = [] if stand_in else _edits.parse_ops(text)
+        unknown = [o for o in ops if o["op"] == "unknown"]
+        ops = [o for o in ops if o["op"] != "unknown"]
+        if stand_in or not ops:
+            # Without a model (or an answer we can read): the old behaviour, a short header written at the start.
             title = f.get("title") or rec["number"]
-            lines = [f"# {title}", f"Document {rec['number']}, revision {f.get('revision', 'A')}.{f.get('minor', 0)}; owner {f.get('owner') or '-'}; "
-                     f"class {f.get('doc_class') or '-'}; state {rec['state']}.",
-                     "Prepared under the procedures " + (", ".join(sorted(sops)) or "of the quality system") + ". Review and approval are recorded on the item."]
-        rq = request.lower()
+            lines = ([f"| {title} | per " + (", ".join(sorted(sops)) or "the quality procedures") + " |"] if sheet else
+                     [f"# {title}", f"Document {rec['number']}, revision {f.get('revision', 'A')}.{f.get('minor', 0)}; owner {f.get('owner') or '-'}; "
+                      f"class {f.get('doc_class') or '-'}; state {rec['state']}.",
+                      "Prepared under the procedures " + (", ".join(sorted(sops)) or "of the quality system") + ". Review and approval are recorded on the item."])
+            ops = [{"op": "append_rows", "lines": lines}] if sheet else [{"op": "insert", "at": "start", "lines": lines}]
+        start_row = None
         if sheet:
-            position = "end"
-        elif re.search(r"\b(revise|rewrite|reformat|format|replace|clean up|tidy|restructure|rework|redo|duplicate)\b", rq):
-            position = "replace"
-        elif re.search(r"\b(end|bottom|append|footer|conclusion)\b", rq):
-            position = "end"
-        else:
-            position = "start"
-        if sheet and (stand_in or not any("|" in ln for ln in lines)):
-            lines = ["| Item | Requirement | Result |", f"| {f.get('title') or rec['number']} | per " + (", ".join(sorted(sops)) or "the quality procedures") + " | |"] if stand_in else lines
-        where = {"replace": "replacing the body of", "start": "at the start of", "end": "at the end of"}[position]
-        out = {"paragraphs": lines[:120], "position": position, "model": model, "stand_in": stand_in,
-               "explanation": f"I wrote {len(lines[:120])} {'row' if sheet else 'line'}(s) {where} the {'sheet' if sheet else 'document'} as asked."}
-        if sheet:
-            out["kind"] = "sheet"
-            out["rows"] = _office.rows_from_lines(lines[:60])
             try:
                 content, _ = ctx.dms.content(rec["locator"]) if ctx.dms is not None else (b"", {})
-                out["start_row"] = _office.sheet_rows_used(content, (f.get("filename") or "").rsplit(".", 1)[-1]) + 1
+                start_row = _edits.Sheet(content, ext).last_row() + 1
             except Exception:
-                out["start_row"] = 1
+                start_row = 1
+            for o in ops:
+                if o["op"] in ("append_rows", "insert_rows") or (o["op"] == "insert" and o.get("lines")):
+                    o["rows"] = _office.rows_from_lines(o.get("lines") or [])
+        else:
+            paras = {_edits.squash(x) for x in (f.get("text") or "").splitlines() if x.strip()}
+            for o in ops:  # deleting a whole paragraph's text deletes the paragraph, live and in the file alike
+                if o["op"] == "delete" and _edits.squash(o.get("target") or "") in paras:
+                    o["op"] = "delete_paragraph"
+        plan = "; ".join(_edits.describe(o) for o in ops)
+        out = {"ops": ops, "kind": "sheet" if sheet else "text", "model": model, "stand_in": stand_in, "start_row": start_row,
+               "explanation": f"Changes: {plan}." + (f" (I skipped {len(unknown)} line(s) I could not read as operations.)" if unknown else "")}
+        # The older fields, for callers that only insert.
+        if len(ops) == 1 and ops[0]["op"] == "insert" and ops[0].get("at") in ("start", "end"):
+            out.update({"paragraphs": ops[0]["lines"][:120], "position": ops[0]["at"]})
+        elif len(ops) == 1 and ops[0]["op"] == "rewrite":
+            out.update({"paragraphs": ops[0]["lines"][:400], "position": "replace"})
         return self.ok("edit-document", out)
 
     def task_chat(self, input: dict, ctx: RunContext) -> dict:

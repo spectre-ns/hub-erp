@@ -30,7 +30,8 @@ INTENTS = ("edit", "review", "approve", "message")
 def intent_by_keywords(text: str) -> str:
     t = (text or "").lower()
     negated = lambda word: re.search(r"\b(not|don't|didn't|do not|did not|never|no)\b[^.]{0,25}\b" + word, t) is not None
-    if re.search(r"\b(edit|insert|include|add|write|draft|rewrite|revise|update|change|format|reformat|make|put|replace|fix|correct|clean)\b", t) and not re.search(r"\b(approve|approval)\b", t):
+    if re.search(r"\b(edit|insert|include|add|write|draft|rewrite|revise|update|change|format|reformat|make|put|replace|fix|correct|clean|"
+                 r"delete|remove|drop|strike|cut|rename|move|swap|shorten|merge|split|trim|erase|clear)\b", t) and not re.search(r"\b(approve|approval)\b", t):
         return "edit"
     if re.search(r"\b(approve|approval|sign off|sign-off|release|move .{0,20}approval)\b", t) and not negated("approv"):
         return "approve"
@@ -46,7 +47,7 @@ def intent_of(text: str, *, model=None, model_name: str = "", thread: list[dict]
     if fallback == "approve":
         return "approve"  # an explicit approval phrase is not for a model to second-guess
     t = (text or "").lower()
-    if fallback == "review" and not re.search(r"\b(edit|insert|include|add|write|draft|rewrite|revise|update|change|format|make|put|replace|fix)\b", t):
+    if fallback == "review" and not re.search(r"\b(edit|insert|include|add|write|draft|rewrite|revise|update|change|format|make|put|replace|fix|delete|remove|drop)\b", t):
         return "review"  # "please review this" means review
     if model is None or not getattr(model, "available", lambda m: False)(model_name):
         return fallback
@@ -54,7 +55,7 @@ def intent_of(text: str, *, model=None, model_name: str = "", thread: list[dict]
     user = ((f"Thread so far:\n{context}\n\n" if context else "") +
             f"Latest comment to {cog_id or 'you'}:\n{text}\n\n"
             "Which ONE does the latest comment ask of you? Answer with a single word:\n"
-            "EDIT (write, add, change, format or revise content in the document)\n"
+            "EDIT (write, add, change, delete, replace, move, format or revise content in the document)\n"
             "REVIEW (assess the document and give findings)\n"
             "APPROVE (sign off, release, or move the item to approval)\n"
             "ANSWER (a question or remark to reply to in words)")
@@ -230,16 +231,17 @@ def _answer(hub, msg, cog_id, bundle, release, record, sender, actions, intent, 
     if record and record["type"] == "document" and intent == "edit" and "edit-document" in cog.tasks:
         env = cog.invoke("edit-document", {"record": record["locator"], "request": msg.get("body") or msg.get("subject")}, ctx)
         r = env.get("payload") or {}
-        if not r.get("paragraphs"):
-            body = f"I cannot write into {record['number']}: " + ((env.get("error") or {}).get("detail") or "nothing to write")
+        if not r.get("ops"):
+            body = f"I cannot change {record['number']}: " + ((env.get("error") or {}).get("detail") or "I found nothing to do")
             out.append(hub.inbox.reply(msg, sender=cog_id, body=body, record=record["locator"], envelope=env))
             return
-        explanation = (r.get("explanation") or "Written as asked.") + ("" if not r.get("stand_in") else " (drafted with the stand-in: configure a model for real wording)")
+        explanation = (r.get("explanation") or "Changed as asked.") + ("" if not r.get("stand_in") else " (drafted with the stand-in: configure a model for real wording)")
         reply = hub.inbox.reply(msg, sender=cog_id, body=explanation, record=record["locator"], envelope=env)
-        # The content is written by the cog's seat in the live editor, or by the hub into the file when no editor is open.
-        edit = {"paragraphs": r["paragraphs"], "position": r.get("position") or "start"}
-        if r.get("kind") == "sheet":
-            edit.update({"kind": "sheet", "rows": r.get("rows") or [], "start_row": r.get("start_row") or 1})
+        # The cog's seat performs the operations live in the editor where it can; the hub does them in the file otherwise.
+        edit = {"ops": r["ops"], "kind": r.get("kind") or "text"}
+        for k in ("paragraphs", "position", "start_row"):
+            if r.get(k):
+                edit[k] = r[k]
         hub.inbox.mark(reply["id"], edit=edit)
         out.append(reply)
         return

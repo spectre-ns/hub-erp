@@ -305,7 +305,7 @@ def test_a_comment_asking_the_cog_to_edit_makes_it_write_into_the_document(shell
     text = office.extract_text(content, "docx")
     assert text.startswith("Test procedure TP-7") and "Inspection plan for the sensor board." in text, "the header was written before the existing text"
     comments = office.extract_comments(content, "docx")
-    assert [c["author"] for c in comments] == ["carol", "quality-assistant"] and "I wrote" in comments[1]["text"]
+    assert [c["author"] for c in comments] == ["carol", "quality-assistant"] and "Changes: insert 3 line(s) at the start" in comments[1]["text"]
     assert hub.kernel.get(loc)["fields"]["checked_out_by"] == "carol", "the editing session survives the cog's edit"
     j = json.loads(get(shell, "/editor-replies/" + quote(loc, safe=":"), **{"as": "carol"})[1])
     assert j["pending"] == 0 and j["version"] == version["version"] and j["machine"] is True
@@ -429,7 +429,9 @@ def test_an_edit_request_on_a_spreadsheet_yields_rows_for_the_seat(shell):
     reply = hub.send("carol", "carol", "Comment", "@quality-assistant please add a checklist with columns for item, requirement and result", record=loc)
     pending = wopi.WopiHost(hub).pending_replies(hub.kernel.get(loc))
     assert pending and pending[0]["edit"]["kind"] == "sheet" and pending[0]["edit"]["start_row"] == 1
-    rows = pending[0]["edit"]["rows"]
+    [op] = pending[0]["edit"]["ops"]
+    rows = op["rows"]
+    assert op["op"] == "append_rows"
     assert rows and all(isinstance(r, list) for r in rows) and len(rows[0]) >= 2
     status, url, text = post(shell, "/apply-replies", {"as": "carol", "doc": loc})
     assert json.loads(text)["applied"] == 1
@@ -460,9 +462,10 @@ def test_sheets_store_numbers_and_formulas_and_the_prompt_states_the_writing_int
     ctx = RunContext(run_id="t", release="", bundle=bundle, owner="quality-assistant", kernel=released.kernel, frames=lambda: released.frames,
                      extras={"cog_profile": bundle["cogs"]["quality-assistant"]})
     rec = released.kernel.get(doc["locator"])
-    assert "OUTPUT FORMAT when you write into a spreadsheet" in cog_context(ctx, rec, task="edit")
+    assert "OUTPUT FORMAT for a change to this spreadsheet" in cog_context(ctx, rec, task="edit") and "@@ delete rows" in cog_context(ctx, rec, task="edit")
     rec["fields"]["filename"] = "wi.docx"
-    assert "OUTPUT FORMAT when you write into a text document" in cog_context(ctx, rec, task="edit") and "page break" in cog_context(ctx, rec, task="edit")
+    text_iface = cog_context(ctx, rec, task="edit")
+    assert "OUTPUT FORMAT for a change to this document" in text_iface and "page break" in text_iface and "@@ delete section" in text_iface
     assert "Verdict: pass" in cog_context(ctx, rec, task="review") and "comment thread" in cog_context(ctx, rec, task="answer")
 
 

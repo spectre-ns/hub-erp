@@ -51,7 +51,8 @@ ACTION_TOOLS = [
                                                     "submit": {"type": "boolean"}}, "required": ["title", "text"]}},
     {"name": "review_document", "description": "Review a record or document against the procedures you follow; the review is filed as evidence on it.",
      "parameters": {"type": "object", "properties": {"number": {"type": "string"}, "question": {"type": "string"}}, "required": ["number"]}},
-    {"name": "edit_document", "description": "Write into a working document (not one in force): `request` says what to write; the result is a new version.",
+    {"name": "edit_document", "description": "Change a working document (not one in force): `request` says what to change: add, replace, delete, "
+                                             "rewrite a section. The result is a new version; you are told which changes were made.",
      "parameters": {"type": "object", "properties": {"number": {"type": "string"}, "request": {"type": "string"}}, "required": ["number", "request"]}},
     {"name": "finish", "description": "End the run with a short summary of what you did and what you left for people.",
      "parameters": {"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}},
@@ -214,14 +215,18 @@ class AgentTools(RecordTools):
                 r = env.get("payload") or {}
                 from . import office, wopi as _wopi
 
+                from . import edits
+
                 content, latest = hub.dms.content(rec["locator"])
                 ext = _wopi.extension_of(latest.get("filename") or f.get("filename") or "")
-                new = office.insert_paragraphs(content, ext, r.get("paragraphs") or [], r.get("position") or "start")
+                new, report = edits.apply_ops(content, ext, r.get("ops") or [])
                 if new is None:
-                    return {"error": f"cannot write into a .{ext or '?'} file"}
+                    return {"error": "nothing was changed: " + ("; ".join(f"{x['op']} ({x['detail']})" for x in report) or "no operations")}
                 hub.dms.add_version(rec["locator"], new, by="hub", filename=latest.get("filename") or "", mime=latest.get("mime") or "",
                                     note=f"edited by {self.cog} (agent run {self.run_id})")
-                return {"ok": True, "document": rec["number"], "version": hub.dms.versions(rec["locator"])[-1]["version"], "explanation": r.get("explanation")}
+                _wopi.WopiHost(hub).index(hub.kernel.get(rec["locator"]), new, "hub")
+                return {"ok": True, "document": rec["number"], "version": hub.dms.versions(rec["locator"])[-1]["version"],
+                        "changes": report}
         except Exception as e:  # the system refused (permission, criteria, state): the agent hears why
             return {"error": f"{type(e).__name__}: {e}"}
         return {"error": f"no action {name!r}"}

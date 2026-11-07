@@ -273,14 +273,24 @@ class WopiHost:
         content, latest = self.hub.dms.content(rec["locator"])
         ext = extension_of(latest.get("filename") or rec["fields"].get("filename") or "")
         applied = []
+        from . import edits
+
+        reports: dict[str, list[dict]] = {}
         for m in pending:
             new = content
             edit = m.get("edit") or {}
-            if edit.get("paragraphs"):
+            if edit.get("ops"):
+                changed, report = edits.apply_ops(new, ext, edit["ops"])
+                reports[m["id"]] = report
+                new = changed or new
+            elif edit.get("paragraphs"):
                 new = office.insert_paragraphs(new, ext, edit["paragraphs"], edit.get("position") or "start") or new
             if m.get("comment_id") not in (None, ""):
                 new = office.add_reply(new, ext, str(m["comment_id"]), m["from"], m.get("body") or "", date=m.get("at") or "") or new
             if new is content:
+                if m["id"] in reports:  # nothing could be done: say so once, and stop offering it
+                    self.hub.inbox.mark(m["id"], applied_in="none", edit_report=reports[m["id"]])
+                    self._report_failures(rec, m, reports[m["id"]])
                 continue
             content = new
             applied.append(m)
@@ -295,11 +305,65 @@ class WopiHost:
             self.hub.kernel.set_fields(rec["locator"], {"editors": sorted(set(rec["fields"].get("editors") or []) | {holder})}, by=by)
         _, version = self.hub.dms.content(rec["locator"])
         for m in applied:
-            self.hub.inbox.mark(m["id"], applied_in=version.get("version"))
+            self.hub.inbox.mark(m["id"], applied_in=version.get("version"), **({"edit_report": reports[m["id"]]} if m["id"] in reports else {}))
+            if m["id"] in reports:
+                self._report_failures(rec, m, reports[m["id"]])
         comments = office.extract_comments(content, ext)
         self.hub.kernel.set_fields(rec["locator"], {"office_comments": [{k: c.get(k) for k in ("id", "author", "date", "text", "digest", "parent")} for c in comments],
                                                     "text": office.extract_text(content, ext)}, by=by)
         return applied
+
+    def _report_failures(self, rec: dict, m: dict, report: list[dict]) -> None:
+        """A cog says on the chatter which of its operations could not be done, like a colleague would."""
+        failed = [r for r in report if not r.get("ok")]
+        if not failed:
+            return
+        body = f"I could not do {len(failed)} of the {len(report)} change(s) in {rec['number']}: " + \
+            "; ".join(f"{r['op']} ({r['detail']})" for r in failed) + ". The rest is done."
+        if len(failed) == len(report):
+            body = f"I could not change {rec['number']}: " + "; ".join(f"{r['op']} ({r['detail']})" for r in failed) + "."
+        self.hub.inbox.post(sender=m["from"], to=m.get("to") or rec["fields"].get("owner") or "", record=rec["locator"], kind="reply",
+                            subject=f"Re: {m.get('subject') or rec['number']}", body=body)
+
+    def verify_edit(self, rec: dict, msg_id: str, by: str) -> dict:
+        """After the cog's seat edited live and the session saved: check each operation in the saved file, do in the
+        file whatever did not take, and mark the reply applied. Returns {"fixed", "failed", "version"}."""
+        from . import edits
+
+        m = self.hub.inbox.find(msg_id)
+        if m is None or m.get("record") != rec["locator"] or not (m.get("edit") or {}).get("ops"):
+            raise KernelGuardError("edit", "no such edit on this document")
+        if m.get("applied_in"):
+            _, v = self.hub.dms.content(rec["locator"])
+            return {"fixed": 0, "failed": [], "version": v.get("version"), "already": True}
+        content, latest = self.hub.dms.content(rec["locator"])
+        ext = extension_of(latest.get("filename") or rec["fields"].get("filename") or "")
+        ops = m["edit"]["ops"]
+        text = edits.applied_text(content, ext)
+        grid = None
+        if m["edit"].get("kind") == "sheet":
+            try:
+                grid = edits.Sheet(content, ext).grid()
+            except Exception:
+                grid = {}
+        missing = [o for o in ops if not edits.op_applied(o, text, grid)]
+        report = [{"op": edits.describe(o), "ok": True, "detail": "done live in the editor"} for o in ops if o not in missing]
+        fixed = 0
+        if missing:
+            new, rep = edits.apply_ops(content, ext, missing)
+            report += [dict(r, detail=r["detail"] + " (by the hub, in the file)") for r in rep]
+            if new is not None:
+                holder = rec["fields"].get("checked_out_by") or by
+                self.hub.dms.add_version(rec["locator"], new, by="hub", filename=latest.get("filename") or "", mime=latest.get("mime") or "",
+                                         note=f"edits from {m['from']} finished in the file ({sum(1 for r in rep if r['ok'])} of {len(missing)})")
+                if rec["fields"].get("checked_out_via") == "editor" or rec["fields"].get("checked_out_by"):
+                    self.hub.dms.checkout(rec["locator"], by=holder, via="editor")
+                fixed = sum(1 for r in rep if r["ok"])
+                self.index(self.hub.kernel.get(rec["locator"]), new, "hub")
+        _, version = self.hub.dms.content(rec["locator"])
+        self.hub.inbox.mark(m["id"], applied_in=version.get("version"), edit_report=report)
+        self._report_failures(rec, m, report)
+        return {"fixed": fixed, "failed": [r for r in report if not r["ok"]], "version": version.get("version")}
 
     def seat_token(self, rec: dict, cog_id: str, requester: str) -> str:
         """A seat in the live editing session for a cog that has something to say on this document: the cog's own
