@@ -19,6 +19,7 @@ APP_TABLE: list[tuple[str, str, str, list[str]]] = [
     ("inventory", "Inventory", "box", ["item", "receipt"]),
     ("finance", "Finance", "coins", ["bill", "journal", "journal-reversal"]),
     ("people", "People", "users", []),
+    ("settings", "Settings", "sliders", []),
     ("policy", "Policy", "book", []),
 ]
 # A release may carry record types the table does not name: their folder's root decides the app.
@@ -30,6 +31,9 @@ APP_PAGES: dict[str, list[tuple[str, str, str]]] = {
     "documents": [("Files by folder", "/files", "folder"), ("Controlled documents", "/items/document?filter=controlled", "file-text")],
     "purchasing": [("Suppliers", "/suppliers", "truck")],
     "people": [("Members and cogs", "/people", "users")],
+    "settings": [("Your changes", "/settings", "edit"), ("People and roles", "/settings/people", "users"), ("Permissions", "/settings/permissions", "lock"),
+                 ("Limits and due dates", "/settings/limits", "clock"), ("Cog rails", "/settings/rails", "robot"),
+                 ("Segregation of duties", "/settings/sod", "shield"), ("Workflows", "/settings/workflows", "activity")],
     "policy": [("Policy versions", "/releases", "layers"), ("Policies", "/frames", "book"), ("Why", "/why", "help"),
                ("Conformance", "/conformance", "check-circle"), ("People and roles", "/admin", "users")],
 }

@@ -242,4 +242,12 @@ details.restart[open]>form{{position:absolute;z-index:20;top:110%;left:0;width:m
 ol.cogq{{list-style:none;padding:0;margin:var(--sp-2) 0;display:grid;gap:var(--sp-1)}}ol.cogq>li{{display:grid;grid-template-columns:minmax(10em,auto) 1fr;gap:var(--sp-2);align-items:baseline;padding:var(--sp-2);border:1px solid var(--line);border-radius:6px;background:var(--panel)}}
 ol.cogq>li.working{{border-left:4px solid var(--accent)}}ol.cogq form.inline{{margin:0}}@media (max-width:640px){{ol.cogq>li{{grid-template-columns:1fr}}}}
 @media (prefers-reduced-motion:reduce){{.chip.work svg.i{{animation:none}}}}
+.settings-layout{{display:grid;grid-template-columns:minmax(11rem,14rem) 1fr;gap:var(--sp-4);align-items:start}}.settings-main{{min-width:0}}
+.settings-nav ul{{list-style:none;margin:0;padding:0;display:grid;gap:2px;position:sticky;top:var(--sp-2)}}.settings-nav a{{display:flex;gap:var(--sp-2);align-items:center;padding:6px 10px;border-radius:6px;color:var(--fg);text-decoration:none}}
+.settings-nav a:hover{{background:var(--chip)}}.settings-nav a[aria-current]{{background:var(--chip);font-weight:600;box-shadow:inset 3px 0 0 var(--accent)}}.settings-nav .count{{margin-left:auto;background:var(--accent);color:var(--accent-fg);border-radius:999px;padding:0 7px;font-size:var(--fs-s)}}
+form.sform{{margin:var(--sp-2) 0}}form.sform.row{{display:flex;flex-wrap:wrap;gap:var(--sp-2);align-items:end}}form.sform.inline{{display:inline-block;margin:0 0 0 var(--sp-1)}}form.sform.inline button{{min-height:28px;padding:2px 8px;font-size:var(--fs-s)}}
+fieldset.checks{{border:1px solid var(--line);border-radius:6px;padding:var(--sp-2);margin:var(--sp-2) 0;display:flex;flex-wrap:wrap;gap:4px var(--sp-3)}}fieldset.checks legend{{font-size:var(--fs-s);color:var(--muted);padding:0 4px}}
+ul.chips-list{{list-style:none;padding:0;display:flex;flex-wrap:wrap;gap:var(--sp-1) var(--sp-2)}}ul.chips-list li{{display:flex;align-items:center}}ol.edits li{{margin:2px 0}}
+section.cog-rails{{border-top:1px solid var(--line);padding-top:var(--sp-2);margin-top:var(--sp-3)}}.card.rail p{{margin:4px 0}}.pre{{white-space:pre-wrap;overflow-wrap:anywhere}}
+@media (max-width:760px){{.settings-layout{{grid-template-columns:1fr}}.settings-nav ul{{position:static;display:flex;flex-wrap:wrap}}}}
 """

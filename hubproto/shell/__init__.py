@@ -35,6 +35,7 @@ from .inbox import InboxMixin
 from .pages import PagesMixin
 from .policy import PolicyMixin, sentence_diff  # noqa: F401
 from .queue import QueueMixin
+from .settings_ui import SettingsMixin
 from .views import ViewsMixin
 from ..workqueue import CogWorker
 from .text import TYPE_NAMES, VERBS, chip, esc, friendly, money, day, when, why_sentence  # noqa: F401
@@ -44,7 +45,7 @@ __all__ = ["Handler", "ShellError", "coerce", "make_server", "serve", "serve_in_
            "when", "why_sentence", "sentence_diff", "widget", "prefill", "chip", "esc", "href", "table"]
 
 
-class Handler(QueueMixin, PagesMixin, ViewsMixin, InboxMixin, PolicyMixin, ActionsMixin, EditorMixin, MessengerMixin, PolicyDocsMixin, McpMixin, AgentsMixin, NewMemberMixin, BaseHandler):
+class Handler(SettingsMixin, QueueMixin, PagesMixin, ViewsMixin, InboxMixin, PolicyMixin, ActionsMixin, EditorMixin, MessengerMixin, PolicyDocsMixin, McpMixin, AgentsMixin, NewMemberMixin, BaseHandler):
     """The request handler: the plumbing in BaseHandler, the pages and actions in the mixins."""
 
 

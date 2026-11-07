@@ -40,8 +40,9 @@ RAIL_MAIN = [("Home", "/", "home"), ("Inbox", "/inbox", "inbox"), ("Documents", 
 RAIL_POLICY = [("Runs", "/runs", "activity"), ("Policy versions", "/releases", "layers"), ("Policies", "/frames", "book"), ("Why", "/why", "help"),
                ("Conformance", "/conformance", "check-circle"), ("People and roles", "/admin", "users")]
 # Routes the identity switcher may stay on (anything else goes home).
-STAY_ROUTES = ("/", "/inbox", "/files", "/documents", "/boards", "/runs", "/releases", "/frames", "/why", "/admin", "/conformance", "/people", "/suppliers")
-STAY_PREFIXES = ("/record/", "/document/", "/run/", "/frame/", "/release/", "/items/", "/app/", "/user/")
+STAY_ROUTES = ("/", "/inbox", "/files", "/documents", "/boards", "/runs", "/releases", "/frames", "/why", "/admin", "/conformance", "/people", "/suppliers",
+               "/settings")
+STAY_PREFIXES = ("/record/", "/document/", "/run/", "/frame/", "/release/", "/items/", "/app/", "/user/", "/settings/")
 # The small script: tabs show one panel at a time (every panel is visible without it) and the print button prints.
 SCRIPT = """document.documentElement.classList.add('js');
 addEventListener('DOMContentLoaded',function(){var tabs=document.querySelectorAll('.tabs a[data-tab]');
@@ -221,14 +222,15 @@ class BaseHandler(BaseHTTPRequestHandler):
             fixed = {"/chat-thread": self.page_chat_thread, "/queue-status": self.page_queue_status, "/queue": self.page_queue, "/": self.page_home, "/files": self.page_files, "/documents": self.page_files, "/boards": self.page_boards, "/inbox": self.page_inbox,
                      "/runs": self.page_runs, "/releases": self.page_releases, "/frames": self.page_frames, "/why": self.page_why,
                      "/admin": self.page_admin, "/conformance": self.page_conformance, "/download": self.page_download,
-                     "/start": self.page_start, "/people": self.page_people, "/suppliers": self.page_suppliers}
+                     "/start": self.page_start, "/people": self.page_people, "/suppliers": self.page_suppliers, "/settings": self.page_settings}
             if r in fixed:
                 return fixed[r]
             for prefix, fn in (("/record/", self.page_record), ("/document/", self.page_document), ("/doc/", self.page_document),
                                ("/run/", self.page_run), ("/frame/", self.page_frame), ("/release/", self.page_release),
                                ("/edit/", self.page_edit), ("/editor-replies/", self.page_editor_replies), ("/cog-seat/", self.page_cog_seat), ("/frame-doc/", self.page_frame_doc),
                                ("/text-edit/", self.page_text_edit), ("/frame-check/", self.page_frame_check), ("/proposal/", self.page_proposal),
-                               ("/agent-run/", self.page_agent_run), ("/items/", self.page_items), ("/app/", self.page_app), ("/user/", self.page_user)):
+                               ("/agent-run/", self.page_agent_run), ("/items/", self.page_items), ("/app/", self.page_app), ("/user/", self.page_user),
+                               ("/settings/", self.page_settings)):
                 if r.startswith(prefix) and len(r) > len(prefix):
                     self.arg = r[len(prefix):]
                     return fn
@@ -236,7 +238,8 @@ class BaseHandler(BaseHTTPRequestHandler):
         posts = {"/start": self.post_start, "/decide": self.post_decide, "/msg": self.post_msg, "/attach": self.post_attach,
                  "/finish-edit": self.post_finish_edit, "/new-document": self.post_new_document, "/working-copy": self.post_working_copy, "/apply-replies": self.post_apply_replies, "/start-on": self.post_start_on, "/chat": self.post_chat, "/chat-clear": self.post_chat_clear, "/frame-draft": self.post_frame_draft, "/text-save": self.post_text_save,
                  "/frame-propose": self.post_frame_propose, "/frame-withdraw": self.post_frame_withdraw, "/proposal-review": self.post_proposal_review, "/proposal-release": self.post_proposal_release,
-                 "/agent-task": self.post_agent_task, "/queue-withdraw": self.post_queue_withdraw, "/assign": self.post_assign, "/agent-confirm": self.post_agent_confirm, "/new-person": self.post_new_person, "/new-cog": self.post_new_cog, "/cog-model": self.post_cog_model, "/restart": self.post_restart, "/mark-applied": self.post_mark_applied, "/verify-edit": self.post_verify_edit, "/editor-debug": self.post_editor_debug,
+                 "/agent-task": self.post_agent_task, "/settings-edit": self.post_settings_edit, "/settings-check": self.post_settings_check,
+                 "/settings-propose": self.post_settings_propose, "/settings-discard": self.post_settings_discard, "/queue-withdraw": self.post_queue_withdraw, "/assign": self.post_assign, "/agent-confirm": self.post_agent_confirm, "/new-person": self.post_new_person, "/new-cog": self.post_new_cog, "/cog-model": self.post_cog_model, "/restart": self.post_restart, "/mark-applied": self.post_mark_applied, "/verify-edit": self.post_verify_edit, "/editor-debug": self.post_editor_debug,
                  "/upload": self.post_upload, "/checkout": self.post_checkout, "/checkin": self.post_checkin, "/link": self.post_link,
                  "/snapshot": self.post_snapshot, "/hold": self.post_hold, "/resubmit": self.post_resubmit, "/retry": self.post_retry,
                  "/cancel": self.post_cancel, "/undo-checkout": self.post_undo_checkout, "/bulk-hold": self.post_bulk_hold}
@@ -404,6 +407,9 @@ class BaseHandler(BaseHTTPRequestHandler):
             if self.route in ("/checkout", "/checkin", "/undo-checkout"):
                 self.arg = self.form.get("doc", "")
                 return self.page_document(status=status)
+            if self.route.startswith("/settings-"):  # a refused settings change: the section it came from, values kept
+                self.arg = self.form.get("section", "") if self.route == "/settings-edit" else "overview"
+                return self.page_settings(status=status)
         except (RunError, KernelGuardError, ShellError):
             pass
         except Exception as inner:  # the re-render failed: fall back to the plain error page, never a 500
