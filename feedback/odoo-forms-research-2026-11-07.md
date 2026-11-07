@@ -1,24 +1,23 @@
 # How Odoo customizes forms (Studio, 17 and 18): a brief for Hub ERP
 
-2026-11-07. Sources: Odoo 17.0/18.0 docs and `odoo/odoo` on GitHub. Studio's
-code (`web_studio`) is in Odoo's private enterprise repository, so Studio
-internals come from the docs or Studio hooks in open-source code, or are marked
-*unconfirmed*.
+2026-11-07. From the Odoo 17.0/18.0 docs and `odoo/odoo` on GitHub. Studio's
+own code (`web_studio`) is private (enterprise), so Studio internals come from
+the docs or are marked *unconfirmed*.
 
 ## 1. Studio's form editor
 
 - **Fields.** Drag a type from *Add > New Fields*, or an *Existing Field*, onto
   the view; *Remove from view* affects that view only. New fields are created
-  only from form or list views (20 Studio types over Odoo's 15). Technical names
-  get `x_studio_`, editable in Studio only at creation; later renames go through
-  *Settings > Technical > Fields* after removing the field from every view,
-  keeping `x_`. In code a custom field is an `ir.model.fields` row with
-  `state='manual'`; an SQL constraint rejects names without `x_`. "Fields
-  created using Studio are saved as columns in your Odoo database."
+  only from form or list views. Technical names get `x_studio_`, editable in
+  Studio only at creation; later renames go through *Settings > Technical >
+  Fields* after removing the field from every view, keeping `x_`. In code a
+  custom field is an `ir.model.fields` row with `state='manual'`; an SQL
+  constraint rejects names without `x_`. "Fields created using Studio are saved
+  as columns in your Odoo database."
 - **Properties** (18.0): Invisible, Required, Readonly, each with *Conditional*
   ("creating a filter"); Label; Help Tooltip; Widget; Placeholder; Default value
   ("when a record is created"); Allow/Forbid visibility to groups; Class and
-  Dynamic Placeholder are new in 18. Label, widget, group visibility and
+  Dynamic Placeholder (only in the 18 docs). Label, widget, group visibility and
   invisible/required/readonly "can be configured independently for different
   views".
 - **Layout.** A *Tabs and Columns* element; header buttons that run a server
@@ -30,14 +29,13 @@ internals come from the docs or Studio hooks in open-source code, or are marked
 - **Views edited:** form, activity (XML only), search, kanban, list, map,
   calendar, cohort, gantt, pivot, graph; developer mode adds an XML editor.
 - **Storage.** Each drag-and-drop edit generates "a specific Studio inherited
-  view and its corresponding XPath". Direct edits to standard views "would be
-  reset and lost during updates or module upgrades". The source notes "all views
-  created via studio have a priority=99 to be loaded last". Everything belongs
-  to a generated module, `studio_customization`.
-- **Export/import.** That module exports as a ZIP (18 adds per-model data with
-  Demo/Attachments/Updatable flags and a domain). Import needs "the same Odoo
-  version" and "the same apps and modules": "Studio does not add the underlying
-  modules as dependencies".
+  view and its corresponding XPath". XML edits to standard and inherited views
+  "would be reset and lost during updates or module upgrades". Odoo's view code
+  notes "all views created via studio have a priority=99 to be loaded last".
+  Customizations belong to a generated module, `studio_customization`.
+- **Export/import.** That module exports as a ZIP (the 18 docs add per-model
+  data selection). Import needs "the same Odoo version" and "the same apps and
+  modules": "Studio does not add the underlying modules as dependencies".
 - **Upgrades and conflicts.** Odoo's upgrade service covers "all customizations
   created with the Studio app, as long as Studio is still installed"; customers
   test an upgraded copy ("Are there views that are deactivated...?"). After a
@@ -51,8 +49,8 @@ internals come from the docs or Studio hooks in open-source code, or are marked
   view's field values, `parent`, `context`, `uid`, `today`, `now`, e.g.
   `required="fname_c != 3"` or `invisible="state != 'done'"`. The 16.0 `attrs`
   domains (`{'invisible': [('sale_ok', '=', False)]}`) are rejected: "Since 17.0,
-  the "attrs" and "states" attributes are no longer used." The source says these
-  expressions "are only executed client side".
+  the "attrs" and "states" attributes are no longer used." Odoo's code says they
+  "are only executed client side".
 - The web client's `ExpressionEditor` turns an expression into a condition tree
   and back; what it can't parse shows "This expression is not supported" with a
   reset button, and only developer mode gets a code box (that Studio uses it is
@@ -65,8 +63,8 @@ internals come from the docs or Studio hooks in open-source code, or are marked
 - **Approval rules** sit on buttons. 18: per-step approvers or group, a filter,
   *Approval Order*, *Exclusive Approval* (no user approves two steps),
   delegation "forever if left empty", revocation (higher steps can revoke lower
-  ones unless exclusive); logged in chatter and *Studio Approval Entries*. 17 had
-  an allowed group, a responsible user and notification order.
+  ones unless exclusive); logged in chatter and *Studio Approval Entries*. The 17
+  docs describe an allowed group, a responsible user and notification order.
 
 ## 3. Safety and governance
 
@@ -82,8 +80,8 @@ internals come from the docs or Studio hooks in open-source code, or are marked
   data is not confirmed; the code has no such check.** Removing an option from a
   non-required custom selection nulls existing values; renaming one rewrites rows.
   Type changes are refused ("drop it and create it again"); base fields can't be
-  altered. Making a field required back-fills only a code default, then tries
-  `SET NOT NULL`, logging a warning if it fails.
+  altered. Making a model field (not a view field) required back-fills only a
+  code default, then tries `SET NOT NULL`, logging a warning if it fails.
 - **Arch validation.** `_check_xml` runs on every arch write against the combined
   view (all patches applied): parse, patch targets, fields exist, the RelaxNG
   schema, no `attrs`; failure rolls back. 17 also refused conditions on fields
@@ -94,13 +92,13 @@ internals come from the docs or Studio hooks in open-source code, or are marked
 
 `ir.ui.view` has `arch`, `priority` (default 16), `inherit_id`, `mode`.
 Resolution: resolve the parent, apply this view's specs, then its **extension**
-children depth-first in `priority, id` order. A **primary** child is its own
-view: the parent is fully resolved, then the child's specs, and the result is
-the child's arch (the docs' case: a derived model). A spec locates the first
-`<xpath expr>` match, a `<field name>`, or an element with identical attributes;
-`position` is `inside` (default), `before`, `after`, `replace` (`$0` re-inserts
-the original), `attributes` (set, remove, add/remove tokens) or `move`. A missing
-target raises "Element ... cannot be located in parent view".
+children depth-first in `priority, id` order. A **primary** child is a separate
+view: the fully resolved parent plus the child's specs (the docs' case: a
+derived model). A spec locates the first `<xpath expr>` match, a
+`<field name>`, or an element with identical attributes; `position` is `inside`
+(default), `before`, `after`, `replace` (`$0` re-inserts the original),
+`attributes` (set, remove, add/remove tokens) or `move`. A missing target
+raises "Element ... cannot be located in parent view".
 
 ## Borrow and avoid
 
@@ -123,7 +121,7 @@ Avoid:
 - warn-only breakage after upgrades;
 - exports without dependencies;
 - open-ended delegation;
-- approvals configured in the form editor;
+- approvals configured in the form editor (Hub's belong in Frames);
 - live edits with no review.
 
 ## Proposal for Hub ERP
@@ -156,16 +154,17 @@ schema damage than ungoverned or retroactive rules.
 
 4. **Conditions** are JSON trees (`all`/`any`/`not`; field `=`, `in`, `set`,
    `<`; `state`; viewer `role`) evaluated by one server function, mirrored in the
-   browser; writes to hidden or readonly fields are refused. No code strings.
+   browser; the server refuses form writes to hidden or readonly fields. No code
+   strings.
 5. **Editor.** Drag-and-drop edits a draft overlay. Each save validates the
    merged layout: undeclared field, system field made editable, condition on a
    field some viewers can't read, field required in a state but hidden there.
-   Preview renders a chosen record as a chosen person in a chosen state, with a
-   diff against the release in force.
+   Preview shows a chosen record, person and state, with a diff against the
+   release in force.
 6. **Release.** Proposals list sentences ("NCR: Supplier lot required to
    close"). Data-rule changes need two policy owners, like widenings. The release
    pins the layout digest. After a kernel or profile upgrade, an op whose anchor
-   no longer resolves blocks the release; it is never just a log line.
+   no longer resolves blocks the release.
 7. **Custom fields**: `x_` names, existing type specs, optional
    `required_by_state`, default, sensitivity; name and type immutable. The kernel
    keeps undeclared fields today; the editor offers only declared ones.
