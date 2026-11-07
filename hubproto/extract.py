@@ -78,6 +78,8 @@ _CRITERIA = re.compile(
     r"^The (?P<cog>[a-z][\w-]*) cog may approve (?P<process>[a-z0-9-]+) (?P<object>[a-z][a-z -]*?)"
     r"(?: under (?P<amount>[\d,]+(?:\.\d+)?) (?P<cur>[A-Z]{3}))?"
     r"(?: when (?P<conds>.+?))?"
+    r"(?:, at most (?P<perday>\d+) (?:approvals? )?a day)?"
+    r"(?:, at most (?P<permonth>[\d,]+(?:\.\d+)?) (?P<mcur>[A-Z]{3}) a month)?"
     r"(?:, countersigned by (?:an? |the )?(?P<counter>[a-z][a-z -]*?))?\.$"
 )
 _SOD = re.compile(
@@ -348,7 +350,9 @@ class ConventionExtractor:
             add("approval_criteria", n, line, approver="cog:" + m.group("cog"), process=m.group("process"),
                 max_amount=number(m.group("amount")) if m.group("amount") else None,
                 currency=m.group("cur"), conditions=conds,
-                countersign=singular_role(m.group("counter")) if m.group("counter") else None)
+                countersign=singular_role(m.group("counter")) if m.group("counter") else None,
+                **({"max_per_day": int(m.group("perday"))} if m.group("perday") else {}),
+                **({"max_amount_per_month": number(m.group("permonth")), "currency": m.group("cur") or m.group("mcur")} if m.group("permonth") else {}))
             return True
         m = _SOD.match(line)
         if m:

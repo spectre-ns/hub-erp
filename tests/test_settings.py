@@ -1,0 +1,151 @@
+"""Settings: rules edited as data (no SOP sentences, no Python), each change a proposal the policy owners release;
+how each rule reads; and the running limits on a cog's rails (at most N approvals a day, at most an amount a month)."""
+
+import shutil
+
+import pytest
+
+from conftest import ROOT, SMALL_BILL, dated, release_all
+from hubproto.app import Hub
+from hubproto.compile import CompileError
+from hubproto.rules import rule_key
+from hubproto.settings import sentence
+
+
+@pytest.fixture
+def hub(tmp_path):
+    shutil.copytree(ROOT / "frames", tmp_path / "frames")
+    h = Hub(tmp_path)
+    h.kernel.seed()
+    release_all(h)
+    return h
+
+
+def bundle(h):
+    return h.releases.bundle(h.releases.current()["digest"])
+
+
+def find(rules, **kw):
+    return next(r for r in rules if all(r.get(k) == v for k, v in kw.items()))
+
+
+_po = [3100]
+
+
+def bill(h, amount=1500):
+    _po[0] += 1
+    h.kernel.append("po.issued", f"po:PO-{_po[0]}", {"supplier": "acme-metals", "amount": amount, "currency": "USD", "description": "[settings]",
+                                                      "received": True}, by="seed")
+    h.kernel._cache = None
+    return {**dated(SMALL_BILL), "amount": amount, "po_ref": f"PO-{_po[0]}"}
+
+
+def test_rules_read_as_the_sentences_people_wrote(hub):
+    procs = bundle(hub)["processes"]
+    rules = hub.settings_rules()
+    same = 0
+    checked = 0
+    for r in rules:
+        if r["kind"] in ("permission", "threshold", "sod", "approval_criteria", "sla") or (r["kind"] == "routing" and r["step"] in ("approve", "*")):
+            checked += 1
+            same += sentence(r, procs) == r["source"]["text"]
+    assert checked > 80 and same / checked > 0.9, f"{same}/{checked} read as written"
+    ap = find(rules, kind="approval_criteria", approver="cog:ap-reviewer")
+    assert sentence(ap, procs) == ap["source"]["text"]
+    route = next(r for r in rules if r["kind"] == "routing" and (r.get("condition") or {}).get("value") == 10000.0 and r["process"] == "purchase-request")
+    assert sentence(route, procs) == "Approvals in purchase-request over 10,000 USD go to the controller."
+
+
+def test_a_rail_changed_in_settings_is_proposed_reviewed_and_released(hub):
+    rules = hub.settings_draft("bob")["rules"]
+    ap = find(rules, kind="approval_criteria", approver="cog:ap-reviewer")
+    new = {k: v for k, v in ap.items() if k != "source"} | {"max_amount": 5000.0, "max_per_day": 20}
+    d = hub.settings_edit("bob", {"action": "replace", "key": rule_key(ap), "rule": new})
+    assert d["edits"][-1]["said"].startswith("changed: The ap-reviewer cog may approve purchase-to-pay bills under 2,000 USD")
+    check = hub.settings_check("bob")
+    [change] = [c for c in check["changes"] if c["op"] == "add"]
+    assert change["widening"] and not [f for f in check["findings"] if f["severity"] == "error"]
+    p = hub.settings_propose("bob", reason="ap-reviewer handles mid-size bills")
+    assert p["source"] == "settings" and p["number"] and hub.settings_drafts.load("bob") is None
+    assert any(m["to"] == "carol" and "Settings change" in m["subject"] for m in hub.inbox.all())
+    with pytest.raises(Exception):
+        hub.release(p["id"], "bob")  # a widening needs both owners
+    hub.review(p["id"], "bob", approve_all=True)
+    hub.review(p["id"], "carol", approve_all=True)
+    hub.release(p["id"], "bob")
+    released = find(bundle(hub)["approval_criteria"], approver="cog:ap-reviewer")
+    assert released["max_amount"] == 5000.0 and released["max_per_day"] == 20
+    assert released["source"]["frame"] == "settings" and "at most 20 a day" in released["source"]["text"] and released["source"]["by"] == "bob"
+    assert hub.settings_source()
+    with pytest.raises(CompileError, match="edited in Settings"):
+        hub.compile()
+
+
+def test_invalid_and_stale_edits_are_refused(hub):
+    rules = hub.settings_draft("carol")["rules"]
+    with pytest.raises(ValueError, match="unknown kind"):
+        hub.settings_edit("carol", {"action": "add", "rule": {"kind": "magic"}})
+    with pytest.raises(ValueError, match="missing field"):
+        hub.settings_edit("carol", {"action": "add", "rule": {"kind": "threshold", "name": "x-limit"}})
+    with pytest.raises(ValueError, match="not in the draft"):
+        hub.settings_edit("carol", {"action": "remove", "key": "nope"})
+    t = find(rules, kind="threshold", name="purchase-approval-threshold")
+    with pytest.raises(ValueError, match="already there"):
+        hub.settings_edit("carol", {"action": "add", "rule": {k: v for k, v in t.items() if k != "source"}})
+    with pytest.raises(ValueError, match="changes nothing"):
+        hub.settings_propose("carol")
+    hub.settings_edit("carol", {"action": "replace", "key": rule_key(t), "rule": {**{k: v for k, v in t.items() if k != "source"}, "value": 9000.0}})
+    # Someone else's change is released meanwhile: carol's edits are against an old policy.
+    other = hub.settings_draft("bob")["rules"]
+    th = find(other, kind="threshold", name="match-tolerance")
+    hub.settings_edit("bob", {"action": "replace", "key": rule_key(th), "rule": {**{k: v for k, v in th.items() if k != "source"}, "value": 1.0}})
+    p = hub.settings_propose("bob")
+    hub.review(p["id"], "bob", approve_all=True)
+    hub.review(p["id"], "carol", approve_all=True)
+    hub.release(p["id"], "bob")
+    assert hub.settings_draft("carol")["stale"]
+    with pytest.raises(ValueError, match="policy changed"):
+        hub.settings_propose("carol")
+    hub.settings_discard("carol")
+    assert not hub.settings_draft("carol")["stale"]
+
+
+def test_a_rail_with_a_daily_limit_declines_once_it_is_reached(hub):
+    rules = hub.settings_draft("bob")["rules"]
+    ap = find(rules, kind="approval_criteria", approver="cog:ap-reviewer")
+    hub.settings_edit("bob", {"action": "replace", "key": rule_key(ap), "rule": {**{k: v for k, v in ap.items() if k != "source"}, "max_per_day": 1}})
+    p = hub.settings_propose("bob")
+    hub.review(p["id"], "bob", approve_all=True)
+    hub.review(p["id"], "carol", approve_all=True)
+    hub.release(p["id"], "bob")
+    first = hub.runner.load(hub.runner.submit("purchase-to-pay", {"record": bill(hub)}, owner="alice"))
+    assert first["status"] == "completed"  # ap-reviewer approved it within its rails
+    second = hub.runner.load(hub.runner.submit("purchase-to-pay", {"record": bill(hub)}, owner="alice"))
+    assert second["status"] == "waiting" and "ap-reviewer" not in second["pending"]["assignees"]
+    declined = [e for e in hub.runner.track(second["id"]) if e["type"] == "gate.declined"]
+    assert declined and "limit of 1 approvals a day is reached" in declined[0]["reasons"][0]
+
+
+def test_a_monthly_amount_limit_is_counted_from_its_approvals(hub):
+    rules = hub.settings_draft("bob")["rules"]
+    ap = find(rules, kind="approval_criteria", approver="cog:ap-reviewer")
+    hub.settings_edit("bob", {"action": "replace", "key": rule_key(ap),
+                              "rule": {**{k: v for k, v in ap.items() if k != "source"}, "max_amount_per_month": 2500.0}})
+    p = hub.settings_propose("bob")
+    hub.review(p["id"], "bob", approve_all=True)
+    hub.review(p["id"], "carol", approve_all=True)
+    hub.release(p["id"], "bob")
+    assert "at most 2,500 USD a month" in find(bundle(hub)["approval_criteria"], approver="cog:ap-reviewer")["source"]["text"]
+    assert hub.runner.load(hub.runner.submit("purchase-to-pay", {"record": bill(hub, 1500)}, owner="alice"))["status"] == "completed"
+    second = hub.runner.load(hub.runner.submit("purchase-to-pay", {"record": bill(hub, 1500)}, owner="alice"))
+    assert second["status"] == "waiting"
+    reasons = [e for e in hub.runner.track(second["id"]) if e["type"] == "gate.declined"][0]["reasons"]
+    assert "a month would be passed" in reasons[0]
+
+
+def test_frames_can_state_running_limits_too(tmp_path):
+    from hubproto.extract import _CRITERIA
+
+    m = _CRITERIA.match("The ap-reviewer cog may approve purchase-to-pay bills under 2,000 USD when the supplier is approved, "
+                        "at most 10 a day, at most 20,000 USD a month, countersigned by a controller.")
+    assert m and m.group("perday") == "10" and m.group("permonth") == "20,000" and m.group("counter") == "controller"

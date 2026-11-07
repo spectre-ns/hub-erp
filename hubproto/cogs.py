@@ -978,6 +978,8 @@ class ReviewerCog(Cog):
                 j = judgment()
                 ctx_c = {**routing_ctx, "conditions": {**(routing_ctx.get("conditions") or {}), "review_passes": j["passes"]}}
             within, reasons = evaluate_criteria(crit, ctx_c)
+            if within and (crit.get("max_per_day") or crit.get("max_amount_per_month")):
+                within, reasons = self._within_caps(ctx, crit, routing_ctx)
             if judged and not judged.get("passes"):
                 reasons = [f"its review did not pass ({judged['verdict']})" + (f": {judged['findings'][0]}" if judged.get("findings") else "")] + \
                     [r for r in reasons if "review_passes" not in r]
@@ -991,6 +993,35 @@ class ReviewerCog(Cog):
                 return self.ok("review", {"verdict": "approve", "reasons": checks, "delegating_rule": crit["source"], "risk": payload.get("risk"),
                                           "countersign": crit.get("countersign"), "judged": bool(judged), "evidence": judged.get("evidence")})
         return self.ok("review", {"verdict": "escalate", "reasons": reasons, "evidence": judged.get("evidence")})
+
+    def _within_caps(self, ctx: RunContext, crit: dict, routing_ctx: dict) -> tuple[bool, list[str]]:
+        """A rail's running limits: at most N approvals a day, at most an amount a month, counted from this cog's own
+        approvals of this process's records (the signed decisions in the kernel)."""
+        kernel = ctx.runner.kernel if ctx.runner is not None else ctx.kernel
+        proc = (ctx.bundle.get("processes") or {}).get(crit["process"]) or {}
+        rtype = proc.get("record_type") or proc.get("object") or ""
+        today = date.today().isoformat()
+        n_today, month_amount = 0, 0.0
+        for r in kernel.query(type_=rtype) if rtype else []:
+            for d in r.get("decisions") or []:
+                if d.get("by") != self.id or d.get("verdict") != "approve":
+                    continue
+                at = str(d.get("at") or "")
+                n_today += at[:10] == today
+                if at[:7] == today[:7]:
+                    try:
+                        month_amount += float(r["fields"].get("amount") or 0)
+                    except (TypeError, ValueError):
+                        pass
+        if crit.get("max_per_day") and n_today >= int(crit["max_per_day"]):
+            return False, [f"its limit of {int(crit['max_per_day'])} approvals a day is reached ({n_today} today)"]
+        cap = crit.get("max_amount_per_month")
+        if cap:
+            amount = float(routing_ctx.get("amount") or 0)
+            if month_amount + amount > float(cap):
+                return False, [f"its limit of {cap:,.0f} {crit.get('currency') or ''} a month would be passed "
+                               f"({month_amount:,.0f} approved this month, this one {amount:,.0f})"]
+        return True, []
 
     @staticmethod
     def _number(ctx, locator: str | None) -> str:

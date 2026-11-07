@@ -10,7 +10,7 @@ from pathlib import Path
 from . import authz
 from .cogs import CogRegistry
 from .dms import DMS, BlobStore
-from .compile import CompileError, ProposalStore, compile_proposal, decide_change, finalize, readiness
+from .compile import CompileError, ProposalStore, _reviewers, compile_proposal, decide_change, finalize, readiness
 from .extract import get_extractor
 from .frames import FrameStore, bump_version
 from .inbox import Inbox
@@ -43,6 +43,9 @@ class Hub:
         except Exception:
             pass
         self.inbox = Inbox(state / "inbox")
+        from .settings import SettingsDrafts
+
+        self.settings_drafts = SettingsDrafts(state / "settings" / "drafts")
         self.dms = DMS(self.kernel, BlobStore(state / "blobs"))
         self.runner = Runner(state / "runs", self.kernel, self.releases, self.registry, self.inbox, self.dms)
         # Cogs are users who work from a queue: a Gate that pends for a cog, a mention, a message or a task lands in the
@@ -66,11 +69,96 @@ class Hub:
         self._frames = store
 
     # --- policy lifecycle ---------------------------------------------------
+    # --- settings: the rules edited on screen (hubproto.settings) ------------------------------------
+    def settings_source(self, at: str | None = None) -> bool:
+        """True when the release in force came from a settings proposal: settings are then the source of truth."""
+        meta = self.releases.current(at)
+        if not meta or not meta.get("proposal_id"):
+            return False
+        try:
+            return self.proposals.load(meta["proposal_id"]).get("source") == "settings"
+        except Exception:
+            return False
+
+    def settings_rules(self) -> list[dict]:
+        meta = self.releases.current()
+        return self.releases.rules(meta["digest"]) if meta else []
+
+    def settings_draft(self, user: str) -> dict:
+        """The person's working copy of the rules; a fresh copy of the release in force when they have no edits."""
+        meta = self.releases.current()
+        base = meta["digest"] if meta else None
+        d = self.settings_drafts.load(user)
+        if d is None or (d.get("base") != base and not d.get("edits")):
+            d = self.settings_drafts.save(user, {"base": base, "rules": self.settings_rules(), "edits": []})
+        d["stale"] = d.get("base") != base
+        return d
+
+    def settings_edit(self, user: str, edit: dict) -> dict:
+        from .settings import apply_edit
+
+        d = self.settings_draft(user)
+        if d["stale"]:
+            raise ValueError("the policy changed since you started these edits; discard your draft and start again from the policy in force")
+        processes = (self.current_bundle() or {}).get("processes") or {}
+        rules, said = apply_edit(d["rules"], edit, user, processes)
+        d["rules"] = rules
+        d["edits"] = list(d.get("edits") or []) + [{"at": utcnow(), "said": said}]
+        return self.settings_drafts.save(user, {k: v for k, v in d.items() if k != "stale"})
+
+    def settings_discard(self, user: str) -> None:
+        self.settings_drafts.discard(user)
+
+    def _settings_proposal(self, rules: list[dict], base: str | None, by: str, reason: str = "") -> dict:
+        import uuid
+
+        from .guards import consistency_guard, drift_guard, schema_guard
+
+        findings = schema_guard(rules) + consistency_guard(rules, self.registry.ids(), self.kernel.types)
+        old_rules = self.releases.rules(base) if base else []
+        changes = drift_guard(old_rules, rules)
+        for c in changes:
+            c["decisions"] = []
+        meta = self.releases.current() or {}
+        return {"id": uuid.uuid4().hex[:12], "created_at": utcnow(), "extractor": "settings", "source": "settings",
+                "proposed_by": by, "reason": reason, "scopes": [], "frames": meta.get("frames") or [],
+                "config": self.kernel.config_digests, "record_types": self.kernel.types, "clauses": meta.get("clauses") or {},
+                "rules": rules, "notes": [], "findings": [f.as_dict() for f in findings], "changes": changes, "base": base,
+                "reviewers": sorted(_reviewers(old_rules) if old_rules else _reviewers(rules)), "status": "open",
+                "release": None, "overrides": {}}
+
+    def settings_check(self, user: str) -> dict:
+        """What the person's draft would change and what the guards say, without proposing it."""
+        d = self.settings_draft(user)
+        return self._settings_proposal(d["rules"], d["base"], user)
+
+    def settings_propose(self, user: str, reason: str = "") -> dict:
+        """The draft becomes a proposal the policy owners review and release (two owners for widenings)."""
+        d = self.settings_draft(user)
+        if d["stale"]:
+            raise ValueError("the policy changed since you started these edits; discard your draft and start again")
+        p = self._settings_proposal(d["rules"], d["base"], user, reason)
+        if not p["changes"]:
+            raise ValueError("your draft changes nothing")
+        existing = self.proposals.list()
+        p["number"] = 1 + max(len(existing), max((int(x.get("number") or 0) for x in existing), default=0))
+        self.proposals.save(p)
+        self.settings_drafts.discard(user)
+        widen = sum(1 for c in p["changes"] if c.get("widening"))
+        for owner in p["reviewers"]:
+            if owner != user:
+                self.inbox.notify(owner, kind="proposal", subject=f"Settings change #{p['number']} from {user}: {len(p['changes'])} change(s)"
+                                  + (f", {widen} widening(s)" if widen else ""), body=reason or "See the proposal.")
+        return p
+
     def compile(self, scopes: list[str] | None = None, extractor=None, now: str | None = None,
                 overrides: dict[str, str] | None = None, drafts: dict[str, str] | None = None, save: bool = True) -> dict:
         """Compile the Frames into a proposal. ``overrides`` are drafts of Frames (name -> text) compiled in place of the
         files, written only when the proposal is released; ``drafts`` names the draft document of each. Drafts already in
         an open proposal on the same base carry forward, so a recompile never drops someone's pending policy change."""
+        if self.settings_source():
+            raise CompileError("the rules are edited in Settings since the release in force came from there; the Frames are the SOPs "
+                               "people and cogs read. Change a rule in Settings (or with a cog's propose tools), not by compiling the Frames.")
         existing = self.proposals.list() if save else []
         base = (self.releases.current(now) or {}).get("digest")
         carried: dict[str, dict] = {}
