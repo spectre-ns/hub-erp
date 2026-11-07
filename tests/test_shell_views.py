@@ -322,7 +322,7 @@ def test_document_library_has_a_folder_tree_tiles_type_icons_previews_sorting_an
     assert 'href="#new-document">' in toolbar and "New document" in toolbar and 'href="#upload">' in toolbar and "Upload" in toolbar and '<select name="sort"' in toolbar
     tiles = text.split('<div class="tiles">')[1].split("</div></div><h2>")[0]
     assert "ft-md" in tiles and "ft-xlsx" in tiles and ">MD</text>" in tiles and ">X</text>" in tiles
-    assert "<pre aria-hidden='true'># Cleaning" in tiles, "a text preview for markdown"
+    assert "<pre aria-hidden='true'>Cleaning" in tiles, "a text preview for markdown, as words not source (review 2026-11-07, ux-20)"
     assert "Edit online" in tiles and "Download" in tiles and md["number"] in tiles and xlsx["number"] in tiles and "chip" in tiles
     status, text = get(shell, "/files", **{"as": "carol", "folder": "Quality/Controlled Documents", "sort": "name"})
     assert text.index("[views] Cleaning WI") < text.index("[views] Inspection plan")
@@ -365,7 +365,7 @@ def test_a_cog_can_be_watched_but_never_acted_as(shell):
         small = start(shell, "purchase-to-pay", **{k: str(v) for k, v in small_bill(hub).items()})
         assert small["pending"]["assignees"] == ["ap-reviewer"]
         status, text = get(shell, "/inbox")
-        assert "See what ap-reviewer is doing" in text.split("Automatic reviewers")[1]
+        assert "See what ap-reviewer is doing" in text.split("<h2>Cogs</h2>")[1]
         status, text = get(shell, "/inbox", **{"as": "ap-reviewer", "open": small["id"]})
         assert status == 200 and "You are watching <b>ap-reviewer</b>" in text and 'action="/decide"' not in text
         card = text.split("<article class='card decide'")[1].split("</article>")[0]
@@ -398,7 +398,7 @@ def test_palette_and_avatars_meet_contrast_in_both_themes():
         la, lb = lum(a), lum(b)
         return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
 
-    assert LIGHT["accent"] == "#714b67" and LIGHT["top"] == "#714b67", "the Odoo purple"
+    assert LIGHT["top"] == LIGHT["panel"] and LIGHT["accent"] != LIGHT["top"], "a light top bar, one accent"
     assert {k for k, _, _ in CONTRAST_PAIRS} >= {"accent2", "info", "c1", "c6"}, "the teal, the info chip and the chart colours are checked"
     for theme in (LIGHT, DARK):
         for fg, bg, need in CONTRAST_PAIRS:

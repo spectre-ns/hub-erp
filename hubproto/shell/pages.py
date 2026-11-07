@@ -765,7 +765,7 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
                                                                self._rule_html(d["delegating_rule"]) if d.get("delegating_rule") else ""]
                                                               for d in decisions], "No signatures yet.") + "</section>"
         body += self._chatter(rec, run)
-        head = (f'<script src="{MERMAID_URL}"></script><script>if(window.mermaid){{mermaid.initialize({{startOnLoad:true,theme:matchMedia("(prefers-color-scheme: dark)").matches?"dark":"default"}})}}'
+        head = (f'<script src="{MERMAID_URL}"></script><script>if(window.mermaid){{mermaid.initialize({{startOnLoad:true,theme:(document.documentElement.getAttribute("data-theme")==="dark"||(document.documentElement.getAttribute("data-theme")==="auto"&&matchMedia("(prefers-color-scheme: dark)").matches))?"dark":"default"}})}}'
                 f'else{{addEventListener("load",function(){{var d=document.getElementById("wf-diagram");if(d&&!window.mermaid){{d.hidden=true}}}})}}</script>')
         parts = rec["folder"].split("/")
         crumbs = [("Files", href("/files", user))] + [(p, href("/files", user, folder="/".join(parts[: i + 1]))) for i, p in enumerate(parts)]

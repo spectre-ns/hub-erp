@@ -46,6 +46,7 @@ STAY_ROUTES = ("/", "/inbox", "/files", "/documents", "/boards", "/runs", "/rele
 STAY_PREFIXES = ("/record/", "/document/", "/run/", "/frame/", "/release/", "/items/", "/app/", "/user/", "/settings/")
 # The small script: tabs show one panel at a time (every panel is visible without it) and the print button prints.
 SCRIPT = """document.documentElement.classList.add('js');
+addEventListener('click',function(e){var b=e.target.closest&&e.target.closest('[data-theme-toggle]');if(!b)return;var r=document.documentElement;var t=r.getAttribute('data-theme')==='dark'?'light':'dark';r.setAttribute('data-theme',t);try{localStorage.setItem('hub-theme',t)}catch(_){}});
 addEventListener('DOMContentLoaded',function(){var tabs=document.querySelectorAll('.tabs a[data-tab]');
 function show(id){tabs.forEach(function(a){var on=a.getAttribute('data-tab')===id;a.setAttribute('aria-selected',on?'true':'false');
 var p=document.getElementById(a.getAttribute('data-tab'));if(p){p.classList.toggle('active',on)}})}
@@ -518,10 +519,10 @@ class BaseHandler(BaseHTTPRequestHandler):
         launcher = launcher_html(apps, user, href, app["key"] if app else None) if apps and self._is_member() else ""
         appbar = appbar_html(app, user, href, self.route, rt) if app and self._is_member() else ""
         me = (f'<span class="who">{self._avatar(user, size="sm")} {esc(user)}</span>' if user else "")
-        page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+        page = f"""<!doctype html><html lang="en" data-theme="light"><head><meta charset="utf-8"><script>try{{var t=localStorage.getItem("hub-theme");if(t==="dark"||t==="auto")document.documentElement.setAttribute("data-theme",t)}}catch(e){{}}</script><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{esc(full_title)}</title><style>{CSS}</style><script>{SCRIPT}</script>{head}</head>
 <body><a class="skip" href="#main">Skip to content</a><div class="top">{launcher}<a class="brand" href="{href("/", user) if user else "/"}">{icon("home")}Hub</a><ol class="crumb" aria-label="You are here">{crumb}</ol>
-<form method="get" action="{esc(action)}">{keep}{me}<label><span class="who">Acting as</span> <select name="as">{self._identity_options()}</select></label> <button class="secondary">Go</button></form></div>{appbar}
+<form method="get" action="{esc(action)}"><button type="button" class="theme" data-theme-toggle aria-label="Switch between light and dark" title="Light or dark"><span class="i-light">{icon("moon")}</span><span class="i-dark">{icon("sun")}</span></button>{keep}{me}<label><span class="who">Acting as</span> <select name="as">{self._identity_options()}</select></label> <button class="secondary">Go</button></form></div>{appbar}
 <div class="layout">{self._rail()}<main id="main">{status_line}{body}</main></div>{self._messenger() if hasattr(self, "_messenger") else ""}</body></html>"""
         data = page.encode("utf-8")
         if status == 200 and getattr(self, "_force_status", 0):
