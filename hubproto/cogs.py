@@ -686,8 +686,7 @@ def capabilities_text(ctx: RunContext, *, tools_now: list[dict] | None = None) -
     """What the cog can do, told to the cog itself: the tools it can call now (or, in a single reply, the ones it has
     when it works on its own), what it may sign (its approval criteria, quoted) and how people reach it. Generated
     from the tool definitions and the release, so it never claims a tool the cog does not have."""
-    from .agent import ACTION_TOOLS
-    from .tools import TOOLS
+    from .agent import act_specs, look_specs
 
     bundle = ctx.bundle or {}
     profile = ctx.profile
@@ -696,8 +695,8 @@ def capabilities_text(ctx: RunContext, *, tools_now: list[dict] | None = None) -
     mode_words = {"act": "you act on your own through the hub's governed paths",
                   "propose": "your actions are recorded as proposals that a person confirms",
                   "read": "you may only look and report"}.get(mode, "")
-    look = [t for t in TOOLS]
-    act = [t for t in ACTION_TOOLS if mode != "read" or t["name"] == "finish"]
+    look = look_specs()
+    act = act_specs(mode)
     line = lambda t: f"- {t['name']}: {_first_sentence(t['description'])}"
     out = [f"YOUR TOOLS AND WHAT YOU MAY DO (as {cog}; autonomy {mode}: {mode_words})"]
     if tools_now:

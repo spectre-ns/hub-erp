@@ -60,6 +60,28 @@ ACTION_TOOLS = [
 WRITE_TOOLS = {"comment", "message", "start_process", "take_turn", "review_document", "edit_document", "complete_step", "hand_back", "draft_document"}
 AUTONOMY = ("read", "propose", "act")
 
+# More tools plug in here (hubproto/agent_*.py): register(spec, fn, write=...). fn(tools: AgentTools, args) -> dict.
+# A write tool counts against the run's budget and follows the cog's autonomy (proposed in 'propose', refused in 'read');
+# a look tool is free. Tools that change configuration only ever create proposals for the policy owners.
+EXTRA_LOOKS: dict[str, tuple[dict, object]] = {}
+EXTRA_ACTS: dict[str, tuple[dict, object]] = {}
+
+
+def register(spec: dict, fn, *, write: bool) -> None:
+    (EXTRA_ACTS if write else EXTRA_LOOKS)[spec["name"]] = (spec, fn)
+
+
+def look_specs() -> list[dict]:
+    return tool_specs() + [spec for spec, _ in EXTRA_LOOKS.values()]
+
+
+def act_specs(mode: str = "act") -> list[dict]:
+    """The write tools a cog has in a mode ('read' keeps only finish); finish stays last."""
+    if mode == "read":
+        return [t for t in ACTION_TOOLS if t["name"] == "finish"]
+    core = [t for t in ACTION_TOOLS if t["name"] != "finish"]
+    return core + [spec for spec, _ in EXTRA_ACTS.values()] + [t for t in ACTION_TOOLS if t["name"] == "finish"]
+
 
 def agents_enabled() -> bool:
     return (os.environ.get("HUBPROTO_AGENTS") or "on").lower() not in ("off", "0", "false", "no")
@@ -115,7 +137,7 @@ class AgentTools(RecordTools):
 
     def execute(self, name: str, args: dict) -> dict:
         args = args if isinstance(args, dict) else {}
-        write = name in WRITE_TOOLS
+        write = name in WRITE_TOOLS or name in EXTRA_ACTS
         if name == "finish":
             self.finished_summary = str(args.get("summary") or "").strip() or "finished"
             res = {"ok": True}
@@ -132,6 +154,11 @@ class AgentTools(RecordTools):
         elif write:
             self.actions += 1
             res = self.act(name, args)
+        elif name in EXTRA_LOOKS:
+            try:
+                res = EXTRA_LOOKS[name][1](self, args)
+            except Exception as e:
+                res = {"error": f"{type(e).__name__}: {e}"}
         else:
             res = self.call(name, args)
         self.store.append(self.run_id, {"type": "tool", "tool": name, "arguments": args, "write": write, "ok": "error" not in res,
@@ -141,6 +168,11 @@ class AgentTools(RecordTools):
     # --- the governed writes
     def act(self, name: str, a: dict) -> dict:
         hub = self.hub
+        if name in EXTRA_ACTS:
+            try:
+                return EXTRA_ACTS[name][1](self, a)
+            except Exception as e:  # the system refused (permission, state, policy): the agent hears why
+                return {"error": f"{type(e).__name__}: {e}"}
         try:
             if name == "comment":
                 rec = self._find(a.get("number", ""))
@@ -312,7 +344,7 @@ class Agent:
         tools = AgentTools(self.hub, self.cog, run_id, mode, actions, self.store, requester=by)
         from .cogs import cog_context
 
-        specs = tool_specs() + ([t for t in ACTION_TOOLS if t["name"] == "finish"] if mode == "read" else ACTION_TOOLS)
+        specs = look_specs() + act_specs(mode)
         system = cog_context(tools._ctx(None), None, tools_now=specs) + "\n\n" + AGENT_RULES.format(cog=self.cog, goal=goal, mode={
             "act": "act: you may act on your own", "propose": "propose: your actions are recorded as proposals a person confirms",
             "read": "read: you may only look and report"}[mode], actions=actions, rounds=rounds)
@@ -414,3 +446,7 @@ def run_duties(hub, cog: str | None = None, today: str | None = None) -> list[di
         mark_duty(hub, name, duty, today)
         out.append({"cog": name, "duty": duty, **{k: res[k] for k in ("run", "status", "summary", "actions")}})
     return out
+
+
+# The further tool groups register themselves on import.
+from . import agent_records, agent_docs, agent_config  # noqa: E402,F401
