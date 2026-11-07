@@ -1,4 +1,215 @@
 """Configuration tools for cogs: every change becomes a proposal the policy owners approve (a Frame draft,
-a cog's model, a new member). Filled in by its own change."""
+a cog's model, a new member). A cog never changes configuration directly: it drafts, the hub compiles, and the
+policy owners review and release through the same paths people use (two owners for anything that widens)."""
 
 from __future__ import annotations
+
+from .agent import register
+from .compile import change_state
+from .frames import FrameError
+
+_OWNERS_DECIDE = ("Nothing changes until the policy owners review and release it (two owners for anything that widens what "
+                  "someone may do); you never change configuration yourself.")
+
+
+def _rule_frame(change: dict) -> str:
+    return ((change.get("rule") or {}).get("source") or {}).get("frame", "")
+
+
+def _summary(proposal: dict, frames: set[str] | None = None) -> dict:
+    """What a proposal holds, as a cog should hear it: its number, changes (and widenings), errors and reviewers."""
+    changes = [c for c in proposal.get("changes") or [] if frames is None or _rule_frame(c) in frames or not _rule_frame(c)]
+    errors = [f"{f.get('detail')} ({f.get('frame')}:{f.get('line')})" for f in proposal.get("findings") or [] if f.get("severity") == "error"]
+    return {"proposal": proposal.get("number"), "proposal_id": proposal.get("id"), "status": proposal.get("status"),
+            "changes": len(changes), "change_list": [c["reason"] for c in changes][:20],
+            "widenings": [c["reason"] for c in changes if c.get("widening")],
+            "errors": errors, "blocked": bool(errors), "reviewers": proposal.get("reviewers") or [],
+            "note": (("The release is blocked until these errors are fixed: reword the policy and propose again (your draft carries "
+                      "forward), or a policy owner withdraws the draft. ") if errors else "") + _OWNERS_DECIDE}
+
+
+def _notify_owners(tools, proposal: dict, subject: str, body: str, record: str | None = None) -> None:
+    for owner in proposal.get("reviewers") or []:
+        tools.hub.inbox.notify(owner, kind="policy-proposal", subject=subject, body=body, record=record)
+
+
+# ---------------------------------------------------------------- propose_policy_change
+def _frontmatter(text: str) -> str:
+    """The '---' block at the top of a Frame, with its closing line."""
+    if not text.startswith("---"):
+        return ""
+    end = text.find("\n---", 3)
+    if end < 0:
+        return ""
+    nl = text.find("\n", end + 4)
+    return text[: nl + 1] if nl >= 0 else text + "\n"
+
+
+def propose_policy_change(tools, a: dict) -> dict:
+    from . import edits
+
+    hub = tools.hub
+    name = str(a.get("frame") or "").strip()
+    reason = str(a.get("reason") or "").strip()
+    try:
+        frame = hub.frames.get(name)
+    except FrameError:
+        return {"error": f"there is no policy Frame {name!r}; the Frames are: {', '.join(sorted(hub.frames.frames))}"}
+    if not reason:
+        return {"error": "say why the policy should change (reason): the policy owners read it"}
+    draft = hub.frame_draft(name, by=tools.cog)
+    current = hub.draft_text(draft)
+    report: list[dict] = []
+    if a.get("text"):
+        new_text = str(a["text"])
+        if not new_text.lstrip().startswith("---"):  # a body without its header keeps the Frame's header
+            new_text = _frontmatter(current) + new_text.lstrip("\n")
+        if not new_text.endswith("\n"):
+            new_text += "\n"
+        report.append({"op": "rewrite the Frame", "ok": True, "detail": f"{len(new_text.splitlines())} line(s)"})
+    else:
+        ops = a.get("ops")
+        ops = edits.parse_ops(ops) if isinstance(ops, str) else list(ops or [])
+        ops = [o for o in ops if isinstance(o, dict) and o.get("op") not in (None, "unknown")]
+        if not ops:
+            return {"error": "give the change as edit operations (ops, in the '@@' language) or as the full new text (text)"}
+        new, report = edits.apply_ops(current.encode("utf-8"), "md", ops)
+        if new is None:
+            return {"error": "the operations changed nothing in the Frame: " + "; ".join(f"{r['op']} ({r['detail']})" for r in report)}
+        new_text = new.decode("utf-8")
+    if new_text == current:
+        return {"error": "the new text is the same as the draft; nothing to propose"}
+    hub.dms.add_version(draft["locator"], new_text.encode("utf-8"), by=tools.cog, filename=frame.path.name, mime="text/markdown",
+                        note=f"proposed by {tools.cog}: {reason[:200]}")
+    try:
+        proposal = hub.compile(overrides={name: new_text}, drafts={name: draft["locator"]})
+    except FrameError as e:
+        return {"error": f"the changed text is not a readable Frame: {e}"}
+    out = _summary(proposal, {name})
+    out.update({"ok": True, "frame": name, "draft": draft["number"], "operations": report})
+    _notify_owners(tools, proposal, f"{tools.cog} proposes a change to {name}: proposal #{proposal.get('number')}",
+                   f"Reason: {reason}\n" + (f"Widenings: {'; '.join(out['widenings'])}\n" if out["widenings"] else "")
+                   + (f"Errors block the release: {'; '.join(out['errors'])}\n" if out["errors"] else "")
+                   + f"Draft {draft['number']}; review it on proposal #{proposal.get('number')}.", record=draft["locator"])
+    return out
+
+
+# ---------------------------------------------------------------- propose_cog_model
+def propose_cog_model(tools, a: dict) -> dict:
+    from .model import resolve_model
+
+    hub = tools.hub
+    cog = str(a.get("cog") or tools.cog).strip()
+    model = str(a.get("model") or "").strip()
+    reason = str(a.get("reason") or "").strip()
+    profile = (tools.bundle.get("cogs") or {}).get(cog)
+    if (tools.bundle.get("members") or {}).get(cog, {}).get("type") != "cog" or profile is None:
+        return {"error": f"{cog!r} is not a cog with a profile in the policy in force"}
+    if not model:
+        return {"error": "name the model (e.g. ollama/qwen3:14b)"}
+    if model == (profile.get("model") or ""):
+        return {"error": f"{cog} already uses {model}"}
+    res = resolve_model(model)
+    if not res["available"]:
+        return {"error": f"{model} cannot be used here: {res['note']}; a cog is bundled with its model, so it would be unavailable"}
+    try:
+        proposal = hub.propose_cog_model(cog, model, by=tools.cog)
+    except (ValueError, FrameError) as e:
+        return {"error": str(e)}
+    out = _summary(proposal)
+    out.update({"ok": True, "cog": cog, "model": model, "served_by": res["served"]})
+    _notify_owners(tools, proposal, f"{tools.cog} proposes {model} for {cog}: proposal #{proposal.get('number')}",
+                   (f"Reason: {reason}\n" if reason else "") + f"{cog} uses {profile.get('model') or 'no model'} now.")
+    return out
+
+
+# ---------------------------------------------------------------- propose_member
+def _names(v) -> list[str]:
+    return [str(x).strip() for x in (v.split(",") if isinstance(v, str) else (v or [])) if str(x).strip()]
+
+
+def propose_member(tools, a: dict) -> dict:
+    hub = tools.hub
+    kind = str(a.get("kind") or "person").strip().lower()
+    if kind not in ("person", "cog"):
+        return {"error": "kind is person or cog"}
+    roles = _names(a.get("roles"))
+    known = set(tools.bundle.get("roles") or [])
+    unknown = [r for r in roles if r not in known]
+    if not roles:
+        return {"error": "give at least one role; the roles are: " + ", ".join(sorted(known))}
+    if unknown:
+        return {"error": f"no such role: {', '.join(unknown)}; the roles are: {', '.join(sorted(known))}"}
+    reason = str(a.get("reason") or "").strip()
+    name = str(a.get("name") or "").strip().lower()
+    try:
+        if kind == "person":
+            proposal = hub.propose_new_person(name=name, roles=roles, by=tools.cog)
+        else:
+            duties = a.get("duties") or []
+            duties = [duties] if isinstance(duties, str) else list(duties)
+            model = str(a.get("model") or "").strip()
+            if model:
+                from .model import resolve_model
+
+                res = resolve_model(model)
+                if not res["available"]:
+                    return {"error": f"{model} cannot be used here: {res['note']}"}
+            proposal = hub.propose_new_cog(name=name, roles=roles, model=model, prompt=str(a.get("prompt") or ""),
+                                           follows=_names(a.get("follows")), autonomy=str(a.get("autonomy") or "propose"),
+                                           duties=duties, by=tools.cog)
+    except (ValueError, FrameError) as e:
+        return {"error": str(e)}
+    out = _summary(proposal)
+    out.update({"ok": True, "kind": kind, "name": name, "roles": roles})
+    _notify_owners(tools, proposal, f"{tools.cog} proposes a new {kind}, {name}: proposal #{proposal.get('number')}",
+                   (f"Reason: {reason}\n" if reason else "") + f"Roles: {', '.join(roles)}.")
+    return out
+
+
+# ---------------------------------------------------------------- list_proposals
+def list_proposals(tools, a: dict) -> dict:
+    out = []
+    for p in tools.hub.proposals.list():
+        if p.get("status") != "open":
+            continue
+        changes = p.get("changes") or []
+        out.append({"proposal": p.get("number"), "proposal_id": p.get("id"), "created": p.get("created_at"),
+                    "frames": sorted((p.get("overrides") or {}).keys()), "changes": len(changes),
+                    "widenings": sum(1 for c in changes if c.get("widening")),
+                    "decisions": sum(len(c.get("decisions") or []) for c in changes),
+                    "errors": sum(1 for f in p.get("findings") or [] if f.get("severity") == "error"),
+                    "still_need_decisions": [c["id"] for c in changes if change_state(c) == "pending"][:30],
+                    "reviewers": p.get("reviewers") or []})
+    return {"open": out, "count": len(out), "note": "Only the policy owners decide and release proposals."}
+
+
+register({"name": "propose_policy_change",
+          "description": "Propose a change to a policy Frame (an SOP or policy) as a draft the policy owners review. Give the change as edit "
+                         "operations in the '@@' language (ops) or the full new text (text), and the reason. The hub compiles it into a "
+                         "proposal and tells you its changes, widenings and any errors. " + _OWNERS_DECIDE,
+          "parameters": {"type": "object", "properties": {
+              "frame": {"type": "string", "description": "the Frame's name, e.g. finance-policy or document-control-sop"},
+              "ops": {"type": "string", "description": "edit operations, e.g. '@@ replace: 10,000 USD\\n@@ with: 15,000 USD'"},
+              "text": {"type": "string", "description": "the whole new text (instead of ops)"},
+              "reason": {"type": "string"}}, "required": ["frame", "reason"]}},
+         propose_policy_change, write=True)
+register({"name": "propose_cog_model",
+          "description": "Propose that a cog use a different model, as a policy proposal. The model must be one this hub can reach. " + _OWNERS_DECIDE,
+          "parameters": {"type": "object", "properties": {"cog": {"type": "string", "description": "the cog (default: you)"},
+                                                         "model": {"type": "string"}, "reason": {"type": "string"}}, "required": ["model"]}},
+         propose_cog_model, write=True)
+register({"name": "propose_member",
+          "description": "Propose a new person or cog for the organization, with its roles (and for a cog its model, prompt, SOPs it follows "
+                         "and autonomy), as a policy proposal. " + _OWNERS_DECIDE,
+          "parameters": {"type": "object", "properties": {
+              "kind": {"type": "string", "enum": ["person", "cog"]}, "name": {"type": "string"},
+              "roles": {"type": "array", "items": {"type": "string"}}, "model": {"type": "string"}, "prompt": {"type": "string"},
+              "follows": {"type": "array", "items": {"type": "string"}}, "autonomy": {"type": "string", "enum": ["read", "propose", "act"]},
+              "duties": {"type": "array", "items": {"type": "string"}}, "reason": {"type": "string"}}, "required": ["kind", "name", "roles"]}},
+         propose_member, write=True)
+register({"name": "list_proposals",
+          "description": "List the open policy proposals: their changes, widenings, errors, decisions so far and what still needs a decision. "
+                         "Only the policy owners decide and release them.",
+          "parameters": {"type": "object", "properties": {}}},
+         list_proposals, write=False)
