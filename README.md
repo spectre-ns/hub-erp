@@ -115,6 +115,27 @@ tries). A failed task tells the person who asked why. The person who asked, or a
 task still waiting. Each cog's profile shows its queue (working on, waiting with positions, recently finished);
 `/queue` shows every cog's queue on one page, and People shows each cog as free or working.
 
+### The QA manager cog, judgment approvals and assigning work to cogs
+
+`qa-manager` is a cog that works like a QA manager. It holds the quality-manager, reviewer and author roles and
+follows the document-control, change-control, NCR and CAPA procedures. It is not on any route, so people stay
+first in line. It acts when it is asked:
+
+* **Approving.** "@qa-manager please approve" on an item waiting for people (or `take_turn` in an agent run)
+  makes it step in where its approval criteria allow. Its criteria are judgment criteria: `when its review passes`
+  makes its model review the item against its procedures and files the review as evidence. In the document-control
+  SOP, a minor change is final on its signature. A major change, and any change request, is
+  `countersigned by a quality manager`: its signature is recorded and the Gate then waits for a quality manager
+  (a person who did not prepare the item). If its review does not pass, the item stays with the people it was
+  waiting for. Removing a countersignature from a criterion is a widening, which needs two policy owners.
+* **Drafting.** Its `draft_document` tool creates a controlled document with itself as author, written in the
+  writing markup, and can send it for approval. Segregation of duties means it never signs its own drafts.
+* **Assigned work.** Any item can be assigned to a cog from **Assign** on its page, with an instruction. The cog
+  takes it from its queue, works it within its autonomy (looking things up, commenting, reviewing, drafting,
+  stepping in to approve) and reports on the chatter. A task filed with a cog as its assignee is the cog's own
+  step: it completes it with a summary (`complete_step`) or hands it back to whoever filed it with why
+  (`hand_back`). If it does neither, the step goes back to a person automatically.
+
 ## Cog profiles, @mentions, committees and swarms
 
 Each cog has a profile in a Frame (`frames/company/cogs.frame.md`): a `## Cog: <name>` section with

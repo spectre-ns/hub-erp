@@ -3,7 +3,7 @@ type: frame [0.2]
 name: change-control-sop
 description: "Planning and control of changes: any member of staff raises a change request with its impact, the quality manager approves it, and the requester verifies the change was carried out as planned."
 visibility: internal
-version: "0.1.0"
+version: "0.2.0"
 scope: department
 maintainer: carol
 inherits: org-model
@@ -32,6 +32,9 @@ Approvals in change-control go to the quality manager.
 At Verify the change in change-control go to the requester.
 Approve the change in change-control is due within 10 days.
 Overdue items in change-control go to the management representative.
+
+## Approval criteria
+The qa-manager cog may approve change-control change-requests when its review passes, countersigned by a quality manager.
 
 ## Process: change-control
 Records are filed in Quality/Changes.

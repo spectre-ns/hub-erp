@@ -35,8 +35,20 @@ ACTION_TOOLS = [
                                              "with new `fields`. The system checks you may start it; its Gates still decide.",
      "parameters": {"type": "object", "properties": {"process": {"type": "string"}, "number": {"type": "string"},
                                                     "fields": {"type": "object", "description": "the new record's fields, e.g. title, description"}}, "required": ["process"]}},
-    {"name": "take_turn", "description": "Take your turn on an item waiting for you at a Gate: you approve within your fixed criteria or decline it to the next person.",
+    {"name": "take_turn", "description": "Take your turn at an item's approval: one waiting for you, or one waiting for people that your approval criteria "
+                                         "let you sign when asked. You approve within your criteria (judgment criteria run your review first) or decline.",
      "parameters": {"type": "object", "properties": {"number": {"type": "string"}}, "required": ["number"]}},
+    {"name": "complete_step", "description": "Complete a step assigned to you (e.g. a task filed for you) once the work is done; `summary` says what you did.",
+     "parameters": {"type": "object", "properties": {"number": {"type": "string"}, "summary": {"type": "string"}}, "required": ["number", "summary"]}},
+    {"name": "hand_back", "description": "Give a step assigned to you back to the person who filed it, saying why you cannot do it.",
+     "parameters": {"type": "object", "properties": {"number": {"type": "string"}, "reason": {"type": "string"}}, "required": ["number", "reason"]}},
+    {"name": "draft_document", "description": "Draft a new controlled document (a procedure, work instruction, form) as yourself, its author. `text` is the "
+                                              "content in the writing markup (# headings, - bullets, | tables |). With submit=true it is sent for approval "
+                                              "(document-control); you can never approve your own draft.",
+     "parameters": {"type": "object", "properties": {"title": {"type": "string"}, "text": {"type": "string"},
+                                                    "change_type": {"type": "string", "enum": ["minor", "major"]},
+                                                    "folder": {"type": "string", "description": "default Quality/Controlled Documents"},
+                                                    "submit": {"type": "boolean"}}, "required": ["title", "text"]}},
     {"name": "review_document", "description": "Review a record or document against the procedures you follow; the review is filed as evidence on it.",
      "parameters": {"type": "object", "properties": {"number": {"type": "string"}, "question": {"type": "string"}}, "required": ["number"]}},
     {"name": "edit_document", "description": "Write into a working document (not one in force): `request` says what to write; the result is a new version.",
@@ -44,7 +56,7 @@ ACTION_TOOLS = [
     {"name": "finish", "description": "End the run with a short summary of what you did and what you left for people.",
      "parameters": {"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}},
 ]
-WRITE_TOOLS = {"comment", "message", "start_process", "take_turn", "review_document", "edit_document"}
+WRITE_TOOLS = {"comment", "message", "start_process", "take_turn", "review_document", "edit_document", "complete_step", "hand_back", "draft_document"}
 AUTONOMY = ("read", "propose", "act")
 
 
@@ -158,11 +170,29 @@ class AgentTools(RecordTools):
             if name == "take_turn":
                 rec = self._find(a.get("number", ""))
                 run = hub.runner.run_for_record(rec["locator"]) if rec else None
-                if not run or run["status"] != "waiting" or self.cog not in (run.get("pending") or {}).get("assignees", []):
-                    return {"error": f"{a.get('number')} is not waiting for {self.cog}"}
-                after = hub.runner.cog_decide(run["id"], self.cog)
-                last = next((e for e in reversed(hub.runner.track(run["id"])) if e["type"] in ("gate.decided", "gate.declined")), {})
-                return {"ok": True, "outcome": last.get("type", "").split(".")[-1], "status": after["status"], "reasons": last.get("reasons")}
+                if not run or run["status"] != "waiting":
+                    return {"error": f"{a.get('number')} is not waiting at an approval"}
+                if hub.runner.is_assigned_work(run, self.cog):
+                    return {"error": f"{a.get('number')} is assigned to you as work: use complete_step or hand_back"}
+                if self.cog in (run.get("pending") or {}).get("assignees", []):
+                    after = hub.runner.cog_decide(run["id"], self.cog)
+                else:  # waiting for people: the cog signs only where its criteria let it when asked
+                    after = hub.runner.cog_step_in(run["id"], self.cog, asked_by=self.requester or self.cog)
+                last = next((e for e in reversed(hub.runner.track(run["id"])) if e["type"] in ("gate.decided", "gate.declined", "gate.signed")), {})
+                return {"ok": True, "outcome": last.get("type", "").split(".")[-1], "status": after["status"], "reasons": last.get("reasons"),
+                        "waiting_for": (after.get("pending") or {}).get("assignees")}
+            if name in ("complete_step", "hand_back"):
+                rec = self._find(a.get("number", ""))
+                run = hub.runner.run_for_record(rec["locator"]) if rec else None
+                if not run or not hub.runner.is_assigned_work(run, self.cog):
+                    return {"error": f"{a.get('number')} has no step assigned to {self.cog}"}
+                if name == "complete_step":
+                    after = hub.runner.cog_complete(run["id"], self.cog, str(a.get("summary") or ""))
+                else:
+                    after = hub.runner.hand_back(run["id"], self.cog, str(a.get("reason") or "no reason given"))
+                return {"ok": True, "status": after["status"], "waiting_for": (after.get("pending") or {}).get("assignees")}
+            if name == "draft_document":
+                return self._draft_document(a)
             if name == "review_document":
                 rec = self._find(a.get("number", ""))
                 if rec is None:
@@ -195,6 +225,35 @@ class AgentTools(RecordTools):
         except Exception as e:  # the system refused (permission, criteria, state): the agent hears why
             return {"error": f"{type(e).__name__}: {e}"}
         return {"error": f"no action {name!r}"}
+
+    def _draft_document(self, a: dict) -> dict:
+        from . import authz, office, wopi as _wopi
+
+        hub = self.hub
+        title = str(a.get("title") or "").strip()
+        if not title:
+            return {"error": "a document needs a title"}
+        folder = str(a.get("folder") or "Quality/Controlled Documents")
+        allowed = authz.check(self.bundle, self.cog, "create", "document", folder)
+        if not allowed["allowed"]:
+            return {"error": allowed["why"]}
+        change_type = a.get("change_type") if a.get("change_type") in ("minor", "major") else "major"
+        lines = [ln for ln in str(a.get("text") or "").splitlines()]
+        if not any(ln.strip() for ln in lines):
+            return {"error": "the draft has no text"}
+        if not lines[0].lstrip().startswith("# "):  # the title is the level-1 heading unless the text has one
+            lines = [f"# {title}", ""] + lines
+        blank, mime = _wopi.blank_document("docx")
+        content = office.insert_paragraphs(blank, "docx", lines, "replace") or office.insert_paragraphs(blank, "docx", lines, "start")
+        doc = hub.dms.create(title=title, doc_class="controlled", folder=folder, by=self.cog, content=content, filename=f"{title}.docx", mime=mime,
+                             doc_type="sop", fields={"change_type": change_type, "drafted_by_run": self.run_id})
+        out = {"ok": True, "document": doc["number"], "state": doc["state"], "change_type": change_type}
+        if a.get("submit"):
+            run_id = hub.runner.submit("document-control", {"record": {"title": title, "change_type": change_type}}, owner=self.cog,
+                                       record=doc["locator"])
+            state = hub.runner.load(run_id)
+            out.update({"submitted": True, "status": state["status"], "waiting_for": (state.get("pending") or {}).get("assignees")})
+        return out
 
     def _ctx(self, rec: dict | None):
         from .cogs import RunContext

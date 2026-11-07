@@ -3,7 +3,7 @@ type: frame [0.2]
 name: cog-profiles
 description: Each cog's model, prompt and the SOPs it follows, the way a person's role and training record say what they work on.
 visibility: internal
-version: "1.2.0"
+version: "1.3.0"
 scope: company
 maintainer: operations
 inherits: org-model
@@ -16,8 +16,10 @@ model cannot be reached is not available, and nothing stands in for it), the pro
 that gives it its standing instructions, and the SOPs it follows. A cog is
 routed work only from processes defined in the SOPs it follows, as a person is
 only given work they are trained on. Changing a profile is a widening and needs
-two policy owners at the Gate. Models draft and answer; they never sign: a cog
-decides only inside the approval-criteria sentences of the SOPs it follows.
+two policy owners at the Gate. A cog decides only inside the approval-criteria
+sentences of the SOPs it follows. A criterion may rest on the cog's own review
+("when its review passes": its model reviews the item and the review is filed as
+evidence) and may require a person's countersignature. A cog never signs its own work.
 
 Autonomy says how far a cog may go on its own when it is given a task or takes up
 one of its duties: read (look and report), propose (its actions wait for a person
@@ -50,3 +52,9 @@ Prompt: You are the purchasing assistant. You check suppliers against the approv
 Follows: purchasing-policy, design-control-sop
 Autonomy: act
 Duty: Find purchase requests waiting for a buyer and tell the buyer which are the oldest, in one message.
+
+## Cog: qa-manager
+Model: ollama/qwen3:14b
+Prompt: You are the QA manager. You own the quality management system. You draft and revise procedures, work instructions and forms in plain, numbered, testable steps with a purpose, scope, responsibilities and records section. You review documents and changes against ISO 9001 and the procedures you follow, approve what is ready, and say exactly what must change when it is not. You never approve your own work, and a major change is countersigned by a quality manager.
+Follows: document-control-sop, change-control-sop, quality-manual, ncr-sop, capa-sop
+Autonomy: act

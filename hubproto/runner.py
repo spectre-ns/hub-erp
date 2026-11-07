@@ -408,11 +408,12 @@ class Runner:
             people = self._eligible(state, bundle, step, rule, payload, record, track)
             if not people:
                 continue
-            is_cog = rule["assignee"].startswith("cog:")
+            # A route to a cog, or a field naming one (a task assigned to a cog): the cog takes it from its queue.
+            is_cog = rule["assignee"].startswith("cog:") or all((bundle["members"].get(p) or {}).get("type") == "cog" for p in people)
             sla = state["workflow"].get("sla", {}).get(checkpoint)
             due = (date.today() + timedelta(days=int(sla))).isoformat() if sla and not is_cog else None
             state["pending"] = {"kind": "decision", "step": step["id"], "checkpoint": checkpoint, "assignees": people,
-                                "assignee_type": "cog" if is_cog else "person", "route_rule": rule["source"],
+                                "assignee_type": "cog" if is_cog else "person", "route_rule": rule["source"], "route": rule["assignee"],
                                 "payload_digest": sha256_of(payload), "title": gate.get("title", "Approve"), "due": due,
                                 "remaining": remaining, "routing_ctx": rctx}
             track.append({"type": "gate.pending", "run_id": state["id"], "step": step["id"], "assignees": people,
@@ -479,10 +480,12 @@ class Runner:
                       "cog_version": cog.version, "verdict": verdict, "reasons": reasons,
                       "route_rule": pending["route_rule"], "delegating_rule": rp.get("delegating_rule")})
         if verdict in ("approve", "reject"):
-            meaning = f"{verdict}d within fixed criteria: " + "; ".join(reasons) if reasons else f"{verdict}d within fixed criteria"
+            basis = "on its review, under its approval criteria" if rp.get("judged") else "within fixed criteria"
+            meaning = f"{verdict}d {basis}: " + "; ".join(reasons) if reasons else f"{verdict}d {basis}"
             try:
                 return self.decide(run_id, cog_name, verdict, meaning=meaning, payload_digest=self.seen_digest(state),
-                                   delegating_rule=rp.get("delegating_rule"))
+                                   delegating_rule=rp.get("delegating_rule"), countersign=rp.get("countersign"),
+                                   evidence=rp.get("evidence"))
             except RunError as e:
                 reasons = [str(e)]
         return self._decline(run_id, cog_name, reasons)
@@ -494,6 +497,16 @@ class Runner:
         step = next(s for s in state["manifest"]["steps"] if s["id"] == pending["step"])
         track = Track(self._dir(state["id"]))
         track.append({"type": "gate.declined", "run_id": state["id"], "step": step["id"], "by": cog_name, "reasons": reasons})
+        if pending.get("stepped_in_from"):
+            # It stepped in when asked and could not sign: the item stays with the people it was waiting for.
+            state["pending"] = pending["stepped_in_from"]
+            track.append({"type": "gate.pending", "run_id": state["id"], "step": step["id"], "assignees": state["pending"].get("assignees"),
+                          "assignee_type": state["pending"].get("assignee_type"), "route_rule": state["pending"].get("route_rule"),
+                          "payload_digest": state["pending"].get("payload_digest"), "back_from": cog_name})
+            self._save(state)
+            if state.get("record"):
+                self.kernel.assign(state["record"], list(state["pending"].get("assignees") or []), by=cog_name, run_id=state["id"], release=state["release"])
+            return self.load(run_id)
         env = state["steps"].get(step["id"], {}).get("envelope") or {}
         outcome = self._pend_next(state, bundle, step, env.get("payload") or {}, pending.get("routing_ctx") or {}, track,
                                   list(pending.get("remaining") or []))
@@ -502,6 +515,92 @@ class Runner:
         self._save(state)
         if outcome == "waiting" and (state.get("pending") or {}).get("assignee_type") == "cog" and cog_name not in state["pending"].get("assignees", []):
             return self.give_to_cog(self.load(run_id))
+        return self.load(run_id)
+
+    # ------------------------------------------------------------ a cog asked to sign, or given the work
+    def may_step_in(self, state: dict, cog_name: str) -> str:
+        """Empty when the cog may take this Gate when asked (it has approval criteria for the process, may approve the
+        object, follows the SOP, is available and did not prepare the item); otherwise why not."""
+        pending = state.get("pending") or {}
+        if state["status"] != "waiting" or pending.get("kind", "decision") != "decision":
+            return f"it is not waiting for a decision (it is {state['status']})"
+        bundle = self.releases.bundle(state["release"])
+        if (bundle["members"].get(cog_name) or {}).get("type") != "cog" or cog_name not in self.registry.ids():
+            return f"{cog_name} is not a cog of the organization"
+        from .routing import criteria_for
+
+        if not criteria_for(bundle, f"cog:{cog_name}", state["process"]):
+            return f"no approval criteria let {cog_name} sign {state['process']} items"
+        allowed = authz.check(bundle, cog_name, "approve", state["manifest"]["object"], state["manifest"]["folder"])
+        if not allowed["allowed"]:
+            return allowed["why"]
+        if self._sod_applies(bundle, state) and cog_name == authz.principal_name(state["owner"]):
+            return f"segregation of duties: {cog_name} prepared this item"
+        rec = self.kernel.get(state["record"]) if state.get("record") else None
+        if rec and self._sod_applies(bundle, state) and cog_name in (rec["fields"].get("author"), rec.get("created_by")):
+            return f"segregation of duties: {cog_name} wrote this item"
+        why = self.cog_follows(bundle, cog_name, state["process"])
+        if why:
+            return why
+        from .model import cog_availability
+
+        ok, why = cog_availability(bundle, cog_name)
+        return "" if ok else why
+
+    def cog_step_in(self, run_id: str, cog_name: str, asked_by: str) -> dict:
+        """Someone asked a cog to approve an item waiting for people: where the policy lets the cog sign it, the cog takes
+        the Gate for this turn. If it cannot sign (its criteria or its review say no), the item goes back to the people."""
+        state = self.load(run_id)
+        if cog_name in ((state.get("pending") or {}).get("assignees") or []):
+            return self.cog_decide(run_id, cog_name)
+        why = self.may_step_in(state, cog_name)
+        if why:
+            raise RunError(why)
+        before = {k: v for k, v in state["pending"].items() if k != "stepped_in_from"}
+        state["pending"] = {**before, "assignees": [cog_name], "assignee_type": "cog", "stepped_in_from": before, "asked_by": asked_by}
+        Track(self._dir(state["id"])).append({"type": "gate.stepped_in", "run_id": state["id"], "step": before["step"], "cog": cog_name,
+                                              "asked_by": asked_by, "was_waiting_for": before.get("assignees")})
+        self._save(state)
+        return self.cog_decide(run_id, cog_name)
+
+    @staticmethod
+    def is_assigned_work(state: dict, cog_name: str) -> bool:
+        """The item waits for the cog because it was assigned the step (a field or a name), not routed to it to approve."""
+        pending = state.get("pending") or {}
+        return (state["status"] == "waiting" and cog_name in (pending.get("assignees") or [])
+                and not str(pending.get("route") or "cog:").startswith("cog:") and not pending.get("stepped_in_from"))
+
+    def cog_complete(self, run_id: str, cog_name: str, summary: str) -> dict:
+        """A cog finishes a step it was assigned (complete the task, do the work): its summary is the signature's meaning."""
+        state = self.load(run_id)
+        if not self.is_assigned_work(state, cog_name):
+            raise RunError(f"run {run_id} is not waiting for {cog_name} to do assigned work")
+        return self.decide(run_id, cog_name, "approve", meaning=f"completed: {summary.strip() or 'done'}", payload_digest=self.seen_digest(state))
+
+    def hand_back(self, run_id: str, cog_name: str, reason: str) -> dict:
+        """A cog gives assigned work back: the step now waits for the person who filed the item, with the cog's reason."""
+        state = self.load(run_id)
+        pending = state.get("pending") or {}
+        if state["status"] != "waiting" or cog_name not in (pending.get("assignees") or []):
+            raise RunError(f"run {run_id} is not waiting for {cog_name}")
+        bundle = self.releases.bundle(state["release"])
+        owner = authz.principal_name(state["owner"])
+        to = owner if (bundle["members"].get(owner) or {}).get("type") == "person" else None
+        if to is None:
+            rec = self.kernel.get(state["record"]) if state.get("record") else None
+            by = (rec or {}).get("created_by")
+            to = by if (bundle["members"].get(by) or {}).get("type") == "person" else None
+        if to is None:
+            raise RunError("there is no person to hand it back to")
+        track = Track(self._dir(state["id"]))
+        track.append({"type": "gate.handed_back", "run_id": state["id"], "step": pending["step"], "by": cog_name, "to": to, "reason": reason})
+        state["pending"] = {**{k: v for k, v in pending.items() if k != "stepped_in_from"}, "assignees": [to], "assignee_type": "person",
+                            "route": f"person:{to}", "handed_back_by": cog_name}
+        self._save(state)
+        if state.get("record"):
+            self.kernel.assign(state["record"], [to], by=cog_name, run_id=state["id"], release=state["release"])
+        self._notify([to], kind="handed-back", subject=f"{cog_name} handed back {pending.get('title', 'the item')}: {state.get('record') or state['process']}",
+                     body=reason, run_id=state["id"])
         return self.load(run_id)
 
     def cog_users_work(self, run_id: str | None = None, cogs: list[str] | None = None) -> list[dict]:
@@ -672,7 +771,7 @@ class Runner:
         return [f for f in td.get("required_by_state", {}).get(first, []) if f not in skip]
 
     def decide(self, run_id: str, by: str, verdict: str, meaning: str = "", payload_digest: str | None = None,
-               fields: dict | None = None, delegating_rule=None) -> dict:
+               fields: dict | None = None, delegating_rule=None, countersign: str | None = None, evidence: str | None = None) -> dict:
         state, pending = self._load_waiting(run_id, by, "decision")
         by = authz.principal_name(by)
         bundle0 = self.releases.bundle(state["release"])
@@ -722,11 +821,18 @@ class Runner:
                     hook(self.kernel, rec, verdict)
                 except KernelGuardError as e:
                     raise RunError(str(e)) from None
-        if by_type == "cog":
+        if by_type == "cog" and verdict == "approve" and countersign:
+            return self._await_countersign(state, pending, step, track, bundle, by, meaning.strip(), countersign, delegating_rule, evidence)
+        if pending.get("countersign_of"):
+            meaning = f"{meaning.strip()} (countersigning {pending['countersign_of']})"
+        if by_type == "cog" and self.is_assigned_work(state, by):
+            self._notify([state["owner"]], kind="cog-done", subject=f"{by} finished {pending.get('title', 'the step')} on {state.get('record') or state['process']}",
+                         body=meaning.strip(), run_id=state["id"])
+        elif by_type == "cog":
             rule = pending.get("route_rule") or {}
             self._notify([state["owner"]], kind="auto-decided",
                          subject=f"{pending.get('title', 'Approval')} on {state.get('record') or state['process']}: {verdict}d automatically by {by}",
-                         body=f"The {by} cog {verdict}d this within the fixed criteria in {rule.get('frame')} line {rule.get('line')}. "
+                         body=f"The {by} cog {verdict}d this under the approval criteria in {rule.get('frame')} line {rule.get('line')}. "
                               f"{meaning.strip()}. No person reviewed it; the criteria and the reasons are on the run page.", run_id=state["id"])
         self._record_decision(state, step, track, by=by, by_type=by_type, verdict=verdict,
                               meaning=meaning.strip(), payload_digest=pending["payload_digest"], meaning_given=True,
@@ -737,6 +843,44 @@ class Runner:
         if hook:
             hook(self.kernel, self.kernel.get(rec["locator"]), verdict)
         return result
+
+    def _await_countersign(self, state: dict, pending: dict, step: dict, track: Track, bundle: dict, by: str, meaning: str,
+                           role: str, delegating_rule, evidence: str | None) -> dict:
+        """The cog signed, and its criteria ask a person to countersign: its signature is recorded and the Gate now waits
+        for the people holding the countersigning role (never the item's preparer, never a cog)."""
+        obj, folder = state["manifest"]["object"], state["manifest"]["folder"]
+        owner = authz.principal_name(state["owner"])
+        rec = self.kernel.get(state["record"]) if state.get("record") else None
+        author = (rec or {}).get("fields", {}).get("author")
+        people = [p for p in principals_for(bundle, f"role:{role}") if bundle["members"][p]["type"] == "person"
+                  and authz.check(bundle, p, "approve", obj, folder)["allowed"] and p not in (owner, author)]
+        signature = {"by": by, "by_type": "cog", "verdict": "approve", "meaning": meaning, "at": utcnow(), "step": step["gate"]["step"],
+                     "payload_digest": pending["payload_digest"], "delegating_rule": delegating_rule, "evidence": evidence,
+                     "countersign_needed": role, "run_id": state["id"], "release_digest": state["release"], "record": state.get("record")}
+        signature["signature"] = sha256_of({k: signature[k] for k in ("by", "verdict", "meaning", "payload_digest", "at", "run_id", "step")})[:32]
+        track.append({"type": "gate.signed", "run_id": state["id"], "step": step["id"], **signature})
+        state["steps"][step["id"]]["first_signature"] = signature
+        if state.get("record"):
+            self.kernel.append("record.decision", state["record"], {**signature, "countersign_needed": role}, run_id=state["id"],
+                               release=state["release"], by=by)
+        if not people:
+            self._fail(state, track, step["id"], f"{by} approved it, but no {role} who may approve it (and did not prepare it) can countersign")
+            self._save(state)
+            return self.load(state["id"])
+        rest = {k: v for k, v in pending.items() if k not in ("stepped_in_from", "asked_by")}
+        state["pending"] = {**rest, "assignees": people, "assignee_type": "person", "route": f"role:{role}", "countersign_of": by,
+                            "title": f"Countersign: {pending.get('title', 'Approve')}", "remaining": []}
+        track.append({"type": "gate.pending", "run_id": state["id"], "step": step["id"], "assignees": people, "assignee_type": "person",
+                      "route_rule": delegating_rule, "payload_digest": pending["payload_digest"], "countersign_of": by})
+        self._save(state)
+        if state.get("record"):
+            self.kernel.assign(state["record"], people, by=by, run_id=state["id"], release=state["release"])
+        self._notify(people, kind="approval", subject=f"Countersign: {by} approved {state.get('record') or state['process']}",
+                     body=f"{by} approved it on its review and its approval criteria ask a {role.replace('-', ' ')} to countersign. {meaning}",
+                     run_id=state["id"])
+        self._notify([state["owner"]], kind="auto-decided", subject=f"{by} approved {state.get('record') or state['process']}; a {role.replace('-', ' ')} countersigns next",
+                     body=meaning, run_id=state["id"])
+        return self.load(state["id"])
 
     def resubmit(self, run_id: str, by: str, fields: dict | None = None, attachments: list[dict] | None = None,
                  note: str = "") -> dict:

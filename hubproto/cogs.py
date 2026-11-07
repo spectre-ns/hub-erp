@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 
 from .envelope import Timer, make_envelope, problem, synthesized_failure
@@ -858,15 +858,55 @@ class ReviewerCog(Cog):
         if not crits:
             return self.ok("review", {"verdict": "escalate", "reasons": ["no approval criteria for this process"]})
         reasons: list[str] = []
+        judged: dict = {}
+
+        def judgment() -> dict:
+            """Its own review of the item against the procedures it follows, done once and filed as evidence. A
+            stand-in (no model) never passes outside development: judgment needs the cog's model."""
+            if not judged:
+                from .model import stand_in_allowed
+
+                # The review is the cog's own work as a member (it files evidence), not a step of the run: full kernel, not the run's scope.
+                rctx = ctx if ctx.runner is None else replace(ctx, kernel=ctx.runner.kernel, dms=ctx.runner.dms or ctx.dms, owner=self.id)
+                env = self.task_review_document({"record": ctx.record, "question": "Approval review: is this ready to approve as it stands? "
+                                                 "Check it against the procedures you follow and give findings."}, rctx) if ctx.record else {}
+                r = (env or {}).get("payload") or {}
+                passed = r.get("verdict") == "pass" and (not r.get("stand_in") or stand_in_allowed())
+                judged.update({"passes": passed, "verdict": r.get("verdict") or "no review", "evidence": r.get("evidence"),
+                               "summary": (r.get("summary") or "").strip(), "stand_in": bool(r.get("stand_in")),
+                               "findings": [f"[{p.get('severity')}] {p.get('detail')}" for p in (r.get("findings") or [])][:6]})
+            return judged
+
         for crit in crits:
-            within, reasons = evaluate_criteria(crit, routing_ctx)
+            ctx_c = routing_ctx
+            if "review_passes" in crit.get("conditions", []):
+                # Fixed conditions first (a minor-change criterion should not cost a model review it cannot use).
+                fixed = {**crit, "conditions": [c for c in crit["conditions"] if c != "review_passes"]}
+                ok_fixed, why = evaluate_criteria(fixed, routing_ctx)
+                if not ok_fixed:
+                    reasons = why
+                    continue
+                j = judgment()
+                ctx_c = {**routing_ctx, "conditions": {**(routing_ctx.get("conditions") or {}), "review_passes": j["passes"]}}
+            within, reasons = evaluate_criteria(crit, ctx_c)
+            if judged and not judged.get("passes"):
+                reasons = [f"its review did not pass ({judged['verdict']})" + (f": {judged['findings'][0]}" if judged.get("findings") else "")] + \
+                    [r for r in reasons if "review_passes" not in r]
             if within:
-                checks = [f"{c} holds" for c in crit.get("conditions", [])]
+                checks = [f"{c} holds" for c in crit.get("conditions", []) if c != "review_passes"]
                 if crit.get("max_amount") is not None:
                     checks.append(f"amount {routing_ctx.get('amount')} under {crit['max_amount']} {crit['currency']}")
-                return self.ok("review", {"verdict": "approve", "reasons": checks,
-                                          "delegating_rule": crit["source"], "risk": payload.get("risk")})
-        return self.ok("review", {"verdict": "escalate", "reasons": reasons})
+                if judged:
+                    checks.insert(0, "its review passed" + (f" (evidence {self._number(ctx, judged['evidence'])})" if judged.get("evidence") else "")
+                                  + (f": {judged['summary'][:240]}" if judged.get("summary") else ""))
+                return self.ok("review", {"verdict": "approve", "reasons": checks, "delegating_rule": crit["source"], "risk": payload.get("risk"),
+                                          "countersign": crit.get("countersign"), "judged": bool(judged), "evidence": judged.get("evidence")})
+        return self.ok("review", {"verdict": "escalate", "reasons": reasons, "evidence": judged.get("evidence")})
+
+    @staticmethod
+    def _number(ctx, locator: str | None) -> str:
+        rec = ctx.kernel.get(locator) if locator else None
+        return rec["number"] if rec else (locator or "")
 
     def task_inbox(self, input: dict, ctx: RunContext) -> dict:
         msg = input.get("message") or {}
@@ -957,6 +997,12 @@ class DocReviewer(ReviewerCog):
     description = "Document reviewer team member: approves minor revisions of controlled documents."
 
 
+class QAManager(ReviewerCog):
+    id = "qa-manager"
+    description = ("QA manager team member: drafts and revises controlled documents, reviews documents and changes, and approves "
+                   "on its own review where its criteria allow, with a quality manager countersigning major changes.")
+
+
 class QualityAssistant(ReviewerCog):
     id = "quality-assistant"
     files_process = "nonconformance"
@@ -977,7 +1023,7 @@ class CogRegistry:
         for cls in (RecordFiler, BillFiler, DocumentFiler, Linker, Notifier, DocumentRenderer, RiskScorer,
                     InvoiceExtractor, ThreeWayMatcher, LedgerPoster, JournalReverser, DocumentDrafter, DocumentPublisher,
                     NCRClassifier, CAPAOpener, NCROpener, CAPADrafter, EffectivenessScheduler, AuditChecklistDrafter,
-                    DocumentClassifier, APReviewer, DocReviewer, QualityAssistant, Swarm):
+                    DocumentClassifier, APReviewer, DocReviewer, QualityAssistant, QAManager, Swarm):
             self.register(cls())
         from . import cad, procurement  # CAD/ECAD and procurement cogs live in their own modules
 

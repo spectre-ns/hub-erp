@@ -31,7 +31,7 @@ from pathlib import Path
 from .kernel import utcnow
 
 KINDS = {"mention": "answer a mention", "message": "answer a message", "gate": "take its turn at a Gate",
-         "task": "do a task", "duty": "do a standing duty"}
+         "task": "do a task", "duty": "do a standing duty", "assigned": "work an item assigned to it"}
 OPEN = ("queued", "working")
 MAX_ATTEMPTS = 3
 
@@ -272,10 +272,15 @@ def execute(hub, task: dict) -> dict:
         pending = state.get("pending") or {}
         if state["status"] != "waiting" or cog not in pending.get("assignees", []) or pending.get("step") != p.get("step", pending.get("step")):
             return {"skipped": f"the item is no longer waiting for {cog} there (it is {state['status']})", "run": p["run"]}
+        if hub.runner.is_assigned_work(state, cog):
+            # Assigned the step itself (a task filed for the cog): it does the work, then completes it or hands it back.
+            return assigned_work(hub, task, state=state)
         after = hub.runner.cog_decide(p["run"], cog)
-        last = next((e for e in reversed(hub.runner.track(p["run"])) if e["type"] in ("gate.decided", "gate.declined")), {})
+        last = next((e for e in reversed(hub.runner.track(p["run"])) if e["type"] in ("gate.decided", "gate.declined", "gate.signed")), {})
         return {"run": p["run"], "outcome": last.get("type", "").split(".")[-1], "status": after["status"],
                 "waiting_for": (after.get("pending") or {}).get("assignees", [])}
+    if kind == "assigned":
+        return assigned_work(hub, task)
     if kind in ("task", "duty"):
         from .agent import Agent, mark_duty
 
@@ -286,6 +291,46 @@ def execute(hub, task: dict) -> dict:
             mark_duty(hub, cog, p["goal"])
         return {"run": res["run"], "status": res["status"], "summary": res["summary"], "actions": res["actions"]}
     raise ValueError(f"unknown kind of cog task {kind!r}")
+
+
+def assigned_work(hub, task: dict, state: dict | None = None) -> dict:
+    """A cog works an item it was assigned, the way a person picks up an assignment: it reads the item and the
+    instruction, acts within its autonomy (comments, reviews, drafts, its turn at a Gate it may sign), and reports
+    back on the item. A step assigned to it is completed or handed back; it is never left waiting silently."""
+    from .agent import Agent
+
+    cog, p = task["cog"], task.get("payload") or {}
+    rec = hub.kernel.get(task.get("record") or p.get("record") or (state or {}).get("record") or "")
+    if rec is None:
+        raise ValueError("the item it was assigned is gone")
+    run = state or hub.runner.run_for_record(rec["locator"])
+    waiting = (run or {}).get("pending") or {}
+    step_mine = bool(run) and hub.runner.is_assigned_work(hub.runner.load(run["id"]), cog)
+    f = rec["fields"]
+    what = f.get("description") or f.get("text", "")[:600] or ""
+    goal = (f"You are assigned {rec['number']} ({rec['type']}: {f.get('title') or ''}) by {task.get('by') or 'a colleague'}."
+            + (f" Their instruction: {p['instruction']}" if p.get("instruction") else "")
+            + (f" What the item says: {what}" if what else "")
+            + f" It is {rec['state']}" + (f", waiting for {', '.join(waiting.get('assignees') or [])} at {waiting.get('title')}" if waiting else "") + "."
+            + (" The step is assigned to you: do the work, then call complete_step with what you did, or hand_back with why you cannot."
+               if step_mine else
+               " Do what is asked within your autonomy. If it waits at an approval you may sign, use take_turn. Comment on the item with what you did.")
+            + " Finish with a summary.")
+    agent = Agent(hub, cog)
+    prep = agent.prepare(goal, by=task.get("by") or cog, trigger="assigned")
+    res = agent.conclude(prep, agent.think_safely(prep))
+    out = {"run": res["run"], "status": res["status"], "summary": res["summary"], "actions": res["actions"], "record": rec["number"]}
+    if run and step_mine and hub.runner.is_assigned_work(hub.runner.load(run["id"]), cog):
+        # It did not finish the step: the work goes back to a person with what it found, rather than sitting with a cog.
+        if res["status"] == "proposed":
+            reason = f"{cog} proposes actions that wait for confirmation (agent run {res['run']}): {res['summary']}"
+        else:
+            reason = f"{cog} did not complete it: {res['summary']}"
+        hub.runner.hand_back(run["id"], cog, reason)
+        out["handed_back"] = True
+    hub.inbox.post(sender=cog, to=task.get("by") or rec.get("created_by") or cog, record=rec["locator"], kind="reply",
+                   subject=f"{cog} on {rec['number']}", body=res["summary"] + (" (handed back)" if out.get("handed_back") else ""))
+    return out
 
 
 # ---------------------------------------------------------------- the worker thread

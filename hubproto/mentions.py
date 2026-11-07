@@ -206,8 +206,23 @@ def _answer(hub, msg, cog_id, bundle, release, record, sender, actions, intent, 
             last = next((e for e in reversed(hub.runner.track(run["id"])) if e["type"] in ("gate.decided", "gate.declined")), {})
             body = f"I took my turn at the Gate: {last.get('type', '').split('.')[-1]}; {record['number']} is now {after['status']}" + \
                 (f", waiting for {', '.join(after['pending']['assignees'])}" if after.get("pending") else "") + "."
+        elif run and run["status"] == "waiting" and not hub.runner.may_step_in(run, cog_id):
+            # Asked to approve an item waiting for people, and the policy lets this cog sign it when asked: it steps in.
+            waited = ", ".join(run["pending"]["assignees"])
+            after = hub.runner.cog_step_in(run["id"], cog_id, asked_by=sender)
+            last = next((e for e in reversed(hub.runner.track(run["id"])) if e["type"] in ("gate.decided", "gate.declined", "gate.signed")), {})
+            if last.get("type") == "gate.signed":
+                body = (f"I reviewed {record['number']} and approved it: {last.get('meaning', '')}. My criteria ask a "
+                        f"{str(last.get('countersign_needed') or 'person').replace('-', ' ')} to countersign; it now waits for {', '.join((after.get('pending') or {}).get('assignees') or [])}.")
+            elif last.get("type") == "gate.decided" and last.get("by") == cog_id:
+                body = f"I reviewed {record['number']} and approved it: {last.get('meaning', '')}. It is now {after['status']}" + \
+                    (f", waiting for {', '.join(after['pending']['assignees'])}" if after.get("pending") else "") + "."
+            else:
+                body = (f"I cannot sign {record['number']}: " + "; ".join(last.get("reasons") or ["my criteria do not hold"])
+                        + f". It stays with {waited}.")
         elif run and run["status"] == "waiting":
-            body = f"{record['number']} is waiting for {', '.join(run['pending']['assignees'])} at {run['pending'].get('title', 'approval')}; it is not mine to sign."
+            why = hub.runner.may_step_in(run, cog_id)
+            body = f"{record['number']} is waiting for {', '.join(run['pending']['assignees'])} at {run['pending'].get('title', 'approval')}; it is not mine to sign ({why})."
         else:
             body = "; ".join(actions) or f"{record['number']} has nothing in flight and no process I can start for it."
         out.append(hub.inbox.reply(msg, sender=cog_id, body=body, record=record["locator"]))

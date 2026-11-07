@@ -77,7 +77,8 @@ _PROCESS_REJECT = re.compile(r"^Rejections return to (?P<title>[A-Z][^.]+?)\.$")
 _CRITERIA = re.compile(
     r"^The (?P<cog>[a-z][\w-]*) cog may approve (?P<process>[a-z0-9-]+) (?P<object>[a-z][a-z -]*?)"
     r"(?: under (?P<amount>[\d,]+(?:\.\d+)?) (?P<cur>[A-Z]{3}))?"
-    r"(?: when (?P<conds>.+?))?\.$"
+    r"(?: when (?P<conds>.+?))?"
+    r"(?:, countersigned by (?:an? |the )?(?P<counter>[a-z][a-z -]*?))?\.$"
 )
 _SOD = re.compile(
     r"^The (?P<a>[\w -]+?) and the (?P<b>[\w -]+?) of a (?P<object>[\w-]+) must be different people\.$"
@@ -346,7 +347,8 @@ class ConventionExtractor:
                     conds.append(CONDITION_VOCABULARY.get(phrase.strip(), "unknown:" + phrase.strip()))
             add("approval_criteria", n, line, approver="cog:" + m.group("cog"), process=m.group("process"),
                 max_amount=number(m.group("amount")) if m.group("amount") else None,
-                currency=m.group("cur"), conditions=conds)
+                currency=m.group("cur"), conditions=conds,
+                countersign=singular_role(m.group("counter")) if m.group("counter") else None)
             return True
         m = _SOD.match(line)
         if m:

@@ -167,6 +167,8 @@ def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict |
             for c in rule.get("conditions", []):
                 if c.startswith("unknown:"):
                     out.append(Finding("consistency", "error", f"condition {c[8:]!r} cannot be evaluated deterministically", key, frame, line))
+            if rule.get("countersign") and not ref_ok("role:" + rule["countersign"]):
+                out.append(Finding("consistency", "error", f"countersigning role {rule['countersign']!r} is not declared", key, frame, line))
         elif kind == "process":
             if rule["folder"] and rule["folder"] not in folders:
                 out.append(Finding("consistency", "error", f"process folder {rule['folder']!r} is not declared", key, frame, line))
@@ -333,6 +335,8 @@ def _widens(rule: dict, old_rules) -> bool:
                     return True
                 if set(rule.get("conditions", [])) < set(o.get("conditions", [])):
                     return True
+                if o.get("countersign") and not rule.get("countersign"):
+                    return True  # dropping a countersignature lets the cog's signature stand alone
                 return False
         return True
     if kind == "threshold":

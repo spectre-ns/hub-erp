@@ -3,7 +3,7 @@ type: frame [0.2]
 name: org-model
 description: Roles, members (people and cogs) and folders of Example Instruments Ltd.
 visibility: internal
-version: "1.3.0"
+version: "1.4.0"
 scope: company
 maintainer: operations
 ---
@@ -37,6 +37,7 @@ messages, and are bound by segregation of duties.
 - ap-reviewer (cog): payables-reviewer, finance-clerk
 - doc-reviewer (cog): reviewer, author
 - quality-assistant (cog): quality-manager, staff, design-review-committee
+- qa-manager (cog): quality-manager, reviewer, author, staff
 
 ## Folders
 - Finance

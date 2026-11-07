@@ -36,6 +36,9 @@ CONDITION_VOCABULARY = {
     "the design checks are clean": "design_checks_clean",
     "the item is known": "item_known",
     "every requirement is accepted": "requirements_accepted",
+    # Judgment: the cog reviews the item against the procedures it follows (with its model) and the review passes.
+    # The review is filed as evidence and cited in the signature.
+    "its review passes": "review_passes",
 }
 
 

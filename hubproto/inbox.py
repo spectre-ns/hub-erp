@@ -137,6 +137,11 @@ class Inbox:
                 return task["result"]["replies"][0]
         return msg
 
+    def post(self, *, sender: str, to: str, subject: str, body: str, record: str | None = None, kind: str = "message") -> dict:
+        """A cog's report on an item (its chatter), without setting off any cog."""
+        return self._append({"id": uuid.uuid4().hex[:8], "at": utcnow(), "from": sender, "to": to, "channel": "dm", "kind": kind,
+                             "subject": subject, "body": body, "run_id": "", "record": record, "attachments": []})
+
     def find(self, msg_id: str) -> dict | None:
         return next((m for m in self.all() if m["id"] == msg_id), None)
 

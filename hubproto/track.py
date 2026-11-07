@@ -49,7 +49,7 @@ class Track:
                 return "waiting"  # returned to the owner for rework: the run waits for a resubmission
             if t == "run.rejected":
                 return "rejected"
-            if t in ("gate.pending", "gate.escalated", "gate.overdue"):
+            if t in ("gate.pending", "gate.escalated", "gate.overdue", "gate.handed_back", "gate.stepped_in"):
                 return "waiting"
             if t == "run.submitted":
                 return "submitted"

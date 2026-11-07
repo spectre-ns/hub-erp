@@ -333,6 +333,70 @@ class ActionsMixin:
                 f"<label class='f'><span>Why <b>*</b></span><input name='reason' required></label>"
                 f"<div class='actions'><button class='reject'>{icon('retry')}Send it back to the start</button></div></form></details>")
 
+    def _may_assign(self, rec: dict) -> bool:
+        if self._viewing_cog() or not self._is_member():
+            return False
+        ok, _ = self.hub.runner.may_restart(rec, self.user)
+        return ok or self.user in (rec.get("assignees") or []) or self.user == rec.get("created_by")
+
+    def _assign_form(self, rec: dict) -> str:
+        """'Assign' on an item: to a person (told in their inbox) or a cog (it works it from its queue)."""
+        if not self._may_assign(rec):
+            return ""
+        members = self.bundle["members"]
+        opts = "".join(f"<option value='{esc(n)}'>{esc(n)}{' (cog)' if members[n]['type'] == 'cog' else ''}</option>"
+                       for n in sorted(members, key=lambda n: (members[n]["type"] != "cog", n)) if n != self.user)
+        return (f"<details class='inline restart'><summary class='button ghost'>{icon('users')}Assign</summary>"
+                f"<form method='post' action='/assign' class='card'>{hidden_as(self.user)}{self._once()}<input type='hidden' name='record' value='{esc(rec['locator'])}'>"
+                f"<label class='f'><span>To <b>*</b></span><select name='to' required><option value=''>choose…</option>{opts}</select></label>"
+                f"<label class='f'><span>What to do <i>(a cog needs this)</i></span><textarea name='instruction' rows='3' "
+                f"placeholder='e.g. review the containment and draft the disposition'></textarea></label>"
+                f"<p class='why'>A cog takes it from its queue, works it within its autonomy and reports here; a person is told in their inbox.</p>"
+                f"<div class='actions'><button>{icon('send')}Assign</button></div></form></details>")
+
+    def post_assign(self):
+        bundle = self._need_release()
+        done = self._once_done()
+        if done:
+            return self._redirect(done)
+        rec = self.hub.kernel.require(self._f("record"))
+        self.arg = rec["locator"]
+        self._require_read(rec["folder"])
+        if not self._may_assign(rec):
+            raise ShellError(f"Only its owner, whoever it is assigned to, or someone who may approve a {rec['type']} assigns {rec['number']}.", 403)
+        to, instruction = self._f("to"), (self._f("instruction") or "").strip()
+        member = bundle["members"].get(to)
+        if member is None:
+            raise ShellError("Choose a member to assign it to.", field="to")
+        page = ("/document/" if rec["type"] == "document" else "/record/") + quote(rec["locator"], safe=":")
+        assignees = list(dict.fromkeys([*(rec.get("assignees") or []), to]))
+        if member["type"] == "cog":
+            from ..model import cog_availability
+            from .queue import ordinal
+
+            if not instruction:
+                raise ShellError(f"Say what {to} should do with {rec['number']}.", field="instruction")
+            ok, why = cog_availability(bundle, to)
+            if not ok:
+                raise ShellError(f"{to} is not available: {why}.")
+            self.hub.kernel.assign(rec["locator"], assignees, by=self.user)
+            self.hub.inbox.post(sender=self.user, to=to, record=rec["locator"], subject=f"Assigned {rec['number']} to {to}", body=instruction)
+            task = self.hub.queue.submit(to, "assigned", by=self.user, title=instruction, record=rec["locator"],
+                                         payload={"record": rec["locator"], "instruction": instruction})
+            if task["status"] in ("queued", "working"):
+                pos = self.hub.queue.position(task)
+                where = "it is working on it" if pos == 0 else "it is next" if pos == 1 else f"it is {ordinal(pos)} in line"
+                msg = f"Assigned {rec['number']} to {to}: {where}. It reports on the chatter."
+            else:
+                msg = f"Assigned {rec['number']} to {to}: " + ((task.get("result") or {}).get("summary") or task.get("error") or task["status"])[:200]
+        else:
+            self.hub.kernel.assign(rec["locator"], assignees, by=self.user)
+            self.hub.inbox.post(sender=self.user, to=to, record=rec["locator"], subject=f"Assigned {rec['number']} to you",
+                                body=instruction or f"{self.user} assigned {rec['number']} to you.")
+            msg = f"Assigned {rec['number']} to {to}; they are told in their inbox."
+        log_line(f"assign record={rec['number']} to={to} by={self.user}")
+        self._redirect(self._once_finish(href(page, self.user, done=msg) + "#chatter"))
+
     def post_restart(self):
         self._need_release()
         done = self._once_done()
