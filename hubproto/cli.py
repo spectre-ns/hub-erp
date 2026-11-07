@@ -502,6 +502,17 @@ def _check_scopes(hub: Hub, scopes: list[str] | None) -> None:
             fail(f"--scope {s}: no Frame is named {s!r}; Frames are: {', '.join(sorted(hub.frames.frames))}", 2)
 
 
+def cmd_withdraw_draft(args) -> int:
+    hub = _hub(args)
+    try:
+        out = hub.withdraw_frame_draft(args.draft if args.draft.startswith("rec:") else f"rec:document:{args.draft}", args.as_, args.reason or "")
+    except (ValueError, KeyError) as e:
+        print(f"refused: {e}")
+        return 1
+    print(f"withdrew {out['draft']}" + (f"; proposal(s) withdrawn: {', '.join('#' + str(n) for n in out['proposals_withdrawn'])}" if out["proposals_withdrawn"] else ""))
+    return 0
+
+
 def cmd_compile(args) -> int:
     hub = _hub(args)
     _check_scopes(hub, args.scope)
@@ -1243,6 +1254,11 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("compile", help="read the Frames into a proposal of changes against the release in force; exit 1 on error findings")
     s.add_argument("--scope", action="append", metavar="FRAME", help="compile only this Frame (and what it inherits); repeatable")
     s.set_defaults(fn=cmd_compile)
+    s = sub.add_parser("withdraw-draft", help="withdraw a Frame draft: it leaves open proposals and is no longer compiled")
+    s.add_argument("draft", help="the draft document's number (DOC-0431) or locator")
+    s.add_argument("--as", dest="as_", required=True, help="the draft's author or a policy owner")
+    s.add_argument("--reason", default="", help="why it is withdrawn (kept on the draft and the proposal)")
+    s.set_defaults(fn=cmd_withdraw_draft)
     s = sub.add_parser("proposals", help="list proposals: number, status, base release, changes, decisions so far")
     s.add_argument("--open", action="store_true", help="only proposals that are still open")
     s.set_defaults(fn=cmd_proposals)

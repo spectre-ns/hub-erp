@@ -235,7 +235,7 @@ class BaseHandler(BaseHTTPRequestHandler):
             return None
         posts = {"/start": self.post_start, "/decide": self.post_decide, "/msg": self.post_msg, "/attach": self.post_attach,
                  "/finish-edit": self.post_finish_edit, "/new-document": self.post_new_document, "/working-copy": self.post_working_copy, "/apply-replies": self.post_apply_replies, "/start-on": self.post_start_on, "/chat": self.post_chat, "/chat-clear": self.post_chat_clear, "/frame-draft": self.post_frame_draft, "/text-save": self.post_text_save,
-                 "/frame-propose": self.post_frame_propose, "/proposal-review": self.post_proposal_review, "/proposal-release": self.post_proposal_release,
+                 "/frame-propose": self.post_frame_propose, "/frame-withdraw": self.post_frame_withdraw, "/proposal-review": self.post_proposal_review, "/proposal-release": self.post_proposal_release,
                  "/agent-task": self.post_agent_task, "/queue-withdraw": self.post_queue_withdraw, "/assign": self.post_assign, "/agent-confirm": self.post_agent_confirm, "/new-person": self.post_new_person, "/new-cog": self.post_new_cog, "/cog-model": self.post_cog_model, "/restart": self.post_restart, "/mark-applied": self.post_mark_applied, "/editor-debug": self.post_editor_debug,
                  "/upload": self.post_upload, "/checkout": self.post_checkout, "/checkin": self.post_checkin, "/link": self.post_link,
                  "/snapshot": self.post_snapshot, "/hold": self.post_hold, "/resubmit": self.post_resubmit, "/retry": self.post_retry,

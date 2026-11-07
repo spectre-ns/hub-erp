@@ -17,7 +17,7 @@ from .inbox import Inbox
 from .model import ModelGateway
 from .workqueue import CogQueue
 from .kernel import Kernel
-from .release import ReleaseStore
+from .release import utcnow, ReleaseStore
 from .runner import Runner
 
 DEFAULT_SCOPES: list[str] | None = None  # None: every Frame whose scope is not "reference"
@@ -182,7 +182,7 @@ class Hub:
         doc = self.frame_document(name)
         for d in self.kernel.query(type_="document"):
             f = d["fields"]
-            if f.get("doc_type") == "frame-draft" and f.get("frame_name") == name and f.get("owner") == by and d["state"] == "open":
+            if f.get("doc_type") == "frame-draft" and f.get("frame_name") == name and f.get("owner") == by and d["state"] == "open" and not f.get("withdrawn"):
                 return d
         frame = self.frames.get(name)
         draft = self.dms.create(title=f"Draft change to {name}", doc_class="working", folder=self.FRAME_FOLDER, by=by,
@@ -277,6 +277,32 @@ class Hub:
                                  note=f"new {kind} {name}")
             drafts[frame_name] = d["locator"]
         return self.compile(overrides=texts, drafts=drafts)
+
+    def withdraw_frame_draft(self, ref: str, by: str, reason: str = "") -> dict:
+        """Withdraw a Frame draft: it leaves every open proposal (which is withdrawn with it, so the next compile reads
+        the files and the other drafts) and is no longer carried into compiles. The draft's owner or a policy owner may."""
+        rec = self.kernel.require(ref)
+        f = rec["fields"]
+        if f.get("doc_type") != "frame-draft" or f.get("withdrawn"):
+            raise ValueError(f"{rec['number']} is not an open Frame draft")
+        meta = self.releases.current()
+        bundle = self.releases.bundle(meta["digest"]) if meta else {"members": {}}
+        if by != f.get("owner") and "policy-owner" not in authz.roles_of(bundle, by):
+            raise ValueError(f"only the draft's author ({f.get('owner')}) or a policy owner withdraws {rec['number']}")
+        touched = []
+        for p in self.proposals.list():
+            if p.get("status") != "open":
+                continue
+            mine = [n for n, o in (p.get("overrides") or {}).items() if o.get("draft") == rec["locator"]]
+            if mine:
+                for n in mine:
+                    p["overrides"].pop(n)
+                p["status"] = "withdrawn"
+                p["withdrawn"] = {"by": by, "at": utcnow(), "reason": reason or f"draft {rec['number']} withdrawn", "draft": rec["locator"]}
+                self.proposals.save(p)
+                touched.append(p.get("number"))
+        self.kernel.set_fields(rec["locator"], {"withdrawn": True, "withdrawn_by": by, "withdrawn_reason": reason, "proposal": None}, by=by)
+        return {"draft": rec["number"], "proposals_withdrawn": touched}
 
     def draft_text(self, draft: dict) -> str:
         content, _ = self.dms.content(draft["locator"])

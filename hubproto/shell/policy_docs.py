@@ -60,6 +60,8 @@ class PolicyDocsMixin:
             out += (f'<form method="post" action="/frame-draft" class="inline">{hidden_as(user)}{self._once()}<input type="hidden" name="frame" value="{esc(f.get("frame_name"))}">'
                     f'<button>{icon("edit")}Edit this policy</button></form>'
                     f'<a class="button ghost" href="{href("/frame/" + (f.get("frame_name") or ""), user)}">{icon("book")}Read the Frame with line numbers</a>')
+        elif f.get("doc_type") == "frame-draft" and f.get("withdrawn"):
+            out += f'<span class="chip">withdrawn by {esc(f.get("withdrawn_by"))}</span>'
         elif f.get("doc_type") == "frame-draft" and rec["state"] == "open":
             out += (f'<a class="button" href="{href("/text-edit/" + quote(loc, safe=":"), user)}">{icon("edit")}Edit the text</a>'
                     f'<a class="button ghost" href="{href("/frame-check/" + quote(loc, safe=":"), user)}">{icon("check-circle")}Check the change</a>'
@@ -67,6 +69,12 @@ class PolicyDocsMixin:
                     f'<button class="ghost">{icon("send")}Propose for release</button></form>')
             if f.get("proposal"):
                 out += f'<a class="button ghost" href="{href("/proposal/" + f["proposal"], user)}">{icon("layers")}Proposal #{esc(f.get("proposal_number"))}</a>'
+            if user == f.get("owner") or self._policy_owner():
+                out += (f'<details class="inline restart"><summary class="button ghost">{icon("x")}Withdraw the draft</summary>'
+                        f'<form method="post" action="/frame-withdraw" class="card">{hidden_as(user)}{self._once()}<input type="hidden" name="doc" value="{esc(loc)}">'
+                        f'<p class="why">The draft leaves any open proposal and is no longer compiled; the Frame stays as it is in force.</p>'
+                        f'<label class="f"><span>Why</span><input name="reason"></label>'
+                        f'<div class="actions"><button class="reject">{icon("x")}Withdraw it</button></div></form></details>')
         elif text_kind(rec):
             can, _ = self._may_edit_document(rec)
             if can and f.get("doc_class") not in ("evidence", "external") and (f.get("doc_class") != "controlled" or rec["state"] in ("open", "draft", "returned", "failed")):
@@ -205,6 +213,19 @@ class PolicyDocsMixin:
             raise ShellError(f"The draft is not a readable Frame: {e}") from None
         log_line(f"frame proposal frame={name} draft={rec['number']} proposal={proposal['id']} by={self.user}")
         return href("/proposal/" + proposal["id"], self.user, done=f"Proposed {rec['number']} as proposal #{proposal['number']}; the policy owners review it here.")
+
+    def post_frame_withdraw(self):
+        self._need_release()
+        done = self._once_done()
+        if done:
+            return self._redirect(done)
+        try:
+            out = self.hub.withdraw_frame_draft(self._f("doc"), self.user, self._f("reason") or "")
+        except (ValueError, KeyError) as e:
+            raise ShellError(str(e)) from None
+        rec = self.hub.kernel.require(self._f("doc"))
+        msg = f"Withdrew {out['draft']}" + (f"; proposal #{', #'.join(map(str, out['proposals_withdrawn']))} withdrawn with it" if out["proposals_withdrawn"] else "") + "."
+        self._redirect(self._once_finish(href("/document/" + quote(rec["locator"], safe=":"), self.user, done=msg)))
 
     def post_frame_propose(self):
         self._need_release()

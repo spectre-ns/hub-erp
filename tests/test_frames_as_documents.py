@@ -88,3 +88,21 @@ def test_a_link_to_a_missing_document_blocks_the_release(released):
     edit_frame(hub, "cog-profiles", "## Cog: doc-reviewer\n", "## Cog: doc-reviewer\nPrompt from: DOC-9999\n", bump="1.1.0")
     proposal = hub.compile()
     assert any("links document 'DOC-9999', which does not exist" in f["detail"] for f in proposal["findings"] if f["severity"] == "error")
+
+
+def test_a_frame_draft_can_be_withdrawn_and_is_no_longer_compiled(released):
+    hub = released
+    draft = hub.frame_draft("cog-profiles", by="carol")
+    text = hub.draft_text(draft) + "\nTest change\n"
+    hub.dms.add_version(draft["locator"], text.encode("utf-8"), by="carol", filename="cogs.frame.md", mime="text/markdown", note="test")
+    p = hub.compile(overrides={"cog-profiles": text}, drafts={"cog-profiles": draft["locator"]})
+    assert "cog-profiles" in p["overrides"]
+    assert "cog-profiles" in hub.compile()["overrides"]  # an open draft carries into every compile
+    import pytest as _pt
+    with _pt.raises(ValueError):
+        hub.withdraw_frame_draft(draft["locator"], "alice")  # neither its author nor a policy owner
+    out = hub.withdraw_frame_draft(draft["locator"], "bob", "it was a test")
+    assert out["proposals_withdrawn"]
+    assert not hub.compile()["overrides"]  # the files again
+    assert hub.kernel.get(draft["locator"])["fields"]["withdrawn"] is True
+    assert hub.frame_draft("cog-profiles", by="carol")["locator"] != draft["locator"]  # a new edit starts a new draft
