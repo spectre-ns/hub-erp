@@ -222,6 +222,50 @@ could stand in for Collabora in production. `docker compose up` starts Collabora
   policy). Without them the editor page says how to configure it and documents stay downloadable
   and check-in-able. Set `HUBPROTO_SECRET` to keep editor sessions valid across hub restarts.
 
+## Targeted edits to documents
+
+When a comment or a chatter message asks a cog to change a document ("delete the Records section", "say must,
+not shall"), the cog answers with a short list of operations rather than a whole new text
+(`hubproto/edits.py`; the cog's edit task is in `hubproto/cogs.py`). An operation is a line starting `@@`; the
+lines after it, up to the next `@@`, are its content in the writing markup (headings, bullets, `| a | b |` tables).
+
+Text documents (docx, odt, md, txt):
+
+    @@ insert at start          @@ insert at end
+    @@ insert after: <text>     @@ insert before: <text>     @@ append to section: <heading>
+    @@ replace: <exact text>    @@ with: <new text>          (every occurrence, inside its paragraph)
+    @@ replace paragraph: <text>    @@ replace section: <heading>    @@ rewrite
+    @@ delete: <exact text>     @@ delete paragraph: <text>  @@ delete section: <heading>
+
+Spreadsheets (xlsx, ods):
+
+    @@ append rows   @@ insert rows at: <n>   @@ set: B3: <value>   @@ clear: B2:D4
+    @@ delete rows: 4-6   @@ replace: <text>  @@ with: <text>
+
+- Applied in the file, the operations keep the document's formatting. A replacement touches only the part that
+  differs ("suppliers shall be" to "suppliers must be" rewrites "shall" alone), so the runs around it keep their
+  bold or italic. Comment anchors in removed paragraphs move to the nearest paragraph that stays, so no comment
+  is lost. Text is matched exactly first, then ignoring case, curly quotes and non-breaking spaces. Deleting the
+  whole text of a paragraph removes the paragraph.
+- Each operation is reported: the cog's reply on the chatter lists the changes, and anything that could not be
+  done (text not found, no section with that heading) is said in a follow-up from the cog.
+- **Live or in the file.** When someone has the document open in the editor, the cog's seat (its own editor
+  session) does live only what is safe from outside the editor: find-and-replace and deleting text, and inserting
+  headings and paragraphs at the very start or end of the document; in a spreadsheet, setting cells and appending
+  rows. Everything else (inserting after or before a paragraph, deleting or replacing paragraphs and sections,
+  tables, lists, row moves, rewrites) is done by the hub in the file once the session has saved, and the editor
+  reloads. Placing the cursor at a paragraph found by search is not reliable from outside the editor: in a live
+  test, text typed after the search replaced the found paragraph instead of following it.
+- **The check after a live edit.** Once the seat is done and the session has saved, the editor page posts to
+  `/verify-edit`. The hub checks each operation in the saved file, including that an insert landed right after
+  or before its target. An insert that landed in the wrong place is taken out and done again in the right place;
+  any operation that did not take is finished in the file (a new version by the hub, and the editor reloads). The
+  report is kept on the cog's reply (`edit_report`), and failures are said on the chatter.
+- With nobody in the editor, the hub applies the operations in the file at once (`WopiHost.apply_replies`).
+  The agent harness's `edit_document` tool uses the same operations.
+- Limits: formulas are not adjusted when rows move; merged cells and charts are not edited; spreadsheet
+  operations apply to the first sheet only.
+
 ## Backup and restore
 
 The state is one SQLite file plus directories under `state/`: `kernel.db`,
