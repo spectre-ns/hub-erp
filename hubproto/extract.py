@@ -72,6 +72,7 @@ _ROUTING = re.compile(
 )
 _SLA = re.compile(r"^(?:(?P<approvals>Approvals)|(?P<title>[A-Z][^,]*?)) in (?P<process>[a-z0-9-]+) (?:is|are) due within (?P<days>\d+) days?\.$")
 _PROCESS_TERMINAL = re.compile(r"^Closes as (?P<state>[a-z][a-z-]*)\.$")
+_PROCESS_FILES_BY_TYPE = re.compile(r"^(?P<what>[A-Z][a-z]+(?: [a-z]+)*) are filed in (?P<folder>[A-Z][\w /-]+?)\.$")
 _PROCESS_TYPE = re.compile(r"^The record type is (?P<t>[a-z][a-z-]*)\.$")
 _PROCESS_REJECT = re.compile(r"^Rejections return to (?P<title>[A-Z][^.]+?)\.$")
 _CRITERIA = re.compile(
@@ -242,6 +243,11 @@ class ConventionExtractor:
                 if m:
                     process["folder"] = m.group("folder")
                     continue
+                m = _PROCESS_FILES_BY_TYPE.match(line)
+                if m and m.group("what") != "Records":
+                    # "Policies are filed in Policy.": documents of that type stay in (and are filed in) their own folder.
+                    process.setdefault("files_by_type", {})[singular_role(m.group("what").lower())] = m.group("folder")
+                    continue
                 m = _PROCESS_TERMINAL.match(line)
                 if m:
                     process["terminal"] = m.group("state")
@@ -326,7 +332,7 @@ class ConventionExtractor:
             if m.group("risk"):
                 conds.append({"field": "risk", "op": "==", "value": m.group("risk")})
             if m.group("doctype"):
-                conds.append({"field": "doc_type", "op": "==", "value": slug(m.group("doctype"))})
+                conds.append({"field": "doc_type", "op": "==", "value": singular_role(m.group("doctype") + "s")})
             if m.group("change"):
                 conds.append({"field": "change_type", "op": "==", "value": m.group("change")})
             if m.group("overdue"):

@@ -16,5 +16,7 @@
  "assigned-to": "assignments",
  "references": "referenced-by",
  "defined-by": "defines",
- "produces": "produced-by"
+ "produces": "produced-by",
+ "carries": "carried-by",
+ "implements": "implemented-by"
 }

@@ -30,6 +30,7 @@ record and its versions.
 Authors may create documents in Quality/Controlled Documents.
 Authors may read Quality.
 Reviewers may approve documents in Quality/Controlled Documents.
+Policy owners may approve documents in Policy.
 Reviewers may read Quality.
 Quality managers may read Quality.
 Document controllers may create documents in Quality/Controlled Documents.
@@ -38,6 +39,7 @@ Process owners may approve documents in Quality/Controlled Documents.
 Staff may read Quality.
 
 ## Routing
+Approvals in document-control for policies go to the policy owner.
 Approvals in document-control with low risk go to the doc-reviewer cog.
 Approvals in document-control for drawings go to the process owner.
 Approvals in document-control go to the reviewer.
@@ -54,6 +56,7 @@ The author and the approver of a document must be different people.
 
 ## Process: document-control
 Records are filed in Quality/Controlled Documents.
+Policies are filed in Policy.
 Closes as effective.
 1. [author] Draft the document (document-drafter)
 2. [system] File the document (record-filer)

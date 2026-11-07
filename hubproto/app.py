@@ -55,6 +55,7 @@ class Hub:
         self.lock = threading.RLock()  # the shell serializes on it; the queue worker holds it except while a model thinks
         self.queue = CogQueue(state / "queue.db", hub=self)
         self.runner.queue = self.queue
+        self.runner.hub = self  # for the change-order steps (hubproto.eco), which compile and release
         self.runner.frames_store = lambda: self.released_frames()  # cogs read the SOPs as released, not the files on disk
         self.runner.frames_for_release = lambda d: self.released_frames(d)
         self._released_cache: dict = {}
@@ -78,6 +79,12 @@ class Hub:
 
     # --- policy lifecycle ---------------------------------------------------
     # --- settings: the rules edited on screen (hubproto.settings) ------------------------------------
+    def sop_source(self) -> bool:
+        """True once the SOPs and policies are documents in the library: the Frame is then compiled from them."""
+        from . import sopdocs
+
+        return sopdocs.converted(self.kernel)
+
     def settings_source(self, at: str | None = None) -> bool:
         """True when the release in force came from a settings proposal: settings are then the source of truth."""
         meta = self.releases.current(at)
@@ -161,13 +168,24 @@ class Hub:
 
     def compile(self, scopes: list[str] | None = None, extractor=None, now: str | None = None,
                 overrides: dict[str, str] | None = None, drafts: dict[str, str] | None = None, save: bool = True,
-                by: str | None = None) -> dict:
+                by: str | None = None, sop_drafts: dict[str, str] | None = None) -> dict:
         """Compile the Frames into a proposal. ``overrides`` are drafts of Frames (name -> text) compiled in place of the
         files, written only when the proposal is released; ``drafts`` names the draft document of each. Drafts already in
         an open proposal on the same base carry forward, so a recompile never drops someone's pending policy change."""
         if self.settings_source():
             raise CompileError("the rules are edited in Settings since the release in force came from there; the Frames are the SOPs "
                                "people and cogs read. Change a rule in Settings (or with a cog's propose tools), not by compiling the Frames.")
+        frames = self.frames
+        if self.sop_source():
+            # The Frame is derived from the SOP documents: the documents in force (or the drafts an ECO carries, in
+            # ``sop_drafts``: {frame name: draft locator}) on top of the release in force; the files on disk are not read.
+            from . import sopdocs
+
+            frames = self.released_frames()
+            derived = sopdocs.source_texts(self, drafts=sop_drafts or {})
+            changed = {n: t for n, t in derived.items() if n not in frames.frames or frames.get(n).text != t}
+            overrides = {**changed, **(overrides or {})}
+            drafts = {**{n: loc for n, loc in (sop_drafts or {}).items() if n in changed}, **(drafts or {})}
         existing = self.proposals.list() if save else []
         base = (self.releases.current(now) or {}).get("digest")
         # One proposal per draft: a recompile of a draft carries forward its own earlier proposal (and the decisions
@@ -196,9 +214,9 @@ class Hub:
         texts = {n: o["text"] for n, o in carried.items()}
         docs = {n: o.get("draft") for n, o in carried.items()}
         for name, text in (overrides or {}).items():
-            texts[name] = bump_version(text, self.frames.get(name).version)
+            texts[name] = bump_version(text, frames.get(name).version)
             docs[name] = (drafts or {}).get(name) or docs.get(name)
-        store = self.frames.with_overrides(texts) if texts else self.frames
+        store = frames.with_overrides(texts) if texts else frames
         proposal = compile_proposal(store, scopes or default_scopes(store), self.registry.ids(), self.releases,
                                     extractor=extractor or get_extractor(), now=now,
                                     record_types=self.kernel.types, config_digests=self.kernel.config_digests,
@@ -456,9 +474,10 @@ class Hub:
         rejected_text = {c["frame"] for c in proposal.get("changes") or [] if c.get("op") == "text" and change_state(c) == "rejected"}
         overrides = {n: o for n, o in (proposal.get("overrides") or {}).items() if n not in rejected_text}
         texts = {}
+        src = self.released_frames() if self.sop_source() else self.frames
         for f in proposal.get("frames") or []:
             try:
-                texts[f["name"]] = overrides[f["name"]]["text"] if f["name"] in overrides else self.frames.get(f["name"]).text
+                texts[f["name"]] = overrides[f["name"]]["text"] if f["name"] in overrides else src.get(f["name"]).text
             except Exception:
                 continue
         meta = finalize(proposal, self.releases, by=by, effective_from=effective_from, now=now, frame_texts=texts)
@@ -474,12 +493,14 @@ class Hub:
                 tmp.replace(path)
             self._frames = None
             for name, o in overrides.items():
+                if self.sop_source():
+                    continue  # the SOP documents are the source: the change order makes its revisions effective
                 self.frame_document(name, by=by)
                 draft = self.kernel.get(o["draft"]) if o.get("draft") else None
                 if draft and draft["state"] == "open":
                     self.kernel.set_fields(draft["locator"], {"released_in": meta["digest"]}, by=by)
                     self.kernel.transition(draft["locator"], "released", by=by, reason=f"released in policy {meta['digest'][:12]}")
-        elif any(d["fields"].get("doc_type") == "frame" for d in self.kernel.query(type_="document")):
+        elif not self.sop_source() and any(d["fields"].get("doc_type") == "frame" for d in self.kernel.query(type_="document")):
             self.frame_documents(create=False)
         self._rebase_open_proposals(base, proposal, now=now)
         return meta

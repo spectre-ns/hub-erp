@@ -70,6 +70,7 @@ def render_manifest(process: dict) -> dict:
         "id": process["name"],
         "title": process["name"].replace("-", " "),
         "folder": process["folder"],
+        **({"files_by_type": dict(process["files_by_type"])} if process.get("files_by_type") else {}),
         "object": process["object"],
         "inputs": [{"name": "record", "required": True}],
         "steps": steps,

@@ -212,8 +212,13 @@ class Runner:
             why = self._may_submit_existing(bundle, rec, wf, owner_name)
             if why:
                 raise RunError(why)
-            if rec["folder"] != manifest["folder"]:
-                rec = self.kernel.move(record, manifest["folder"], by=owner_name, run_id=run_id, release=release["digest"],
+            home = self.folder_for(manifest, rec["fields"])
+            if home != manifest["folder"] and not parent_run:
+                d = authz.check(bundle, owner, "create", manifest["object"], home)
+                if not d["allowed"]:
+                    raise RunError(f"{owner} may not file a {rec['fields'].get('doc_type')} in {home}: {d['why']}")
+            if rec["folder"] != home:
+                rec = self.kernel.move(record, home, by=owner_name, run_id=run_id, release=release["digest"],
                                        reason=f"filed by {process}")
             # The existing item is the submission: its fields seed the steps, under whatever the caller supplied.
             td = self.kernel.types.get(rec["type"], {})
@@ -236,8 +241,13 @@ class Runner:
                     raise RunError(why)
                 if revises:
                     fields["revises"] = revises
+            home = self.folder_for(manifest, fields)
+            if home != manifest["folder"] and not parent_run:
+                d = authz.check(bundle, owner, "create", manifest["object"], home)
+                if not d["allowed"]:
+                    raise RunError(f"{owner} may not file a {fields.get('doc_type')} in {home}: {d['why']}")
             try:
-                rec = self.kernel.create(wf["record_type"], manifest["folder"], fields, by=opener or owner_name, run_id=run_id,
+                rec = self.kernel.create(wf["record_type"], home, fields, by=opener or owner_name, run_id=run_id,
                                          release=release["digest"], state="open")
             except KernelGuardError as e:
                 raise RunError(f"cannot create {wf['record_type']}: {e}") from None
@@ -257,6 +267,12 @@ class Runner:
         self._save(state)
         self.advance(run_id)
         return run_id
+
+    @staticmethod
+    def folder_for(manifest: dict, fields: dict) -> str:
+        """Where the process files an item: its folder, or the folder it names for that document type ("Policies are
+        filed in Policy.")."""
+        return (manifest.get("files_by_type") or {}).get(str((fields or {}).get("doc_type") or ""), manifest["folder"])
 
     def _may_submit_existing(self, bundle: dict, rec: dict, wf: dict, owner: str) -> str:
         """Why an existing item may not be put through a process by this person (empty when it may): it must be of the
@@ -443,6 +459,9 @@ class Runner:
     def _close_record(self, state: dict, track: Track) -> bool:
         terminal = state["workflow"]["terminal"]
         rec = self.kernel.get(state["record"])
+        if rec and rec["fields"].get("held_for") and terminal == "effective":
+            # Approved, held for its change order: it comes into force when the change order is released.
+            terminal = "approved"
         if rec and rec["state"] == terminal:
             return True
         try:
@@ -1078,9 +1097,16 @@ class Runner:
             raise RunError("a cog decides within fixed criteria and supplies no fields")
         if verdict not in ("approve", "reject"):
             raise RunError("verdict must be approve or reject")
-        allowed = authz.check(bundle, by, "approve", state["manifest"]["object"], state["manifest"]["folder"])
+        rec_now = self.kernel.get(state["record"]) if state.get("record") else None
+        allowed = authz.check(bundle, by, "approve", state["manifest"]["object"], rec_now["folder"] if rec_now else state["manifest"]["folder"])
         if not allowed["allowed"]:
             raise RunError(allowed["why"])
+        if verdict == "approve" and (state.get("workflow") or {}).get("record_type") == "change-order" and getattr(self, "hub", None) is not None:
+            from . import eco
+
+            blocked = eco.check_approval(self.hub, state["record"])
+            if blocked:
+                raise RunError("the change order cannot be approved yet: " + "; ".join(blocked))
         if pending.get("countersign_of"):
             role = pending.get("countersign_role") or str(pending.get("route") or "").partition(":")[2]
             if by_type != "person":

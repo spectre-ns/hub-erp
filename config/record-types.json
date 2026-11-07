@@ -846,5 +846,51 @@
   ],
   "retention": "financial-reporting",
   "sensitivity": "internal"
+ },
+ "change-order": {
+  "prefix": "CO",
+  "digits": 4,
+  "yearly": true,
+  "object": "change-order",
+  "fields": {
+   "title": "text",
+   "description": "text",
+   "implements": "list",
+   "requested_by": "principal",
+   "risk": "text",
+   "staged_proposal": "text",
+   "staged_number": "text",
+   "staged_changes": "number",
+   "staged_widenings": "number",
+   "staged_errors": "list",
+   "staged_sig": "text",
+   "staged_base": "text",
+   "released_release": "text"
+  },
+  "required_by_state": {
+   "awaiting-approve-the-change-order": [
+    "title",
+    "description"
+   ]
+  },
+  "retention": "quality",
+  "sensitivity": "internal",
+  "defaults": {
+   "requested_by": "$owner"
+  },
+  "system_fields": [
+   "staged_proposal",
+   "staged_number",
+   "staged_changes",
+   "staged_widenings",
+   "staged_errors",
+   "staged_sig",
+   "staged_base",
+   "released_release"
+  ],
+  "decision_fields": [
+   "description",
+   "implements"
+  ]
  }
 }

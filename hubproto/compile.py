@@ -174,7 +174,7 @@ def finalize(proposal: dict, releases: ReleaseStore, *, by: str, effective_from:
     if proposal.get("status") != "open":
         raise CompileError(f"proposal #{proposal.get('number') or proposal['id']} is {proposal.get('status')}"
                            + (f" (replaced by #{proposal['superseded_by_number']}: release that one)" if proposal.get("superseded_by_number") else ""))
-    if by not in proposal["reviewers"]:
+    if by not in proposal["reviewers"] and not (proposal.get("eco") and by == f"change-order:{proposal['eco']}"):
         raise CompileError(f"{by} is not a policy owner and cannot release (policy owners: {', '.join(proposal['reviewers']) or 'none'})")
     current = releases.current(now)
     if (current["digest"] if current else None) != proposal.get("base"):

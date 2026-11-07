@@ -158,6 +158,8 @@ def sentence(rule: dict, processes: dict | None = None) -> str:
         return "\n".join(lines)
     if k == "process":
         lines = [f"## Process: {rule['name']}", f"Records are filed in {rule['folder']}."]
+        for what, folder in (rule.get("files_by_type") or {}).items():
+            lines.append(f"{plural(what).capitalize()} are filed in {folder}.")
         if rule.get("record_type"):
             lines.append(f"The record type is {rule['record_type']}.")
         if rule.get("terminal") and rule["terminal"] != "closed":

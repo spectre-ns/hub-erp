@@ -255,6 +255,51 @@ class DocumentRenderer(Cog):
         return self.ok("run", {**prior, "snapshot": doc["number"]})
 
 
+class FrameStager(Cog):
+    """Stages the Frame a change order's SOP drafts compile into (hubproto.eco), and stops the run when it cannot."""
+
+    id = "frame-stager"
+    reaches = ["kernel:records", "kernel:documents"]
+    description = "Compiles the Frame a change order's carried SOP and policy drafts make, and shows the rule changes on the change order."
+
+    def task_run(self, input: dict, ctx: RunContext) -> dict:
+        from . import eco
+
+        hub = getattr(ctx.runner, "hub", None)
+        if hub is None or not ctx.record:
+            return make_envelope(self.id, self.version, "run", error={"code": "no-hub", "detail": "no change order to stage"})
+        st = eco.status(hub, ctx.record)
+        if not st["carried"]:
+            return make_envelope(self.id, self.version, "run", error={"code": "nothing-carried",
+                                 "detail": "the change order carries no SOP or policy revision: add the SOPs it changes first"})
+        errors = list(st["co"]["fields"].get("staged_errors") or [])
+        if errors:
+            return make_envelope(self.id, self.version, "run", error={"code": "compile", "detail": "the staged Frame does not compile: " + "; ".join(errors[:3])})
+        f = st["co"]["fields"]
+        return self.ok("run", {**self._prior(input, ctx), "staged_proposal": f.get("staged_proposal"), "staged_changes": f.get("staged_changes"),
+                               "staged_widenings": f.get("staged_widenings")})
+
+
+class ChangeOrderReleaser(Cog):
+    """Releases an approved change order: its staged Frame comes into force and its revisions become effective."""
+
+    id = "change-order-releaser"
+    reaches = ["kernel:records", "kernel:documents"]
+    description = "Brings an approved change order's staged Frame into force and makes the SOP and policy revisions it carries effective, together."
+
+    def task_run(self, input: dict, ctx: RunContext) -> dict:
+        from . import eco
+
+        hub = getattr(ctx.runner, "hub", None)
+        if hub is None or not ctx.record:
+            return make_envelope(self.id, self.version, "run", error={"code": "no-hub", "detail": "no change order to release"})
+        try:
+            meta = eco.release(hub, ctx.record, by=self.id)
+        except Exception as e:
+            return make_envelope(self.id, self.version, "run", error={"code": "release", "detail": str(e)})
+        return self.ok("run", {**self._prior(input, ctx), "release": meta["digest"]})
+
+
 class RiskScorer(Cog):
     id = "risk-scorer"
     reaches = ["kernel:records"]
@@ -541,25 +586,39 @@ class DocumentPublisher(Cog):
         if refused:
             return refused
         doc = self._prior(input, ctx)
+        rec = ctx.rec() or {}
+        co = (rec.get("fields") or {}).get("change_order")
+        if co:
+            # A revision a change order carries is approved now but comes into force only when the change order is
+            # released, together with the others it carries and the Frame they make (hubproto.eco).
+            ctx.kernel.set_fields(rec["locator"], {"held_for": co, "approved_by": ctx.grant.get("decided_by", ""), "approved_run": ctx.run_id,
+                                                   "approved_grant": ctx.grant.get("id"), "approved_release": ctx.release},
+                                  by=self.id, run_id=ctx.run_id, release=ctx.release)
+            return self.ok("run", {**doc, "state": "approved", "held_for": co})
         ctx.kernel.publish_document(doc["id"], run_id=ctx.run_id, release=ctx.release, grant=ctx.grant,
                                     approved_by=ctx.grant.get("decided_by", ""), by=self.id)
         if ctx.dms is not None:
             ctx.dms.release_revision(ctx.record, by=self.id, run_id=ctx.run_id, release=ctx.release)
-        assigned = []
-        roles = doc.get("training_roles") or []
-        if roles and ctx.runner is not None and "training-acknowledgement" in ctx.bundle.get("ops", {}):
-            rec = ctx.rec()
-            for person, m in ctx.bundle["members"].items():
-                if m["type"] == "person" and set(m["roles"]) & set(roles):
-                    rid = ctx.runner.submit("training-acknowledgement",
-                                            {"record": {"person": person, "document": rec["locator"], "revision": rec["fields"].get("revision"),
-                                                        "assigned": date.today().isoformat(), "assignee": person,
-                                                        "title": f"Read {rec['fields'].get('title')} rev {rec['fields'].get('revision')}"}},
-                                            owner=ctx.grant.get("decided_by", ctx.owner), parent_run=ctx.run_id)
-                    ctx.kernel.link(ctx.runner.load(rid)["record"], "trains-on", rec["locator"], by=self.id,
-                                    run_id=ctx.run_id, release=ctx.release)
-                    assigned.append({"person": person, "run_id": rid})
+        assigned = assign_training(ctx.runner, ctx.bundle, ctx.kernel, ctx.rec(), doc.get("training_roles") or [],
+                                   owner=ctx.grant.get("decided_by", ctx.owner), parent_run=ctx.run_id, by=self.id, release=ctx.release)
         return self.ok("run", {**doc, "state": "effective", "training_assigned": assigned})
+
+
+def assign_training(runner, bundle: dict, kernel, rec: dict, roles: list[str], *, owner: str, parent_run: str, by: str, release: str = "") -> list[dict]:
+    """A read-and-acknowledge task for everyone in the roles a new revision trains."""
+    assigned = []
+    if not roles or runner is None or "training-acknowledgement" not in bundle.get("ops", {}):
+        return assigned
+    for person, m in bundle["members"].items():
+        if m["type"] == "person" and set(m["roles"]) & set(roles):
+            rid = runner.submit("training-acknowledgement",
+                                {"record": {"person": person, "document": rec["locator"], "revision": rec["fields"].get("revision"),
+                                            "assigned": date.today().isoformat(), "assignee": person,
+                                            "title": f"Read {rec['fields'].get('title')} rev {rec['fields'].get('revision')}"}},
+                                owner=owner, parent_run=parent_run)
+            kernel.link(runner.load(rid)["record"], "trains-on", rec["locator"], by=by, run_id=parent_run, release=release)
+            assigned.append({"person": person, "run_id": rid})
+    return assigned
 
 
 class NCRClassifier(Cog):
@@ -1447,7 +1506,7 @@ class CogRegistry:
         for cls in (RecordFiler, BillFiler, DocumentFiler, Linker, Notifier, DocumentRenderer, RiskScorer,
                     InvoiceExtractor, ThreeWayMatcher, LedgerPoster, JournalReverser, DocumentDrafter, DocumentPublisher,
                     NCRClassifier, CAPAOpener, NCROpener, CAPADrafter, EffectivenessScheduler, AuditChecklistDrafter,
-                    DocumentClassifier, APReviewer, DocReviewer, QualityAssistant, QAManager, Swarm):
+                    DocumentClassifier, APReviewer, DocReviewer, QualityAssistant, QAManager, Swarm, FrameStager, ChangeOrderReleaser):
             self.register(cls())
         from . import cad, procurement  # CAD/ECAD and procurement cogs live in their own modules
 
