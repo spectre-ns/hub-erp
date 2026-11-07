@@ -136,6 +136,7 @@ class NewMemberMixin:
         if (bundle["members"].get(user) or {}).get("type") != "person":
             return ""
         roles = "".join(f"<label class='check'><input type='checkbox' name='roles' value='{esc(r)}'> {esc(r.replace('-', ' '))}</label>" for r in sorted(bundle.get("roles") or []))
+        chosen = self._val("model") if self.route == "/new-cog" else self._default_model()
         frames = "".join(f"<label class='check'><input type='checkbox' name='follows' value='{esc(n)}'> {esc(n)}</label>"
                          for n in sorted(self.hub.frames.frames) if self.hub.frames.get(n).scope != "reference")
         err = self._form_error(["name", "roles"]) if self.route in ("/new-person", "/new-cog") else ""
@@ -147,8 +148,9 @@ class NewMemberMixin:
                 f"<div class='actions'><button>{icon('send')}Propose</button></div></form></details>"
                 f"<details class='card'><summary><b>A new cog</b></summary><form method='post' action='/new-cog'>{hidden_as(user)}{self._once()}"
                 f"<label class='f'><span>Name <b>*</b></span><input name='name' required pattern='[a-z][a-z0-9-]+' placeholder='calibration-assistant' value='{esc(self._val('name') if self.route == '/new-cog' else '')}'></label>"
-                f"<label class='f'><span>Model</span><input name='model' list='models' value='{esc(self._val('model') if self.route == '/new-cog' else self._default_model())}'></label>"
-                f"<datalist id='models'>{''.join(f'<option value=\'{esc(c[chr(118)+chr(97)+chr(108)+chr(117)+chr(101)])}\'>{esc(c[chr(108)+chr(97)+chr(98)+chr(101)+chr(108)])}</option>' for c in self._model_choices())}</datalist>"
+                f"<label class='f'><span>Model <i>(what Ollama serves now; a cog comes with its model)</i></span><select name='model' required>"
+                + "".join(f"<option value='{esc(c['value'])}'{' selected' if c['value'] == chosen else ''}{'' if c['available'] else ' disabled'}>{esc(c['label'])}</option>"
+                          for c in self._model_choices()) + "</select></label>"
                 f"<label class='f'><span>Prompt: its standing instructions <b>*</b></span><textarea name='prompt' rows='3' required>{esc(self._val('prompt') if self.route == '/new-cog' else '')}</textarea></label>"
                 f"<fieldset><legend>Roles <b>*</b></legend><div class='checks'>{roles}</div></fieldset>"
                 f"<fieldset><legend>Procedures it follows (it is routed work only from these)</legend><div class='checks'>{frames}</div></fieldset>"
@@ -163,8 +165,16 @@ class NewMemberMixin:
         return available_models()["choices"]
 
     def _default_model(self) -> str:
-        ch = self._model_choices()
-        return ch[0]["value"] if ch else "claude-sonnet-5-5"
+        """For a new cog: the model the organization's cogs already use (when Ollama serves it), else the largest
+        model Ollama serves, else nothing (no model, no cog)."""
+        from collections import Counter
+
+        ch = [c for c in self._model_choices() if c["available"]]
+        served = {c["value"] for c in ch}
+        used = Counter(p.get("model") for p in ((self.bundle or {}).get("cogs") or {}).values() if p.get("model") in served)
+        if used:
+            return used.most_common(1)[0][0]
+        return ch[0]["value"] if ch else ""
 
     def post_cog_model(self):
         self._need_release()

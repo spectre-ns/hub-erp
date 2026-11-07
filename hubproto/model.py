@@ -165,6 +165,7 @@ def available_models(refresh: bool = False) -> dict:
     name falls back to without one."""
     local, err = ollama_models(refresh)
     key = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    local = sorted(local, key=lambda m: -(m.get("size_gb") or 0))  # the most capable (largest) installed model first
     choices = [{"value": f"ollama/{m['name']}", "label": f"{m['name']} ({m['params']} {m['family']}, local)".replace("( ", "("), "available": True} for m in local]
     choices += [{"value": c, "label": c + (" (Anthropic)" if key else " (needs an Anthropic key: not available here)"), "available": key} for c in CLAUDE_MODELS]
     return {"ollama": local, "ollama_error": err, "anthropic_key": key, "choices": choices}

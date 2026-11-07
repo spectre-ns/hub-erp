@@ -532,7 +532,7 @@ class ViewsMixin:
                       f"<span class='muted'>{esc(what)}</span>")
             can_change = self._is_member() and (self.bundle["members"].get(user) or {}).get("type") == "person"
             rows = []
-            for c in avail["choices"]:
+            for c in sorted(avail["choices"], key=lambda c: c["value"] != current):  # its current model first, then largest first
                 mi = info.get(c["value"])
                 detail = f"{mi['params']} {mi['family']} · {mi['quant']} · {mi['size_gb']} GB · installed" if mi else ("Anthropic" if c["available"] else "needs an Anthropic key")
                 name_ = mi["name"] if mi else c["value"]

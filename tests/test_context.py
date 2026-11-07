@@ -93,3 +93,11 @@ def test_agent_runs_and_chat_get_the_tools_they_can_call(hub, monkeypatch):
     names = {t["name"] for t in prep["specs"]}
     assert {"search_records", "comment", "take_turn", "finish"} <= names
     assert "Tools you can call now" in prep["system"] and all(f"- {n}:" in prep["system"] for n in names)
+
+
+def test_models_are_listed_as_ollama_serves_them_largest_first(monkeypatch):
+    served = [{"name": "granite4.2:3b", "params": "3.7B", "family": "granite", "quant": "Q4_K_M", "size_gb": 2.2},
+              {"name": "qwen3:14b", "params": "14.8B", "family": "qwen3", "quant": "Q4_K_M", "size_gb": 9.3}]
+    monkeypatch.setattr(model_mod, "ollama_models", lambda refresh=False: (served, ""))
+    choices = model_mod.available_models()["choices"]
+    assert [c["value"] for c in choices[:2]] == ["ollama/qwen3:14b", "ollama/granite4.2:3b"]
