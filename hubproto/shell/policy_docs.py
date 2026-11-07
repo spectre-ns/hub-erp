@@ -110,7 +110,7 @@ class PolicyDocsMixin:
         can, why = self._may_edit_document(rec)
         locked = f.get("checked_out_by")
         blocked = (not can and f"you cannot change it: {why}") or (f.get("doc_class") in ("evidence", "external") and "it is kept as received") or \
-            (f.get("doc_class") == "controlled" and rec["state"] not in ("open", "draft", "returned", "failed") and
+            (f.get("doc_class") in ("controlled", "template") and rec["state"] not in ("open", "draft", "returned", "failed") and
              ("it is the policy in force; use Edit this policy to make a draft" if f.get("doc_type") == "frame" else "it is in force; a controlled document changes through a new revision")) or \
             (locked and locked != user and f"{locked} has it checked out")
         text = self.hub.draft_text(rec) if self.hub.dms.versions(rec["locator"]) else ""

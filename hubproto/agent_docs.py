@@ -35,7 +35,7 @@ def create_document(tools, a: dict) -> dict:
         return {"error": f"format must be one of {', '.join(DOC_EXTS)}"}
     if folder not in (tools.bundle.get("folders") or []):
         return {"error": f"there is no folder {folder!r} in the release"}
-    allowed = authz.check(tools.bundle, tools.cog, "create", "document", folder)
+    allowed = tools.both_may("create", "document", folder) if hasattr(tools, "both_may") else authz.check(tools.bundle, tools.cog, "create", "document", folder)
     if not allowed["allowed"]:
         return {"error": allowed["why"]}
     content, mime = wopi.blank_document(ext)

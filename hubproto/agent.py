@@ -203,6 +203,19 @@ class AgentTools(RecordTools):
             return f"{to} may not read {', '.join(hidden)}; do not pass on what is in it"
         return ""
 
+    def both_may(self, action: str, obj: str, folder: str) -> dict:
+        """authz.check for the cog and, when it works for someone, for that person too: a cog is their hands, never a
+        way round what they may do. Returns the cog's decision, or a refusal naming who may not."""
+        from . import authz
+
+        mine = authz.check(self.bundle, self.cog, action, obj, folder)
+        if not mine["allowed"] or not self.for_whom:
+            return mine
+        theirs = authz.check(self.bundle, self.for_whom, action, obj, folder)
+        if not theirs["allowed"]:
+            return {"allowed": False, "why": f"{self.for_whom}, for whom you work, may not {action} {obj} in {folder}: {theirs['why']}"}
+        return mine
+
     def execute(self, name: str, args: dict) -> dict:
         args = args if isinstance(args, dict) else {}
         write = name in WRITE_TOOLS or name in EXTRA_ACTS
@@ -354,7 +367,7 @@ class AgentTools(RecordTools):
         if not title:
             return {"error": "a document needs a title"}
         folder = str(a.get("folder") or "Quality/Controlled Documents")
-        allowed = authz.check(self.bundle, self.cog, "create", "document", folder)
+        allowed = self.both_may("create", "document", folder)
         if not allowed["allowed"]:
             return {"error": allowed["why"]}
         change_type = "major"  # a new document has nothing to be a minor revision of: whatever the request said

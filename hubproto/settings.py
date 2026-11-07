@@ -124,7 +124,8 @@ def sentence(rule: dict, processes: dict | None = None) -> str:
         s = f"The {cog} cog may approve {rule['process']} {obj}"
         if rule.get("max_amount") is not None:
             s += f" under {money(rule['max_amount'])} {rule.get('currency') or ''}".rstrip()
-        conds = [_PHRASE.get(c, _words(c)) for c in rule.get("conditions") or []]
+        conds = [f"{int(rule.get('adversarial_reviews') or 0)} adversarial reviews pass" if c == "adversarial_reviews_pass" else _PHRASE.get(c, _words(c))
+                 for c in rule.get("conditions") or []]
         if conds:
             s += " when " + " and ".join(conds)
         if rule.get("max_per_day"):
@@ -151,6 +152,8 @@ def sentence(rule: dict, processes: dict | None = None) -> str:
             lines.append("References: " + ", ".join(rule["references"]))
         if rule.get("autonomy"):
             lines.append(f"Autonomy: {rule['autonomy']}")
+        if rule.get("lenses"):
+            lines.append("Lenses: " + ", ".join(rule["lenses"]))
         lines += [f"Duty: {d}" for d in rule.get("duties") or []]
         return "\n".join(lines)
     if k == "process":

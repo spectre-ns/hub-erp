@@ -564,6 +564,14 @@ class Hub:
         self.proposals.save(p)
         return new
 
+    # --- controlled templates --------------------------------------------------
+    def import_templates(self, by: str, submit: bool = False, paths=None) -> list[dict]:
+        """The Frames' Markdown templates into the library as controlled templates (see hubproto.templates): idempotent,
+        keyed by lineage; a changed source updates the open draft or becomes a new revision of the one in force."""
+        from . import templates
+
+        return templates.import_templates(self, by=by, submit=submit, paths=paths)
+
     # --- the Frames as released -----------------------------------------------
     def released_frames(self, digest: str | None = None):
         """The Frame store as a release pinned it: each Frame's text from that release (the release in force by
@@ -631,7 +639,27 @@ class Hub:
         return [n for n, m in sorted(bundle.get("members", {}).items()) if m.get("type") == "cog" and n in self.registry.ids()
                 and "chat" in getattr(self.registry.get(n), "tasks", [])]
 
-    def chat_prepare(self, sender: str, cog: str, text: str, about: str | None = None) -> dict:
+    def chat_tools(self, cog: str, sender: str, run_id: str, text: str, about: str | None = None):
+        """The cog's governed tools for one chat turn, recorded as an agent run (so /agent-run shows what it did and a
+        person confirms what it proposed): the look tools and, within its Autonomy, the write tools. Every write goes
+        through the same checks as anywhere else: what the cog may do and what the person asking may do."""
+        from .agent import AgentStore, AgentTools, act_specs, agents_enabled, look_specs
+
+        meta = self.releases.current()
+        bundle = self.releases.bundle(meta["digest"]) if meta else {}
+        mode = ((bundle.get("cogs") or {}).get(cog) or {}).get("autonomy") or "propose"
+        if not agents_enabled():
+            mode = "read"
+        actions = int(os.environ.get("HUBPROTO_CHAT_ACTIONS") or 5)
+        store = AgentStore(self.root / "state" / "agents")
+        store.append(run_id, {"type": "started", "cog": cog, "goal": text, "by": sender, "trigger": "chat", "mode": mode, "about": about,
+                              "budget": {"actions": actions, "rounds": 8}, "release": meta["digest"] if meta else ""})
+        tools = AgentTools(self, cog, run_id, mode, actions, store, requester=sender, goal=text)
+        specs = [s for s in look_specs() + act_specs(mode) if s["name"] != "finish"]
+        return tools, specs, mode, store
+
+    def chat_prepare(self, sender: str, cog: str, text: str, about: str | None = None, tools_now: list[dict] | None = None,
+                     mode: str = "") -> dict:
         """Everything a chat turn needs before the model is asked (fast; kernel reads): the system prompt and the history.
         Returns {"system", "history", "model", "about", "cog"}; raises ValueError for a bad request."""
         from .cogs import RunContext, chat_prompt
@@ -662,11 +690,11 @@ class Hub:
             item = self.kernel.get(r["record"]) if r.get("record") else None
             queue.append(f"{item['number'] if item else r['process']}: {(r.get('pending') or {}).get('title', '')}")
         history = [{"role": "assistant" if m["from"] == cog else "user", "content": m["body"]} for m in self.inbox.chat_thread(sender, cog)[-12:]]
-        return {"system": chat_prompt(ctx, rec, cog_id=cog, person=sender, queue=queue), "history": history,
+        return {"system": chat_prompt(ctx, rec, cog_id=cog, person=sender, queue=queue, tools_now=tools_now, mode=mode), "history": history,
                 "model": profile.get("model") or "stand-in", "about": rec["locator"] if rec else None, "cog": cog,
                 "sops": sorted(ctx.sop_texts()), "rec": rec}
 
-    def chat_answer(self, prep: dict, sender: str, text: str, call_tool=None) -> dict:
+    def chat_answer(self, prep: dict, sender: str, text: str, call_tool=None, specs: list[dict] | None = None) -> dict:
         """Ask the model (slow), letting it look records up with the record tools as the person chatting.
         ``call_tool(name, args)`` runs one tool; the shell passes one that takes the hub's lock for the call."""
         from .cogs import stand_in_chat
@@ -682,7 +710,7 @@ class Hub:
                     + json.dumps(looked["result"], default=str, ensure_ascii=False)[:6000]
                     + "\nAnswer from these results; name the record numbers (the messenger turns them into links)."}
         try:
-            out = self._chat_call(prep, text, call_tool or tools.call, tool_specs)
+            out = self._chat_call(prep, text, call_tool or tools.call, (lambda: specs) if specs else tool_specs)
         except ModelUnavailable as e:
             raise ValueError(f"{prep['cog']} is not available: {e}") from None
         reply = plain_chat(out["text"] or "")

@@ -28,7 +28,8 @@ FOLDER_APPS = {"Quality": "quality", "Engineering": "engineering", "Purchasing":
 # Fixed pages per app (name, path, icon) that are not record-type lists.
 APP_PAGES: dict[str, list[tuple[str, str, str]]] = {
     "inbox": [("Waiting for me", "/inbox", "inbox"), ("My work", "/boards", "kanban"), ("Runs", "/runs", "activity")],
-    "documents": [("Files by folder", "/files", "folder"), ("Controlled documents", "/items/document?filter=controlled", "file-text")],
+    "documents": [("Files by folder", "/files", "folder"), ("Controlled documents", "/items/document?filter=controlled", "file-text"),
+                  ("Templates", "/templates", "clipboard")],
     "purchasing": [("Suppliers", "/suppliers", "truck")],
     "people": [("Members and cogs", "/people", "users")],
     "settings": [("Your changes", "/settings", "edit"), ("People and roles", "/settings/people", "users"), ("Permissions", "/settings/permissions", "lock"),

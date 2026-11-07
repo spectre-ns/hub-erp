@@ -690,9 +690,9 @@ class ViewsMixin:
         if run:
             try:
                 for ev in self.hub.runner.track(run["id"]):
-                    if ev["type"] in ("gate.cog_review", "gate.declined", "gate.skipped", "gate.escalated", "gate.overdue", "run.failed", "run.retried", "run.resubmitted", "run.cancelled"):
+                    if ev["type"] in ("gate.cog_review", "gate.reviewing", "gate.lens", "gate.declined", "gate.skipped", "gate.escalated", "gate.overdue", "run.failed", "run.retried", "run.resubmitted", "run.cancelled"):
                         who = ev.get("cog") or ev.get("by") or "hub"
-                        kind = "decision" if ev["type"] == "gate.cog_review" else "history"
+                        kind = "decision" if ev["type"] in ("gate.cog_review", "gate.lens") else "history"
                         entries.append((ev["at"], who, kind, track_sentence(ev, self._number_link)))
             except RunError:
                 pass

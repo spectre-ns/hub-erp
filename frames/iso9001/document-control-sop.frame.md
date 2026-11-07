@@ -3,7 +3,7 @@ type: frame [0.2]
 name: document-control-sop
 description: "Lifecycle of controlled documents, who approves them, when the document reviewer cog may, how long a review may take, and the training that follows a release."
 visibility: internal
-version: "2.2.0"
+version: "2.3.0"
 scope: department
 maintainer: carol
 inherits: org-model
@@ -46,8 +46,8 @@ Overdue items in document-control go to the document controller.
 
 ## Approval criteria
 The doc-reviewer cog may approve document-control documents when the change is minor.
-The qa-manager cog may approve document-control documents when its review passes and the change is minor.
-The qa-manager cog may approve document-control documents when its review passes, countersigned by a quality manager.
+The qa-manager cog may approve document-control documents when 3 adversarial reviews pass and the change is minor.
+The qa-manager cog may approve document-control documents when 3 adversarial reviews pass, countersigned by a quality manager.
 
 ## Segregation of duties
 The author and the approver of a document must be different people.

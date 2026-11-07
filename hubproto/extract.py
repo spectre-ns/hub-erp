@@ -20,7 +20,7 @@ import re
 from dataclasses import dataclass, field
 
 from .frames import Frame
-from .rules import CONDITION_VOCABULARY
+from .rules import CONDITION_VOCABULARY, NUMBER_WORDS
 
 RULE_SECTIONS = (
     "roles", "members", "folders", "permissions", "thresholds", "routing",
@@ -92,7 +92,7 @@ _PROCESS_STEP = re.compile(
     r"^(?P<n>\d+)\. \[(?P<role>[a-z][\w-]*)\] (?P<title>[^()]+?)(?: \((?P<cog>[a-z][\w-]*(?:, ?[a-z][\w-]*)*)\))?$"
 )
 _COG_HEAD = re.compile(r"^## Cog: (?P<name>[a-z0-9][\w-]*)$")
-_COG_KEY = re.compile(r"^(?P<key>Model|Prompt from|Prompt|Follows|Reviews|References|Autonomy|Duty): ?(?P<rest>.*)$")
+_COG_KEY = re.compile(r"^(?P<key>Model|Prompt from|Prompt|Follows|Reviews|References|Autonomy|Duty|Lenses): ?(?P<rest>.*)$")
 _DOC_REF = re.compile(r"\b[A-Z]{2,}-\d[\w-]*\b")
 _OPS = {"over": ">", "above": ">", "under": "<", "below": "<", "at or under": "<=", "at or over": ">="}
 
@@ -343,14 +343,20 @@ class ConventionExtractor:
             return True
         m = _CRITERIA.match(line)
         if m:
-            conds = []
+            conds, lenses = [], {}
             if m.group("conds"):
                 for phrase in m.group("conds").split(" and "):
+                    adv = re.match(r"^(\d+|two|three|four|five|six) adversarial reviews pass$", phrase.strip())
+                    if adv:
+                        conds.append("adversarial_reviews_pass")
+                        lenses["adversarial_reviews"] = int(adv.group(1)) if adv.group(1).isdigit() else NUMBER_WORDS[adv.group(1)]
+                        continue
                     conds.append(CONDITION_VOCABULARY.get(phrase.strip(), "unknown:" + phrase.strip()))
             add("approval_criteria", n, line, approver="cog:" + m.group("cog"), process=m.group("process"),
                 max_amount=number(m.group("amount")) if m.group("amount") else None,
                 currency=m.group("cur"), conditions=conds,
                 countersign=singular_role(m.group("counter")) if m.group("counter") else None,
+                **lenses,
                 **({"max_per_day": int(m.group("perday"))} if m.group("perday") else {}),
                 **({"max_amount_per_month": number(m.group("permonth")), "currency": m.group("cur") or m.group("mcur")} if m.group("permonth") else {}))
             return True

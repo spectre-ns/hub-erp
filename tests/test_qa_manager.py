@@ -75,7 +75,7 @@ def test_asked_to_approve_a_major_change_it_signs_and_a_quality_manager_counters
     assert after["pending"]["assignees"] == ["carol"] and after["pending"]["title"].startswith("Countersign")
     track = hub.runner.track(state["id"])
     signed = next(e for e in track if e["type"] == "gate.signed")
-    assert signed["by"] == "qa-manager" and "its review passed" in signed["meaning"] and signed["countersign_needed"] == "quality-manager"
+    assert signed["by"] == "qa-manager" and "3 adversarial reviews passed (compliance, consistency, impact)" in signed["meaning"] and signed["countersign_needed"] == "quality-manager"
     assert any(e["type"] == "gate.stepped_in" and e["was_waiting_for"] == waited for e in track)
     rec = hub.kernel.get(state["record"])
     assert any(d.get("by") == "qa-manager" and d.get("countersign_needed") for d in rec["decisions"])
@@ -107,7 +107,7 @@ def test_asked_to_approve_a_minor_change_its_signature_stands_alone(shell):
     after = hub.runner.load(state["id"])
     assert after["status"] == "completed" and hub.kernel.get(state["record"])["state"] == "effective"
     decided = next(e for e in hub.runner.track(state["id"]) if e["type"] == "gate.decided")
-    assert decided["by"] == "qa-manager" and "its review passed" in decided["meaning"] and "the change is minor: yes" in decided["meaning"]
+    assert decided["by"] == "qa-manager" and "3 adversarial reviews passed (compliance, consistency, impact)" in decided["meaning"] and "the change is minor: yes" in decided["meaning"]
 
 
 def test_a_new_document_declared_minor_is_a_major_change(shell):

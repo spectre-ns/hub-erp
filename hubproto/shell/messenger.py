@@ -28,9 +28,9 @@ function store(k,v){try{localStorage.setItem('mx.'+k,v)}catch(e){}}
 function load(k){try{return localStorage.getItem('mx.'+k)}catch(e){return null}}
 var cog=load('cog');var opt=cog&&sel.querySelector('option[value="'+cog+'"]');if(!opt||opt.disabled){var first=sel.querySelector('option:not([disabled])');cog=first?first.value:sel.value}sel.value=cog;
 function open(on,quiet){panel.hidden=!on;btn.setAttribute('aria-expanded',on?'true':'false');root.classList.toggle('open',on);store('open',on?'1':'0');if(on){refresh();if(!quiet)setTimeout(function(){ta.focus()},30)}else if(!quiet){btn.focus()}}
-var NUM=/\b(?:[A-Z]{2,5}-\d{4}-\d{2,5}|[A-Z]{2,5}-\d{2,6})\b/g;
+var NUM=/\/agent-run\/[\w-]+|\b(?:[A-Z]{2,5}-\d{4}-\d{2,5}|[A-Z]{2,5}-\d{2,6})\b/g;
 function linkify(el,text){var i=0,m;NUM.lastIndex=0;while((m=NUM.exec(text))){el.appendChild(document.createTextNode(text.slice(i,m.index)));
-var a=document.createElement('a');a.href='/record/'+encodeURIComponent(m[0])+'?as='+encodeURIComponent(me);a.textContent=m[0];el.appendChild(a);i=m.index+m[0].length}
+var a=document.createElement('a');a.href=(m[0].charAt(0)==='/'?m[0]:'/record/'+encodeURIComponent(m[0]))+'?as='+encodeURIComponent(me);a.textContent=m[0].charAt(0)==='/'?'review and confirm':m[0];el.appendChild(a);i=m.index+m[0].length}
 el.appendChild(document.createTextNode(text.slice(i)))}
 function li(cls){var x=document.createElement('li');x.className='mx-msg '+cls;return x}
 function bubble(m){var x=li(m.mine?'mine':'theirs');if(!m.mine){var a=document.createElement('span');a.className='mx-av';a.innerHTML=avatars[m.from]||'';x.appendChild(a)}
@@ -62,6 +62,12 @@ if(load('open')==='1')open(true,true);
 })();"""
 
 
+_DID = {"move_record": "moved", "update_fields": "changed", "apply_document_ops": "edited", "edit_document": "edited",
+        "start_process": "started", "take_turn": "took its turn on", "comment": "commented on", "assign": "assigned", "link_records": "linked",
+        "create_record": "created a record", "create_document": "created a document", "create_task": "created a task",
+        "send_back_to_start": "sent back", "complete_step": "completed the step of", "hand_back": "handed back"}
+
+
 def looked_words(calls: list[dict]) -> str:
     """'looked at BILL-0012, searched "torque"' for the line under a cog's answer."""
     bits = []
@@ -75,6 +81,10 @@ def looked_words(calls: list[dict]) -> str:
             bits.append("checked " + (a.get("who") or "your") + " queue")
         elif c["tool"] == "overview":
             bits.append("counted the records")
+        elif c["tool"] in _DID and a.get("number"):
+            bits.append(f"{_DID[c['tool']]} {a['number']}" + (f" to {a['folder']}" if c["tool"] == "move_record" and a.get("folder") else ""))
+        elif c["tool"] in _DID:
+            bits.append(_DID[c["tool"]])
     seen, out = set(), []
     for b in bits:
         if b not in seen:

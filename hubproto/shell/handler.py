@@ -41,7 +41,7 @@ RAIL_MAIN = [("Home", "/", "home"), ("Inbox", "/inbox", "inbox"), ("Documents", 
 RAIL_POLICY = [("Runs", "/runs", "activity"), ("Policy versions", "/releases", "layers"), ("Policies", "/frames", "book"),
                ("Conformance", "/conformance", "check-circle"), ("People and roles", "/admin", "users")]
 # Routes the identity switcher may stay on (anything else goes home).
-STAY_ROUTES = ("/", "/inbox", "/files", "/documents", "/boards", "/runs", "/releases", "/frames", "/why", "/admin", "/conformance", "/people", "/suppliers",
+STAY_ROUTES = ("/", "/inbox", "/files", "/documents", "/templates", "/boards", "/runs", "/releases", "/frames", "/why", "/admin", "/conformance", "/people", "/suppliers",
                "/settings")
 STAY_PREFIXES = ("/record/", "/document/", "/run/", "/frame/", "/release/", "/items/", "/app/", "/user/", "/settings/")
 # The small script: tabs show one panel at a time (every panel is visible without it) and the print button prints.
@@ -225,7 +225,7 @@ class BaseHandler(BaseHTTPRequestHandler):
             fixed = {"/chat-thread": self.page_chat_thread, "/queue-status": self.page_queue_status, "/queue": self.page_queue, "/proposals": self.page_proposals, "/": self.page_home, "/files": self.page_files, "/documents": self.page_files, "/boards": self.page_boards, "/inbox": self.page_inbox,
                      "/runs": self.page_runs, "/releases": self.page_releases, "/frames": self.page_frames, "/why": self.page_why,
                      "/admin": self.page_admin, "/conformance": self.page_conformance, "/download": self.page_download,
-                     "/start": self.page_start, "/people": self.page_people, "/suppliers": self.page_suppliers, "/settings": self.page_settings}
+                     "/start": self.page_start, "/people": self.page_people, "/suppliers": self.page_suppliers, "/settings": self.page_settings, "/templates": self.page_templates}
             if r in fixed:
                 return fixed[r]
             for prefix, fn in (("/record/", self.page_record), ("/document/", self.page_document), ("/doc/", self.page_document),
@@ -242,7 +242,7 @@ class BaseHandler(BaseHTTPRequestHandler):
                  "/finish-edit": self.post_finish_edit, "/new-document": self.post_new_document, "/working-copy": self.post_working_copy, "/apply-replies": self.post_apply_replies, "/start-on": self.post_start_on, "/chat": self.post_chat, "/chat-clear": self.post_chat_clear, "/frame-draft": self.post_frame_draft, "/text-save": self.post_text_save,
                  "/frame-propose": self.post_frame_propose, "/frame-withdraw": self.post_frame_withdraw, "/proposal-review": self.post_proposal_review, "/proposal-release": self.post_proposal_release,
                  "/agent-task": self.post_agent_task, "/settings-edit": self.post_settings_edit, "/settings-check": self.post_settings_check,
-                 "/settings-propose": self.post_settings_propose, "/settings-discard": self.post_settings_discard, "/queue-withdraw": self.post_queue_withdraw, "/assign": self.post_assign, "/agent-confirm": self.post_agent_confirm, "/new-person": self.post_new_person, "/new-cog": self.post_new_cog, "/cog-model": self.post_cog_model, "/restart": self.post_restart, "/mark-applied": self.post_mark_applied, "/verify-edit": self.post_verify_edit, "/editor-debug": self.post_editor_debug,
+                 "/settings-propose": self.post_settings_propose, "/settings-discard": self.post_settings_discard, "/queue-withdraw": self.post_queue_withdraw, "/template-revise": self.post_template_revise, "/assign": self.post_assign, "/agent-confirm": self.post_agent_confirm, "/new-person": self.post_new_person, "/new-cog": self.post_new_cog, "/cog-model": self.post_cog_model, "/restart": self.post_restart, "/mark-applied": self.post_mark_applied, "/verify-edit": self.post_verify_edit, "/editor-debug": self.post_editor_debug,
                  "/upload": self.post_upload, "/checkout": self.post_checkout, "/checkin": self.post_checkin, "/link": self.post_link,
                  "/snapshot": self.post_snapshot, "/hold": self.post_hold, "/resubmit": self.post_resubmit, "/retry": self.post_retry,
                  "/cancel": self.post_cancel, "/undo-checkout": self.post_undo_checkout, "/bulk-hold": self.post_bulk_hold}

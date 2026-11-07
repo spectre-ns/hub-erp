@@ -336,6 +336,8 @@ def _criteria_widens(old: dict, new: dict) -> bool:
         return True
     if (old.get("currency") or None) != (new.get("currency") or None) and old.get("max_amount") is not None:
         return True
+    if int(new.get("adversarial_reviews") or 0) < int(old.get("adversarial_reviews") or 0):
+        return True  # fewer independent reviews before a cog signs
     return any(_limit_raised(old.get(k), new.get(k)) for k in ("max_amount", "max_per_day", "max_amount_per_month"))
 
 

@@ -513,7 +513,8 @@ class DocumentDrafter(Cog):
         existing = ctx.dms.versions(ctx.record) if (ctx.dms is not None and ctx.record) else []
         body = rec.get("body") or ""
         out = {"title": rec.get("title", ""), "change_type": change_type,
-               "doc_type": rec.get("doc_type", "sop"), "doc_class": "controlled",
+               "doc_type": rec.get("doc_type", "sop"),
+               "doc_class": rec.get("doc_class") if rec.get("doc_class") in ("controlled", "template") else "controlled",
                "training_roles": rec.get("training_roles", [])}
         if body:  # a body in the submission is the draft's content
             out["body"] = body
@@ -886,19 +887,25 @@ def cog_context(ctx: RunContext, rec: dict | None, *, sop_chars: int | None = No
     return "\n\n".join(parts)
 
 
-def chat_prompt(ctx: RunContext, rec: dict | None, *, cog_id: str, person: str, queue: list[str] | None = None) -> str:
+def chat_prompt(ctx: RunContext, rec: dict | None, *, cog_id: str, person: str, queue: list[str] | None = None,
+                tools_now: list[dict] | None = None, mode: str = "") -> str:
     """The system prompt for an informal chat: who the cog is, what it follows, what the person is looking at
     (the whole item, when on one), who they are and what is in the cog's queue, then how to talk."""
     from .tools import TOOLS as _TOOLS
 
-    system = cog_context(ctx, rec, task="chat", tools_now=_TOOLS)
+    system = cog_context(ctx, rec, task="chat" if not tools_now else "chat-act", tools_now=tools_now or _TOOLS)
     bundle = ctx.bundle or {}
     roles = sorted((bundle.get("members") or {}).get(person, {}).get("roles") or [])
     extra = [f"YOU ARE CHATTING WITH {person}" + (f" ({', '.join(r.replace('-', ' ') for r in roles)})" if roles else "") + "."]
     extra.append(f"THEY ARE LOOKING AT {rec['number']} right now." if rec else "They are not looking at any particular item.")
     if queue:
         extra.append("WAITING FOR YOU (your queue):\n" + "\n".join(f"- {q}" for q in queue[:10]))
-    return system + "\n\n" + "\n".join(extra)
+    if tools_now:
+        extra.append({"act": "YOUR AUTONOMY: act. When they ask you to do something, do it with your tools.",
+                      "propose": "YOUR AUTONOMY: propose. What you do with your write tools is recorded as a proposal; tell them it waits "
+                                 "for their confirmation.",
+                      "read": "YOUR AUTONOMY: read. You can only look things up; say what should be done and who can do it."}.get(mode, ""))
+    return system + "\n\n" + "\n".join(x for x in extra if x)
 
 
 def stand_in_chat(cog_id: str, text: str, rec: dict | None, sops: list[str]) -> str:
@@ -915,7 +922,7 @@ class ReviewerCog(Cog):
     answers its inbox, and files records it is asked to file."""
 
     kind = "context"
-    tasks = ["review", "inbox", "review-document", "edit-document", "answer", "chat"]
+    tasks = ["review", "inbox", "review-document", "edit-document", "answer", "chat", "lens"]
     reaches = ["kernel:records", "kernel:documents"]
     files_process = ""
 
@@ -1075,35 +1082,169 @@ class ReviewerCog(Cog):
                 seen_before = ctx.runner.seen_digest(ctx.runner.load(ctx.run_id))
             except Exception:
                 seen_before = ""
+        adv: dict = {}
         for crit in crits:
             ctx_c = routing_ctx
-            if "review_passes" in crit.get("conditions", []):
+            judged_conds = {"review_passes", "adversarial_reviews_pass"} & set(crit.get("conditions", []))
+            if judged_conds:
                 # Fixed conditions first (a minor-change criterion should not cost a model review it cannot use).
-                fixed = {**crit, "conditions": [c for c in crit["conditions"] if c != "review_passes"]}
+                fixed = {**crit, "conditions": [c for c in crit["conditions"] if c not in judged_conds]}
                 ok_fixed, why = evaluate_criteria(fixed, routing_ctx)
                 if not ok_fixed:
                     reasons = why
                     continue
-                j = judgment()
-                ctx_c = {**routing_ctx, "conditions": {**(routing_ctx.get("conditions") or {}), "review_passes": j["passes"]}}
+                facts = dict(routing_ctx.get("conditions") or {})
+                if "adversarial_reviews_pass" in judged_conds:
+                    adv = self._adversarial(ctx, crit)
+                    if adv["state"] == "pending":
+                        # The lenses are in this cog's queue; the item keeps waiting for it and it signs once they are in.
+                        return self.ok("review", {"verdict": "reviewing", "reasons": [adv["summary"]], "lenses": adv["missing"],
+                                                  "seen_before": seen_before})
+                    facts["adversarial_reviews_pass"] = adv["state"] == "pass"
+                if "review_passes" in judged_conds:
+                    facts["review_passes"] = judgment()["passes"]
+                ctx_c = {**routing_ctx, "conditions": facts}
             within, reasons = evaluate_criteria(crit, ctx_c)
             if within and (crit.get("max_per_day") or crit.get("max_amount_per_month")):
                 within, reasons = self._within_caps(ctx, crit, routing_ctx)
             if judged and not judged.get("passes"):
                 reasons = [f"its review did not pass ({judged['verdict']})" + (f": {judged['findings'][0]}" if judged.get("findings") else "")] + \
                     [r for r in reasons if "review_passes" not in r]
+            if adv and adv["state"] != "pass":
+                reasons = list(adv.get("reasons") or [adv["summary"]]) + [r for r in reasons if "adversarial" not in r]
             if within:
                 checks = [f"{c} holds" for c in crit.get("conditions", []) if c != "review_passes"]
                 if crit.get("max_amount") is not None:
                     checks.append(f"amount {routing_ctx.get('amount')} under {crit['max_amount']} {crit['currency']}")
+                checks = [c for c in checks if "adversarial" not in c]
                 if judged:
                     checks.insert(0, "its review passed" + (f" (evidence {self._number(ctx, judged['evidence'])})" if judged.get("evidence") else "")
                                   + (f": {judged['summary'][:240]}" if judged.get("summary") else ""))
+                if adv:
+                    checks.insert(0, adv["summary"] + (f" (evidence {self._number(ctx, adv['evidence'])})" if adv.get("evidence") else ""))
                 return self.ok("review", {"verdict": "approve", "reasons": [self._in_words(x) for x in checks], "delegating_rule": crit["source"],
-                                          "risk": payload.get("risk"), "countersign": crit.get("countersign"), "judged": bool(judged),
-                                          "evidence": judged.get("evidence"), "seen_before": seen_before})
-        return self.ok("review", {"verdict": "escalate", "reasons": [self._in_words(x) for x in reasons], "evidence": judged.get("evidence"),
-                                  "seen_before": seen_before})
+                                          "risk": payload.get("risk"), "countersign": crit.get("countersign"), "judged": bool(judged or adv),
+                                          "evidence": adv.get("evidence") or judged.get("evidence"), "seen_before": seen_before})
+        return self.ok("review", {"verdict": "escalate", "reasons": [self._in_words(x) for x in reasons],
+                                  "evidence": adv.get("evidence") or judged.get("evidence"), "seen_before": seen_before})
+
+    # ------------------------------------------------------------ adversarial reviews (lenses)
+    def lens_names(self, ctx, n: int) -> list[str] | None:
+        """The first ``n`` lenses this cog reviews with (its profile's Lenses:, or the hub's default order); None when it has fewer."""
+        from .review import DEFAULT_LENSES
+
+        names = list((ctx.profile or {}).get("lenses") or DEFAULT_LENSES)
+        return names[:n] if n <= len(names) else None
+
+    def _review_ctx(self, ctx):
+        """The cog's own reviewing is its work as a member (it files evidence), not a step of the run: the full kernel."""
+        return ctx if ctx.runner is None else replace(ctx, kernel=ctx.runner.kernel, dms=ctx.runner.dms or ctx.dms, owner=self.id)
+
+    def _adversarial(self, ctx, crit: dict) -> dict:
+        """Where the adversarial reviews of this version of the item stand. Each lens is a fresh review with one brief,
+        trying to find a reason not to approve; all must pass. A failed lens binds for this version (asking again does
+        not roll the dice again). Missing lenses go in this cog's queue as their own tasks (worked inline when the
+        queue is inline). Returns {"state": "pass"|"fail"|"pending", "summary", "reasons", "missing", "evidence"}."""
+        from .review import LENSES, file_review
+
+        n = int(crit.get("adversarial_reviews") or 0)
+        names = self.lens_names(ctx, n)
+        if not names:
+            return {"state": "fail", "summary": f"{n} adversarial reviews are required but {self.id} has fewer lenses", "missing": []}
+        rctx = self._review_ctx(ctx)
+        key = self._content_key(rctx) if ctx.record else ""
+        if not key:
+            return {"state": "fail", "summary": "there is no item to review", "missing": []}
+        have = self._lens_results(ctx).get(key, {})
+        missing = [x for x in names if x not in have]
+        failed = [x for x in names if x in have and not have[x]["passes"]]
+        if missing and not failed:
+            queue = getattr(ctx.runner, "queue", None) if ctx.runner is not None else None
+            if queue is not None and queue.mode != "inline" and ctx.run_id:
+                for i, lens in enumerate(names, 1):
+                    if lens in missing:
+                        queue.submit(self.id, "lens", by=self.id, title=f"{LENSES.get(lens, (lens,))[0]} review ({i} of {n}) of {rctx.kernel.get(ctx.record)['number']}",
+                                     record=ctx.record, payload={"run": ctx.run_id, "lens": lens, "i": i, "n": n, "lenses": names},
+                                     key=f"lens:{key}:{lens}")
+                return {"state": "pending", "missing": missing,
+                        "summary": f"{len(missing)} of {n} adversarial reviews still to do ({', '.join(missing)}); it signs only when all pass"}
+            for i, lens in enumerate(names, 1):
+                if lens in missing:
+                    self.task_lens({"lens": lens, "i": i, "n": n, "lenses": names}, ctx)
+                    if not self._lens_results(ctx).get(key, {}).get(lens, {}).get("passes"):
+                        break  # one failed lens decides it: the others are not needed
+            have = self._lens_results(ctx).get(key, {})
+            missing = [x for x in names if x not in have]
+            failed = [x for x in names if x in have and not have[x]["passes"]]
+        state = "fail" if failed else ("pass" if not missing else "fail")
+        evidence = (have.get("_evidence") or {}).get(state)
+        if evidence is None and ctx.record and (state == "pass" or failed):
+            reviews = [have[x]["review"] for x in names if x in have and have[x].get("review")]
+            doc = file_review(rctx, rctx.kernel.get(ctx.record), reviews, f"{n} adversarial reviews before approval", by=self.id) if reviews else None
+            evidence = doc["locator"] if doc else None
+            self._save_lens(ctx, key, "_evidence", {**(have.get("_evidence") or {}), state: evidence})
+        if state == "pass":
+            return {"state": "pass", "evidence": evidence, "missing": [],
+                    "summary": f"{n} adversarial reviews passed ({', '.join(names)})"}
+        reasons = []
+        for x in failed:
+            top = (have[x].get("findings") or ["it found a problem"])[0]
+            reasons.append(f"the {x} review did not pass: {top}")
+        return {"state": "fail", "evidence": evidence, "missing": missing, "reasons": reasons,
+                "summary": reasons[0] if reasons else f"the adversarial reviews are not complete ({', '.join(missing)})"}
+
+    def task_lens(self, input: dict, ctx: RunContext) -> dict:
+        """One adversarial review of the item, with one lens and a fresh context; the result is kept for this version
+        of the item. Returns {"lens", "passes", "verdict", "done" (all lenses in), "failed" (one did not pass)}."""
+        from . import review as _review
+        from .model import stand_in_allowed
+
+        lens = input["lens"]
+        rctx = self._review_ctx(ctx)
+        rec = rctx.kernel.get(ctx.record) if ctx.record else None
+        if rec is None:
+            return make_envelope(self.id, self.version, "lens", error={"code": "no-record", "detail": "nothing to review"})
+        key = self._content_key(rctx)
+        have = self._lens_results(ctx).get(key, {})
+        if lens in have:  # done already for this version (a re-run after a crash, or asked twice)
+            r = have[lens]
+        else:
+            rv = _review.review(self.id, ctx.profile, rctx, rec, judgment=True, lens=lens, lens_of=(int(input.get("i") or 1), int(input.get("n") or 1)))
+            passes = rv["verdict"] == "pass" and (not rv.get("stand_in") or stand_in_allowed())
+            r = {"passes": passes, "verdict": rv["verdict"], "summary": (rv.get("summary") or "")[:600], "model": rv.get("model"),
+                 "findings": [f"[{p.get('severity')}] {p.get('detail')}" for p in rv.get("findings") or [] if p.get("severity") == "error"][:6]
+                 or [f"[{p.get('severity')}] {p.get('detail')}" for p in rv.get("findings") or []][:6], "review": rv,
+                 "at": __import__("hubproto.release", fromlist=["utcnow"]).utcnow()}
+            self._save_lens(ctx, key, lens, r)
+            have = self._lens_results(ctx).get(key, {})
+        names = input.get("lenses") or [lens]
+        return self.ok("lens", {"lens": lens, "passes": r["passes"], "verdict": r["verdict"], "findings": r["findings"][:3],
+                                "done": all(x in have for x in names), "failed": any(x in have and not have[x]["passes"] for x in names)})
+
+    def _lens_path(self, ctx):
+        root = getattr(ctx.runner, "root", None)
+        return (root.parent / "judgments" / f"{self.id}-lenses.json") if root is not None else None
+
+    def _lens_results(self, ctx) -> dict:
+        path = self._lens_path(ctx)
+        if path is None:
+            return getattr(self, "_lens_mem", {})
+        try:
+            return json.loads(path.read_text())
+        except (OSError, ValueError):
+            return {}
+
+    def _save_lens(self, ctx, key: str, lens: str, result) -> None:
+        data = self._lens_results(ctx)
+        data.setdefault(key, {})[lens] = result
+        path = self._lens_path(ctx)
+        if path is None:
+            self._lens_mem = data
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=1, default=str))
+        tmp.replace(path)
 
     @staticmethod
     def _in_words(reason: str) -> str:
@@ -1282,7 +1423,8 @@ class DocReviewer(ReviewerCog):
 class QAManager(ReviewerCog):
     id = "qa-manager"
     description = ("QA manager team member: drafts and revises controlled documents, reviews documents and changes, and approves "
-                   "on its own review where its criteria allow, with a quality manager countersigning major changes.")
+                   "where its criteria allow once independent adversarial reviews of the document all pass, with a quality manager "
+                   "countersigning major changes.")
 
 
 class QualityAssistant(ReviewerCog):

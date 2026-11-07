@@ -75,7 +75,7 @@ def create_record(t, a: dict) -> dict:
     if folder not in (bundle.get("folders") or []):
         return {"error": f"there is no folder {folder!r} in the policy release"}
     obj = _object_of(hub, type_)
-    allowed = authz.check(bundle, t.cog, "create", obj, folder)
+    allowed = t.both_may("create", obj, folder) if hasattr(t, "both_may") else authz.check(bundle, t.cog, "create", obj, folder)
     if not allowed["allowed"]:
         return {"error": allowed["why"]}
     rec = hub.kernel.create(type_, folder, fields, by=t.cog, run_id=f"agent-{t.run_id}")
@@ -138,6 +138,9 @@ def update_fields(t, a: dict) -> dict:
             return {"error": f"neither you nor {who or 'anyone you work for'} may change {rec['number']}: "
                              f"{allowed['why']}" + ("" if theirs else f"; it is not {who}'s draft" if who else "")}
         allowed = mine
+    elif t.for_whom and not authz.check(bundle, t.for_whom, "update", obj, rec["folder"])["allowed"] and t.for_whom not in (
+            rec.get("created_by"), rec["fields"].get("owner"), rec["fields"].get("author"), rec["fields"].get("requested_by"), *(rec.get("assignees") or [])):
+        return {"error": f"{t.for_whom}, for whom you work, may not change {rec['number']}"}
     try:
         after = hub.kernel.set_fields(rec["locator"], fields, by=t.cog, run_id=f"agent-{t.run_id}")
     except KernelGuardError as e:
@@ -168,9 +171,12 @@ def move_record(t, a: dict) -> dict:
     if run and run["status"] in ("waiting", "submitted", "running"):
         return {"error": f"{rec['number']} is in a {run['process']} run; it is filed where its process keeps it"}
     obj = _object_of(hub, rec["type"])
-    allowed = authz.check(bundle, t.cog, "create", obj, folder)
+    allowed = t.both_may("create", obj, folder) if hasattr(t, "both_may") else authz.check(bundle, t.cog, "create", obj, folder)
     if not allowed["allowed"]:
         return {"error": allowed["why"]}
+    if getattr(t, "for_whom", "") and not authz.check(bundle, t.for_whom, "update", obj, rec["folder"])["allowed"] \
+            and t.for_whom not in (rec.get("created_by"), rec["fields"].get("owner"), rec["fields"].get("author")):
+        return {"error": f"{t.for_whom}, for whom you work, may not take {rec['number']} out of {rec['folder']}"}
     try:
         after = hub.kernel.move(rec["locator"], folder, by=t.cog, run_id=f"agent-{t.run_id}", reason=str(a.get("reason") or f"moved by {t.cog}"))
     except KernelGuardError as e:

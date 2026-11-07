@@ -925,6 +925,8 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
             body += f"<span class='why'>You cannot change this document: {why_not}</span>"
         elif immutable:
             body += f"<span class='why'>{esc(f.get('doc_class'))} documents are never edited; file a new one that supersedes it.</span>"
+        elif rec["state"] not in EDITABLE_DOC_STATES and f.get("doc_class") == "template":
+            body += self._template_revision_html(rec)
         elif rec["state"] not in EDITABLE_DOC_STATES:
             body += (f"<span class='why'>{esc(rec['number'])} is {esc(state_name(rec['state']).lower())}; a controlled document changes only through a new revision "
                      f"(propose a document change with the same title).</span>")

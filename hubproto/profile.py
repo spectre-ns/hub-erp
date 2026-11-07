@@ -163,6 +163,12 @@ def cmd_seed(args) -> None:
     hub = Hub(Path(args.root))
     paths = install(hub, args.profile, force=args.force, log=print)
     print(f"seeded profile {args.profile!r}: {len(paths)} file(s) installed under {hub.frames.root / args.profile}")
+    if getattr(args, "as_user", None):
+        from .cli_templates import print_report
+
+        print_report(hub.import_templates(by=args.as_user))
+    else:
+        print("templates: run `hubproto templates import --as PERSON` to put them in the library as controlled templates")
     print("next: hubproto compile, then review and release with two policy owners (or bootstrap-release)")
 
 
@@ -188,6 +194,7 @@ def register(sub) -> None:
     s = sub.add_parser("seed", help="install a seed profile's Frames into this hub")
     s.add_argument("profile", help="profile name under profiles/ (for example iso9001)")
     s.add_argument("--force", action="store_true", help="overwrite Frames already installed from the profile")
+    s.add_argument("--as", dest="as_user", metavar="PERSON", help="also import the profile's templates into the library as this author")
     s.set_defaults(fn=cmd_seed)
     s = sub.add_parser("conformance", help="print the clause conformance checklist of a profile")
     s.add_argument("--profile", default="iso9001")

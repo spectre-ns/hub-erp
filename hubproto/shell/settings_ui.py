@@ -311,7 +311,7 @@ class SettingsMixin:
     # ------------------------------------------------------------ cog rails and profiles
     def _criteria_fields(self, fid: str, c: dict, roles: list[str]) -> str:
         procs = self._processes()
-        conds = [(k, p) for k, p in _PHRASES.items()]
+        conds = [(k, p) for k, p in _PHRASES.items() if k != "adversarial_reviews_pass"]  # set by the number below
         return ("<div class='fields'>"
                 + self._select("process", [(p, p) for p in sorted(procs)], self._sv(fid, "process", c.get("process", "")), label="May approve in", blank="choose…")
                 + self._input("max_amount", self._sv(fid, "max_amount", "" if c.get("max_amount") is None else f"{c['max_amount']:g}"), label="Under (amount)", hint="blank: no limit", size="9em")
@@ -320,6 +320,8 @@ class SettingsMixin:
                 + self._input("max_amount_per_month", self._sv(fid, "max_amount_per_month", "" if not c.get("max_amount_per_month") else f"{c['max_amount_per_month']:g}"),
                               label="At most a month", hint="amount", size="9em")
                 + self._select("countersign", [(r, r.replace("-", " ")) for r in roles], self._sv(fid, "countersign", c.get("countersign") or ""), label="Countersigned by", blank="nobody")
+                + self._input("adversarial_reviews", self._sv(fid, "adversarial_reviews", c.get("adversarial_reviews") or ""), label="Adversarial reviews",
+                              hint="independent lenses that must all pass; blank: none", size="6em")
                 + "</div>" + self._checks("conditions", conds, self._smulti(fid, "conditions", c.get("conditions") or []), legend="Only when"))
 
     def _settings_rails(self, rules, draft, released, check) -> str:
@@ -333,8 +335,9 @@ class SettingsMixin:
         models = available_models()
         model_opts = [(c["value"], c["label"]) for c in models["choices"] if c["available"]]
         out = ("<p>What each cog may approve on its own, and within which limits. Outside its rails a cog declines and the item goes to a "
-               "person. Rails with 'its review passes' make the cog review the item with its model first; a countersignature makes a person "
-               "sign after it.</p>")
+               "person. Rails with 'its review passes' make the cog review the item with its model first; adversarial reviews make it read the "
+               "item several times over, each time with one brief and trying to find a reason not to approve, and sign only if all pass; a "
+               "countersignature makes a person sign after it.</p>")
         for cog in cogs:
             crits = [r for r in rules if r["kind"] == "approval_criteria" and r["approver"] == f"cog:{cog}"]
             cards = ""
@@ -462,12 +465,19 @@ class SettingsMixin:
             amount = _num(f("max_amount"), "max_amount")
             per_day = _num(f("max_per_day"), "max_per_day", integer=True)
             per_month = _num(f("max_amount_per_month"), "max_amount_per_month")
+            lenses = _num(f("adversarial_reviews"), "adversarial_reviews", integer=True)
+            if lenses is not None and not 1 <= int(lenses) <= 6:
+                raise ShellError("Adversarial reviews: from 1 to 6, or blank for none.", field="adversarial_reviews")
             rule = {"kind": "approval_criteria", "approver": f"cog:{cog}", "process": proc,
                     "max_amount": float(amount) if amount is not None else None,
                     "currency": (f("currency") or "USD") if (amount is not None or per_month) else None,
                     "conditions": self._multi("conditions"), "countersign": f("countersign") or None}
             if per_day:
                 rule["max_per_day"] = int(per_day)
+            rule["conditions"] = [c for c in rule["conditions"] if c != "adversarial_reviews_pass"]
+            if lenses:
+                rule["conditions"].append("adversarial_reviews_pass")
+                rule["adversarial_reviews"] = int(lenses)
             if per_month:
                 rule["max_amount_per_month"] = float(per_month)
             return rule

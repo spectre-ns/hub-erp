@@ -125,3 +125,44 @@ def test_chat_replies_are_plain_text():
     md = "1. **[DOC-0375](#)** - *Test Document* (open)\n## Next\nsee __this__"
     assert plain_chat(md) == "1. DOC-0375 - Test Document (open)\nNext\nsee this"
     assert plain_chat("2 * 3 = 6") == "2 * 3 = 6"
+
+
+def _chat_with_tool(hub, monkeypatch, who: str, cog: str, text: str, tool: str, args: dict):
+    """The model asks for one tool in the chat, then answers with what the tool said."""
+    seen = {}
+
+    def fake(**kw):
+        seen["result"] = kw["call_tool"](tool, args)
+        seen["tools"] = [t["name"] for t in kw["tools"]]
+        return {"text": f"result: {seen['result']}", "stand_in": False, "served_model": "fake", "model": "fake",
+                "tool_calls": [{"tool": tool, "arguments": args}]}
+
+    monkeypatch.setattr(hub.model, "complete_with_tools", fake)
+    me = hub.inbox.chat_append(sender=who, to=cog, body=text)
+    t = hub.queue.submit(cog, "chat", by=who, title=text, payload={"text": text, "about": None, "line": me["id"]})
+    assert t["status"] == "done", t.get("error")
+    return seen, t
+
+
+def test_a_cog_acts_from_the_chat_when_both_may(hub, monkeypatch):
+    doc = hub.dms.create(title="Chat move", doc_class="working", folder="Quality/Controlled Documents", by="carol",
+                         content=b"# Chat move\n", filename="chat-move.md", mime="text/markdown")
+    seen, t = _chat_with_tool(hub, monkeypatch, "carol", "qa-manager", f"please move {doc['number']} to Policy",
+                              "move_record", {"number": doc["number"], "folder": "Policy"})
+    assert "move_record" in seen["tools"] and "finish" not in seen["tools"], "the write tools are offered in the chat"
+    assert seen["result"].get("ok"), seen["result"]
+    assert hub.kernel.get(doc["locator"])["folder"] == "Policy"
+    run = hub.queue.get(t["id"])["result"]["run"]
+    from hubproto.agent import AgentStore
+
+    evs = AgentStore(hub.root / "state" / "agents").load(run)
+    assert evs[0]["trigger"] == "chat" and evs[-1]["type"] == "finished" and evs[-1]["actions"] == 1
+
+
+def test_a_cog_never_acts_beyond_what_the_person_asking_may_do(hub, monkeypatch):
+    doc = hub.dms.create(title="Not dave's", doc_class="working", folder="Quality/Controlled Documents", by="carol",
+                         content=b"# x\n", filename="not-daves.md", mime="text/markdown")
+    seen, _ = _chat_with_tool(hub, monkeypatch, "dave", "qa-manager", f"move {doc['number']} to Policy",
+                              "move_record", {"number": doc["number"], "folder": "Policy"})
+    assert "error" in seen["result"], seen["result"]
+    assert hub.kernel.get(doc["locator"])["folder"] == "Quality/Controlled Documents"

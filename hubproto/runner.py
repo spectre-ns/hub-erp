@@ -280,7 +280,7 @@ class Runner:
                 or (rec["type"] == "document" and "document-controller" in authz.roles_of(bundle, owner))):
             return f"{rec['number']} is not {owner}'s: only its owner, whoever it is assigned to" + \
                 (" or a document controller" if rec["type"] == "document" else "") + " may start a process on it"
-        if rec["type"] == "document" and f.get("title"):
+        if rec["type"] == "document" and f.get("title") and not f.get("revises"):  # a named revision keeps its lineage, never a title match
             revises, why = self._revision_of(bundle, str(f["title"]), owner, exclude=rec["locator"])
             if why:
                 return why
@@ -712,6 +712,11 @@ class Runner:
         track.append({"type": "gate.cog_review", "run_id": state["id"], "step": step["id"], "cog": cog_name,
                       "cog_version": cog.version, "verdict": verdict, "reasons": reasons, "seen": seen, "judged": bool(rp.get("judged")),
                       "route_rule": pending["route_rule"], "delegating_rule": rp.get("delegating_rule")})
+        if verdict == "reviewing":
+            # Its adversarial reviews are in its queue: the item keeps waiting for it, and it takes its turn again when they are in.
+            track.append({"type": "gate.reviewing", "run_id": state["id"], "step": step["id"], "cog": cog_name,
+                          "lenses": list(rp.get("lenses") or []), "reasons": reasons})
+            return self.load(run_id)
         if verdict in ("approve", "reject"):
             basis = "on its review, under its approval criteria" if rp.get("judged") else "within fixed criteria"
             meaning = f"{verdict}d {basis}: " + "; ".join(reasons) if reasons else f"{verdict}d {basis}"
@@ -722,6 +727,29 @@ class Runner:
             except RunError as e:
                 reasons = [str(e)]
         return self._decline(run_id, cog_name, reasons)
+
+    def cog_lens(self, run_id: str, cog_name: str, lens: str, i: int, n: int, lenses: list[str]) -> dict:
+        """One adversarial review (a lens) for an item waiting for the cog. When the last lens is in, or one fails, the
+        cog takes its turn at the Gate again (from its queue) and signs or declines on what the lenses found."""
+        state = self.load(run_id)
+        bundle = self.releases.bundle(state["release"])
+        cog = self.registry.get(cog_name)
+        env = cog.invoke("lens", {"lens": lens, "i": i, "n": n, "lenses": lenses}, self._ctx(state, bundle, cog))
+        p = env.get("payload") or {}
+        if env.get("error") or not p:
+            raise RunError(f"{cog_name} could not do the {lens} review: {(env.get('error') or {}).get('detail') or 'no result'}")
+        pending = state.get("pending") or {}
+        Track(self._dir(state["id"])).append({"type": "gate.lens", "run_id": state["id"], "step": pending.get("step"), "cog": cog_name,
+                                              "lens": lens, "of": [i, n], "verdict": p.get("verdict"), "passes": p.get("passes"),
+                                              "findings": p.get("findings") or []})
+        waiting = state["status"] == "waiting" and cog_name in (pending.get("assignees") or [])
+        if waiting and (p.get("done") or p.get("failed")):
+            if p.get("failed") and self.queue is not None:
+                for t in self.queue.open_tasks(cog=cog_name, record=state.get("record")):
+                    if t["kind"] == "lens" and t["status"] == "queued" and (t.get("payload") or {}).get("run") == run_id:
+                        self.queue.cancel(t["id"], by=cog_name, why=f"the {lens} review did not pass; the others are not needed")
+            self.give_to_cog(state)
+        return {"run": run_id, "lens": lens, "passes": p.get("passes"), "verdict": p.get("verdict"), "done": p.get("done"), "failed": p.get("failed")}
 
     def _decline(self, run_id: str, cog_name: str, reasons: list[str]) -> dict:
         state = self.load(run_id)

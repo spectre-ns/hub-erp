@@ -33,7 +33,8 @@ from pathlib import Path
 from .kernel import utcnow
 
 KINDS = {"mention": "answer a mention", "message": "answer a message", "gate": "take its turn at a Gate",
-         "task": "do a task", "duty": "do a standing duty", "assigned": "work an item assigned to it", "chat": "answer a chat"}
+         "task": "do a task", "duty": "do a standing duty", "assigned": "work an item assigned to it", "chat": "answer a chat",
+         "lens": "do an adversarial review"}
 PRIORITY = {"chat": 10}  # higher is taken first; everything else is 0 (oldest first)
 OPEN = ("queued", "working")
 MAX_ATTEMPTS = 3
@@ -401,19 +402,30 @@ def execute(hub, task: dict) -> dict:
                 "waiting_for": (after.get("pending") or {}).get("assignees", [])}
     if kind == "assigned":
         return assigned_work(hub, task)
+    if kind == "lens":
+        return hub.runner.cog_lens(p["run"], cog, p["lens"], int(p.get("i") or 1), int(p.get("n") or 1), list(p.get("lenses") or [p["lens"]]))
     if kind == "chat":
-        from .tools import RecordTools
 
         sender = task.get("by") or ""
-        prep = hub.chat_prepare(sender, cog, p["text"], p.get("about"))
+        run_id = f"chat-{task['id']}"
+        # The cog's governed tools: it reads what both it and the asker may read, and acts within its autonomy and both their rights.
+        tools, specs, mode, store = hub.chat_tools(cog, sender, run_id, p["text"], p.get("about"))
+        prep = hub.chat_prepare(sender, cog, p["text"], p.get("about"), tools_now=specs, mode=mode)
         thread = hub.inbox.chat_thread(sender, cog)
         cut = next((i for i, m in enumerate(thread) if m.get("id") == p.get("line")), len(thread))
         prep["history"] = [{"role": "assistant" if m["from"] == cog else "user", "content": m["body"]} for m in thread[:cut][-12:]]
-        tools = RecordTools(hub, sender)  # the cog looks things up with the asker's rights
-        ans = hub.chat_answer(prep, sender, p["text"], call_tool=tools.call)
-        line = hub.inbox.chat_append(sender=cog, to=sender, body=ans["text"], about=prep["about"], model=ans["model"],
+        ans = hub.chat_answer(prep, sender, p["text"], call_tool=tools.execute, specs=specs)
+        body = ans["text"]
+        failed = [e for e in store.load(run_id) if e.get("type") == "tool" and e.get("write") and not e.get("ok")]
+        if tools.proposed:
+            body += f"\n\n{len(tools.proposed)} action(s) wait for your confirmation: /agent-run/{run_id}"
+        store.append(run_id, {"type": "finished", "status": "proposed" if tools.proposed else "done", "summary": body[:2000],
+                              "actions": tools.actions, "proposed": tools.proposed, "model": ans["model"],
+                              "refused": [f"{e['tool']}: {(e.get('result') or '')[:160]}" for e in failed[:6]]})
+        line = hub.inbox.chat_append(sender=cog, to=sender, body=body, about=prep["about"], model=ans["model"],
                                      stand_in=ans["stand_in"], tools=ans["tool_calls"])
-        return {"line": line.get("id"), "model": ans["model"], "stand_in": ans["stand_in"], "tools": len(ans["tool_calls"])}
+        return {"line": line.get("id"), "model": ans["model"], "stand_in": ans["stand_in"], "tools": len(ans["tool_calls"]),
+                "run": run_id, "actions": tools.actions, "proposed": len(tools.proposed)}
     if kind in ("task", "duty"):
         from .agent import Agent, mark_duty
 

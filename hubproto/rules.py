@@ -39,7 +39,11 @@ CONDITION_VOCABULARY = {
     # Judgment: the cog reviews the item against the procedures it follows (with its model) and the review passes.
     # The review is filed as evidence and cited in the signature.
     "its review passes": "review_passes",
+    # Several independent adversarial reviews, each a fresh read with one brief (a "lens"), each trying to find a reason
+    # not to approve; all must pass. How many is the criterion's ``adversarial_reviews`` ("when 3 adversarial reviews pass").
+    "adversarial reviews pass": "adversarial_reviews_pass",
 }
+NUMBER_WORDS = {"two": 2, "three": 3, "four": 4, "five": 5, "six": 6}
 
 
 def canonical(obj) -> str:
@@ -79,6 +83,10 @@ def validate_rule(rule: dict) -> list[str]:
         for c in rule.get("conditions", []):
             if c not in CONDITION_VOCABULARY.values():
                 errors.append(f"approval_criteria: condition {c!r} is not evaluable")
+        if "adversarial_reviews_pass" in (rule.get("conditions") or []):
+            n = rule.get("adversarial_reviews")
+            if not isinstance(n, int) or not 1 <= n <= 6:
+                errors.append("approval_criteria: say how many adversarial reviews must pass (1 to 6)")
     if kind == "process" and not rule.get("steps"):
         errors.append("process: needs at least one step")
     return errors

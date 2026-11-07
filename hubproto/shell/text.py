@@ -478,6 +478,13 @@ def track_sentence(ev: dict, link_number=None) -> str:
         return f"waiting for {esc(', '.join(ev.get('assignees') or []))} at {step}" + (f", due {esc(day(ev.get('due')))}" if ev.get("due") else "")
     if t == "gate.cog_review":
         return f"the {esc(ev.get('cog'))} cog reviewed it: {esc(ev.get('verdict'))}" + (f" ({esc('; '.join(ev.get('reasons') or []))})" if ev.get("reasons") else "")
+    if t == "gate.reviewing":
+        return (f"the {esc(ev.get('cog'))} cog started its adversarial reviews: " + esc(", ".join(ev.get("lenses") or []))
+                + "; it signs only when all of them pass")
+    if t == "gate.lens":
+        i, n = (ev.get("of") or [1, 1])[:2]
+        s = f"the {esc(ev.get('cog'))} cog's {esc(ev.get('lens'))} review ({i} of {n}): " + ("<b>passed</b>" if ev.get("passes") else "<b>did not pass</b>")
+        return s + (f" ({esc((ev.get('findings') or [''])[0][:240])})" if ev.get("findings") and not ev.get("passes") else "")
     if t == "gate.skipped":
         return f"route {esc(ev.get('candidate'))} skipped: {esc(ev.get('reason'))}"
     if t == "gate.escalated":

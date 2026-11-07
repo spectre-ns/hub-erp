@@ -1399,7 +1399,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--as", dest="cogs", action="append", metavar="COG", help="only this cog (repeatable); default: every cog")
     s.add_argument("--loop", type=int, metavar="SECONDS", help="keep working every SECONDS until stopped")
     s.set_defaults(fn=cmd_cog_users)
-    from . import cli_records
+    from . import cli_records, cli_templates
+
+    cli_templates.register(sub)  # templates import, templates list
 
     cli_records.register(sub)  # inbox-pending, retry, resubmit, cancel, records, record, link, snapshot, documents
 
