@@ -4,8 +4,8 @@ The cog answers in a conversational voice, knows who you are, what item you are 
 you are on one), the procedures it follows and what is in its queue, and remembers the conversation. It changes
 nothing from the chat; for reviews, edits and approvals it points you at the item's chatter, comments or Ops.
 
-The model call is the slow part of a turn, so it runs with the hub's lock released: the rest of the hub keeps
-answering while a cog is thinking.
+A chat line goes to the cog's queue ahead of everything else waiting there, and the page polls the thread until
+the answer is in: nothing waits on the model, and a chat never collides with the cog's other work on the model.
 """
 
 from __future__ import annotations
@@ -28,14 +28,22 @@ function store(k,v){try{localStorage.setItem('mx.'+k,v)}catch(e){}}
 function load(k){try{return localStorage.getItem('mx.'+k)}catch(e){return null}}
 var cog=load('cog');var opt=cog&&sel.querySelector('option[value="'+cog+'"]');if(!opt||opt.disabled){var first=sel.querySelector('option:not([disabled])');cog=first?first.value:sel.value}sel.value=cog;
 function open(on,quiet){panel.hidden=!on;btn.setAttribute('aria-expanded',on?'true':'false');root.classList.toggle('open',on);store('open',on?'1':'0');if(on){refresh();if(!quiet)setTimeout(function(){ta.focus()},30)}else if(!quiet){btn.focus()}}
+var NUM=/\b(?:[A-Z]{2,5}-\d{4}-\d{2,5}|[A-Z]{2,5}-\d{2,6})\b/g;
+function linkify(el,text){var i=0,m;NUM.lastIndex=0;while((m=NUM.exec(text))){el.appendChild(document.createTextNode(text.slice(i,m.index)));
+var a=document.createElement('a');a.href='/record/'+encodeURIComponent(m[0])+'?as='+encodeURIComponent(me);a.textContent=m[0];el.appendChild(a);i=m.index+m[0].length}
+el.appendChild(document.createTextNode(text.slice(i)))}
 function li(cls){var x=document.createElement('li');x.className='mx-msg '+cls;return x}
 function bubble(m){var x=li(m.mine?'mine':'theirs');if(!m.mine){var a=document.createElement('span');a.className='mx-av';a.innerHTML=avatars[m.from]||'';x.appendChild(a)}
-var b=document.createElement('div');b.className='mx-bubble';b.textContent=m.body;x.appendChild(b);
+var b=document.createElement('div');b.className='mx-bubble';linkify(b,m.body);x.appendChild(b);
 if(m.looked){var lk=document.createElement('span');lk.className='mx-looked';lk.textContent=m.looked;b.appendChild(lk)}
 if(m.when){var t=document.createElement('span');t.className='mx-when';t.textContent=m.when+(m.stand_in?' · no model':'');b.appendChild(t)}return x}
 function empty(){var x=li('mx-empty');x.textContent='Say hello to '+cog+'. It can see what you are looking at, the procedures it follows and its queue. It will not change anything from here.';return x}
-function render(msgs){list.innerHTML='';if(!msgs.length)list.appendChild(empty());msgs.forEach(function(m){list.appendChild(bubble(m))});list.scrollTop=list.scrollHeight}
-function refresh(){fetch(threadUrl+'&with='+encodeURIComponent(cog)).then(function(r){return r.json()}).then(function(j){render(j.messages||[]);if(ctxLine)ctxLine.textContent=j.context||''}).catch(function(){})}
+function typingLi(ahead){var t=li('theirs mx-typing');t.innerHTML='<span class="mx-av">'+(avatars[cog]||'')+'</span><div class="mx-bubble"><span class="mx-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="mx-wait"></span></div>';
+var w=t.querySelector('.mx-wait');w.textContent=ahead>0?(' '+(ahead===1?'1 task':ahead+' tasks')+' ahead of you in '+cog+'\'s queue'):' '+cog+' is on it';return t}
+var poll=null;function busy(on){send.disabled=on;sel.disabled=on}
+function render(msgs,pending){list.innerHTML='';if(!msgs.length&&!pending)list.appendChild(empty());msgs.forEach(function(m){list.appendChild(bubble(m))});
+if(pending){list.appendChild(typingLi(pending.ahead||0));busy(true);if(!poll)poll=setTimeout(function(){poll=null;refresh()},2500)}else{busy(false)}list.scrollTop=list.scrollHeight}
+function refresh(){fetch(threadUrl+'&with='+encodeURIComponent(cog)).then(function(r){return r.json()}).then(function(j){render(j.messages||[],j.pending);if(ctxLine)ctxLine.textContent=j.context||''}).catch(function(){if(!poll)poll=setTimeout(function(){poll=null;refresh()},5000)})}
 sel.addEventListener('change',function(){cog=sel.value;store('cog',cog);refresh();ta.focus()});
 btn.addEventListener('click',function(){open(panel.hidden)});
 if(closeB)closeB.addEventListener('click',function(){open(false)});
@@ -44,12 +52,12 @@ ta.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.pre
 if(clr)clr.addEventListener('click',function(){var fd=new FormData();fd.append('as',me);fd.append('with',cog);fetch(clearUrl,{method:'POST',body:fd}).then(function(){refresh()})});
 form.addEventListener('submit',function(e){e.preventDefault();var text=ta.value.trim();if(!text||send.disabled)return;
 var em=list.querySelector('.mx-empty');if(em)em.remove();list.appendChild(bubble({mine:true,body:text}));ta.value='';
-var typing=li('theirs mx-typing');typing.innerHTML='<span class="mx-av">'+(avatars[cog]||'')+'</span><div class="mx-bubble"><span class="mx-dots" aria-label="'+cog+' is thinking"><i></i><i></i><i></i></span></div>';
-list.appendChild(typing);list.scrollTop=list.scrollHeight;send.disabled=true;sel.disabled=true;
+var typing=typingLi(0);list.appendChild(typing);list.scrollTop=list.scrollHeight;busy(true);
 var fd=new FormData();fd.append('as',me);fd.append('to',cog);fd.append('body',text);if(about)fd.append('about',about);
 fetch(postUrl,{method:'POST',body:fd}).then(function(r){return r.json().then(function(j){return{ok:r.ok,j:j}})}).then(function(res){typing.remove();
+if(res.ok&&res.j.queued){refresh();return}
 if(res.ok&&res.j.reply){list.appendChild(bubble(res.j.reply))}else{var x=li('mx-error');x.textContent=(res.j&&res.j.error)||'The message was not delivered.';list.appendChild(x)}
-list.scrollTop=list.scrollHeight}).catch(function(){typing.remove();var x=li('mx-error');x.textContent='The hub did not answer; try again.';list.appendChild(x)}).then(function(){send.disabled=false;sel.disabled=false;ta.focus()})});
+list.scrollTop=list.scrollHeight;busy(false);ta.focus()}).catch(function(){typing.remove();var x=li('mx-error');x.textContent='The hub did not answer; try again.';list.appendChild(x);busy(false)})});
 if(load('open')==='1')open(true,true);
 })();"""
 
@@ -62,7 +70,7 @@ def looked_words(calls: list[dict]) -> str:
         if c["tool"] in ("get_record", "read_document", "record_history") and a.get("number"):
             bits.append(("read " if c["tool"] == "read_document" else "looked at ") + str(a["number"]))
         elif c["tool"] == "search_records":
-            bits.append("searched " + (f"“{a.get('query')}”" if a.get("query") else "") + (f" {a.get('type')}" if a.get("type") else "")).strip()
+            bits.append(("searched " + (f"“{a.get('query')}”" if a.get("query") else "") + (f" {a.get('type')}s" if a.get("type") else "")).strip())
         elif c["tool"] == "waiting_for":
             bits.append("checked " + (a.get("who") or "your") + " queue")
         elif c["tool"] == "overview":
@@ -117,14 +125,16 @@ data-thread="{esc(href('/chat-thread', self.user, about=about))}" data-post="{es
         about = self.q.get("about", [""])[0]
         if cog not in self.hub.chat_cogs():
             return self._json({"error": f"{cog!r} is not a cog you can chat with"}, 400)
-        msgs = [{"from": m["from"], "mine": m["from"] == self.user, "body": m["body"], "when": (m.get("at") or "")[11:16],
-                 "stand_in": bool(m.get("stand_in")), "looked": looked_words(m.get("tools") or [])} for m in self.hub.inbox.chat_thread(self.user, cog)]
+        msgs = [self._chat_line(m) for m in self.hub.inbox.chat_thread(self.user, cog)]
+        waiting = [t for t in self.hub.queue.open_tasks(cog=cog) if t["kind"] == "chat" and t.get("by") == self.user]
         rec = self.hub.kernel.get(about) if about else None
         if rec is not None and not self._can_read(rec["folder"])["allowed"]:
             rec = None  # an item the person may not read is not named, not even its number or title
         context = (f"{cog} can see {rec['number']} ({(rec['fields'].get('title') or '')[:60]}) and the procedures it follows."
                    if rec else f"{cog} can see the procedures it follows and its queue.")
-        return self._json({"messages": msgs, "context": context})
+        # Like the stack on a person's desk: what is ahead of this question in this cog's own queue.
+        pending = ({"task": waiting[0]["id"], "status": waiting[0]["status"], "ahead": self._chat_ahead(waiting[0])} if waiting else None)
+        return self._json({"messages": msgs, "context": context, "pending": pending})
 
     # ------------------------------------------------------------ a turn (JSON); the model call runs unlocked
     @contextmanager
@@ -149,22 +159,26 @@ data-thread="{esc(href('/chat-thread', self.user, about=about))}" data-post="{es
                 self._require_read(prep["rec"]["folder"])
             except Exception:
                 prep = self.hub.chat_prepare(self.user, cog, text, None)  # not theirs to read: the cog does not see it either
-        self.hub.inbox.chat_append(sender=self.user, to=cog, body=text, about=prep["about"])
-        from ..tools import RecordTools
+        mine = self.hub.inbox.chat_append(sender=self.user, to=cog, body=text, about=prep["about"])
+        # The cog answers from its queue, ahead of everything else waiting there: the page never waits on the model.
+        task = self.hub.queue.submit(cog, "chat", by=self.user, title=text[:300], record=None,
+                                     payload={"text": text, "about": prep["about"], "line": mine["id"]})
+        log_line(f"chat {self.user} -> {cog} about={prep['about'] or '-'} task={task['id']} status={task['status']}")
+        if task["status"] == "done":  # worked at once (inline queue)
+            line = next((m for m in reversed(self.hub.inbox.chat_thread(self.user, cog)) if m["from"] == cog), None)
+            if line is not None:
+                return self._json({"reply": self._chat_line(line)})
+        if task["status"] == "failed":
+            return self._json({"error": f"{cog} could not answer: {task.get('error') or 'unknown error'}"}, 502)
+        return self._json({"queued": True, "task": task["id"], "ahead": self._chat_ahead(task)})
 
-        tools = RecordTools(self.hub, self.user)
+    def _chat_line(self, m: dict) -> dict:
+        return {"from": m["from"], "mine": m["from"] == self.user, "body": m["body"], "when": (m.get("at") or "")[11:16],
+                "stand_in": bool(m.get("stand_in")), "looked": looked_words(m.get("tools") or [])}
 
-        def call_tool(name, args):  # the model runs unlocked; each look-up takes the lock for its own moment
-            with self.lock:
-                return tools.call(name, args)
-
-        with self._unlocked():  # the slow part: other requests are served meanwhile
-            ans = self.hub.chat_answer(prep, self.user, text, call_tool=call_tool)
-        line = self.hub.inbox.chat_append(sender=cog, to=self.user, body=ans["text"], about=prep["about"], model=ans["model"], stand_in=ans["stand_in"],
-                                          tools=ans["tool_calls"])
-        log_line(f"chat {self.user} -> {cog} about={prep['about'] or '-'} model={ans['model']} stand_in={ans['stand_in']} tools={len(ans['tool_calls'])}")
-        return self._json({"reply": {"from": cog, "mine": False, "body": line["body"], "when": line["at"][11:16], "stand_in": ans["stand_in"],
-                                     "looked": looked_words(ans["tool_calls"])}})
+    def _chat_ahead(self, task: dict) -> int:
+        """Tasks before this chat: the one its cog is working on now (a chat never interrupts it), and earlier chats."""
+        return max(0, self.hub.queue.position(task) - 1) if task["status"] == "queued" else 0
 
     def post_chat_clear(self):
         cog = self._f("with")

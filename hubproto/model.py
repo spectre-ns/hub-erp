@@ -43,12 +43,99 @@ def thinking_releases(lock):
         _held.lock = prev
 
 
+class ModelGate:
+    """Turns on a local model. Each cog has its own worker, but a local model (Ollama) answers one call at a time and
+    in arrival order, and its wait would count against the call's timeout. So the hub hands out the turns itself:
+    ``slots`` calls at once (HUBPROTO_MODEL_PARALLEL, default 1), the highest priority first (a chat before other
+    work), then first come, first served; the timeout starts only when the call is sent."""
+
+    def __init__(self, slots: int | None = None):
+        self.slots = max(1, int(slots or os.environ.get("HUBPROTO_MODEL_PARALLEL") or 1))
+        self.cv = threading.Condition()
+        self.busy: list[str] = []  # who holds a turn now
+        self.waiting: list[tuple[int, int, str]] = []  # (-priority, arrival, who), kept sorted
+        self._n = 0
+
+    @contextmanager
+    def turn(self, priority: int = 0, who: str = ""):
+        with self.cv:
+            self._n += 1
+            me = (-priority, self._n, who or f"call-{self._n}")
+            self.waiting.append(me)
+            self.waiting.sort()
+            while not (len(self.busy) < self.slots and self.waiting[0] == me):
+                self.cv.wait(timeout=5)
+            self.waiting.pop(0)
+            self.busy.append(me[2])
+        try:
+            yield
+        finally:
+            with self.cv:
+                self.busy.remove(me[2])
+                self.cv.notify_all()
+
+    def ahead(self, who: str) -> int | None:
+        """How many calls go before ``who`` (those running and those before it in the line); None when it is not waiting."""
+        with self.cv:
+            for i, w in enumerate(self.waiting):
+                if w[2] == who:
+                    return len(self.busy) + i
+        return None
+
+
+MODEL_GATE = ModelGate()
+_GATES: dict[str, ModelGate] = {}
+_GATES_LOCK = threading.Lock()
+
+
+def gate_for(url: str, body: bytes | None = None) -> ModelGate:
+    """The gate a call waits at. Today the cogs share one local model server and one GPU, so every call shares one
+    gate. HUBPROTO_MODEL_GATE=per-model gives each model its own (when cogs run separate models on their own
+    resources), and HUBPROTO_MODEL_GATE=off lets every call through."""
+    how = (os.environ.get("HUBPROTO_MODEL_GATE") or "shared").lower()
+    if how == "off":
+        return _OPEN_GATE
+    if how != "per-model":
+        return MODEL_GATE
+    try:
+        name = json.loads(body or b"{}").get("model") or url
+    except (ValueError, AttributeError):
+        name = url
+    with _GATES_LOCK:
+        return _GATES.setdefault(name, ModelGate())
+
+
+class _Open(ModelGate):
+    @contextmanager
+    def turn(self, priority: int = 0, who: str = ""):
+        yield
+
+
+_OPEN_GATE = _Open()
+
+
+@contextmanager
+def model_priority(priority: int, who: str = ""):
+    """The priority (and the name, a queue task id) of this thread's model calls while it works one task."""
+    prev = (getattr(_held, "priority", 0), getattr(_held, "who", ""))
+    _held.priority, _held.who = priority, who
+    try:
+        yield
+    finally:
+        _held.priority, _held.who = prev
+
+
 def _fetch_json(req, timeout: float):
     lock = getattr(_held, "lock", None)
     saved = None
     if lock is not None and getattr(lock, "_is_owned", lambda: False)():
         saved = lock._release_save()  # all the way out of the re-entrant lock
     try:
+        url = str(getattr(req, "full_url", "") or "")
+        if not url.startswith(ANTHROPIC_URL):  # a hosted API takes calls side by side; a local server does not
+            with gate_for(url, getattr(req, "data", None)).turn(getattr(_held, "priority", 0), getattr(_held, "who", "")):
+                with urllib.request.urlopen(req, timeout=timeout) as r:
+                    return json.load(r)
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.load(r)
     finally:

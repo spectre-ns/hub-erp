@@ -3,7 +3,9 @@
 Everything asked of a cog lands here as a task: a comment or message that mentions it, a message sent to it, an item
 waiting for it at a Gate, a task a person gives it, a standing duty. Asking returns at once; the cog takes its tasks
 one at a time, oldest first, and answers where it was asked (the chatter, the comment thread in the document, the
-Gate). Different cogs work side by side; one cog never works on two things at once.
+Gate). Different cogs work side by side; one cog never works on two things at once. A chat line jumps the queue:
+someone is waiting at the messenger, so it is taken before anything else queued (the task a cog is already working
+on is finished first).
 
 The queue is a small SQLite table (``state/queue.db``) so a worker in another process (the cog-users service) can
 share it. How tasks get worked depends on ``HUBPROTO_COG_QUEUE``:
@@ -31,7 +33,8 @@ from pathlib import Path
 from .kernel import utcnow
 
 KINDS = {"mention": "answer a mention", "message": "answer a message", "gate": "take its turn at a Gate",
-         "task": "do a task", "duty": "do a standing duty", "assigned": "work an item assigned to it"}
+         "task": "do a task", "duty": "do a standing duty", "assigned": "work an item assigned to it", "chat": "answer a chat"}
+PRIORITY = {"chat": 10}  # higher is taken first; everything else is 0 (oldest first)
 OPEN = ("queued", "working")
 MAX_ATTEMPTS = 3
 
@@ -70,10 +73,13 @@ class CogQueue:
         self.mode = mode or queue_mode()
         self.wake = threading.Event()
         self.worker_id = f"{socket.gethostname()}:{os.getpid()}"
+        # One worker per cog by default (cogs work side by side; the model gate serializes their model calls). With
+        # HUBPROTO_COG_WORKERS=1 one thread works every cog's tasks, so a position counts every cog's work.
+        self.lanes = int(os.environ.get("HUBPROTO_COG_WORKERS") or 0) or 1000
         with self._db() as db:
             db.executescript(SCHEMA)
             cols = {r[1] for r in db.execute("PRAGMA table_info(tasks)").fetchall()}
-            for col, decl in (("lease_until", "REAL"),):
+            for col, decl in (("lease_until", "REAL"), ("priority", "INTEGER DEFAULT 0")):
                 if col not in cols:
                     db.execute(f"ALTER TABLE tasks ADD COLUMN {col} {decl}")
         self.workers: dict[str, dict] = {}  # this process's worker threads: name -> {"alive", "last_ok", "last_error"}
@@ -117,8 +123,9 @@ class CogQueue:
                     return _row(same)
             seq = (db.execute("SELECT COALESCE(MAX(seq),0)+1 FROM tasks").fetchone()[0])
             tid = uuid.uuid4().hex[:10]
-            db.execute("INSERT INTO tasks(id,seq,cog,kind,status,title,by,record,key,payload,enqueued_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                       (tid, seq, cog, kind, "queued", (title or "")[:300], by, record, key, json.dumps(payload or {}, default=str), utcnow()))
+            db.execute("INSERT INTO tasks(id,seq,cog,kind,status,title,by,record,key,payload,enqueued_at,priority) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                       (tid, seq, cog, kind, "queued", (title or "")[:300], by, record, key, json.dumps(payload or {}, default=str), utcnow(),
+                        PRIORITY.get(kind, 0)))
             db.execute("COMMIT")
         self.wake.set()
         if self.mode == "inline":
@@ -155,12 +162,19 @@ class CogQueue:
         return self.list(cog=cog, record=record, status=OPEN, limit=500)
 
     def position(self, task: dict) -> int:
-        """1 = the cog is on it or it is next; n = n-1 tasks ahead of it in the same cog's queue."""
+        """1 = it is next; n = n-1 tasks will be worked before it: the ones being worked now, and queued ones taken
+        first (a higher priority, or the same priority and older: chats keep their order among themselves). With one
+        worker thread (the default) every cog shares it, so the count is across all cogs; with more, per cog."""
         if task["status"] == "working":
             return 0
+        shared = self.lanes <= 1
+        scope = "" if shared else "cog=? AND "
+        args = () if shared else (task["cog"],)
         with self._db() as db:
-            ahead = db.execute("SELECT COUNT(*) FROM tasks WHERE cog=? AND status IN ('queued','working') AND seq<?",
-                               (task["cog"], task["seq"])).fetchone()[0]
+            pri = task.get("priority") or 0
+            ahead = db.execute(f"SELECT COUNT(*) FROM tasks WHERE {scope}(status='working' OR (status='queued' AND "
+                               "(COALESCE(priority,0)>? OR (COALESCE(priority,0)=? AND seq<?))))",
+                               (*args, pri, pri, task["seq"])).fetchone()[0]
         return ahead + 1
 
     def counts(self) -> dict[str, dict[str, int]]:
@@ -185,11 +199,11 @@ class CogQueue:
 
     # ------------------------------------------------------------ working
     def claim(self, cogs: list[str] | None = None) -> dict | None:
-        """The oldest queued task of a cog that is not already working on something."""
+        """The next queued task of a cog that is not already working on something: chats first, then oldest first."""
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
             busy = {r[0] for r in db.execute("SELECT cog FROM tasks WHERE status='working'").fetchall()}
-            for r in db.execute("SELECT * FROM tasks WHERE status='queued' ORDER BY seq").fetchall():
+            for r in db.execute("SELECT * FROM tasks WHERE status='queued' ORDER BY COALESCE(priority,0) DESC, seq").fetchall():
                 if r["cog"] in busy or (cogs and r["cog"] not in cogs):
                     continue
                 db.execute("UPDATE tasks SET status='working', started_at=?, attempts=attempts+1, worker=?, lease_until=? WHERE id=?",
@@ -271,14 +285,24 @@ class CogQueue:
         renewer.start()
         prev = (getattr(_CURRENT, "task", None), getattr(_CURRENT, "n", 0))
         _CURRENT.task, _CURRENT.n = t["id"], 0
+        from .model import model_priority
+
         try:
-            result = execute(self.hub, t)
+            with model_priority(t.get("priority") or PRIORITY.get(t["kind"], 0), t["id"]):
+                result = execute(self.hub, t)
             done = self._finish(t["id"], status="done", finished_at=utcnow(), result=result, lease_until=None)
         except Exception as e:  # the task fails; the person who asked is told why
             detail = str(e) or e.__class__.__name__
             done = self._finish(t["id"], status="failed", finished_at=utcnow(), error=detail[:1000], lease_until=None)
             _log(f"cog task {t['id']} ({t['cog']} {t['kind']}) failed: {detail}\n{traceback.format_exc(limit=4)}")
-            if t.get("by") and self.hub is not None and t["by"] != t["cog"]:
+            if t["kind"] == "chat" and self.hub is not None:  # the person is told in the chat itself
+                try:
+                    p = t.get("payload") or {}
+                    self.hub.inbox.chat_append(sender=t["cog"], to=t["by"], body=f"Sorry, I could not answer that: {detail[:300]}",
+                                               about=p.get("about"), stand_in=True)
+                except Exception:
+                    pass
+            elif t.get("by") and self.hub is not None and t["by"] != t["cog"]:
                 try:
                     self.hub.inbox.notify(t["by"], kind="cog-task", subject=f"{t['cog']} could not {KINDS[t['kind']]}: {t['title'][:80]}",
                                           body=detail, record=t.get("record"))
@@ -377,6 +401,19 @@ def execute(hub, task: dict) -> dict:
                 "waiting_for": (after.get("pending") or {}).get("assignees", [])}
     if kind == "assigned":
         return assigned_work(hub, task)
+    if kind == "chat":
+        from .tools import RecordTools
+
+        sender = task.get("by") or ""
+        prep = hub.chat_prepare(sender, cog, p["text"], p.get("about"))
+        thread = hub.inbox.chat_thread(sender, cog)
+        cut = next((i for i, m in enumerate(thread) if m.get("id") == p.get("line")), len(thread))
+        prep["history"] = [{"role": "assistant" if m["from"] == cog else "user", "content": m["body"]} for m in thread[:cut][-12:]]
+        tools = RecordTools(hub, sender)  # the cog looks things up with the asker's rights
+        ans = hub.chat_answer(prep, sender, p["text"], call_tool=tools.call)
+        line = hub.inbox.chat_append(sender=cog, to=sender, body=ans["text"], about=prep["about"], model=ans["model"],
+                                     stand_in=ans["stand_in"], tools=ans["tool_calls"])
+        return {"line": line.get("id"), "model": ans["model"], "stand_in": ans["stand_in"], "tools": len(ans["tool_calls"])}
     if kind in ("task", "duty"):
         from .agent import Agent, mark_duty
 
@@ -443,9 +480,18 @@ class CogWorker:
     def __init__(self, hub, lock, threads: int | None = None):
         self.hub = hub
         self.lock = lock
-        self.threads = max(1, int(threads or os.environ.get("HUBPROTO_COG_WORKERS") or 1))
+        self.threads = max(1, int(threads or os.environ.get("HUBPROTO_COG_WORKERS") or 0) or self._cog_count())
         self.stop = threading.Event()
         self._threads: list[threading.Thread] = []
+
+    def _cog_count(self) -> int:
+        """A worker per cog in the release in force (a claim skips a cog that is busy, so each cog gets its own)."""
+        try:
+            meta = self.hub.releases.current()
+            members = self.hub.releases.bundle(meta["digest"])["members"] if meta else {}
+            return max(1, sum(1 for m in members.values() if m.get("type") == "cog"))
+        except Exception:
+            return 1
 
     def start(self) -> "CogWorker":
         with self.lock:
@@ -456,7 +502,8 @@ class CogWorker:
             t = threading.Thread(target=self._loop, name=f"cog-worker-{i}", daemon=True)
             t.start()
             self._threads.append(t)
-        _log(f"cog queue: {self.threads} worker thread(s) taking the cogs' tasks")
+        self.hub.queue.lanes = self.threads
+        _log(f"cog queue: {self.threads} worker thread(s) taking the cogs' tasks; model calls take turns at the model gate")
         return self
 
     def _loop(self) -> None:

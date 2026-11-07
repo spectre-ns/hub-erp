@@ -3,7 +3,9 @@ the inbox and the runner for a hub rooted at a directory."""
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import threading
 from pathlib import Path
 
@@ -673,14 +675,21 @@ class Hub:
         from .model import ModelUnavailable
 
         tools = RecordTools(self, sender)
+        looked = chat_lookup(call_tool or tools.call, text)
+        if looked:
+            # Small models often answer "I can't find it" without searching: the hub searches first and shows them what it found.
+            prep = {**prep, "system": prep["system"] + "\n\nLOOKED UP FOR THIS QUESTION (search_records, with this person's rights):\n"
+                    + json.dumps(looked["result"], default=str, ensure_ascii=False)[:6000]
+                    + "\nAnswer from these results; name the record numbers (the messenger turns them into links)."}
         try:
             out = self._chat_call(prep, text, call_tool or tools.call, tool_specs)
         except ModelUnavailable as e:
             raise ValueError(f"{prep['cog']} is not available: {e}") from None
-        reply = (out["text"] or "").strip()
+        reply = plain_chat(out["text"] or "")
         if not reply:
             reply = stand_in_chat(prep["cog"], text, prep.get("rec"), prep.get("sops") or [])
-        return {"text": reply, "model": out.get("served_model") or prep["model"], "stand_in": out["stand_in"], "tool_calls": out.get("tool_calls") or []}
+        calls = ([{"tool": "search_records", "arguments": looked["arguments"]}] if looked else []) + (out.get("tool_calls") or [])
+        return {"text": reply, "model": out.get("served_model") or prep["model"], "stand_in": out["stand_in"], "tool_calls": calls}
 
     def _chat_call(self, prep: dict, text: str, call_tool, tool_specs) -> dict:
         return self.model.complete_with_tools(model=prep["model"], system=prep["system"], user=text, by=prep["cog"], max_tokens=800,
@@ -703,3 +712,48 @@ class Hub:
         return self.inbox.send(sender=sender, to=to, subject=subject, body=body, channel=channel,
                                attachments=attachments, bundle=bundle, registry=self.registry, runner=self.runner,
                                kernel=self.kernel, release=meta["digest"] if meta else "", record=record, hub=self, comment_id=comment_id)
+
+
+_FIND = ("find", "where", "link", "look up", "lookup", "search", "show me", "which", "locate", "open the", "get me")
+_STOP = {"find", "the", "a", "an", "please", "provide", "give", "me", "link", "links", "to", "for", "of", "and", "where", "is", "are", "can",
+         "you", "i", "my", "our", "it", "with", "show", "search", "look", "up", "lookup", "locate", "which", "get", "open", "what", "do",
+         "we", "have", "any", "in", "on", "about", "called", "named", "there", "that", "this", "us", "your", "help", "need", "want"}
+_TYPE_WORDS = {"document": "document", "doc": "document", "file": "document", "sop": "document", "bill": "bill", "invoice": "bill",
+               "purchase": "purchase-request", "order": "purchase-order", "ncr": "ncr", "nonconformance": "ncr", "capa": "capa",
+               "design": "design", "requirement": "requirement", "task": "task", "receipt": "receipt", "item": "item", "part": "item"}
+
+
+def chat_lookup(call_tool, text: str) -> dict | None:
+    """For a chat line that asks to find something, the search a person would run: the words that name it, narrowed by
+    a record type the line mentions; if every word together finds nothing, the longest words one at a time."""
+    t = (text or "").lower()
+    if not any(k in t for k in _FIND):
+        return None
+    words = [w for w in re.findall(r"[\w.-]+", t) if w not in _STOP]
+    rtype = next((_TYPE_WORDS[w.rstrip("s")] for w in words if w.rstrip("s") in _TYPE_WORDS), "")
+    named = [w for w in words if w.rstrip("s") not in _TYPE_WORDS] or words
+    tries = [{"query": " ".join(named), "type": rtype}] + [{"query": w, "type": rtype} for w in sorted(named, key=len, reverse=True)[:3] if len(named) > 1]
+    if rtype:
+        tries.append({"query": " ".join(named), "type": ""})
+    for args in tries:
+        args = {k: v for k, v in args.items() if v}
+        if not args.get("query"):
+            continue
+        try:
+            res = call_tool("search_records", {**args, "limit": 8})
+        except Exception:
+            return None
+        if res.get("count"):
+            return {"arguments": args, "result": res}
+    return {"arguments": tries[0], "result": {"count": 0, "records": [], "note": "nothing matched these words in records this person may read"}} if named else None
+
+
+def plain_chat(text: str) -> str:
+    """A chat bubble shows plain text: Markdown links become their text (record numbers are linked by the messenger),
+    bold and italics lose their stars, headings their hashes."""
+    t = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text or "")
+    t = re.sub(r"\*\*(.+?)\*\*|__(.+?)__", lambda m: m.group(1) or m.group(2), t)
+    t = re.sub(r"(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])", r"\1", t)
+    t = re.sub(r"(?m)^#{1,6}\s+", "", t)
+    return t.strip()
+

@@ -65,26 +65,31 @@ def test_bad_chat_requests_are_refused_with_a_reason(shell):
 
 
 def test_a_slow_cog_does_not_hold_up_the_rest_of_the_hub(shell):
+    """A chat is queued for the cog (ahead of its other work) and the post returns at once; the page polls the thread."""
     hub = shell["hub"]
-    real = hub.model.complete_with_tools
+    real, mode = hub.model.complete_with_tools, hub.queue.mode
 
     def slow(**kw):
         time.sleep(2.0)
         return {"text": "done thinking", "stand_in": False, "served_model": "slow", "model": "slow", "tool_calls": []}
 
     hub.model.complete_with_tools = slow
-    result = {}
+    hub.queue.mode = "service"  # as in the hub: a worker answers, never the request
     try:
-        t = threading.Thread(target=lambda: result.update(r=post(shell, "/chat", {"as": "carol", "to": "doc-reviewer", "body": "take your time"})))
-        t.start()
-        time.sleep(0.3)
         t0 = time.time()
+        status, url, body = post(shell, "/chat", {"as": "carol", "to": "doc-reviewer", "body": "take your time"})
+        j = json.loads(body)
+        assert status == 200 and j["queued"] and time.time() - t0 < 1.0, "the post does not wait for the model"
+        thread = json.loads(get(shell, "/chat-thread", **{"as": "carol", "with": "doc-reviewer"})[1])
+        assert thread["pending"]["task"] == j["task"] and thread["messages"][-1]["body"] == "take your time"
         status, text = get(shell, "/inbox", **{"as": "bob"})
-        assert status == 200 and time.time() - t0 < 1.5, "another person's page was served while the cog was thinking"
-        t.join(10)
+        assert status == 200
+        done = hub.queue.work_one(j["task"])
+        assert done["status"] == "done"
     finally:
-        hub.model.complete_with_tools = real
-    assert json.loads(result["r"][2])["reply"]["body"] == "done thinking"
+        hub.model.complete_with_tools, hub.queue.mode = real, mode
+    thread = json.loads(get(shell, "/chat-thread", **{"as": "carol", "with": "doc-reviewer"})[1])
+    assert thread["pending"] is None and thread["messages"][-1]["body"] == "done thinking"
 
 
 def test_without_a_model_the_cog_says_so_plainly(shell):
