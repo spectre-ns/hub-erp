@@ -93,6 +93,49 @@ def served_name(model: str) -> str:
     return model.split("/", 1)[1] if model.startswith("ollama/") else model
 
 
+_CTX: dict[str, int] = {}
+
+
+def context_length(model: str) -> int:
+    """The longest context the model was trained for, as Ollama reports it (qwen3:14b: 40,960 tokens)."""
+    backend = backend_for(model)
+    if backend == "anthropic":
+        return 200000
+    if backend != "ollama":
+        return 32768
+    name = served_name(model)
+    if name not in _CTX:
+        n = 32768
+        try:
+            req = urllib.request.Request(ollama_url() + "/api/show", data=json.dumps({"model": name}).encode("utf-8"), method="POST",
+                                         headers={"content-type": "application/json"})
+            with urllib.request.urlopen(req, timeout=4) as r:
+                info = json.load(r).get("model_info") or {}
+            found = [int(v) for k, v in info.items() if k.endswith(".context_length") and str(v).isdigit()]
+            if found:
+                n = found[0]
+        except Exception:
+            pass
+        _CTX[name] = n
+    return _CTX[name]
+
+
+def num_ctx_for(model: str) -> int:
+    """The window each call asks for: the model's own length, capped (HUBPROTO_MODEL_CTX_MAX, default 65536) or set
+    (HUBPROTO_MODEL_CTX); never more than the model was trained for. One value per model, so Ollama does not reload."""
+    native = context_length(model)
+    want = int(os.environ.get("HUBPROTO_MODEL_CTX") or 0) or min(native, int(os.environ.get("HUBPROTO_MODEL_CTX_MAX") or 65536))
+    return max(2048, min(want, native))
+
+
+def prompt_budget_chars(model: str, max_tokens: int = 1200) -> int:
+    """How many characters of prompt fit the window with room for the answer (about 3.2 characters a token for
+    English with markup), unless HUBPROTO_MODEL_MAX_CHARS says otherwise."""
+    if os.environ.get("HUBPROTO_MODEL_MAX_CHARS"):
+        return int(os.environ["HUBPROTO_MODEL_MAX_CHARS"])
+    return int(max(4096, num_ctx_for(model) - max_tokens - 1024) * 3.2)
+
+
 def ollama_models(refresh: bool = False) -> tuple[list[dict], str]:
     """The models installed in Ollama (cached for a minute): [{name, params, family, quant, size_gb}], and an error."""
     url = ollama_url()
@@ -214,12 +257,12 @@ class ModelGateway:
     def _ollama(self, model: str, system: str, user: str, max_tokens: int, history: list[dict] | None = None) -> str:
         """A local model through Ollama's chat API (``ollama/<name>`` or any name when HUBPROTO_OLLAMA_URL is set)."""
         name = served_name(model)
-        ceiling = int(os.environ.get("HUBPROTO_MODEL_MAX_CHARS") or 90000)  # ~22k tokens; under the 32k window with room to answer
+        ceiling = prompt_budget_chars(model, max_tokens)  # what fits in the model's window with room to answer
         if len(system) + len(user) > ceiling:
             keep = max(ceiling - len(user) - 200, 2000)
             system = system[:keep] + "\n[... context trimmed to fit the model's window]"
         payload = {"model": name, "stream": False,
-                   "options": {"num_predict": max_tokens, "num_ctx": int(os.environ.get("HUBPROTO_MODEL_CTX") or 32768)},
+                   "options": {"num_predict": max_tokens, "num_ctx": num_ctx_for(model)},
                    "messages": [{"role": "system", "content": system}]
                                + [{"role": t["role"], "content": t["content"]} for t in (history or []) if t.get("content")]
                                + [{"role": "user", "content": user}]}
@@ -294,7 +337,7 @@ class ModelGateway:
         usage = {"prompt_tokens": 0, "output_tokens": 0, "served_model": name}
         for round_ in range(max_rounds + 1):
             payload = {"model": name, "stream": False, "messages": msgs, "tools": fns if round_ < max_rounds else [],
-                       "options": {"num_predict": max_tokens, "num_ctx": int(os.environ.get("HUBPROTO_MODEL_CTX") or 32768)}}
+                       "options": {"num_predict": max_tokens, "num_ctx": num_ctx_for(model)}}
             if not os.environ.get("HUBPROTO_MODEL_THINK"):
                 payload["think"] = False
             req = urllib.request.Request(ollama_url() + "/api/chat", data=json.dumps(payload).encode("utf-8"), method="POST",

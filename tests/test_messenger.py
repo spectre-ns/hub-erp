@@ -128,6 +128,10 @@ def test_a_model_drives_the_tools_through_function_calling(monkeypatch):
     class Fake(BaseHTTPRequestHandler):
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if self.path.endswith("/api/show"):  # the gateway asks the model's context length once
+                out = json.dumps({"model_info": {"qwen3.context_length": 40960}}).encode()
+                self.send_response(200); self.send_header("Content-Length", str(len(out))); self.end_headers(); self.wfile.write(out)
+                return
             turns.append(body)
             if len(turns) == 1:
                 msg = {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "get_record", "arguments": {"number": "BILL-0001"}}}]}
@@ -151,6 +155,7 @@ def test_a_model_drives_the_tools_through_function_calling(monkeypatch):
         out = ModelGateway().complete_with_tools(model="ollama/qwen3:14b", system="s", user="what about BILL-0001?", tools=tool_specs(),
                                                  call_tool=lambda n, a: calls.append((n, a)) or {"number": "BILL-0001", "state": "posted"})
         assert out["text"] == "BILL-0001 is posted." and calls == [("get_record", {"number": "BILL-0001"})] and out["tool_calls"][0]["tool"] == "get_record"
+        assert turns[0]["options"]["num_ctx"] == 40960  # the model's own window, read from Ollama
         assert turns[0]["tools"] and turns[1]["messages"][-1]["role"] == "tool" and "posted" in turns[1]["messages"][-1]["content"]
     finally:
         srv.shutdown()

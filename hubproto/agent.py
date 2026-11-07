@@ -312,10 +312,10 @@ class Agent:
         tools = AgentTools(self.hub, self.cog, run_id, mode, actions, self.store, requester=by)
         from .cogs import cog_context
 
-        system = cog_context(tools._ctx(None), None) + "\n\n" + AGENT_RULES.format(cog=self.cog, goal=goal, mode={
+        specs = tool_specs() + ([t for t in ACTION_TOOLS if t["name"] == "finish"] if mode == "read" else ACTION_TOOLS)
+        system = cog_context(tools._ctx(None), None, tools_now=specs) + "\n\n" + AGENT_RULES.format(cog=self.cog, goal=goal, mode={
             "act": "act: you may act on your own", "propose": "propose: your actions are recorded as proposals a person confirms",
             "read": "read: you may only look and report"}[mode], actions=actions, rounds=rounds)
-        specs = tool_specs() + ([t for t in ACTION_TOOLS if t["name"] == "finish"] if mode == "read" else ACTION_TOOLS)
         return {"run": run_id, "tools": tools, "system": system, "specs": specs, "model": prof.get("model") or "stand-in", "mode": mode,
                 "goal": goal, "by": by, "rounds": rounds}
 

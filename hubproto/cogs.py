@@ -661,21 +661,99 @@ def pinned_text(ctx: RunContext, pin: dict | None, limit: int = 20000) -> str:
     return extract_text(content, v.get("mime") or "", v.get("filename") or "")[:limit].strip()
 
 
-def cog_context(ctx: RunContext, rec: dict | None, *, sop_chars: int | None = None, doc_chars: int | None = None, task: str = "") -> str:
+def governing_sop(ctx: RunContext, rec: dict | None) -> str:
+    """The SOP that defines the process this item is in (or would be in), so the cog reads it first and whole."""
+    bundle = ctx.bundle or {}
+    procs = bundle.get("processes") or {}
+    process = (ctx.extras or {}).get("process") or ""
+    if not process and rec is not None and ctx.runner is not None:
+        try:
+            run = ctx.runner.run_for_record(rec["locator"])
+            process = run["process"] if run else ""
+        except Exception:
+            process = ""
+    if not process and rec is not None:  # not in flight: the process that files this type of record
+        process = next((n for n, p in procs.items() if (p.get("record_type") or p.get("object")) == rec.get("type")), "")
+    return ((procs.get(process) or {}).get("source") or {}).get("frame", "")
+
+
+def _first_sentence(text: str, n: int = 150) -> str:
+    s = re.split(r"(?<=[.;])\s", (text or "").strip(), maxsplit=1)[0]
+    return s if len(s) <= n else s[: n - 1] + "\u2026"
+
+
+def capabilities_text(ctx: RunContext, *, tools_now: list[dict] | None = None) -> str:
+    """What the cog can do, told to the cog itself: the tools it can call now (or, in a single reply, the ones it has
+    when it works on its own), what it may sign (its approval criteria, quoted) and how people reach it. Generated
+    from the tool definitions and the release, so it never claims a tool the cog does not have."""
+    from .agent import ACTION_TOOLS
+    from .tools import TOOLS
+
+    bundle = ctx.bundle or {}
+    profile = ctx.profile
+    cog = next((n for n, p in (bundle.get("cogs") or {}).items() if p is profile), "") or getattr(ctx, "owner", "") or "you"
+    mode = profile.get("autonomy") or "propose"
+    mode_words = {"act": "you act on your own through the hub's governed paths",
+                  "propose": "your actions are recorded as proposals that a person confirms",
+                  "read": "you may only look and report"}.get(mode, "")
+    look = [t for t in TOOLS]
+    act = [t for t in ACTION_TOOLS if mode != "read" or t["name"] == "finish"]
+    line = lambda t: f"- {t['name']}: {_first_sentence(t['description'])}"
+    out = [f"YOUR TOOLS AND WHAT YOU MAY DO (as {cog}; autonomy {mode}: {mode_words})"]
+    if tools_now:
+        out.append("Tools you can call now (call them; never guess what a tool would return):")
+        out += [line(t) for t in tools_now]
+        others = [t for t in look + act if t["name"] not in {x["name"] for x in tools_now}]
+        if others:
+            out.append("Not available in this conversation: " + ", ".join(t["name"] for t in others) + ".")
+    else:
+        out.append("In this reply you cannot call tools: answer in the output format given below. When a person gives you a task or "
+                   "assigns you an item, you work with these tools:")
+        out += [line(t) for t in look + act]
+    crits = [c for c in bundle.get("approval_criteria") or [] if c.get("approver") == f"cog:{cog}"]
+    if crits:
+        out.append("What you may sign (nothing else; segregation of duties binds you, and you never sign your own work):")
+        out += [f"- \u201c{c['source']['text']}\u201d ({c['source']['frame']} line {c['source']['line']})" for c in crits]
+    else:
+        out.append("You may not sign approvals: you review, answer and draft, and a person decides.")
+    out.append("How people reach you: an @mention in a document comment or an item's chatter, Assign on an item, a task on your "
+               "profile, or an item routed to you. Each lands in your queue; you take them one at a time.")
+    return "\n".join(out)
+
+
+def cog_context(ctx: RunContext, rec: dict | None, *, sop_chars: int | None = None, doc_chars: int | None = None, task: str = "",
+                tools_now: list[dict] | None = None) -> str:
     """What a cog has in front of it when it works on an item: its standing prompt, the SOPs it follows, the whole
     document (text) and every comment thread in it, with authors and reply structure. Goes in the system prompt
     of every document task, so review, edit and answer reason from the same reference."""
     import os as _os
 
-    sops = ctx.sop_texts()
-    sop_budget = sop_chars or int(_os.environ.get("HUBPROTO_SOP_CHARS") or 14000)
-    doc_budget = doc_chars or int(_os.environ.get("HUBPROTO_DOC_CHARS") or 24000)
-    per = max(1500, sop_budget // max(1, len(sops)))
+    from .model import prompt_budget_chars
+
     profile = ctx.profile
+    # The window is the model's: SOPs get up to 45% of it and the item's own text up to 35%, so a cog reads its
+    # procedures whole (all 26 policies together are about 46,000 characters) instead of the first lines of each.
+    budget = prompt_budget_chars(profile.get("model") or "")
+    sop_budget = sop_chars or int(_os.environ.get("HUBPROTO_SOP_CHARS") or 0) or int(budget * 0.45)
+    doc_budget = doc_chars or int(_os.environ.get("HUBPROTO_DOC_CHARS") or 0) or int(budget * 0.35)
+    governing = governing_sop(ctx, rec)
+    sops = ctx.sop_texts()
+    if governing and governing not in sops:
+        sops = {**ctx.sop_texts([governing]), **sops}
+    order = ([governing] if governing in sops else []) + [n for n in sops if n != governing]
     prompt = pinned_text(ctx, profile.get("prompt_doc"), 8000) or profile.get("prompt") or f"You are {getattr(ctx, 'owner', 'a cog')}, a reviewer on the team."
     parts = [prompt]
-    parts.append("PROCEDURES YOU FOLLOW (review, write and answer strictly against these):\n\n" +
-                 ("\n\n".join(f"# {n}\n{t[:per]}" for n, t in sops.items()) or "(none assigned)"))
+    left, blocks = sop_budget, []
+    for n in order:
+        t = sops[n].strip()
+        label = f"# {n}" + (" (the procedure that governs this item)" if n == governing else "")
+        if len(t) > left:
+            t = t[: max(0, left)] + f"\n[... {len(sops[n].strip()) - max(0, left):,} more characters of {n} not shown: the window is full]"
+        blocks.append(f"{label}\n{t}")
+        left -= len(t)
+    parts.append("PROCEDURES YOU FOLLOW (review, write and answer strictly against these; quote them by name):\n\n" +
+                 ("\n\n".join(blocks) or "(none assigned)"))
+    parts.append(capabilities_text(ctx, tools_now=tools_now))
     refs = [(pin, pinned_text(ctx, pin, 6000)) for pin in profile.get("reference_docs") or []]
     refs = [(pin, t) for pin, t in refs if t]
     if refs:
@@ -719,7 +797,9 @@ def cog_context(ctx: RunContext, rec: dict | None, *, sop_chars: int | None = No
 def chat_prompt(ctx: RunContext, rec: dict | None, *, cog_id: str, person: str, queue: list[str] | None = None) -> str:
     """The system prompt for an informal chat: who the cog is, what it follows, what the person is looking at
     (the whole item, when on one), who they are and what is in the cog's queue, then how to talk."""
-    system = cog_context(ctx, rec, task="chat")
+    from .tools import TOOLS as _TOOLS
+
+    system = cog_context(ctx, rec, task="chat", tools_now=_TOOLS)
     bundle = ctx.bundle or {}
     roles = sorted((bundle.get("members") or {}).get(person, {}).get("roles") or [])
     extra = [f"YOU ARE CHATTING WITH {person}" + (f" ({', '.join(r.replace('-', ' ') for r in roles)})" if roles else "") + "."]
