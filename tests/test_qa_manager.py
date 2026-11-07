@@ -42,9 +42,16 @@ def ask_to_approve(hub, rec_loc: str, who: str = "bob") -> dict:
 
 
 def test_dropping_a_countersignature_is_a_widening():
-    old = {"kind": "approval_criteria", "approver": "cog:qa-manager", "process": "document-control", "conditions": ["review_passes"], "countersign": "quality-manager"}
+    from hubproto.guards import drift_guard
+
+    src = {"frame": "f", "version": "1", "line": 1, "text": "x"}
+    old = {"kind": "approval_criteria", "approver": "cog:qa-manager", "process": "document-control", "max_amount": None, "currency": None,
+           "conditions": ["review_passes"], "countersign": "quality-manager", "source": src}
     new = {**old, "countersign": None}
-    assert _widens(new, [old]) and not _widens(old, [old])
+    [add, remove] = sorted(drift_guard([old], [new]), key=lambda c: c["op"])
+    assert add["widening"] and add["changes_from"]["countersign"] == "quality-manager"
+    assert drift_guard([old], [old]) == []
+    assert _widens(new, [old])
 
 
 def test_the_qa_manager_is_released_with_criteria_but_no_route(shell):
@@ -83,9 +90,16 @@ def test_asked_to_approve_a_major_change_it_signs_and_a_quality_manager_counters
 
 def test_asked_to_approve_a_minor_change_its_signature_stands_alone(shell):
     hub = shell["hub"]
+    # A minor change is a revision of a document in force (a brand-new document is always major: a person approves it).
+    base = submit_doc(hub, "SOP-QA-base", "major")
+    hub.runner.decide(base["id"], "bob", "approve", meaning="approved the base procedure", payload_digest=hub.runner.seen_digest(hub.runner.load(base["id"])))
+    base_no = hub.kernel.get(base["record"])["number"]
+    assert hub.kernel.get(base["record"])["state"] == "effective"
     hub.runner.cog_users_inline = False  # the minor change waits for the doc-reviewer cog instead of being taken at once
     try:
-        state = submit_doc(hub, "SOP-QA-minor", "minor")
+        run_id = hub.runner.submit("document-control", {"record": {"title": "SOP-QA-base", "change_type": "minor", "revises": base_no,
+                                                                   "body": "# SOP-QA-base\n\n1. Purpose\n2. Scope\n3. Steps, reworded"}}, owner="alice")
+        state = hub.runner.load(run_id)
         assert state["pending"]["assignees"] == ["doc-reviewer"]
     finally:
         hub.runner.cog_users_inline = True
@@ -93,7 +107,15 @@ def test_asked_to_approve_a_minor_change_its_signature_stands_alone(shell):
     after = hub.runner.load(state["id"])
     assert after["status"] == "completed" and hub.kernel.get(state["record"])["state"] == "effective"
     decided = next(e for e in hub.runner.track(state["id"]) if e["type"] == "gate.decided")
-    assert decided["by"] == "qa-manager" and "its review passed" in decided["meaning"] and "change_minor holds" in decided["meaning"]
+    assert decided["by"] == "qa-manager" and "its review passed" in decided["meaning"] and "the change is minor: yes" in decided["meaning"]
+
+
+def test_a_new_document_declared_minor_is_a_major_change(shell):
+    hub = shell["hub"]
+    state = submit_doc(hub, "SOP-QA-new-minor", "minor")
+    assert "doc-reviewer" not in state["pending"]["assignees"] and state["pending"]["assignee_type"] == "person"
+    rec = hub.kernel.get(state["record"])
+    assert rec["fields"]["conditions"]["change_minor"] is False
 
 
 def test_a_failed_review_leaves_the_item_with_the_people(shell, monkeypatch):

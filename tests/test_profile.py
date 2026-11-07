@@ -246,6 +246,8 @@ def test_quality_manager_cannot_disposition_her_own_ncr(seeded):
 def test_effective_document_assigns_training_and_tick_escalates_overdue_items(seeded):
     run_id = seeded.runner.submit("document-control", {"record": {"title": "SOP-12 Handling", "change_type": "minor",
                                                                    "training_roles": ["staff"]}}, owner="alice")
+    # A new document is a major change whatever its author says (review governance-1): a person approves it.
+    seeded.runner.decide(run_id, "bob", "approve", meaning="fit for use", payload_digest=seen(seeded.runner, run_id))
     assert run_state(seeded, run_id)["status"] == "completed", events(seeded, run_id)
     trainings = seeded.kernel.query(type_="training")
     assert {t["fields"]["person"] for t in trainings} == {"alice", "bob", "carol", "dave"}

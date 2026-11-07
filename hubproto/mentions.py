@@ -27,28 +27,53 @@ def slug(name: str) -> str:
 INTENTS = ("edit", "review", "approve", "message")
 
 
+_EDIT_VERBS = (r"edit|insert|include|add|write|draft|rewrite|revise|update|change|format|reformat|make|put|replace|fix|correct|clean|"
+               r"delete|remove|drop|strike|cut|rename|move|swap|shorten|merge|split|trim|erase|clear")
+_POLITE = r"(?:(?:hi|hello|hey|thanks|ok|okay)[,!]?\s+)?(?:(?:please|pls|kindly)\s+)?(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)?"
+_APPROVE_REQ = re.compile(r"^" + _POLITE + r"(?:approve|sign(?:\s+|-)off(?:\s+on)?|release|"
+                          r"(?:move|send|put|submit)\s+(?:this|it|the\s+\w+)?\s*(?:\w+\s+)?(?:to|for|into)\s+approval)\b")
+_EDIT_REQ = re.compile(r"^" + _POLITE + r"(?:" + _EDIT_VERBS + r")\b")
+_REVIEW_REQ = re.compile(r"^" + _POLITE + r"(?:review|check|look at|assess|inspect)\b")
+_HOLD = re.compile(r"\b(hold off|wait|until|not yet|don't|do not|no action|never)\b")
+
+
+def _clauses(text: str) -> list[str]:
+    t = _MENTION.sub(" ", (text or "")).lower()
+    return [c.strip(" ,:-") for c in re.split(r"[.!?;\n]+|\band then\b", t) if c.strip(" ,:-")]
+
+
 def intent_by_keywords(text: str) -> str:
+    """What a message asks, from its wording. An approval is asked only by an explicit request ("please approve",
+    "can you sign off on this"), never by a question about approval or a "hold off on approval"; an edit verb in a
+    question is a question unless a clause asks for the edit outright."""
     t = (text or "").lower()
-    negated = lambda word: re.search(r"\b(not|don't|didn't|do not|did not|never|no)\b[^.]{0,25}\b" + word, t) is not None
-    if re.search(r"\b(edit|insert|include|add|write|draft|rewrite|revise|update|change|format|reformat|make|put|replace|fix|correct|clean|"
-                 r"delete|remove|drop|strike|cut|rename|move|swap|shorten|merge|split|trim|erase|clear)\b", t) and not re.search(r"\b(approve|approval)\b", t):
-        return "edit"
-    if re.search(r"\b(approve|approval|sign off|sign-off|release|move .{0,20}approval)\b", t) and not negated("approv"):
+    clauses = _clauses(text)
+    if any(_APPROVE_REQ.match(c) and not _HOLD.search(c) for c in clauses):
         return "approve"
-    if re.search(r"\b(review|check|look at|assess|inspect)\b", t) and not negated("review"):
+    if any(_EDIT_REQ.match(c) for c in clauses):
+        return "edit"
+    if re.search(r"\b(" + _EDIT_VERBS + r")\b", t) and "?" not in t and not re.search(r"\b(approve|approval)\b", t):
+        return "edit"
+    if any(_REVIEW_REQ.match(c) for c in clauses) or (re.search(r"\b(review|check|look at|assess|inspect)\b", t) and "?" not in t
+                                                      and not re.search(r"\b(not|don't|didn't|do not|did not|never|no)\b[^.]{0,25}\breview", t)):
         return "review"
     return "message"
 
 
+def _unambiguous(text: str, intent: str) -> bool:
+    """A plain imperative ("please delete the Records section") needs no model to tell what it asks."""
+    clauses = _clauses(text)
+    pat = {"edit": _EDIT_REQ, "review": _REVIEW_REQ, "approve": _APPROVE_REQ}.get(intent)
+    return bool(pat) and "?" not in (text or "") and bool(clauses) and all(pat.match(c) or len(c) < 4 for c in clauses[:1])
+
+
 def intent_of(text: str, *, model=None, model_name: str = "", thread: list[dict] | None = None, cog_id: str = "") -> str:
     """What the writer wants: edit (write or change content), review, approve (move the item on), or an answer.
-    The cog's model decides when one is configured, with the thread in view; keywords otherwise."""
+    An explicit request is taken as it reads; anything else the cog's model decides, with the thread in view
+    (keywords when no model is configured)."""
     fallback = intent_by_keywords(text)
-    if fallback == "approve":
-        return "approve"  # an explicit approval phrase is not for a model to second-guess
-    t = (text or "").lower()
-    if fallback == "review" and not re.search(r"\b(edit|insert|include|add|write|draft|rewrite|revise|update|change|format|make|put|replace|fix|delete|remove|drop)\b", t):
-        return "review"  # "please review this" means review
+    if fallback == "approve" or _unambiguous(text, fallback):
+        return fallback  # an explicit request is not for a model to second-guess, nor worth a model call
     if model is None or not getattr(model, "available", lambda m: False)(model_name):
         return fallback
     context = "\n".join(f"- {t.get('author')}: {t.get('text')}" for t in (thread or [])[-6:])
@@ -57,14 +82,15 @@ def intent_of(text: str, *, model=None, model_name: str = "", thread: list[dict]
             "Which ONE does the latest comment ask of you? Answer with a single word:\n"
             "EDIT (write, add, change, delete, replace, move, format or revise content in the document)\n"
             "REVIEW (assess the document and give findings)\n"
-            "APPROVE (sign off, release, or move the item to approval)\n"
+            "APPROVE (an explicit request that you sign it off now; a question about approval is ANSWER)\n"
             "ANSWER (a question or remark to reply to in words)")
     try:
         out = model.complete(model=model_name, system="You classify requests. Reply with exactly one word.", user=user, max_tokens=5, by=cog_id)
         word = (out.get("text") or "").strip().upper().split()[0] if (out.get("text") or "").strip() else ""
     except Exception:
         return fallback
-    return {"EDIT": "edit", "REVIEW": "review", "APPROVE": "approve", "ANSWER": "message"}.get(word.strip(".,:!"), fallback)
+    got = {"EDIT": "edit", "REVIEW": "review", "APPROVE": "approve", "ANSWER": "message"}.get(word.strip(".,:!"), fallback)
+    return "message" if got == "approve" else got  # signing is never on a model's reading of a message
 
 
 def resolve(bundle: dict, text: str) -> tuple[list[str], list[str], list[str]]:
@@ -198,47 +224,60 @@ def _answer(hub, msg, cog_id, bundle, release, record, sender, actions, intent, 
                            thread=[t for t in thread_ctx if str(t.get("id")) != str(msg.get("comment_id"))], cog_id=cog_id)
     ctx = RunContext(run_id="inbox-" + msg["id"], release=release, bundle=bundle, owner=cog_id, kernel=hub.kernel,
                      runner=hub.runner, inbox=hub.inbox, record=record["locator"] if record else None, dms=hub.dms,
-                     frames=lambda: hub.frames, model=hub.model, extras={"cog_profile": profile, "process": run["process"] if run else ""})
+                     frames=lambda: hub.released_frames(), model=hub.model, extras={"cog_profile": profile, "process": run["process"] if run else ""})
     if record and intent == "approve":
-        # Asked to approve: a cog takes its turn only where the Gate is assigned to it; otherwise it just reports.
+        # Asked to approve: a cog takes its turn where the Gate is assigned to it, or steps in where its criteria allow
+        # and the person asking is one the approval waits for; otherwise it says why not.
+        from .agent import may_ask_step_in
+
         run = hub.runner.run_for_record(record["locator"])
+        done = "; ".join(actions)
+        lead = (done[0].upper() + done[1:] + ". ") if done else ""
         if run and run["status"] == "waiting" and cog_id in (run.get("pending") or {}).get("assignees", []):
             after = hub.runner.cog_decide(run["id"], cog_id)
-            last = next((e for e in reversed(hub.runner.track(run["id"])) if e["type"] in ("gate.decided", "gate.declined")), {})
-            body = f"I took my turn at the Gate: {last.get('type', '').split('.')[-1]}; {record['number']} is now {after['status']}" + \
-                (f", waiting for {', '.join(after['pending']['assignees'])}" if after.get("pending") else "") + "."
+            body = lead + _outcome(hub, run["id"], record, cog_id, after)
         elif run and run["status"] == "waiting" and not hub.runner.may_step_in(run, cog_id):
-            # Asked to approve an item waiting for people, and the policy lets this cog sign it when asked: it steps in.
             waited = ", ".join(run["pending"]["assignees"])
-            after = hub.runner.cog_step_in(run["id"], cog_id, asked_by=sender)
-            last = next((e for e in reversed(hub.runner.track(run["id"])) if e["type"] in ("gate.decided", "gate.declined", "gate.signed")), {})
-            if last.get("type") == "gate.signed":
-                body = (f"I reviewed {record['number']} and approved it: {last.get('meaning', '')}. My criteria ask a "
-                        f"{str(last.get('countersign_needed') or 'person').replace('-', ' ')} to countersign; it now waits for {', '.join((after.get('pending') or {}).get('assignees') or [])}.")
-            elif last.get("type") == "gate.decided" and last.get("by") == cog_id:
-                body = f"I reviewed {record['number']} and approved it: {last.get('meaning', '')}. It is now {after['status']}" + \
-                    (f", waiting for {', '.join(after['pending']['assignees'])}" if after.get("pending") else "") + "."
+            # The runner's rule (a person waited for or a policy owner; not the preparer; not after this cog's review of
+            # this very version failed), and the same rule here for a hub without it.
+            why = hub.runner.may_step_in(run, cog_id, asked_by=sender) or may_ask_step_in(bundle, run, record, sender)
+            if why:
+                body = lead + f"I may not sign {record['number']} on your request: {why}. It stays with {waited}."
             else:
-                body = (f"I cannot sign {record['number']}: " + "; ".join(last.get("reasons") or ["my criteria do not hold"])
-                        + f". It stays with {waited}.")
+                after = hub.runner.cog_step_in(run["id"], cog_id, asked_by=sender)
+                body = lead + _outcome(hub, run["id"], record, cog_id, after, waited=waited)
         elif run and run["status"] == "waiting":
             why = hub.runner.may_step_in(run, cog_id)
-            body = f"{record['number']} is waiting for {', '.join(run['pending']['assignees'])} at {run['pending'].get('title', 'approval')}; it is not mine to sign ({why})."
+            body = lead + f"{record['number']} is waiting for {', '.join(run['pending']['assignees'])} at {run['pending'].get('title', 'approval')}; it is not mine to sign ({why})."
         else:
-            body = "; ".join(actions) or f"{record['number']} has nothing in flight and no process I can start for it."
+            body = done or f"{record['number']} has nothing in flight and no process I can start for it."
         out.append(hub.inbox.reply(msg, sender=cog_id, body=body, record=record["locator"]))
         return
     if record and record["type"] == "document" and intent == "edit" and "edit-document" in cog.tasks:
+        from .tools import may_edit_document
+
+        ok, why = may_edit_document(bundle, sender, record)
+        if not ok:
+            # The cog writes as the asker's pen: it changes only what the asker may change.
+            body = f"I cannot change {record['number']} for you: {why}. I can review it or answer questions about it instead."
+            out.append(hub.inbox.reply(msg, sender=cog_id, body=body, record=record["locator"]))
+            owner = record["fields"].get("owner") or record["fields"].get("author")
+            if owner and owner not in (sender, cog_id):
+                hub.inbox.notify(owner, kind="mention", subject=f"{sender} asked {cog_id} to change {record['number']}",
+                                 body=f"Not done ({why}). The request was: {(msg.get('body') or '')[:400]}", record=record["locator"])
+            return
         env = cog.invoke("edit-document", {"record": record["locator"], "request": msg.get("body") or msg.get("subject")}, ctx)
         r = env.get("payload") or {}
         if not r.get("ops"):
             body = f"I cannot change {record['number']}: " + ((env.get("error") or {}).get("detail") or "I found nothing to do")
             out.append(hub.inbox.reply(msg, sender=cog_id, body=body, record=record["locator"], envelope=env))
             return
-        explanation = (r.get("explanation") or "Changed as asked.") + ("" if not r.get("stand_in") else " (drafted with the stand-in: configure a model for real wording)")
+        plan = (r.get("explanation") or "").replace("Changes:", "", 1).strip() or "the changes asked"
+        explanation = f"Working on it: {plan}" + ("" if not r.get("stand_in") else " (drafted with the stand-in: configure a model for real wording)")
         reply = hub.inbox.reply(msg, sender=cog_id, body=explanation, record=record["locator"], envelope=env)
         # The cog's seat performs the operations live in the editor where it can; the hub does them in the file otherwise.
-        edit = {"ops": r["ops"], "kind": r.get("kind") or "text", "before_text": (hub.kernel.get(record["locator"])["fields"].get("text") or "")}
+        edit = {"ops": r["ops"], "kind": r.get("kind") or "text", "before_text": (hub.kernel.get(record["locator"])["fields"].get("text") or ""),
+                "asked_by": sender, "stand_in": bool(r.get("stand_in"))}
         for k in ("paragraphs", "position", "start_row"):
             if r.get(k):
                 edit[k] = r[k]
@@ -265,26 +304,34 @@ def _answer(hub, msg, cog_id, bundle, release, record, sender, actions, intent, 
         env = cog.invoke("review-document", {"record": record["locator"], "question": msg.get("body") or msg.get("subject")}, ctx)
         r = env.get("payload") or {}
         verdict = r.get("verdict", "fail")
-        lines = [f"Review of {record['number']} by {cog_id}: {verdict}."]
-        for p in r.get("findings") or []:
-            lines.append(f"- [{p['severity']}] {p['check']}: {p['detail']}")
-        if r.get("summary") and r["summary"] not in "\n".join(lines):
+        errors = [p for p in r.get("findings") or [] if p.get("severity") == "error"]
+        remarks = [p for p in r.get("findings") or [] if p.get("severity") != "error"]
+        outcome = ("problems found" if errors else "looks right" + (" with remarks" if remarks else ""))
+        def said(p):
+            what = "" if p.get("check") in (None, "", "model", "check") else f"{p['check']}: "
+            return what + p["detail"]
+
+        lines = [f"Review of {record['number']} by {cog_id}: {outcome}."]
+        lines += [f"- Problem: {said(p)}" for p in errors]
+        lines += [f"- Remark: {said(p)}" for p in remarks]
+        if r.get("summary") and r["summary"] not in "\n".join(lines) and not r["summary"].endswith("listed above."):
             lines.append(r["summary"])
+        for n in r.get("routing_notes") or []:
+            lines.append(f"Who signs: {n}.")
         if r.get("evidence"):
-            lines.append(f"Filed as evidence {r['evidence']}.")
+            ev = hub.kernel.get(r["evidence"])
+            lines.append(f"Filed as evidence {ev['number'] if ev else r['evidence']}.")
         # Progress the workflow only where policy already lets this cog decide.
         run = hub.runner.run_for_record(record["locator"])
         if run and run["status"] == "waiting" and cog_id in (run.get("pending") or {}).get("assignees", []):
             if verdict == "pass":
                 after = hub.runner.cog_decide(run["id"], cog_id)
-                last = next((e for e in reversed(hub.runner.track(run["id"])) if e["type"] in ("gate.decided", "gate.declined")), {})
-                lines.append(f"Then I took my turn at the Gate: {last.get('type', '').split('.')[-1]}; the item is now {after['status']}"
-                             + (f", waiting for {', '.join(after['pending']['assignees'])}" if after.get("pending") else "") + ".")
+                lines.insert(0, _outcome(hub, run["id"], record, cog_id, after))  # the outcome first, the review behind it
             else:
                 lines.append("The item is waiting for me at the Gate, but the review did not pass, so I have not signed it.")
         elif run and run["status"] == "waiting":
             lines.append(f"The item is waiting for {', '.join(run['pending']['assignees'])}; this review is attached for them.")
-            hub.inbox.notify_all(run["pending"]["assignees"], kind="review", subject=f"{cog_id} reviewed {record['number']}: {verdict}",
+            hub.inbox.notify_all(run["pending"]["assignees"], kind="review", subject=f"{cog_id} reviewed {record['number']}: {outcome}",
                                  body="\n".join(lines), run_id=run["id"], record=record["locator"]) if hasattr(hub.inbox, "notify_all") else None
         body = "\n".join(lines + actions)
     else:
@@ -293,6 +340,24 @@ def _answer(hub, msg, cog_id, bundle, release, record, sender, actions, intent, 
         if actions:
             body += "\n" + "\n".join(actions)
     out.append(hub.inbox.reply(msg, sender=cog_id, body=body, record=record["locator"] if record else None, envelope=env))
+
+
+def _outcome(hub, run_id: str, record: dict, cog_id: str, after: dict, waited: str = "") -> str:
+    """What happened at the Gate, outcome first: signed and waiting for a countersignature, approved, or declined."""
+    from .tools import state_words
+
+    last = next((e for e in reversed(hub.runner.track(run_id)) if e["type"] in ("gate.decided", "gate.declined", "gate.signed")), {})
+    nxt = ", ".join((after.get("pending") or {}).get("assignees") or [])
+    rec_now = hub.kernel.get(record["locator"]) or record
+    if last.get("type") == "gate.signed":
+        return (f"Signed; waiting for a countersignature from {nxt or 'a person'}: {record['number']} is not approved until then "
+                f"(my criteria ask a {str(last.get('countersign_needed') or 'person').replace('-', ' ')}). My basis: {last.get('meaning', '')}.")
+    if last.get("type") == "gate.decided" and last.get("by") == cog_id:
+        verdict = last.get("verdict") or "approve"
+        return (f"{'Approved' if verdict == 'approve' else 'Rejected'}: {record['number']} is now {state_words(rec_now.get('state'))}"
+                + (f", waiting for {nxt}" if nxt else "") + f". My basis: {last.get('meaning', '')}.")
+    return (f"I cannot sign {record['number']}: " + "; ".join(last.get("reasons") or ["my criteria do not hold"])
+            + (f". It stays with {waited}." if waited else "."))
 
 
 def _apply_into_file(hub, record: dict, sender: str, out: list[dict]) -> None:

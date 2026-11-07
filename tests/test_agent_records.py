@@ -76,7 +76,10 @@ def test_create_record_without_a_process_needs_the_permission(hub):
 # ---------------------------------------------------------------- update_fields
 def test_update_fields_sets_what_the_cog_may_change_and_nothing_managed(hub):
     t = tools_for(hub)
-    n = new_ncr(t, "Scratch on cover")["number"]
+    in_run = new_ncr(t, "Scratch on cover")["number"]
+    assert "is in a nonconformance run" in t.execute("update_fields", {"number": in_run, "fields": {"lot": "L-42"}})["error"]
+    # A draft carol filed (no run, no signature): the cog changes it for her.
+    n = hub.kernel.create("ncr", "Quality/Nonconformances", {"title": "Scratch on cover", "source": "inspection"}, by="carol")["number"]
     out = t.execute("update_fields", {"number": n, "fields": {"lot": "L-42", "quantity": 12}})
     assert out["ok"] and hub.kernel.get(f"rec:ncr:{n}")["fields"]["lot"] == "L-42"
     assert "managed by the hub" in t.execute("update_fields", {"number": n, "fields": {"owner": "carol", "risk": "low"}})["error"]
@@ -87,11 +90,11 @@ def test_update_fields_sets_what_the_cog_may_change_and_nothing_managed(hub):
 
 
 def test_update_fields_is_refused_without_permission(hub):
-    t = tools_for(hub, cog="quality-assistant")
+    t = AgentTools(hub, "quality-assistant", "t-perm", "act", 8, AgentStore(hub.root / "state" / "agents"), requester="dave")
     doc = hub.dms.create(title="Carol's SOP", doc_class="controlled", folder="Quality/Controlled Documents", by="carol",
                          content=b"# SOP\n", filename="sop.md", mime="text/markdown", doc_type="sop")
     out = t.execute("update_fields", {"number": doc["number"], "fields": {"title": "Renamed"}})
-    assert "error" in out and "no rule" in out["error"]
+    assert "error" in out and "neither you nor dave may change" in out["error"]
 
 
 # ---------------------------------------------------------------- move_record
@@ -176,8 +179,10 @@ def test_create_task_for_a_person_or_a_cog(queued):
     assert "not a member" in t.execute("create_task", {"title": "x", "assignee": "zed"})["error"]
     bad = t.execute("create_task", {"title": "x", "due": "next week"})
     assert "error" in bad and "date" in bad["error"]
-    # A task's due date is a guarded field for update_fields too.
-    assert "field-date" in t.execute("update_fields", {"number": out["number"], "fields": {"due": "soon"}})["error"]
+    # A task in its run is changed through its process, not in place.
+    assert "is in a task run" in t.execute("update_fields", {"number": out["number"], "fields": {"due": "soon"}})["error"]
+    linked = t.execute("create_task", {"title": "Confirm containment", "assignee": "carol", "concerns": out["number"]})
+    assert linked["ok"] and linked["linked_to"] == out["number"]
 
 
 # ---------------------------------------------------------------- delegate_to_cog

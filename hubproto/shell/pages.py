@@ -15,7 +15,7 @@ from ..runner import FIELD_ROLES
 from .forms import DEFAULT_START_INPUTS, REQUIRED_EXTRA, START_INPUTS, ShellError, file_input, text_input, widget
 from .handler import details, folder_tree, hidden_as, href, kv, table
 from .icons import TYPE_ICONS, file_icon, icon, type_icon
-from .text import (type_name, BLOB_FIELDS, chip, day, days_from, esc, event_sentence, field_label, fmt, owner_of, short, state_name,
+from .text import (type_name, BLOB_FIELDS, chip, day, days_from, esc, event_sentence, field_label, fmt, join_words, owner_of, short, state_name,
                    summary_of_record, tag, track_sentence, type_name, value_text, verb_for, when)
 from .views import BUCKET_WORDS, EXIT_STATES, bucket_of
 
@@ -78,6 +78,22 @@ def may_file(bundle: dict, user: str, folder: str) -> dict:
     return d
 
 
+def _plain_preview(text: str) -> str:
+    """Markdown source as the words a person reads: no heading marks, emphasis stars, backticks or digests."""
+    import re as _re
+
+    out = []
+    for line in str(text or "").splitlines():
+        t = _re.sub(r"^#{1,6}\s*", "", line).replace("**", "").replace("`", "")
+        t = _re.sub(r"^\s*[-*]\s+", "• ", t)
+        t = _re.sub(r"\b[0-9a-f]{12,64}\b", "…", t)
+        t = _re.sub(r"rec:[a-z-]+:([A-Z]+-[0-9A-Z-]+)", r"\1", t)
+        t = _re.sub(r"(\d{4}-\d{2}-\d{2})T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:\+00:00|Z)?", r"\1", t)
+        if t.strip():
+            out.append(t.strip())
+    return "\n".join(out)
+
+
 class PagesMixin:
     # ----------------------------------------------------------------- home
     def page_home(self, status: int = 200):
@@ -90,7 +106,7 @@ class PagesMixin:
             return self._page("Home", f"<h1>Welcome, {esc(user)}</h1><div class='card crit' role='alert'><b>{esc(user)} is not a member of the organization</b> under the "
                                       "policy release in effect, so nothing here is available. Ask a policy owner (bob or carol) to add you to the org model.</div>")
         m = bundle["members"][user]
-        roles = " ".join(tag(r.replace("-", " ")) for r in m["roles"]) or "no role"
+        roles = join_words(tag(r.replace("-", " ")) for r in m["roles"]) or "no role"
         body = f"""<h1>Welcome, {esc(user)}</h1><p>You are {roles}.</p>""" + self._dashboard()
         body += f"<h2 id='start'>{icon('play')} Start something</h2><p class='why'>Fields marked * are required. Each entry opens its form.</p>"
         open_process = self.q.get("start", [""])[0] or (self.vals.get("process") if self.err else "")
@@ -365,7 +381,7 @@ class PagesMixin:
             name = f.get("filename") or ""
             ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
             if ext in ("md", "txt") and f.get("text"):
-                thumb = f"<pre aria-hidden='true'>{esc(short(f['text'], 220))}</pre>"
+                thumb = f"<pre aria-hidden='true'>{esc(short(_plain_preview(f['text']), 220))}</pre>"
             else:
                 thumb = file_icon(name, label=False)
             page = href("/document/" + quote(d["locator"], safe=":"), user)
@@ -515,7 +531,7 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
             body += self._failed_card(s, rec)
         if s.get("grant"):
             g = s["grant"]
-            body += f"<p class='why'>Approval granted by {esc(g['decided_by'])} ({'automatic reviewer' if g['by_type'] == 'cog' else 'person'}) on {esc(when(g['issued_at']))}.</p>"
+            body += f"<p class='why'>Approval granted by {esc(g['decided_by'])} ({'cog' if g['by_type'] == 'cog' else 'person'}) on {esc(when(g['issued_at']))}.</p>"
         rows = []
         for step in s["manifest"]["steps"]:
             srec = s["steps"].get(step["id"])
@@ -529,12 +545,25 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
             dec = ""
             if srec.get("decision"):
                 d = srec["decision"]
-                dec = f"{chip(d['verdict'])} by {esc(d['by'])} ({'automatic reviewer' if d['by_type'] == 'cog' else 'person'})<div class='why'>{esc(d['meaning'])}</div>"
+                dec = f"{chip(d['verdict'])} by {esc(d['by'])} ({'cog' if d['by_type'] == 'cog' else 'person'})<div class='why'>{esc(d['meaning'])}</div>"
                 if d.get("delegating_rule"):
                     dec += f"<div class='why'>under {self._rule_html(d['delegating_rule'])}</div>"
-            result = {"passed": "passed", "failed": "stopped", "pass-with-problems": "passed with warnings", "gate-pending": "waiting for approval"}.get(srec["status"], srec["status"])
+            result = {"passed": "passed", "failed": "stopped", "pass-with-problems": "passed with warnings", "gate-pending": "passed"}.get(srec["status"], srec["status"])
+            gate = step.get("gate") or {}
+            if gate.get("type") == "human":
+                # The step's own work, then its approval as a row of its own (the approval is what waits, not the step).
+                rows.append([esc(step["title"]), f"{esc(env['cog']['id'])} {esc(env['cog']['version'])}", chip(result), probs, ""])
+                pend = s.get("pending") or {}
+                if srec["status"] == "gate-pending" and pend.get("step") == step["id"]:
+                    who = ", ".join(pend.get("assignees") or [])
+                    rows.append([esc(gate.get("title") or "Approval"), esc(who), chip("waiting"), "", f"<span class='why'>waiting for {esc(who)}</span>"])
+                elif dec:
+                    rows.append([esc(gate.get("title") or "Approval"), esc(srec["decision"]["by"]), chip(srec["decision"]["verdict"] + "d"), "", dec])
+                else:
+                    rows.append([esc(gate.get("title") or "Approval"), "", chip("not reached", ""), "", ""])
+                continue
             rows.append([esc(step["title"]), f"{esc(env['cog']['id'])} {esc(env['cog']['version'])}", chip(result), probs, dec])
-        body += "<h2>Steps</h2>" + table(["Step", "Automatic reviewer", "Result", "Problems", "Decision"], rows)
+        body += "<h2>Steps</h2>" + table(["Step", "Done by", "Result", "Problems", "Decision"], rows)
         body += "<h2>History</h2>" + self._track_html(s["id"])
         crumbs = [("Runs", href("/runs", user))] + ([(rec["number"], href("/record/" + quote(rec["locator"], safe=":"), user))] if rec else []) + [(title, None)]
         self._page(title, body, crumbs=crumbs)
@@ -599,7 +628,7 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
                      and (op["steps"][0]["role"] in ("system", *FIELD_ROLES) or op["steps"][0]["role"] in authz.roles_of(bundle, user))]
         if startable:
             btns += f'<a class="button ghost" href="{href("/", user)}#start">{icon("play")}Start a process</a>'
-        btns += self._assign_form(rec) + self._restart_form(rec)
+        btns += self._why_not_me(rec) + self._assign_form(rec) + self._restart_form(rec)
         btns += f'<form method="post" action="/snapshot" class="inline">{hidden_as(user)}{self._once()}<input type="hidden" name="record" value="{esc(loc)}"><button class="ghost" title="files a copy of this item as an evidence document">{icon("camera")}Render snapshot</button></form>'
         btns += f'<button type="button" class="ghost" onclick="print()">{icon("printer")}Print</button>'
         body = f'<div class="formhead"><div class="btns">{btns}</div>{self._statusbar(wf, rec)}</div>' + self._ops_row(rec, run)
@@ -607,7 +636,7 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
                                      ("Runs", len(runs_of), "activity", "workflow"), ("Decisions", len(decisions), "check-circle", "decisions")]
                                     + ([("Reviews", len(reviews), "eye", "reviews")] if reviews else []))
         # --- the sheet
-        body += f"""<div class="sheet"><h1 class="title">{esc(rec['number'])} {tag(tname)} {self._state_chip(rec['state'], wf)}{hold}</h1>
+        body += f"""<div class="sheet" id="sheet" data-live><h1 class="title">{esc(rec['number'])} {tag(tname)} {self._state_chip(rec['state'], wf)}{hold}</h1>
 <div class="subtitle"><b>{esc(short(headline, 300))}</b><div class="why">{' &middot; '.join(x for x in [
     f"{esc(tname)} in <a href=\"{href('/files', user, folder=rec['folder'])}\">{esc(rec['folder'])}</a>",
     ("owner " + self._avatar(owner_of(rec), size='sm', named=True)) if owner_of(rec) else "",
@@ -730,7 +759,7 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
                                              [[self._run_link(r), self._avatar(r["owner"], size="sm", named=True), self._state_chip(r["status"]), esc(when(r["created_at"])),
                                                esc(", ".join((r.get("pending") or {}).get("assignees") or []))] for r in reversed(runs_of)])
         body += '<h2 id="decisions">Decisions</h2>' + table(["When", "By", "Verdict", "Meaning", "Step", "Under"],
-                                                             [[esc(when(d.get("at", ""))), f"{self._avatar(d.get('by', ''), size='sm', named=True)} ({'automatic reviewer' if d.get('by_type') == 'cog' else 'person'})", chip(d.get("verdict")),
+                                                             [[esc(when(d.get("at", ""))), f"{self._avatar(d.get('by', ''), size='sm', named=True)} ({'cog' if d.get('by_type') == 'cog' else 'person'})", chip(d.get("verdict")),
                                                                esc(short(d.get("meaning"), 600)) + details("signature", f"<code>{esc(d.get('signature'))}</code> on payload <code>{esc(str(d.get('payload_digest', ''))[:12])}</code>"),
                                                                esc((d.get("step") or "").replace("-", " ")),
                                                                self._rule_html(d["delegating_rule"]) if d.get("delegating_rule") else ""]
@@ -752,6 +781,15 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
                      "internal-audit": "Plan the audit", "training-acknowledgement": "Send for acknowledgement", "complaint": "Open the complaint",
                      "management-review": "Hold the review", "task": "Assign the task", "supplier-evaluation": "Start the evaluation"}
 
+    def _why_not_me(self, rec: dict) -> str:
+        run = self.hub.runner.run_for_record(rec["locator"])
+        if not run or run["status"] != "waiting" or self.user in ((run.get("pending") or {}).get("assignees") or []) or self._viewing_cog():
+            return ""
+        return f'<a class="button ghost" href="{href("/why", self.user, record=rec["locator"])}">{icon("help")}Why not me?</a>'
+
+    FINISHED_STATES = ("closed", "posted", "effective", "obsolete", "cancelled", "rejected", "superseded", "completed", "verified",
+                       "released", "ordered", "acknowledged", "active", "accepted")
+
     def _ops_row(self, rec: dict, run: dict | None) -> str:
         """One-click Ops on this item: the processes that apply to it (started on it, not on a copy) and the cogs that
         can be asked about it, each with a key: press the key on the page to fire it."""
@@ -760,7 +798,8 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
         keys = iter("123456789")
         letters = iter("qwertyuiop")
         items = []
-        if not live:
+        finished = rec["state"] in self.FINISHED_STATES
+        if not live and not finished:
             for name, wf in sorted((bundle.get("workflows") or {}).items()):
                 if wf.get("record_type") != rec["type"] or (rec["fields"].get("doc_type") in ("frame", "frame-draft")):
                     continue
@@ -772,9 +811,17 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
                 k = next(keys, "")
                 label = self.OPS_ON_RECORD.get(name) or ("Start " + name.replace("-", " "))
                 where = "" if op.get("folder") in ("", rec["folder"]) else f"; files it in {op.get('folder')}"
-                items.append(f'<form method="post" action="/start-on" class="inline">{hidden_as(user)}{self._once()}<input type="hidden" name="process" value="{esc(name)}"><input type="hidden" name="record" value="{esc(loc)}">'
+                ask_change = rec["type"] == "document" and rec["fields"].get("doc_class") != "evidence"
+                change_pick = (f'<label class="inline"><span class="vh">Change type</span><select name="change_type" required title="minor: wording, no change to what people do">'
+                               f'<option value="">minor or major?</option><option value="minor">minor change</option><option value="major">major change</option></select></label>'
+                               if ask_change else "")
+                items.append(f'<form method="post" action="/start-on" class="inline">{hidden_as(user)}{self._once()}<input type="hidden" name="process" value="{esc(name)}"><input type="hidden" name="record" value="{esc(loc)}">{change_pick}'
                              f'<button class="button" data-hotkey="{k}" title="starts {esc(name)} on this item{esc(where)}">{icon("play")}{esc(label)}<kbd class="hk">{k}</kbd></button></form>')
-        cogs = [(n, m) for n, m in sorted((bundle.get("members") or {}).items()) if m.get("type") == "cog" and n in self.hub.registry.ids()]
+        # Only cogs that follow a procedure for this kind of item are offered (as only trained people are asked).
+        sops = {((p.get("source") or {}).get("frame")) for p in (bundle.get("processes") or {}).values()
+                if (p.get("record_type") or p.get("object")) == rec["type"]}
+        cogs = [(n, m) for n, m in sorted((bundle.get("members") or {}).items()) if m.get("type") == "cog" and n in self.hub.registry.ids()
+                and sops & set(((bundle.get("cogs") or {}).get(n) or {}).get("follows") or [])]
         for n, m in cogs:
             cog = self.hub.registry.get(n)
             if "review-document" not in getattr(cog, "tasks", []):
@@ -786,7 +833,10 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
                          f'<button class="button ghost" data-hotkey="{k}" title="asks {esc(n)} for a review in the chatter">{self._avatar(n, size="sm")} Ask {esc(n)} to review<kbd class="hk">{k}</kbd></button></form>')
         if not items:
             return ""
-        return f'<div class="ops" role="group" aria-label="Ops on this item"><span class="lbl">{icon("zap")}Ops</span>{"".join(items)}<span class="lbl">press <kbd class="hk" style="margin:0"></kbd> then the key</span></div>'
+        return (f'<div class="ops" role="group" aria-label="Ops on this item"><span class="lbl">{icon("zap")}Ops</span>{"".join(items)}'
+                f'<span class="lbl hk-hint">press <kbd class="hk" style="margin:0"></kbd> then the key; Enter confirms</span>'
+                f'<button type="button" class="ghost hk-hint" data-hotkeys-toggle aria-pressed="true">Keyboard shortcuts: on</button>'
+                f'<span id="hk-status" class="vh" role="status" aria-live="polite"></span></div>')
 
     def _self_url(self) -> str:
         return self.path.split("?", 1)[0] + "?as=" + quote(self.user)
@@ -835,7 +885,7 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
                 ("Folder", f'<a href="{href("/files", user, folder=rec["folder"])}">{esc(rec["folder"])}</a>'), ("Owner", self._avatar(f["owner"], size="sm", named=True) if f.get("owner") else ""),
                 ("Author", self._avatar(f["author"], size="sm", named=True) if f.get("author") else ""), ("Checked out by", (self._avatar(locked, size="sm", named=True) if locked else "")), ("File", esc(f.get("filename"))), ("Format", esc(f.get("mime"))),
                 ("Labels", " ".join(tag(f"{k}: {v}") for k, v in rec["labels"].items())),
-                ("Provenance", esc(fmt(f.get("provenance")))), ("Effective from", esc(day(f.get("effective_from")))), ("Review date", esc(day(f.get("review_date")))),
+                ("Provenance", esc(", ".join(f"{k}: {v}" for k, v in (f.get("provenance") or {}).items()) if isinstance(f.get("provenance"), dict) else fmt(f.get("provenance")))), ("Effective from", esc(day(f.get("effective_from")))), ("Review date", esc(day(f.get("review_date")))),
                 ("Approved by", esc(f.get("approved_by")))]
         wf = self._wf_for_type("document")
         attached = [l for l in self.hub.kernel.links_of(loc) if l["direction"] == "in" and l["rel"] == "has-document"]
@@ -848,22 +898,24 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
             btns += f'<a class="button" href="{href("/edit/" + quote(loc, safe=":"), user)}">{icon("edit" if editable_now else "eye")}{label}</a>'
         if versions and wopi.is_editable(rec) and (immutable or rec["state"] not in EDITABLE_DOC_STATES) and may_file(bundle, user, rec["folder"])["allowed"]:
             btns += f"""<form method="post" action="/working-copy" class="inline">{hidden_as(user)}{self._once()}<input type="hidden" name="doc" value="{esc(loc)}"><button class="ghost" title="A new working document with this content, attached to the same items, that you can edit online">{icon("plus")}Make a working copy</button></form>"""
-        btns = self._policy_doc_buttons(rec) + btns + self._assign_form(rec) + self._restart_form(rec)
+        btns = self._policy_doc_buttons(rec) + btns + self._why_not_me(rec) + self._assign_form(rec) + self._restart_form(rec)
         if versions:
             btns += f'<a class="button ghost" href="{href("/download", user, doc=loc)}">{icon("download")}Download</a>'
         btns += f'<a class="button ghost" href="#checkout">{icon("lock")}Check-out and check-in</a><button type="button" class="ghost" onclick="print()">{icon("printer")}Print</button>'
         body = f'<div class="formhead"><div class="btns">{btns}</div>{self._statusbar(wf, rec)}</div>' + self._ops_row(rec, self.hub.runner.run_for_record(loc))
         body += self._smart_buttons([("Versions", len(versions), "layers", "versions"), ("Attached to", len(attached), "paperclip", "attached"), ("Links", len(other), "link", "links")])
-        body += (f"<div class='sheet'><h1 class='title'>{esc(rec['number'])} {tag('Document')} {self._state_chip(rec['state'])}</h1>"
+        body += (f"<div class='sheet' id='sheet' data-live><h1 class='title'>{esc(rec['number'])} {tag('Document')} {self._state_chip(rec['state'])}</h1>"
                  f"<div class='subtitle'><b>{file_icon(f.get('filename'))} {esc(f.get('title'))}</b></div><dl class='sheetfields'>"
                  + "".join(f"<div class='fld'><dt>{esc(k)}</dt><dd>{v}</dd></div>" for k, v in meta if v) + "</dl></div>")
         if wopi.is_viewable(rec) and versions:
             editable = can and not immutable and rec["state"] in EDITABLE_DOC_STATES and wopi.is_editable(rec) and (not locked or locked == user)
             label = "Edit online" if editable else "Open in the viewer"
             body += f'<p><a class="button" href="{href("/edit/" + quote(loc, safe=":"), user)}">{label}</a> <span class="why">{"every save becomes a version; finish editing to release the document" if editable else "read-only"}</span></p>'
-        body += "<h2 id='versions'>Versions</h2>" + table(["Version", "When", "By", "File", "Size", "Note", "Download"],
+        body += "<h2 id='versions'>Versions</h2>" + table(["Version", "When", "By", "File", "Size", "Note", "Download", "Change"],
                                              [[esc(v["version"]), esc(when(v["at"])), esc(v["by"]), esc(v.get("filename")), esc(v.get("size")), esc(v.get("note")),
-                                               f'<a href="{href("/download", user, doc=loc, v=v["version"])}">Download version {esc(v["version"])}</a>'] for v in versions], "No content yet.")
+                                               f'<a href="{href("/download", user, doc=loc, v=v["version"])}">Download version {esc(v["version"])}</a>',
+                                               (f'<a href="{href("/compare/" + quote(loc, safe=":"), user, a=v["version"] - 1, b=v["version"])}">what changed</a>'
+                                                if v["version"] > 1 else "")] for v in versions], "No content yet.")
         if f.get("text"):
             body += f"<h2>Text</h2><pre>{esc(short(f['text'], 20000))}</pre>"
         body += "<h2 id='checkout'>Check-out and check-in</h2><div class='card'>"
@@ -899,9 +951,53 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
         crumbs = [("Files", href("/files", user))] + [(p, href("/files", user, folder="/".join(parts[: i + 1]))) for i, p in enumerate(parts)] + [(rec["number"], None)]
         self._page(rec["number"], body, status=status, crumbs=crumbs, app_type="document")
 
+    def page_compare(self):
+        """/compare/<document>?a=<version>&b=<version>: what changed between two versions, as text."""
+        from .. import office
+        from ..wopi import extension_of
+        from .policy_docs import diff_html
+
+        user = self.user
+        self._need_release()
+        rec = self.hub.kernel.get(self.arg)
+        if rec is None or rec["type"] != "document":
+            raise ShellError(f"There is no document '{self.arg}'.", 404)
+        self._require_read(rec["folder"])
+        versions = self.hub.dms.versions(rec["locator"])
+        if not versions:
+            raise ShellError(f"{rec['number']} has no versions yet.", 404)
+        try:
+            b = int(self.q.get("b", [versions[-1]["version"]])[0])
+            a = int(self.q.get("a", [b - 1])[0])
+        except ValueError:
+            raise ShellError("Versions are numbers, e.g. a=2&b=3.", 400) from None
+        nums = {v["version"]: v for v in versions}
+        if a not in nums or b not in nums:
+            raise ShellError(f"{rec['number']} has versions {min(nums)} to {max(nums)}.", 404)
+
+        def text_of(n: int) -> str:
+            content, v = self.hub.dms.content(rec["locator"], n)
+            ext = extension_of(v.get("filename") or rec["fields"].get("filename") or "")
+            if ext in ("md", "txt", "csv"):
+                return content.decode("utf-8", "replace")
+            return office.extract_text(content, ext, limit=200000)
+        va, vb = nums[a], nums[b]
+        body = (f"<h1>{esc(rec['number'])}: what changed from version {a} to {b}</h1>"
+                f"<p class='why'>Version {a}: {esc(va.get('by'))} on {esc(when(va.get('at')))} ({esc(va.get('note') or '-')}). "
+                f"Version {b}: {esc(vb.get('by'))} on {esc(when(vb.get('at')))} ({esc(vb.get('note') or '-')}). Text only; formatting is not compared.</p>"
+                + diff_html(text_of(a), text_of(b), rec["number"]).replace("(in force)", f"(version {a})").replace("(draft)", f"(version {b})")
+                + f"<p><a href='{href('/document/' + quote(rec['locator'], safe=':'), user)}#versions'>Back to the versions</a></p>")
+        self._page(f"{rec['number']} changes", body, crumbs=[("Files", href("/files", user)), (rec["number"], href("/document/" + quote(rec["locator"], safe=":"), user)),
+                                                           ("What changed", None)])
+
     def _may_edit_document(self, rec: dict) -> tuple[bool, str]:
         """Who may check a document out or in: its author or owner, a document controller, or anyone who may create documents there."""
         f = rec["fields"]
+        if f.get("doc_type") == "frame-draft":
+            # A draft of a policy is its author's: only they (and the policy owners, who review it) change its text.
+            if self.user == f.get("owner") or "policy-owner" in authz.roles_of(self.bundle, self.user):
+                return True, ""
+            return False, f"this is {esc(f.get('owner') or 'someone')}'s draft of a policy; only they or a policy owner change it. Start your own draft from the policy's page."
         if self.user in (f.get("author"), f.get("owner")) or "document-controller" in authz.roles_of(self.bundle, self.user):
             return True, ""
         d = authz.check(self.bundle, self.user, "create", "document", rec["folder"])

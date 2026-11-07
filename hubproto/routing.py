@@ -70,8 +70,20 @@ def evaluate_criteria(crit: dict, ctx: dict) -> tuple[bool, list[str]]:
     facts = ctx.get("conditions", {})
     for c in crit.get("conditions", []):
         if not facts.get(c):
-            reasons.append(f"condition {c} not met")
+            reasons.append(condition_not_met(c, ctx))
     return (not reasons), reasons
+
+
+def condition_not_met(key: str, ctx: dict) -> str:
+    """A criterion's condition that does not hold, in the words of the policy sentence and with what the item says."""
+    from .rules import CONDITION_VOCABULARY
+
+    phrase = next((p for p, k in CONDITION_VOCABULARY.items() if k == key), key.replace("_", " "))
+    if key in ("risk_low", "risk_not_high") and ctx.get("risk"):
+        return f"“{phrase}” does not hold: the risk is {ctx['risk']}"
+    if key == "change_minor" and ctx.get("change_type"):
+        return f"“{phrase}” does not hold: it is a {ctx['change_type']} change"
+    return f"“{phrase}” does not hold"
 
 
 def threshold(bundle: dict, name: str, default=None):

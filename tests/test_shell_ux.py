@@ -136,7 +136,7 @@ def test_no_default_principal_a_page_without_as_asks_who_you_are(shell):
         status, text, _ = get(shell, path)
         assert status == 200 and "Who are you?" in text, path
         assert 'name="as" value="alice"' not in text and "Welcome, alice" not in text and 'action="/decide"' not in text
-        assert "alice" in text and "bob" in text and "ap-reviewer" not in text.split("Automatic reviewers")[0].split("<div class='who'>")[-1]
+        assert "alice" in text and "bob" in text and "ap-reviewer" not in text.split("<h2>Cogs</h2>")[0].split("<div class='who'>")[-1]
     status, url, text = post(shell, "/msg", {"to": "bob", "subject": "x", "body": "y"})
     assert status == 400 and "Say who you are" in text
 
@@ -336,7 +336,7 @@ def test_the_card_states_the_policy_band_and_the_human_criterion(shell):
     card = open_card(shell, "bob", run_id)
     text = plain(card)
     assert "Routed to you by finance-policy line" in text and "over 10,000 USD go to the controller" in text
-    assert "the ap-reviewer cog may approve up to 2,000.00 USD when the three-way match is within tolerance and the supplier is approved" in text
+    assert "the ap-reviewer cog could not take it because it is over its limit of 2,000.00 USD" in text
     assert "this item is 12,000.00 USD" in text and "you are asked whether the bill may be posted" in text
     assert '<span class="chip crit">high</span>' in card and '<span class="chip ok">within tolerance</span>' in card
     assert '<span class="tag">Supplier bill</span>' in card
@@ -499,7 +499,7 @@ def test_message_form_needs_a_body_defaults_to_a_person_and_shows_what_was_sent(
     hub = shell["hub"]
     status, text, _ = get(shell, "/inbox", **{"as": "alice"})
     form = text.split('<h2 id="send">')[1]
-    assert '<select name="to" required>' in form and form.index('value="bob"') < form.index("ap-reviewer (automatic reviewer)")
+    assert '<select name="to" required>' in form and form.index('value="bob"') < form.index("ap-reviewer (cog)")
     assert 'name="body" rows="2" required' in form
     status, url, text = post(shell, "/msg", {"as": "alice", "to": "bob", "subject": "[ux] ping", "body": ""})
     assert status == 400 and "Write the message" in text and 'value="[ux] ping"' in text
@@ -573,7 +573,7 @@ def test_one_name_per_thing_numbers_not_locators_money_and_dates_in_words(shell)
     status, text, _ = get(shell, "/run/" + run_id, **{"as": "alice"})
     body = plain(main_of(text))
     assert "policy version 1 (" in body and "pinned to release" not in body and "Gate" not in body and "Cog" not in body.replace("cog", "")
-    assert "Automatic reviewer" in body and "Result" in body
+    assert "Done by" in body and "Result" in body  # one name per thing (review 2026-11-07, ux-18): no "automatic reviewer"
     status, text, _ = get(shell, "/", **{"as": "alice"})
     assert "policy version 1 (" in text and hub.releases.current()["digest"][:16] not in plain(main_of(text))
     status, text, _ = get(shell, "/why", **{"as": "dave", "action": "create", "object": "capa", "folder": "Quality/CAPA"})
@@ -686,7 +686,7 @@ def test_release_page_shows_the_sentence_diff_and_decisions(shell):
     status, text, _ = get(shell, "/admin", **{"as": "alice"})
     assert status == 403 and "for policy owners" in text
     status, text, _ = get(shell, "/admin", **{"as": "bob"})
-    assert "<h1>People and roles</h1>" in text and "Automatic reviewers" in text and "payables reviewer" in text and "Cog catalog" in text.split("Developer details")[1]
+    assert "<h1>People and roles</h1>" in text and "<h2>Cogs</h2>" in text and "payables reviewer" in text and "Cog catalog" in text.split("Developer details")[1]
     status, text, _ = get(shell, "/conformance", **{"as": "carol"})
     assert "<h1>Conformance</h1>" in text and '<th scope="col">Clause</th>' in text and "covered" in text and '{"' not in plain(main_of(text))
 
@@ -697,7 +697,7 @@ def test_escalated_cards_quote_the_escalation_and_the_original_route(shell):
     item = hub.kernel.create("item", "Inventory/Items", {"name": "[ux] 10k resistor", "mpn": "RC0603FR-0710KL", "manufacturer": "Yageo", "stock": 0,
                                                           "supplier": "acme-metals", "unit_cost": 0.1}, by="alice")
     status, url, text = post(shell, "/start", {"as": "alice", "process": "purchase-request", "title": "[ux] resistors for line 2", "item": item["locator"],
-                                               "quantity": "20000", "reason": "line 2 rework"})
+                                               "quantity": "20000", "reason": "line 2 rework", "supplier": "acme-metals"})
     run_id = run_of(url)
     state = hub.runner.load(run_id)
     assert state["status"] == "waiting" and "dave" in state["pending"]["assignees"], state["status"]
@@ -734,7 +734,8 @@ def test_ops_buttons_on_a_document_start_its_process_or_ask_a_cog_with_a_key(she
     status, text, _ = get(shell, "/document/" + quote(loc, safe=":"), **{"as": "carol"})
     assert status == 200 and 'aria-label="Ops on this item"' in text
     assert "Send for approval" in text and 'data-hotkey="1"' in text and '<kbd class="hk">1</kbd>' in text
-    assert "Ask quality-assistant to review" in text and 'data-hotkey="q"' in text
+    # Only cogs that follow the document-control SOP are offered (review 2026-11-07, ux-10).
+    assert "Ask doc-reviewer to review" in text and 'data-hotkey="q"' in text and "Ask quality-assistant to review" not in text
     assert "data-hotkey" in text and "keydown" in text, "the page script wires the keys"
     # The process button runs document-control on this very item.
     status, url, text = post(shell, "/start-on", {"as": "carol", "process": "document-control", "record": loc})
@@ -743,6 +744,6 @@ def test_ops_buttons_on_a_document_start_its_process_or_ask_a_cog_with_a_key(she
     assert run and run["process"] == "document-control" and hub.kernel.get(loc)["folder"] == "Quality/Controlled Documents"
     # Now the item is in flight: no process buttons, the cog buttons remain.
     status, text, _ = get(shell, "/document/" + quote(loc, safe=":"), **{"as": "carol"})
-    assert "Send for approval" not in text and "Ask quality-assistant to review" in text
+    assert "Send for approval" not in text and "Ask doc-reviewer to review" in text
     status, url, text = post(shell, "/start-on", {"as": "carol", "process": "document-control", "record": loc})
     assert status == 400 and "already in document-control" in text

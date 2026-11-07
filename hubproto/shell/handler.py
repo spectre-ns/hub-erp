@@ -36,8 +36,9 @@ from .icons import icon
 from .text import clean, esc, friendly, humanize, short, summary_of_record, tag, type_name, version_label, why_sentence
 
 DEFAULT_MAX_UPLOAD = 25 * 1024 * 1024
-RAIL_MAIN = [("Home", "/", "home"), ("Inbox", "/inbox", "inbox"), ("Documents", "/files", "folder"), ("Boards", "/boards", "kanban"), ("People", "/people", "users")]
-RAIL_POLICY = [("Runs", "/runs", "activity"), ("Policy versions", "/releases", "layers"), ("Policies", "/frames", "book"), ("Why", "/why", "help"),
+RAIL_MAIN = [("Home", "/", "home"), ("Inbox", "/inbox", "inbox"), ("Documents", "/files", "folder"), ("Boards", "/boards", "kanban"), ("People", "/people", "users"),
+             ("Why?", "/why", "help")]
+RAIL_POLICY = [("Runs", "/runs", "activity"), ("Policy versions", "/releases", "layers"), ("Policies", "/frames", "book"),
                ("Conformance", "/conformance", "check-circle"), ("People and roles", "/admin", "users")]
 # Routes the identity switcher may stay on (anything else goes home).
 STAY_ROUTES = ("/", "/inbox", "/files", "/documents", "/boards", "/runs", "/releases", "/frames", "/why", "/admin", "/conformance", "/people", "/suppliers",
@@ -52,11 +53,11 @@ function go(){if(!tabs.length)return;var h=location.hash.replace('#','');var t=h
 show(p?p.id:tabs[0].getAttribute('data-tab'));if(t&&t!==p){setTimeout(function(){t.scrollIntoView()},0)}}
 go();addEventListener('hashchange',go);
 var all=document.querySelector('input[data-select-all]');if(all){all.addEventListener('change',function(){document.querySelectorAll('input[name=sel]').forEach(function(c){c.checked=all.checked})})}
-var leader=false,leaderTimer=null;function armLeader(on){leader=on;document.body.classList.toggle('leader',on);clearTimeout(leaderTimer);if(on)leaderTimer=setTimeout(function(){armLeader(false)},2000)}
+addEventListener('DOMContentLoaded',function(){document.querySelectorAll('.statusbar').forEach(function(b){var c=b.querySelector('[aria-current]');if(c&&b.scrollWidth>b.clientWidth)b.scrollLeft=c.offsetLeft-b.clientWidth/2+c.clientWidth/2})});function hotkeysOff(){try{return localStorage.getItem('hub.hotkeys')==='off'}catch(e){return false}}var leader=false,leaderTimer=null;function armLeader(on){leader=on;document.body.classList.toggle('leader',on);clearTimeout(leaderTimer);if(on)leaderTimer=setTimeout(function(){armLeader(false)},2000)}
 addEventListener('keydown',function(ev){if(ev.ctrlKey||ev.metaKey||ev.altKey)return;var t=ev.target;if(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.tagName==='SELECT'||t.isContentEditable))return;
-var k=ev.key.toLowerCase();if(!leader){if(k==='o'&&document.querySelector('[data-hotkey]')){armLeader(true);ev.preventDefault()}return}
+var k=ev.key.toLowerCase();if(!leader){if(k==='o'&&document.querySelector('[data-hotkey]')&&!hotkeysOff()){armLeader(true);ev.preventDefault()}return}
 armLeader(false);var el=null;document.querySelectorAll('[data-hotkey]').forEach(function(b){if(!el&&b.getAttribute('data-hotkey').toLowerCase()===k)el=b});if(!el)return;ev.preventDefault();
-if(el.tagName==='A'&&el.getAttribute('href')&&el.getAttribute('href').charAt(0)==='#'){location.hash=el.getAttribute('href');var h=document.getElementById(el.getAttribute('href').slice(1));if(h){var f=h.querySelector('input,textarea,select,button');if(f)f.focus()}}else{el.click()}});});"""
+if(el.tagName==='A'&&el.getAttribute('href')&&el.getAttribute('href').charAt(0)==='#'){location.hash=el.getAttribute('href');var h=document.getElementById(el.getAttribute('href').slice(1));if(h){var f=h.querySelector('input,textarea,select,button');if(f)f.focus()}}else{el.focus();el.classList.add('hk-armed');var st=document.getElementById('hk-status');if(st)st.textContent='Press Enter to '+(el.textContent||'').trim()+', or Escape.';setTimeout(function(){el.classList.remove('hk-armed')},4000)}});document.querySelectorAll('[data-hotkeys-toggle]').forEach(function(b){var paint=function(){b.textContent=hotkeysOff()?'Keyboard shortcuts: off':'Keyboard shortcuts: on';b.setAttribute('aria-pressed',hotkeysOff()?'false':'true')};paint();b.addEventListener('click',function(){try{localStorage.setItem('hub.hotkeys',hotkeysOff()?'on':'off')}catch(e){}paint()})});});"""
 ONCE_KEEP = 2000  # one-use tokens remembered (the oldest are forgotten first)
 
 
@@ -164,7 +165,8 @@ class BaseHandler(BaseHTTPRequestHandler):
         self._err_shown = False
         try:
             if self.route == "/healthz":
-                return self._text("ok")
+                q = getattr(self.hub, "queue", None)
+                return self._text("ok; cog queue stalled" if q is not None and q.health().get("stalled") else "ok")
             if self.route == "/mcp":
                 self.raw_body = self._read_raw() if method == "POST" else b""
                 with self.lock:
@@ -219,7 +221,7 @@ class BaseHandler(BaseHTTPRequestHandler):
     def _route(self, method: str):
         r = self.route
         if method == "GET":
-            fixed = {"/chat-thread": self.page_chat_thread, "/queue-status": self.page_queue_status, "/queue": self.page_queue, "/": self.page_home, "/files": self.page_files, "/documents": self.page_files, "/boards": self.page_boards, "/inbox": self.page_inbox,
+            fixed = {"/chat-thread": self.page_chat_thread, "/queue-status": self.page_queue_status, "/queue": self.page_queue, "/proposals": self.page_proposals, "/": self.page_home, "/files": self.page_files, "/documents": self.page_files, "/boards": self.page_boards, "/inbox": self.page_inbox,
                      "/runs": self.page_runs, "/releases": self.page_releases, "/frames": self.page_frames, "/why": self.page_why,
                      "/admin": self.page_admin, "/conformance": self.page_conformance, "/download": self.page_download,
                      "/start": self.page_start, "/people": self.page_people, "/suppliers": self.page_suppliers, "/settings": self.page_settings}
@@ -227,7 +229,7 @@ class BaseHandler(BaseHTTPRequestHandler):
                 return fixed[r]
             for prefix, fn in (("/record/", self.page_record), ("/document/", self.page_document), ("/doc/", self.page_document),
                                ("/run/", self.page_run), ("/frame/", self.page_frame), ("/release/", self.page_release),
-                               ("/edit/", self.page_edit), ("/editor-replies/", self.page_editor_replies), ("/cog-seat/", self.page_cog_seat), ("/frame-doc/", self.page_frame_doc),
+                               ("/edit/", self.page_edit), ("/compare/", self.page_compare), ("/editor-replies/", self.page_editor_replies), ("/cog-seat/", self.page_cog_seat), ("/frame-doc/", self.page_frame_doc),
                                ("/text-edit/", self.page_text_edit), ("/frame-check/", self.page_frame_check), ("/proposal/", self.page_proposal),
                                ("/agent-run/", self.page_agent_run), ("/items/", self.page_items), ("/app/", self.page_app), ("/user/", self.page_user),
                                ("/settings/", self.page_settings)):
@@ -389,9 +391,10 @@ class BaseHandler(BaseHTTPRequestHandler):
                     self.arg = run["record"]
                     return self.page_record(status=status)
                 return self.page_inbox(status=status)
-            if self.route in ("/attach", "/link", "/hold", "/snapshot"):
+            if self.route in ("/attach", "/link", "/hold", "/snapshot", "/assign", "/restart"):
                 self.arg = self.form.get("record", "")
-                return self.page_record(status=status)
+                rec = self.hub.kernel.get(self.arg)
+                return self.page_document(status=status) if rec and rec["type"] == "document" else self.page_record(status=status)
             if self.route == "/bulk-hold":
                 self.arg = self.form.get("type", "")
                 return self.page_items(status=status)
@@ -544,7 +547,7 @@ class BaseHandler(BaseHTTPRequestHandler):
         if cogs:
             cog_cards = "".join(f'<div class="card">{avatar(p, self.bundle, size="lg")}<div><a href="/user/{esc(p)}?{urlencode({"as": p})}">See what {esc(p)} is doing</a>'
                                 f'<div class="why">{esc(", ".join(r.replace("-", " ") for r in members[p]["roles"]))} &middot; read-only</div></div></div>' for p in cogs)
-            body += (f"<h2>Automatic reviewers</h2><p class='why'>Cogs act on their own within the policy; nobody signs in as one, but you can watch "
+            body += (f"<h2>Cogs</h2><p class='why'>Cogs act on their own within the policy; nobody signs in as one, but you can watch "
                      f"what each is doing.</p><div class='who'>{cog_cards}</div>")
         self._page("Who are you?", body, status=200)
 
@@ -618,6 +621,8 @@ class BaseHandler(BaseHTTPRequestHandler):
         rec = self.hub.kernel.get(ref)
         if rec is None:
             return esc(ref.rsplit(":", 1)[-1])
+        if self.user and self.bundle and not self._can_read(rec["folder"])["allowed"]:
+            return esc(rec["number"])  # a number without the title or a link: the item is in a folder this person may not read
         page = "/document/" if rec["type"] == "document" else "/record/"
         link = f'<a href="{href(page + quote(rec["locator"], safe=":"), self.user)}">{esc(rec["number"])}</a>'
         summary = summary_of_record(rec)
@@ -675,6 +680,42 @@ class BaseHandler(BaseHTTPRequestHandler):
                 return ev
         return {}
 
+    ORG_STOPS = ("no eligible approver", "can countersign", "no routing rule", "no person or cog holds")
+
+    def _org_stop(self, ev: dict) -> bool:
+        """A stop no field can fix: nobody may take the item (routing, roles, segregation of duties, a countersignature)."""
+        if ev.get("kind"):
+            return ev["kind"] == "organisation"
+        reason = str(ev.get("reason") or "").lower()
+        return any(x in reason for x in self.ORG_STOPS)
+
+    def _stop_reasons(self, run_id: str, ev: dict) -> tuple[str, list[str]]:
+        """A failure's headline and its reasons in words. The runner writes the chain into the reason ("Nobody can take
+        “X”: a declined: … | b: …"); an older run without it is explained from its log."""
+        reason = str(ev.get("reason") or "")
+        head, sep, rest = reason.partition(": ")
+        if sep and (" | " in rest or head.startswith("Nobody can take")):
+            return head, [x.strip() for x in rest.split(" | ") if x.strip()]
+        return reason, ([] if not self._org_stop(ev) else self._stop_explanation(run_id))
+
+    def _stop_explanation(self, run_id: str) -> list[str]:
+        """Why each route passed the item by, from the run's own record: what a cog declined and why, who was skipped."""
+        evs = self.hub.runner.track(run_id)
+        start = max((i for i, e in enumerate(evs) if e["type"] in ("run.started", "run.retried", "run.resubmitted")), default=0)
+        out = []
+        for e in evs[start:]:
+            if e["type"] == "gate.declined":
+                out.append(f"{e.get('by')} could not decide it: " + "; ".join(str(x) for x in e.get("reasons") or ["its rules do not cover it"]) + ".")
+            elif e["type"] == "gate.skipped":
+                who = str(e.get("candidate") or "").partition(":")[2].replace("-", " ") or str(e.get("candidate"))
+                out.append(f"The route to {who} was passed by: {e.get('reason')}.")
+        seen, uniq = set(), []
+        for x in out:
+            if x not in seen:
+                seen.add(x)
+                uniq.append(x)
+        return uniq
+
     def _record_type_of(self, run: dict) -> str:
         wf = run.get("workflow") or {}
         if wf.get("record_type"):
@@ -728,7 +769,14 @@ class BaseHandler(BaseHTTPRequestHandler):
     def _record_options(self, type_: str, key: str = "locator") -> list[tuple[str, str]]:
         if type_ not in self.hub.kernel.types:
             return []
-        return [(r[key], f"{r['number']} {summary_of_record(r)}") for r in self.hub.kernel.query(type_=type_) if r["state"] not in ("cancelled", "rejected", "obsolete")]
+        readable: dict[str, bool] = {}
+
+        def ok(folder: str) -> bool:
+            if folder not in readable:
+                readable[folder] = self._can_read(folder)["allowed"]
+            return readable[folder]
+        return [(r[key], f"{r['number']} {summary_of_record(r)}") for r in self.hub.kernel.query(type_=type_)
+                if r["state"] not in ("cancelled", "rejected", "obsolete") and ok(r["folder"])]
 
     def _supplier_name(self, ref) -> str:
         """A supplier's name for its id ('Acme Metals' for acme-metals); the id when unknown."""

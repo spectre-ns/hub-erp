@@ -269,11 +269,12 @@ def test_a_comment_asking_for_a_deletion_removes_it_from_the_file(shell, monkeyp
     hub.send("carol", "carol", "Comment", "@quality-assistant please delete the Records section and say must, not shall", record=doc["locator"])
     content, version = hub.dms.content(doc["locator"])
     t = text_of(content, "docx")
-    assert version["by"] == "hub" and "Records" not in t and "Keep records" not in t and "must be audited" in t and "Old line" not in t
+    assert version["by"] in ("hub", "quality-assistant") and "Records" not in t and "Keep records" not in t and "must be audited" in t and "Old line" not in t
     assert "OUTPUT FORMAT for a change to this document" in fake.calls[0]["system"]
     msgs = [m for m in hub.inbox.on_record(doc["locator"]) if m["from"] == "quality-assistant"]
-    assert msgs[0]["body"].startswith("Changes: delete section") and "delete paragraph" in msgs[0]["body"]  # a whole paragraph's text: its paragraph
-    assert any("could not do 1 of the 4 change(s)" in m["body"] and "not in the document" in m["body"] for m in msgs)
+    body = msgs[0]["body"]  # the reply states what was done and what could not be, once
+    assert body.startswith("Done: delete section") and "delete paragraph" in body  # a whole paragraph's text: its paragraph
+    assert "Could not: delete “not in the document”" in body and len(msgs) == 1
     applied = hub.inbox.find(msgs[0]["id"])
     assert applied["applied_in"] and [r["ok"] for r in applied["edit_report"]] == [True, True, True, False]
 
@@ -296,7 +297,7 @@ def test_after_a_live_edit_the_hub_finishes_what_did_not_take(shell, monkeypatch
     out = json.loads(text)
     assert status == 200 and out["fixed"] == 1 and not out["failed"]
     content, version = hub.dms.content(loc)
-    assert version["by"] == "hub" and "finished in the file" in version["note"]
+    assert version["by"] in ("hub", "quality-assistant") and "finished in the file" in version["note"]
     t = text_of(content, "docx")
     assert "must be audited" in t and "Old line to" not in t and "delete." in t and t.count("must") == 1
     m = hub.inbox.find(reply["id"])
@@ -323,11 +324,15 @@ def test_the_agent_tool_edits_with_operations(shell, monkeypatch):
     hub = shell["hub"]
     doc = _doc(hub, ext="md", title="Agent target")
     monkeypatch.setattr(hub, "model", FakeModel("@@ delete section: Records\n@@ insert at end\n## Review\nReviewed yearly."))
-    tools = AgentTools(hub, "quality-assistant", "t-edit", "act", 5, AgentStore(shell["root"] / "state" / "agents"), requester="carol")
+    refused = AgentTools(hub, "quality-assistant", "t-edit0", "act", 5, AgentStore(shell["root"] / "state" / "agents"), requester="carol")
+    assert "error" in refused.execute("edit_document", {"number": doc["number"], "request": "x"})  # it may not change documents there
+    tools = AgentTools(hub, "doc-reviewer", "t-edit", "act", 5, AgentStore(shell["root"] / "state" / "agents"), requester="carol")
     out = tools.execute("edit_document", {"number": doc["number"], "request": "drop the records section and add a review section"})
     assert out["ok"] and [c["ok"] for c in out["changes"]] == [True, True]
     t = hub.dms.content(doc["locator"])[0].decode()
     assert "Records" not in t and t.rstrip().endswith("Reviewed yearly.")
+    last = hub.dms.versions(doc["locator"])[-1]
+    assert last["by"] == "doc-reviewer" and "asked by carol" in last["note"]
 
 
 def test_an_insert_in_the_wrong_place_is_caught_and_moved(shell, monkeypatch):

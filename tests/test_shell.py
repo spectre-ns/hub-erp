@@ -411,7 +411,7 @@ def test_decide_form_offers_only_allowed_fields_and_refuses_others(shell):
     card = text.split(f'name="run" value="{ncr_run}"')[1].split("</form>")[0]
     assert '<select name="disposition" required>' in card and 'name="disposition_rationale"' in card and "required" in card
     assert 'name="containment"' in card and 'name="risk"' not in card and 'name="capa"' not in card
-    assert "To approve, also give: disposition, disposition_rationale" in card
+    assert "To approve, also give: disposition and reason for the disposition" in card
     status, url, text = post(shell, "/decide", {"as": who, "run": ncr_run, "verdict": "approve", "meaning": "scrap it", "risk": "low", "confirm": "1",
                                                 "digest": hub.runner.load(ncr_run)["seen_digest"]})
     assert status == 400 and "may not set risk" in text
@@ -609,6 +609,8 @@ def test_controlled_document_controls_follow_permission_and_state(shell):
     effective = next((d for d in hub.kernel.query(type_="document") if d["state"] == "effective"), None)
     if effective is None:
         run_id = hub.runner.submit("document-control", {"record": {"title": "[shell] SOP-Q", "change_type": "minor"}}, owner="alice")
+        # A new document is major whatever its author says (review governance-1): a person approves it.
+        hub.runner.decide(run_id, "bob", "approve", meaning="fit for use", payload_digest=hub.runner.load(run_id)["seen_digest"])
         effective = hub.kernel.get(hub.runner.load(run_id)["record"])
         assert effective["state"] == "effective"
     status, text = get(shell, "/document/" + quote(effective["locator"], safe=":"), **{"as": "alice"})

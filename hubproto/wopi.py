@@ -20,6 +20,7 @@ import hashlib
 import hmac
 import io
 import json
+import re
 import os
 import pathlib
 import secrets
@@ -76,14 +77,28 @@ def secret(root: str | os.PathLike | None = None) -> str:
     return value
 
 
-def wopi_time(iso: str | None) -> str:
-    """WOPI clients parse one shape only: 2026-11-06T17:20:35.000000Z."""
+def wopi_time(iso: str | None, version: int | None = None) -> str:
+    """WOPI clients parse one shape only: 2026-11-06T17:20:35.000000Z. With a version number, its microseconds are the
+    version, so two saves in the same second still have different stamps (the stale-save check depends on it)."""
     if not iso:
         return ""
     base = iso.replace("Z", "").split("+", 1)[0]
-    if "." not in base:
+    if version is not None:
+        base = base.split(".", 1)[0] + f".{int(version) % 1_000_000:06d}"
+    elif "." not in base:
         base += ".000000"
     return base + "Z"
+
+
+def version_stamp(version: dict) -> str:
+    """The LastModifiedTime of a document version, unique per version."""
+    return wopi_time(version.get("at"), version.get("version"))
+
+
+def is_stale_save(latest: dict, seen_stamp: str, machines: set[str]) -> bool:
+    """A save from an editor session based on an older version, when the newer version was written by the hub or a
+    cog (their edits must not be silently overwritten): the client is told to reload instead."""
+    return bool(seen_stamp) and seen_stamp != version_stamp(latest) and (latest.get("by") in machines or latest.get("by") == "hub")
 
 
 def extension_of(filename: str) -> str:
@@ -171,7 +186,7 @@ class WopiHost:
             "DisableCopy": False,
             "HidePrintOption": False,
             "EnableOwnerTermination": False,
-            "LastModifiedTime": wopi_time(version.get("at")),
+            "LastModifiedTime": version_stamp(version),
             "PostMessageOrigin": post_message_origin,
             "HubNumber": rec["number"],
             "HubTitle": f.get("title"),
@@ -203,7 +218,7 @@ class WopiHost:
         self.hub.kernel.set_fields(rec["locator"], {"editors": editors}, by=user)
         _, version = self.hub.dms.content(rec["locator"])
         self.index(rec, content, user)
-        return {"LastModifiedTime": wopi_time(version.get("at"))}
+        return {"LastModifiedTime": version_stamp(version)}
 
     def index(self, rec: dict, content: bytes, user: str) -> list[dict]:
         """After a save: the document's text goes on the record (so reviews read it) and a comment written in the
@@ -227,7 +242,11 @@ class WopiHost:
         for c in comments:
             if c["digest"] in seen:
                 continue
-            author = c["author"].strip().lower() if c["author"] and c["author"].strip().lower() in members else user
+            # Never take identity from the file: a new comment is by the person who saved it, unless the name in the file is
+            # another member in this live editing session (co-editors' comments are saved by whoever saves next).
+            named = (c["author"] or "").strip().lower()
+            session = set(rec["fields"].get("editors") or []) | {rec["fields"].get("checked_out_by")}
+            author = named if (named in members and (named == user or (named in session and rec["fields"].get("checked_out_via") == "editor"))) else user
             if author in cog_names:
                 continue  # a cog's own words never trigger a cog
             subject = f"Comment in {rec['number']}"
@@ -262,78 +281,117 @@ class WopiHost:
                             "comment_author": (c or {}).get("author") or parent.get("from") or ""})
         return out
 
+    def _applied_by_version(self, rec: dict) -> dict[str, int]:
+        """Replies already written into a version (the version note names them): a crash between saving the version and
+        marking the reply must not write the same edit twice."""
+        out = {}
+        for v in self.hub.dms.versions(rec["locator"]):
+            for rid in re.findall(r"\breply ([0-9a-f]{8})\b", v.get("note") or ""):
+                out[rid] = v.get("version")
+        return out
+
+    @staticmethod
+    def writer(rec: dict, cog: str) -> str:
+        """Who a version is credited to: the cog, unless a person holds the check-out outside a live editing session (the
+        DMS then admits only the hub; the version note still names the cog and who asked)."""
+        f = rec.get("fields") or {}
+        locked = f.get("checked_out_by")
+        if not locked or locked == cog or (f.get("checked_out_via") == "editor" and cog in (f.get("editors") or [])):
+            return cog
+        return "hub"
+
+    @staticmethod
+    def done_text(report: list[dict], stand_in: bool = False) -> str:
+        """The reply as the outcome, not the plan: 'Done: ...' and 'Could not: ...' from the apply report."""
+        ok = [f"{r['op']} ({r['detail']})" for r in report if r.get("ok")]
+        bad = [f"{r['op']} ({r['detail']})" for r in report if not r.get("ok")]
+        parts = []
+        if ok:
+            parts.append("Done: " + "; ".join(ok) + ".")
+        if bad:
+            parts.append("Could not: " + "; ".join(bad) + ".")
+        return " ".join(parts) + (" (drafted with the stand-in: configure a model for real wording)" if stand_in else "")
+
     def apply_replies(self, rec: dict, by: str) -> list[dict]:
         """Write every pending reply into the document as a reply comment by its author (a new version), so the
-        thread in the editor carries the answer."""
-        from . import office
+        thread in the editor carries the answer. An edit is written only if the person who asked for it may still
+        change the document; the reply then says what was done and what could not be."""
+        from . import edits, office
 
         pending = self.pending_replies(rec)
+        if not pending:
+            return []
+        already = self._applied_by_version(rec)
+        for m in [m for m in pending if m["id"] in already]:
+            self.hub.inbox.mark(m["id"], applied_in=already[m["id"]])
+        pending = [m for m in pending if m["id"] not in already]
         if not pending:
             return []
         content, latest = self.hub.dms.content(rec["locator"])
         ext = extension_of(latest.get("filename") or rec["fields"].get("filename") or "")
         applied = []
-        from . import edits
-
         reports: dict[str, list[dict]] = {}
         for m in pending:
             new = content
             edit = m.get("edit") or {}
+            body = m.get("body") or ""
             if edit.get("ops"):
-                changed, report = edits.apply_ops(new, ext, edit["ops"])
+                asker = edit.get("asked_by")
+                ok, why = self.may_edit(self.hub.kernel.get(rec["locator"]), asker) if asker else (True, "")
+                if not ok:
+                    report = [{"op": edits.describe(o), "ok": False, "detail": why} for o in edit["ops"]]
+                else:
+                    changed, report = edits.apply_ops(new, ext, edit["ops"])
+                    new = changed or new
                 reports[m["id"]] = report
-                new = changed or new
+                body = self.done_text(report, edit.get("stand_in"))
             elif edit.get("paragraphs"):
                 new = office.insert_paragraphs(new, ext, edit["paragraphs"], edit.get("position") or "start") or new
             if m.get("comment_id") not in (None, ""):
-                new = office.add_reply(new, ext, str(m["comment_id"]), m["from"], m.get("body") or "", date=m.get("at") or "") or new
+                new = office.add_reply(new, ext, str(m["comment_id"]), m["from"], body, date=m.get("at") or "") or new
             if new is content:
-                if m["id"] in reports:  # nothing could be done: say so once, and stop offering it
-                    self.hub.inbox.mark(m["id"], applied_in="none", edit_report=reports[m["id"]])
-                    self._report_failures(rec, m, reports[m["id"]])
+                if m["id"] in reports:  # nothing could be done: the reply says so, and it is not offered again
+                    self.hub.inbox.mark(m["id"], applied_in="none", edit_report=reports[m["id"]], body=body)
                 continue
             content = new
+            m["_body"] = body
             applied.append(m)
         if not applied:
             return []
         holder = rec["fields"].get("checked_out_by") or by
-        self.hub.dms.add_version(rec["locator"], content, by="hub", filename=latest.get("filename") or "", mime=latest.get("mime") or "",
-                                 note=("edits and replies" if any(m.get("edit") for m in applied) else "replies") + " from "
-                                      + ", ".join(sorted({m["from"] for m in applied})) + " written into the document")
+        cogs = sorted({m["from"] for m in applied})
+        askers = sorted({(m.get("edit") or {}).get("asked_by") for m in applied if (m.get("edit") or {}).get("asked_by")})
+        cur = self.hub.kernel.get(rec["locator"])
+        self.hub.dms.add_version(rec["locator"], content, by=self.writer(cur, cogs[0]) if len(cogs) == 1 else "hub", filename=latest.get("filename") or "",
+                                 mime=latest.get("mime") or "",
+                                 note=("edits and replies" if any(m.get("edit") for m in applied) else "replies") + " from " + ", ".join(cogs)
+                                      + (f", asked by {', '.join(askers)}" if askers else "") + " written into the document ("
+                                      + ", ".join(f"reply {m['id']}" for m in applied) + ")")
         if rec["fields"].get("checked_out_via") == "editor" or rec["fields"].get("checked_out_by"):
             self.hub.dms.checkout(rec["locator"], by=holder, via="editor")
             self.hub.kernel.set_fields(rec["locator"], {"editors": sorted(set(rec["fields"].get("editors") or []) | {holder})}, by=by)
         _, version = self.hub.dms.content(rec["locator"])
         for m in applied:
-            self.hub.inbox.mark(m["id"], applied_in=version.get("version"), **({"edit_report": reports[m["id"]]} if m["id"] in reports else {}))
-            if m["id"] in reports:
-                self._report_failures(rec, m, reports[m["id"]])
+            extra = {"edit_report": reports[m["id"]], "body": m["_body"]} if m["id"] in reports else {}
+            self.hub.inbox.mark(m["id"], applied_in=version.get("version"), **extra)
         comments = office.extract_comments(content, ext)
         self.hub.kernel.set_fields(rec["locator"], {"office_comments": [{k: c.get(k) for k in ("id", "author", "date", "text", "digest", "parent")} for c in comments],
                                                     "text": office.extract_text(content, ext)}, by=by)
         return applied
 
-    def _report_failures(self, rec: dict, m: dict, report: list[dict]) -> None:
-        """A cog says on the chatter which of its operations could not be done, like a colleague would."""
-        failed = [r for r in report if not r.get("ok")]
-        if not failed:
-            return
-        body = f"I could not do {len(failed)} of the {len(report)} change(s) in {rec['number']}: " + \
-            "; ".join(f"{r['op']} ({r['detail']})" for r in failed) + ". The rest is done."
-        if len(failed) == len(report):
-            body = f"I could not change {rec['number']}: " + "; ".join(f"{r['op']} ({r['detail']})" for r in failed) + "."
-        self.hub.inbox.post(sender=m["from"], to=m.get("to") or rec["fields"].get("owner") or "", record=rec["locator"], kind="reply",
-                            subject=f"Re: {m.get('subject') or rec['number']}", body=body)
-
     def verify_edit(self, rec: dict, msg_id: str, by: str) -> dict:
         """After the cog's seat edited live and the session saved: check each operation in the saved file, do in the
-        file whatever did not take, and mark the reply applied. Returns {"fixed", "failed", "version"}."""
+        file whatever did not take, and mark the reply applied. Returns {"fixed", "failed", "version"}. Idempotent: a
+        second call, or a call after a crash between the fix and the mark, does nothing twice."""
         from . import edits
 
         m = self.hub.inbox.find(msg_id)
         if m is None or m.get("record") != rec["locator"] or not (m.get("edit") or {}).get("ops"):
             raise KernelGuardError("edit", "no such edit on this document")
-        if m.get("applied_in"):
+        already = self._applied_by_version(rec)
+        if m.get("applied_in") or msg_id in already:
+            if not m.get("applied_in"):
+                self.hub.inbox.mark(msg_id, applied_in=already[msg_id])
             _, v = self.hub.dms.content(rec["locator"])
             return {"fixed": 0, "failed": [], "version": v.get("version"), "already": True}
         content, latest = self.hub.dms.content(rec["locator"])
@@ -349,6 +407,11 @@ class WopiHost:
         missing = [o for o in ops if not edits.op_applied(o, text, grid)]
         report = [{"op": edits.describe(o), "ok": True, "detail": "done live in the editor"} for o in ops if o not in missing]
         fixed = 0
+        asker = m["edit"].get("asked_by")
+        ok, why = self.may_edit(self.hub.kernel.get(rec["locator"]), asker) if asker else (True, "")
+        if missing and not ok:
+            report += [{"op": edits.describe(o), "ok": False, "detail": why} for o in missing]
+            missing = []
         if missing:
             # An insert that landed in the wrong place live: take that copy out before the hub puts it where it belongs.
             cleanup = []
@@ -366,15 +429,16 @@ class WopiHost:
             report += [dict(r, detail=r["detail"] + " (by the hub, in the file)") for r in rep]
             if new is not None:
                 holder = rec["fields"].get("checked_out_by") or by
-                self.hub.dms.add_version(rec["locator"], new, by="hub", filename=latest.get("filename") or "", mime=latest.get("mime") or "",
-                                         note=f"edits from {m['from']} finished in the file ({sum(1 for r in rep if r['ok'])} of {len(missing)})")
+                self.hub.dms.add_version(rec["locator"], new, by=self.writer(self.hub.kernel.get(rec["locator"]), m["from"]),
+                                         filename=latest.get("filename") or "", mime=latest.get("mime") or "",
+                                         note=f"edits from {m['from']}" + (f", asked by {asker}" if asker else "")
+                                              + f" finished in the file ({sum(1 for r in rep if r['ok'])} of {len(missing)}; reply {m['id']})")
                 if rec["fields"].get("checked_out_via") == "editor" or rec["fields"].get("checked_out_by"):
                     self.hub.dms.checkout(rec["locator"], by=holder, via="editor")
                 fixed = sum(1 for r in rep if r["ok"])
-                self.index(self.hub.kernel.get(rec["locator"]), new, "hub")
+                self.index(self.hub.kernel.get(rec["locator"]), new, m["from"])
         _, version = self.hub.dms.content(rec["locator"])
-        self.hub.inbox.mark(m["id"], applied_in=version.get("version"), edit_report=report)
-        self._report_failures(rec, m, report)
+        self.hub.inbox.mark(m["id"], applied_in=version.get("version"), edit_report=report, body=self.done_text(report, m["edit"].get("stand_in")))
         return {"fixed": fixed, "failed": [r for r in report if not r["ok"]], "version": version.get("version")}
 
     def seat_token(self, rec: dict, cog_id: str, requester: str) -> str:
@@ -393,7 +457,11 @@ class WopiHost:
     def lock(self, rec: dict, claims: dict, lock_id: str) -> tuple[int, dict]:
         """Lock, RefreshLock and Unlock map onto the check-out; the lock id is remembered on the record."""
         user = claims["u"]
-        ok, why = self.can_write(rec, user)
+        if not claims.get("w"):  # a view-only session never locks (Collabora does not ask); a hand-made request may
+            return 409, {"X-WOPI-Lock": rec["fields"].get("wopi_lock") or "", "X-WOPI-LockFailureReason": "this session is read-only"}
+        ok, why = self.may_edit(rec, user)
+        if ok:
+            ok, why = self.can_write(rec, user)
         if not ok:
             return 409, {"X-WOPI-Lock": rec["fields"].get("wopi_lock") or "", "X-WOPI-LockFailureReason": why}
         if not rec["fields"].get("checked_out_by"):
@@ -401,7 +469,16 @@ class WopiHost:
         self.hub.kernel.set_fields(rec["locator"], {"wopi_lock": lock_id}, by=user)
         return 200, {}
 
+    def may_edit(self, rec: dict, user: str) -> tuple[bool, str]:
+        from .tools import may_edit_document
+
+        meta = self.hub.releases.current()
+        bundle = self.hub.releases.bundle(meta["digest"]) if meta else {"members": {}}
+        return may_edit_document(bundle, user, rec)
+
     def unlock(self, rec: dict, claims: dict, lock_id: str) -> tuple[int, dict]:
+        if not claims.get("w"):
+            return 409, {"X-WOPI-Lock": rec["fields"].get("wopi_lock") or "", "X-WOPI-LockFailureReason": "this session is read-only"}
         current = rec["fields"].get("wopi_lock") or ""
         if current and current != lock_id:
             return 409, {"X-WOPI-Lock": current}

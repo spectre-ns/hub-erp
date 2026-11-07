@@ -69,7 +69,8 @@ def test_a_mentioned_cog_reviews_the_item_answers_in_the_chatter_and_files_evide
     loc = state["record"]
     reply = released.send("alice", "quality-assistant", "Review please", "@quality-assistant please provide a quality review on this nonconformance", record=loc)
     assert reply["kind"] == "reply" and reply["from"] == "quality-assistant" and reply["record"] == loc
-    assert "Review of" in reply["body"] and ("pass" in reply["body"] or "fail" in reply["body"])
+    # The outcome in words (looks right / problems found), not a bare pass or fail.
+    assert "Review of" in reply["body"] and ("looks right" in reply["body"] or "problems found" in reply["body"])
     docs = [d for d in released.dms.documents_of(loc) if d["fields"].get("doc_type") == "review"]
     assert docs and docs[0]["fields"]["doc_class"] == "evidence" and "quality-assistant" in docs[0]["fields"]["title"]
     chatter = released.inbox.on_record(loc)
@@ -85,7 +86,8 @@ def test_a_mentioned_cog_takes_its_turn_at_the_gate_when_the_review_passes(relea
         loc = state["record"]
         assert state["pending"]["assignees"] == ["quality-assistant"]
         reply = released.send("alice", "quality-assistant", "Review", "@quality-assistant please review and approve this nonconformance", record=loc)
-        assert "took my turn at the Gate" in reply["body"]
+        # The outcome leads the reply (ux-8): approved, signed and waiting for a countersignature, or not signed.
+        assert reply["body"].startswith(("Approved:", "Signed; waiting for a countersignature", "I cannot sign")), reply["body"][:200]
         after = released.runner.load(state["id"])
         assert after["status"] in ("completed", "waiting") and after["status"] != "failed"
         decided = [e for e in released.runner.track(state["id"]) if e["type"] == "gate.decided"]
@@ -235,11 +237,17 @@ def test_an_explicit_approval_phrase_is_not_second_guessed_by_the_model(monkeypa
         def available(self, m):
             return True
 
+        calls = 0
+
         def complete(self, **kw):
+            Model.calls += 1
             return {"text": "REVIEW"}
 
     assert intent_of("Please move this document to approval", model=Model(), model_name="x") == "approve"
-    assert intent_of("Please make it a table", model=Model(), model_name="x") == "review", "otherwise the model decides"
+    # An imperative edit is taken as it reads, with no classification call (cogs-13).
+    assert intent_of("Please make it a table", model=Model(), model_name="x") == "edit" and Model.calls == 0
+    assert intent_of("What do you make of the scope section?", model=Model(), model_name="x") == "review", "otherwise the model decides"
+    assert Model.calls == 1
 
 
 def test_an_approval_request_files_a_working_document_into_the_process_folder_and_starts_it(released):

@@ -17,10 +17,34 @@ DC = "{http://purl.org/dc/elements/1.1/}"
 A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 
 
+MAX_MEMBER = 64 * 1024 * 1024     # one part of an office package, inflated
+MAX_PACKAGE = 256 * 1024 * 1024   # all parts together, inflated
+MAX_RATIO = 200                   # inflated size over compressed size, for packages above a few megabytes
+
+
+class PackageTooLarge(ValueError):
+    """An office package that would inflate far beyond its size (a zip bomb): it is not read."""
+
+
 def _zip(content: bytes) -> zipfile.ZipFile | None:
+    """The package, after checking what it would inflate to from its directory (nothing is inflated to check)."""
     try:
-        return zipfile.ZipFile(io.BytesIO(content))
+        z = zipfile.ZipFile(io.BytesIO(content))
     except zipfile.BadZipFile:
+        return None
+    sizes = [i.file_size for i in z.infolist()]
+    total = sum(sizes)
+    if (sizes and max(sizes) > MAX_MEMBER) or total > MAX_PACKAGE or (total > 8 * 1024 * 1024 and total > MAX_RATIO * max(1, len(content))):
+        raise PackageTooLarge(f"the file would inflate to {total / 1e6:,.0f} MB; it is not opened (a part over {MAX_MEMBER // 2**20} MB, "
+                              f"over {MAX_PACKAGE // 2**20} MB in all, or compressed more than {MAX_RATIO} to 1)")
+    return z
+
+
+def _zip_safe(content: bytes) -> zipfile.ZipFile | None:
+    """For readers: an oversized package is treated as unreadable (its text is not extracted), never inflated."""
+    try:
+        return _zip(content)
+    except PackageTooLarge:
         return None
 
 
@@ -28,18 +52,37 @@ def _itertext(el) -> str:
     return "".join(el.itertext())
 
 
+def _own_text(el, paragraph_tags: tuple, text_tag: str | None = None) -> str:
+    """A paragraph's own text, leaving out paragraphs nested inside it (a textbox, a frame, a nested table, a note):
+    those are paragraphs of their own and are read once, as themselves."""
+    out = []
+
+    def walk(e, top):
+        if not top and e.tag in paragraph_tags:
+            return
+        if text_tag is None or e.tag == text_tag:
+            out.append(e.text or "")
+        for c in e:
+            walk(c, False)
+            if text_tag is None:
+                out.append(c.tail or "")  # text after a child belongs to this element
+
+    walk(el, True)
+    return "".join(out)
+
+
 def extract_text(content: bytes, extension: str, limit: int = 20000) -> str:
     """Plain text of the document body, paragraph per line; empty when the format is not one we read."""
     ext = (extension or "").lower()
     if ext in ("txt", "md", "csv"):
         return content.decode("utf-8", "replace")[:limit]
-    z = _zip(content)
+    z = _zip_safe(content)
     if z is None:
         return ""
     try:
         if ext == "docx" and "word/document.xml" in z.namelist():
             root = ElementTree.fromstring(z.read("word/document.xml"))
-            paras = ["".join(t.text or "" for t in p.iter(W + "t")) for p in root.iter(W + "p")]
+            paras = [_own_text(p, (W + "p",), W + "t") for p in root.iter(W + "p")]
             return "\n".join(p for p in paras if p.strip())[:limit]
         if ext == "ods" and "content.xml" in z.namelist():
             root = ElementTree.fromstring(z.read("content.xml"))
@@ -53,7 +96,7 @@ def extract_text(content: bytes, extension: str, limit: int = 20000) -> str:
             return "\n".join(lines)[:limit]
         if ext in ("odt", "odp") and "content.xml" in z.namelist():
             root = ElementTree.fromstring(z.read("content.xml"))
-            paras = [_itertext(p) for p in root.iter() if p.tag in (TEXT + "p", TEXT + "h")]
+            paras = [_own_text(p, (TEXT + "p", TEXT + "h")) for p in root.iter() if p.tag in (TEXT + "p", TEXT + "h")]
             return "\n".join(p for p in paras if p.strip())[:limit]
         if ext == "xlsx":
             ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
@@ -91,7 +134,7 @@ def extract_text(content: bytes, extension: str, limit: int = 20000) -> str:
 def extract_comments(content: bytes, extension: str) -> list[dict]:
     """Comments (annotations) in the document: [{id, author, date, text, digest}], in document order."""
     ext = (extension or "").lower()
-    z = _zip(content)
+    z = _zip_safe(content)
     if z is None:
         return []
     out: list[dict] = []
@@ -166,7 +209,7 @@ def add_reply(content: bytes, extension: str, parent_id: str, author: str, text:
     """Write a reply to a comment into the document: a new comment on the same anchor, authored by ``author``.
     docx and odt are supported; None when the format or the parent comment is not found."""
     ext = (extension or "").lower()
-    z = _zip(content)
+    z = _zip_safe(content)
     if z is None:
         return None
     names = z.namelist()
@@ -243,7 +286,7 @@ def insert_paragraphs(content: bytes, extension: str, paragraphs: list[str], pos
         if position == "replace":
             return block.encode("utf-8")
         return (block + "\n" + text).encode("utf-8") if position == "start" else (text.rstrip("\n") + "\n\n" + block).encode("utf-8")
-    z = _zip(content)
+    z = _zip_safe(content)
     if z is None or not paragraphs:
         return None
     names = z.namelist()
@@ -406,7 +449,7 @@ def rows_from_lines(lines: list[str]) -> list[list[str]]:
 def sheet_rows_used(content: bytes, extension: str) -> int:
     """The last used row number of the first sheet (0 when empty)."""
     ext = (extension or "").lower()
-    z = _zip(content)
+    z = _zip_safe(content)
     if z is None:
         return 0
     if ext == "xlsx" and "xl/worksheets/sheet1.xml" in z.namelist():
@@ -434,7 +477,7 @@ def sheet_rows_used(content: bytes, extension: str) -> int:
 def insert_rows(content: bytes, extension: str, rows: list[list[str]]) -> bytes | None:
     """Append rows of cells after the last used row of the first sheet (xlsx or ods); None otherwise."""
     ext = (extension or "").lower()
-    z = _zip(content)
+    z = _zip_safe(content)
     if z is None or not rows:
         return None
     names = z.namelist()
@@ -522,7 +565,11 @@ Not supported: images, merged cells, footnotes, fonts, colours. Write content on
 - Keep one table; no headings, no bullets, no blank rows inside it.
 Not supported: merged cells, formats, charts. Write rows only: no preamble, no explanation.""",
     "review": """OUTPUT FORMAT for a review: a short assessment in plain sentences, then any further findings as lines
-'- [error] check: detail' or '- [warning] check: detail', then exactly one line 'Verdict: pass' or 'Verdict: fail'.""",
+'- [error] <what was checked>: "<the SOP sentence it breaks, quoted word for word>" <detail>' or
+'- [warning] <what was checked>: <detail>', then exactly one line 'Verdict: pass' or 'Verdict: fail'.
+An error is only something a procedure requires and the item does not do: quote that procedure's sentence. A suggestion,
+a style point or something no procedure asks for is a warning. Judge the content in front of you, not how big the change is.
+Fail only when there is at least one error.""",
     "chat": """HOW TO TALK HERE: a colleague has dropped by your desk for an informal chat in the hub's messenger.
 Answer like a person would across a desk: plain, warm, first person, usually one to four sentences; more only if they ask for detail.
 No headings, no review format, no verdict lines. Say what you know from the procedures, the item they are looking at and your queue.
@@ -531,9 +578,11 @@ comments, or to use the Ops buttons on the item, and that you will pick it up th
 TOOLS: you can look up anything in the record space this person may read: search_records (find by words, type, state, folder,
 assignee), get_record (one record by number: fields, state, decisions, links, documents, run), read_document (a document's text and
 comments), waiting_for (a queue), record_history (who did what) and overview (counts by type and state). Look things up before you answer
-a question about records; never guess a number or a state; mention the record numbers you looked at.""",
+a question about records; never guess a number or a state; mention the record numbers you looked at. If your tools do not
+show something, say you cannot tell from what you can see; never claim that something did not happen.""",
     "answer": """OUTPUT FORMAT for an answer in a comment thread: a few plain sentences a colleague can act on; cite the procedure
-by name when you rely on it. No headings, no lists longer than three items.""",
+by name when you rely on it. If the procedures you follow do not cover the question, say so, say which procedure would
+(if you know), and that you do not follow it. No headings, no lists longer than three items.""",
 }
 
 

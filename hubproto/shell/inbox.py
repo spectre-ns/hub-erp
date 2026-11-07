@@ -11,10 +11,33 @@ from .forms import file_input, text_input, widget
 from .handler import details, hidden_as, href, kv, table
 from .icons import icon, type_icon
 from .pages import next_state_for
-from .text import (BLOB_FIELDS, MEANING_EXAMPLES, NOTIFICATION_KINDS, chip, day, esc, join_words, money, notification_sentence,
+from .text import (BLOB_FIELDS, MEANING_EXAMPLES, NOTIFICATION_KINDS, chip, day, esc, field_label, join_words, money, notification_sentence,
                    qty, short, state_name, summary_of_record, tag, type_name, value_text, when)
 
 PAGE_SIZE = 25
+
+
+def _approve_label(rt: str, pending: dict, rec: dict | None) -> str:
+    number = rec["number"] if rec else ""
+    if pending.get("countersign_of"):
+        return f"Countersign {number}"
+    if rt == "ncr":
+        return f"Sign the disposition of {number}"
+    if rt == "task":
+        return f"Mark {number} done"
+    return f"Approve {number}"
+
+
+def _phrases() -> dict:
+    from ..rules import CONDITION_VOCABULARY
+
+    out: dict = {}
+    for phrase, key in CONDITION_VOCABULARY.items():
+        out.setdefault(key, phrase)
+    return out
+
+
+_PHRASES = _phrases()
 
 
 class InboxMixin:
@@ -120,21 +143,35 @@ class InboxMixin:
                 bands.append(f"{'at or under' if c['op'] == '<=' else 'under' if c['op'] == '<' else 'over' if c['op'] == '>' else 'at or over'} "
                              f"{money(c['value'], c.get('currency') or cur)} to {'the ' + who + ' cog' if r['assignee'].startswith('cog:') else 'the ' + who}")
         crit = [c for c in bundle.get("approval_criteria", []) if c["process"] == run["process"]]
+        met = f.get("conditions") or {}
+
+        def fact(k: str) -> str:
+            """What is actually true of this item for a condition a cog's rule needs."""
+            if k in ("risk_low", "risk_not_high"):
+                return f"the risk is <b>{esc(f.get('risk') or 'not scored')}</b>"
+            return {"change_minor": "the change is <b>major</b>", "supplier_approved": "the supplier is <b>not approved</b>",
+                    "match_within_tolerance": "the three-way match is <b>outside tolerance</b>", "item_known": "the item is <b>not known</b>",
+                    "requirements_accepted": "not every requirement is accepted", "bom_resolved": "the bill of materials is <b>not resolved</b>",
+                    "design_checks_clean": "the design checks are <b>not clean</b>", "no_open_ncr": "a nonconformance is <b>open</b>",
+                    "review_passes": "its review did <b>not pass</b>"}.get(k, f"not: {esc(_PHRASES.get(k, k))}")
+        if p.get("countersign_of"):
+            signer = p["countersign_of"]
+            sig = next((d for d in reversed((rec or {}).get("decisions") or []) if d.get("by") == signer), {})
+            parts.append(f"<b>{esc(signer)}</b> signed it" + (f" on {esc(when(sig.get('at')))}" if sig.get("at") else "")
+                         + (f" (“{esc(short(sig.get('meaning'), 200))}”)" if sig.get("meaning") else "") + "; you countersign")
         for c in crit:
             cog = c["approver"].partition(":")[2]
-            limit = f" up to {money(c['max_amount'], c.get('currency') or cur)}" if c.get("max_amount") is not None else ""
-            conds = [k for k in c.get("conditions", [])]
-            met = f.get("conditions") or {}
+            if p.get("countersign_of") == cog:
+                continue
+            conds = list(c.get("conditions", []))
             failed = [k for k in conds if met.get(k) is False]
-            words = {"match_within_tolerance": "the three-way match is within tolerance", "supplier_approved": "the supplier is approved",
-                     "risk_low": "the risk is low", "change_minor": "the change is minor", "item_known": "the item is known",
-                     "risk_not_high": "the risk is not high", "requirements_accepted": "every requirement is accepted",
-                     "bom_resolved": "the bill of materials is resolved", "design_checks_clean": "the design checks are clean",
-                     "no_open_ncr": "no open nonconformance exists"}
-            s = f"the {cog} cog may approve{limit} when {join_words(words.get(k, k) for k in conds)} ({self._rule_link(c.get('source'))})"
-            if failed:
-                s += f"; here, not met: {esc(join_words(words.get(k, k) for k in failed))}"
-            parts.append(s)
+            over = c.get("max_amount") is not None and amount is not None and float(amount) >= float(c["max_amount"])
+            if not failed and not over:
+                continue  # its rule does not explain why this came to a person
+            why = [fact(k) for k in failed]
+            if over:
+                why.append(f"it is over its limit of {esc(money(c['max_amount'], c.get('currency') or cur))}")
+            parts.append(f"the {esc(cog)} cog could not take it because {join_words(why)} ({self._rule_link(c.get('source'))})")
         if bands:
             parts.append("amounts " + esc("; ".join(bands)))
         if amount is not None:
@@ -171,7 +208,7 @@ class InboxMixin:
         optional = [x for x in allowed if x not in missing]
         people = self._people()
         values = values or {}
-        html_ = "".join(widget(x, td.get("fields", {}).get(x), values.get(x, ""), required=True, people=people, options=self._picker_options(x, td.get("fields", {}).get(x)),
+        html_ = "".join(widget(x, td.get("fields", {}).get(x), values.get(x, rec["fields"].get(x, "")), required=True, people=people, options=self._picker_options(x, td.get("fields", {}).get(x)),
                                error=self._field_error(x) if values else None) for x in missing)
         opt = "".join(widget(x, td.get("fields", {}).get(x), values.get(x, rec["fields"].get(x, "")), people=people, options=self._picker_options(x, td.get("fields", {}).get(x)),
                              error=self._field_error(x) if values else None) for x in optional)
@@ -180,6 +217,22 @@ class InboxMixin:
         return html_, missing, optional
 
     # ---------------------------------------------------------------- cards
+    def _moved_by_others(self, user: str, days: int = 7) -> list[tuple[dict, dict]]:
+        """The person's own items (owner, author or filer) that someone else moved in the last few days, newest first."""
+        from datetime import datetime, timedelta, timezone
+
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        out = []
+        for rec in self.hub.kernel.query():
+            f = rec["fields"]
+            if user not in (f.get("owner"), f.get("author"), rec.get("created_by")):
+                continue
+            last = (rec.get("transitions") or [])[-1:] or []
+            for t in last:
+                if t.get("by") not in (user, "hub", None, "") and str(t.get("at") or "") >= since:
+                    out.append((rec, t))
+        return sorted(out, key=lambda x: str(x[1].get("at") or ""), reverse=True)
+
     def _card_title(self, run: dict, rec: dict | None) -> str:
         p = run["pending"]
         return f"{p['title']}: {rec['number'] + ' ' + summary_of_record(rec) if rec else run['process']}"
@@ -243,21 +296,23 @@ class InboxMixin:
         if problems:
             checks = "<div class='card quiet'><b>Checks:</b><ul>" + "".join(f"<li>{chip(sev if sev != 'error' else 'error')} {esc(check)}: {esc(detail)}</li>" for sev, check, detail in problems) + "</ul></div>"
         blocked_html = f"<div class='card crit' role='status'><b>{blocked}</b> Approve is disabled until then.</div>" if blocked else ""
-        needs = f"<p class='why'>To approve, also give: {esc(', '.join(missing))}.</p>" if missing else ""
+        needs = f"<p class='why'>To approve, also give: {esc(join_words(field_label(m).lower() for m in missing))}.</p>" if missing else ""
         examples = MEANING_EXAMPLES.get(rt) or ("reviewed and approved as presented", "approved with the stated condition")
-        meaning_hint = (f"Say in your own words what you are confirming. It is stored with your signature and shown to {esc(r['owner'])}. "
+        shown_to = "" if r["owner"] == user else f" and shown to {esc(r['owner'])}"
+        meaning_hint = (f"Say in your own words what you are confirming. It is stored with your signature{shown_to}. "
                         f"For example: “{esc(examples[0])}” or “{esc(examples[1])}”.")
         digest = r.get("seen_digest") or self.hub.runner.seen_digest(r)
         leads = f"Approval moves it to {self._state_chip(nxt, r.get('workflow'))}" if nxt else "Approval completes it"
         rej = (f"Reject returns it to {esc(r['owner'])} for rework" if on_reject == "returned" else
                f"Reject rewinds it to {esc(state_name(on_reject, r.get('workflow')))}" if on_reject and on_reject.startswith("awaiting") else
-               "Reject closes it as rejected; nothing more can be done with it")
+               "Reject closes it as rejected; nothing more can be done with it" + (
+                   ". To send it back for rework instead, use Back to the start on its page" if rt in ("document", "capa", "design", "change-request") else ""))
         approve_form = f"""{err}<form method="post" action="/decide" aria-labelledby="h-{esc(r['id'])}">{hidden_as(user)}<input type="hidden" name="run" value="{esc(r['id'])}"><input type="hidden" name="digest" value="{esc(digest)}"><input type="hidden" name="verdict" value="approve">
 {needs}<div class="fields">{inputs}</div>
 <div class="fields">{text_input("meaning", "Meaning of your signature", values.get("meaning", ""), required=True, textarea=True, hint="", error=self._field_error("meaning") if mine else None)}</div>
 <p class="why">{meaning_hint}</p>
 <div class="actions"><label><input type="checkbox" name="confirm" value="1" required{' checked' if values.get('confirm') else ''}> I have read the item and the checks above</label>
-<button{' disabled' if blocked else ''}>Approve {esc(rec['number'] if rec else '')}</button> <span class="why">{leads}.</span></div></form>"""
+<button{' disabled' if blocked else ''}>{esc(_approve_label(rt, p, rec))}</button> <span class="why">{leads}.</span></div></form>"""
         reject_form = f"""<div class="card quiet" id="reject-{esc(r['id'])}"><h4>Reject instead</h4><p class="why">{rej}. {esc(r['owner'])} will see your reason.</p>
 <form method="post" action="/decide" aria-label="Reject {esc(rec['number'] if rec else '')}">{hidden_as(user)}<input type="hidden" name="run" value="{esc(r['id'])}"><input type="hidden" name="digest" value="{esc(digest)}"><input type="hidden" name="verdict" value="reject">
 <div class="fields">{text_input("reason", "Reason for rejecting", values.get("reason", "") if values.get("verdict") == "reject" else "", required=True, textarea=True, hint="", error=self._field_error("reason") if mine else None)}</div>
@@ -419,11 +474,22 @@ class InboxMixin:
         rt = rec["type"] if rec else self._record_type_of(run)
         problems = [(sev, check, detail) for sev, check, detail in self._guard_problems(run, ev.get("step"))]
         plist = "".join(f"<li>{chip(sev if sev != 'error' else 'error')} {esc(check)}: {esc(detail)}</li>" for sev, check, detail in problems)
-        head = f"<h2 style='margin-top:0;border:0'>Stopped at {esc((ev.get('step') or '?').replace('-', ' '))}</h2><p><b>{esc(ev.get('reason', 'no reason recorded'))}</b></p>" + (f"<ul>{plist}</ul>" if plist else "")
+        where = ev.get("gate") or (ev.get("step") or "?").replace("-", " ")
+        headline, why = self._stop_reasons(run["id"], ev)
+        head = (f"<h2 style='margin-top:0;border:0'>Stopped at {esc(where)}</h2><p><b>{self._human(headline or 'no reason recorded')}</b></p>"
+                + (f"<ul>{''.join('<li>' + self._human(x) + '</li>' for x in why)}</ul>" if why else "") + (f"<ul>{plist}</ul>" if plist else ""))
         bundle = self.bundle
         may = user == run["owner"] or (bundle and authz.check(bundle, user, "approve", run["manifest"]["object"], run["manifest"]["folder"])["allowed"])
         if not may or rec is None:
             return f"<div class='card crit' id='stopped'>{head}<p class='why'>Its owner {esc(run['owner'])}, or an approver of this item, may fix it and retry, or cancel it.</p></div>"
+        if self._org_stop(ev):
+            owners = sorted(p for p, m in bundle["members"].items() if "policy-owner" in m.get("roles", []) and m.get("type") == "person")
+            fix = (f"<div class='card quiet'><b>No field change fixes this.</b> Nobody the policy allows may take this item now. "
+                   + f"<p>A policy owner ({esc(', '.join(owners) or 'none')}) can add someone to the role in "
+                   f"<a href='{href('/settings/people', user)}'>Settings</a>, or change the route. Then retry it here.</p>"
+                   f"<form method='post' action='/retry'>{hidden_as(user)}{self._once()}<input type='hidden' name='run' value='{esc(run['id'])}'>"
+                   f"<input type='hidden' name='note' value='retried after the organisation changed'><button class='secondary'>Retry now</button></form></div>")
+            return f"<div class='card crit' id='stopped'>{head}{fix}{self._cancel_form(run, rec)}</div>"
         failing = self._failing_fields(run, rt)
         mine = self.err is not None and self.route == "/retry" and self.vals.get("run") == run["id"]
         values = dict(self.vals) if mine else {}
@@ -506,6 +572,17 @@ class InboxMixin:
             if total_pages > 1:
                 pages = " ".join(f"<b>{n}</b>" if n == page else f'<a href="{href("/inbox", user, page=n, type=type_filter)}#forme">{n}</a>' for n in range(1, total_pages + 1))
                 body += f"<p class='why'>Page {page} of {total_pages} ({PAGE_SIZE} per page): {pages}</p>"
+        awaiting = self._awaiting_me() if hasattr(self, "_awaiting_me") else []
+        if awaiting:
+            body += f"<h2 id='proposals'>Policy proposals waiting for your decision <span class='muted'>{len(awaiting)}</span></h2><ul class='notes'>"
+            for x in awaiting:
+                q = x["proposal"]
+                widen = sum(1 for c in x["todo"] if c.get("widening"))
+                frames = ", ".join(sorted((q.get("overrides") or {}).keys())) or ("settings" if q.get("source") == "settings" else "the policy")
+                body += (f"<li>{icon('layers')}<span><a href='{href('/proposal/' + q['id'], user)}'>Review policy proposal #{esc(q.get('number'))}</a>: "
+                         f"{esc(frames)}, {len(x['todo'])} change(s) need your decision" + (f", {widen} widening(s)" if widen else "")
+                         + (f" <span class='muted'>from {esc(q.get('proposed_by'))}</span>" if q.get("proposed_by") else "") + "</span></li>")
+            body += "</ul>"
         returned = self._pending(user, "resubmit")
         failed = self._failed_for(user)
         body += f"<h2 id='mine'>Returned or stopped, mine <span class='muted'>{len(returned) + len(failed)}</span></h2>"
@@ -520,7 +597,7 @@ class InboxMixin:
             rec = self.hub.kernel.get(r["record"]) if r.get("record") else None
             ev = self._failure_of(r["id"])
             body += f"""<article class="card crit" aria-labelledby="f-{esc(r['id'])}"><h3 id="f-{esc(r['id'])}">Stopped: {self._record_link(r['record']) if rec else esc(r['process'])}</h3>
-<p class="why">{tag(type_name(rec['type']) if rec else r['process'])} stopped on {esc(when(ev.get('at', r['created_at'])))} at {esc((ev.get('step') or '?').replace('-', ' '))} &middot; {self._run_link(r)}</p>
+<p class="why">{tag(type_name(rec['type']) if rec else r['process'])} stopped on {esc(when(ev.get('at', r['created_at'])))} at {esc(ev.get('gate') or (ev.get('step') or '?').replace('-', ' '))} &middot; {self._run_link(r)}</p>
 {details("Fix and retry", self._failed_card(r, rec), open_=bool(self.err and self.vals.get("run") == r["id"]))}</article>"""
         others = self._waiting_on_others(user)
         body += f"<h2 id='others'>Waiting on others (mine) <span class='muted'>{len(others)}</span></h2>"
@@ -533,6 +610,13 @@ class InboxMixin:
                 rows.append([self._record_link(r["record"]) if r.get("record") else esc(r["process"]), esc(p["title"]), esc(", ".join(p["assignees"])),
                              self._due_html(p.get("due")), self._run_link(r)])
             body += table(["Item", "Waiting at", "With", "Due", "Run"], rows)
+        moved = self._moved_by_others(user)
+        if moved:
+            body += f"<h2 id='moved'>Your items that moved <span class='muted'>{len(moved)}</span></h2><ul class='notes'>"
+            for rec, t in moved[:15]:
+                body += (f"<li>{icon('activity')}<span>{self._record_link(rec['locator'], with_summary=False)} is now {self._state_chip(rec['state'])}: "
+                         f"{esc(t.get('by'))} moved it on {esc(when(t.get('at')))}" + (f" ({self._human(short(t.get('reason'), 160))})" if t.get("reason") else "") + "</span></li>")
+            body += "</ul>"
         msgs = [m for m in reversed(self.hub.inbox.for_principal(user)) if m.get("kind") != "chat"]
         notes = [m for m in msgs if m["kind"] in NOTIFICATION_KINDS]
         messages = [m for m in msgs if m["kind"] not in NOTIFICATION_KINDS and m["kind"] != "approval"]
@@ -553,7 +637,7 @@ class InboxMixin:
         if not messages:
             body += "<p class='muted'>No messages.</p>"
         for m in messages[:50]:
-            sender = self._avatar(m["from"], size="sm", named=True) + (" (automatic)" if bundle["members"].get(m["from"], {}).get("type") == "cog" else "")
+            sender = self._avatar(m["from"], size="sm", named=True) + (" (cog)" if bundle["members"].get(m["from"], {}).get("type") == "cog" else "")
             body += (f"<article class='card quiet'><h3>{esc(short(m['subject'], 160))}</h3><p class='why'>from {sender} on {esc(when(m['at']))}"
                      f"{' by email' if m['channel'] == 'email' else ''}</p><p class='msg'>{self._mentions(short(m['body'], 1200))}</p>{self._message_links(m)}")
             if m.get("attachments"):
@@ -614,13 +698,13 @@ class InboxMixin:
         if self._viewing_cog():
             return f"<h2 id='send'>{icon('send')} Messages to {esc(user)}</h2><p class='why'>Choose your own name under 'Acting as' to write to it; it answers with what it filed or found.</p>"
         people = [(p, p) for p in self._people() if p != user]
-        cogs = [(p, f"{p} (automatic reviewer)") for p, m in sorted(bundle["members"].items()) if m["type"] == "cog"]
+        cogs = [(p, f"{p} (cog)") for p, m in sorted(bundle["members"].items()) if m["type"] == "cog"]
         mine = self.err is not None and self.route == "/msg"
         err = self._form_error(["to", "subject", "body", "channel"]) if mine else ""
         to = self._val("to") if mine else (people[0][0] if people else "")
         return f"""<h2 id="send">{icon('send')} Send a message</h2><form method="post" action="/msg" class="card">{hidden_as(user)}{self._once()}{err}
-<div class="fields">{widget("to", "text", to, label="To", required=True, options=people + cogs, hint="people first; automatic reviewers answer with what they filed", error=self._field_error("to") if mine else None)}
-{widget("channel", "enum:dm,email", self._val("channel") if mine else "dm", label="Via", hint="", blank="dm", error=self._field_error("channel") if mine else None)}
+<div class="fields">{widget("to", "text", to, label="To", required=True, options=people + cogs, hint="people first; cogs answer with what they filed or found", error=self._field_error("to") if mine else None)}
+<label class="f{' bad' if mine and self._field_error('channel') else ''}"><span>Via</span>{('<span class=err>' + esc(self._field_error('channel')) + '</span>') if mine and self._field_error('channel') else ''}<select name="channel"><option value="dm"{'' if (self._val('channel') if mine else 'dm') == 'email' else ' selected'}>direct message</option><option value="email"{' selected' if (self._val('channel') if mine else 'dm') == 'email' else ''}>email</option></select></label>
 {text_input("subject", "Subject", self._val("subject") if mine else "", required=True, error=self._field_error("subject") if mine else None)}
 {text_input("body", "Message", self._val("body") if mine else "", required=True, textarea=True, error=self._field_error("body") if mine else None)}</div>
 <div class="actions"><button>{icon('send')}Send</button></div></form>"""

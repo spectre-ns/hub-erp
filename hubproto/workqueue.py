@@ -72,6 +72,11 @@ class CogQueue:
         self.worker_id = f"{socket.gethostname()}:{os.getpid()}"
         with self._db() as db:
             db.executescript(SCHEMA)
+            cols = {r[1] for r in db.execute("PRAGMA table_info(tasks)").fetchall()}
+            for col, decl in (("lease_until", "REAL"),):
+                if col not in cols:
+                    db.execute(f"ALTER TABLE tasks ADD COLUMN {col} {decl}")
+        self.workers: dict[str, dict] = {}  # this process's worker threads: name -> {"alive", "last_ok", "last_error"}
 
     # ------------------------------------------------------------ storage
     @contextmanager
@@ -187,23 +192,67 @@ class CogQueue:
             for r in db.execute("SELECT * FROM tasks WHERE status='queued' ORDER BY seq").fetchall():
                 if r["cog"] in busy or (cogs and r["cog"] not in cogs):
                     continue
-                db.execute("UPDATE tasks SET status='working', started_at=?, attempts=attempts+1, worker=? WHERE id=?",
-                           (utcnow(), self.worker_id, r["id"]))
+                db.execute("UPDATE tasks SET status='working', started_at=?, attempts=attempts+1, worker=?, lease_until=? WHERE id=?",
+                           (utcnow(), self.worker_id, time.time() + LEASE, r["id"]))
                 db.execute("COMMIT")
                 return self.get(r["id"])
             db.execute("COMMIT")
         return None
 
     def recover(self) -> int:
-        """Tasks left 'working' by a worker that stopped go back in the queue (or fail after MAX_ATTEMPTS)."""
+        """Tasks left 'working' by a worker that stopped go back in the queue (or fail after MAX_ATTEMPTS). A task is
+        taken back only when its lease ran out (its worker stopped renewing it) or its worker was a process on this
+        host that is gone; a live worker's task, here or in the cog-users service, is never taken."""
         n = 0
+        now = time.time()
+        host = socket.gethostname()
         for t in self.list(status=("working",), limit=500):
+            worker = str(t.get("worker") or "")
+            w_host, _, w_pid = worker.rpartition(":")
+            dead_here = w_host == host and w_pid.isdigit() and int(w_pid) != os.getpid() and not _pid_alive(int(w_pid))
+            expired = (t.get("lease_until") or 0) < now
+            if not (dead_here or expired):
+                continue
             if t["attempts"] >= MAX_ATTEMPTS:
                 self._set(t["id"], status="failed", finished_at=utcnow(), error="the worker stopped while working on it, three times")
             else:
-                self._set(t["id"], status="queued", started_at=None, worker=None)
+                self._set(t["id"], status="queued", started_at=None, worker=None, lease_until=None)
             n += 1
         return n
+
+    def renew(self, task_id: str) -> None:
+        with self._db() as db:
+            db.execute("UPDATE tasks SET lease_until=? WHERE id=? AND worker=? AND status='working'", (time.time() + LEASE, task_id, self.worker_id))
+
+    def _finish(self, task_id: str, **fields) -> dict:
+        """The final write of a task, only if this worker still holds it (another may have taken it over)."""
+        for k in ("payload", "result"):
+            if k in fields and not isinstance(fields[k], str):
+                fields[k] = json.dumps(fields[k], default=str)
+        cols = ", ".join(f"{k}=?" for k in fields)
+        with self._db() as db:
+            cur = db.execute(f"UPDATE tasks SET {cols} WHERE id=? AND (worker=? OR worker IS NULL)", (*fields.values(), task_id, self.worker_id))
+        if cur.rowcount == 0:
+            _log(f"cog task {task_id}: another worker holds it now; this result is not written")
+        return self.get(task_id)
+
+    def health(self) -> dict:
+        """For /queue and /healthz: are the worker threads alive, and how old is the oldest task still waiting?"""
+        oldest = None
+        with self._db() as db:
+            r = db.execute("SELECT MIN(enqueued_at) FROM tasks WHERE status='queued'").fetchone()
+            oldest = r[0] if r else None
+        age = None
+        if oldest:
+            try:
+                from datetime import datetime, timezone
+
+                age = int((datetime.now(timezone.utc) - datetime.fromisoformat(oldest.replace("Z", "+00:00"))).total_seconds())
+            except ValueError:
+                age = None
+        workers = {k: dict(v) for k, v in self.workers.items()}
+        stalled = self.mode == "worker" and (not workers or not any(w.get("alive") for w in workers.values()))
+        return {"mode": self.mode, "workers": workers, "oldest_queued_seconds": age, "stalled": bool(stalled and age and age > 60)}
 
     def work_one(self, task_id: str | None = None, cogs: list[str] | None = None) -> dict | None:
         """Work one task (the given one, or the next one claimable). Returns the finished task."""
@@ -211,17 +260,23 @@ class CogQueue:
             t = self.get(task_id)
             if t is None or t["status"] != "queued":
                 return t
-            t = self._set(task_id, status="working", started_at=utcnow(), attempts=(t["attempts"] or 0) + 1, worker=self.worker_id)
+            t = self._set(task_id, status="working", started_at=utcnow(), attempts=(t["attempts"] or 0) + 1, worker=self.worker_id,
+                          lease_until=time.time() + LEASE)
         else:
             t = self.claim(cogs)
             if t is None:
                 return None
+        stop = threading.Event()
+        renewer = threading.Thread(target=self._renew_loop, args=(t["id"], stop), daemon=True)
+        renewer.start()
+        prev = (getattr(_CURRENT, "task", None), getattr(_CURRENT, "n", 0))
+        _CURRENT.task, _CURRENT.n = t["id"], 0
         try:
             result = execute(self.hub, t)
-            done = self._set(t["id"], status="done", finished_at=utcnow(), result=result)
+            done = self._finish(t["id"], status="done", finished_at=utcnow(), result=result, lease_until=None)
         except Exception as e:  # the task fails; the person who asked is told why
             detail = str(e) or e.__class__.__name__
-            done = self._set(t["id"], status="failed", finished_at=utcnow(), error=detail[:1000])
+            done = self._finish(t["id"], status="failed", finished_at=utcnow(), error=detail[:1000], lease_until=None)
             _log(f"cog task {t['id']} ({t['cog']} {t['kind']}) failed: {detail}\n{traceback.format_exc(limit=4)}")
             if t.get("by") and self.hub is not None and t["by"] != t["cog"]:
                 try:
@@ -229,8 +284,18 @@ class CogQueue:
                                           body=detail, record=t.get("record"))
                 except Exception:
                     pass
+        finally:
+            stop.set()
+            _CURRENT.task, _CURRENT.n = prev
         _log(f"cog task {done['id']} {done['cog']} {done['kind']} {done['status']} record={done.get('record') or '-'}")
         return done
+
+    def _renew_loop(self, task_id: str, stop: threading.Event) -> None:
+        while not stop.wait(LEASE / 3):
+            try:
+                self.renew(task_id)
+            except Exception as e:  # a missed renewal is retried; the lease is long
+                _log(f"cog task {task_id}: lease renewal failed: {e}")
 
     def drain(self, cogs: list[str] | None = None, limit: int = 1000) -> list[dict]:
         out = []
@@ -240,6 +305,37 @@ class CogQueue:
                 break
             out.append(t)
         return out
+
+
+LEASE = float(os.environ.get("HUBPROTO_COG_LEASE") or 900)  # seconds; renewed every LEASE/3 while a task runs
+_CURRENT = threading.local()
+
+
+def current_task() -> str | None:
+    """The cog task this thread is working, if any (writes made during it get ids derived from it)."""
+    return getattr(_CURRENT, "task", None)
+
+
+def effect_id(kind: str = "msg") -> str | None:
+    """A deterministic id for the next write of the current task: a re-run after a crash produces the same ids, so
+    its replies and notes are not written twice (the inbox ignores an id it already has)."""
+    t = current_task()
+    if not t:
+        return None
+    _CURRENT.n = getattr(_CURRENT, "n", 0) + 1
+    import hashlib
+
+    return hashlib.sha256(f"{t}:{kind}:{_CURRENT.n}".encode()).hexdigest()[:8]
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _log(line: str) -> None:
@@ -285,7 +381,10 @@ def execute(hub, task: dict) -> dict:
         from .agent import Agent, mark_duty
 
         agent = Agent(hub, cog)
-        prep = agent.prepare(p["goal"], by=task.get("by") or cog, trigger=kind)
+        earlier = agent.resume_or_none(f"q{task['id']}", by=task.get("by") or cog)
+        if earlier is not None:
+            return earlier
+        prep = agent.prepare(p["goal"], by=task.get("by") or cog, trigger=kind, run_id=f"q{task['id']}")
         res = agent.conclude(prep, agent.think_safely(prep))
         if kind == "duty":
             mark_duty(hub, cog, p["goal"])
@@ -298,6 +397,7 @@ def assigned_work(hub, task: dict, state: dict | None = None) -> dict:
     instruction, acts within its autonomy (comments, reviews, drafts, its turn at a Gate it may sign), and reports
     back on the item. A step assigned to it is completed or handed back; it is never left waiting silently."""
     from .agent import Agent
+    from .tools import state_words
 
     cog, p = task["cog"], task.get("payload") or {}
     rec = hub.kernel.get(task.get("record") or p.get("record") or (state or {}).get("record") or "")
@@ -311,14 +411,16 @@ def assigned_work(hub, task: dict, state: dict | None = None) -> dict:
     goal = (f"You are assigned {rec['number']} ({rec['type']}: {f.get('title') or ''}) by {task.get('by') or 'a colleague'}."
             + (f" Their instruction: {p['instruction']}" if p.get("instruction") else "")
             + (f" What the item says: {what}" if what else "")
-            + f" It is {rec['state']}" + (f", waiting for {', '.join(waiting.get('assignees') or [])} at {waiting.get('title')}" if waiting else "") + "."
+            + f" It is {state_words(rec['state'])}" + (f", waiting for {', '.join(waiting.get('assignees') or [])} at {waiting.get('title')}" if waiting else "") + "."
             + (" The step is assigned to you: do the work, then call complete_step with what you did, or hand_back with why you cannot."
                if step_mine else
                " Do what is asked within your autonomy. If it waits at an approval you may sign, use take_turn. Comment on the item with what you did.")
             + " Finish with a summary.")
     agent = Agent(hub, cog)
-    prep = agent.prepare(goal, by=task.get("by") or cog, trigger="assigned")
-    res = agent.conclude(prep, agent.think_safely(prep))
+    res = agent.resume_or_none(f"q{task['id']}", by=task.get("by") or cog)
+    if res is None:
+        prep = agent.prepare(goal, by=task.get("by") or cog, trigger="assigned", run_id=f"q{task['id']}")
+        res = agent.conclude(prep, agent.think_safely(prep))
     out = {"run": res["run"], "status": res["status"], "summary": res["summary"], "actions": res["actions"], "record": rec["number"]}
     if run and step_mine and hub.runner.is_assigned_work(hub.runner.load(run["id"]), cog):
         # It did not finish the step: the work goes back to a person with what it found, rather than sitting with a cog.
@@ -361,15 +463,34 @@ class CogWorker:
         from .model import thinking_releases
 
         q = self.hub.queue
-        while not self.stop.is_set():
-            q.wake.wait(timeout=5)
-            q.wake.clear()
+        name = threading.current_thread().name
+        state = q.workers.setdefault(name, {"alive": True, "last_ok": None, "last_error": None, "errors": 0})
+        backoff = 1.0
+        try:
             while not self.stop.is_set():
-                with self.lock, thinking_releases(self.lock):
-                    t = q.work_one()
-                if t is None:
-                    break
-                time.sleep(0.05)  # let a waiting request in between tasks
+                q.wake.wait(timeout=5)
+                q.wake.clear()
+                try:
+                    if time.time() - state.get("_recovered", 0) > LEASE / 3:  # take back expired leases now and then
+                        with self.lock:
+                            q.recover()
+                        state["_recovered"] = time.time()
+                    while not self.stop.is_set():
+                        with self.lock, thinking_releases(self.lock):
+                            t = q.work_one()
+                        state["last_ok"] = utcnow()
+                        if t is None:
+                            break
+                        time.sleep(0.05)  # let a waiting request in between tasks
+                    backoff = 1.0
+                except Exception as e:  # a locked database, a full disk: log it, wait, carry on; never die silently
+                    state["errors"] = state.get("errors", 0) + 1
+                    state["last_error"] = f"{utcnow()} {type(e).__name__}: {e}"
+                    _log(f"cog worker {name}: {type(e).__name__}: {e}; retrying in {backoff:.0f} s\n{traceback.format_exc(limit=3)}")
+                    self.stop.wait(backoff)
+                    backoff = min(backoff * 2, 60.0)
+        finally:
+            state["alive"] = False
 
     def shutdown(self) -> None:
         self.stop.set()

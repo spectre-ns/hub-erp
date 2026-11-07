@@ -157,4 +157,4 @@ def test_unapproved_supplier_never_reaches_the_cog(hub):
     rec = k.get(state["record"])
     assert rec["fields"]["supplier_approved"] is False and "not approved" in rec["fields"]["supplier_note"]
     review = next(e for e in hub.runner.track(run_id) if e["type"] == "gate.cog_review")
-    assert review["verdict"] == "escalate" and any("supplier_approved" in r for r in review["reasons"])
+    assert review["verdict"] == "escalate" and any("the supplier is approved" in r for r in review["reasons"])

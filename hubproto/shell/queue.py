@@ -38,9 +38,17 @@ LIVE_JS = r"""(function(){var meta=document.getElementById('live');if(!meta)retu
 var open=+meta.getAttribute('data-open');var timer=null;
 function schedule(){clearTimeout(timer);timer=setTimeout(tick,document.hidden?20000:(open>0?2500:12000))}
 function refresh(){fetch(location.href,{cache:'no-store',credentials:'same-origin'}).then(function(r){return r.text()}).then(function(t){
-var doc=new DOMParser().parseFromString(t,'text/html');document.querySelectorAll('[data-live]').forEach(function(el){var n=doc.getElementById(el.id);if(n&&n.outerHTML!==el.outerHTML)el.replaceWith(n)})})}
+var doc=new DOMParser().parseFromString(t,'text/html');var changed=0;document.querySelectorAll('[data-live]').forEach(function(el){var n=doc.getElementById(el.id);
+if(!n||n.outerHTML===el.outerHTML)return;var a=document.activeElement;if(a&&a!==document.body&&el.contains(a))return;
+var typed=false;el.querySelectorAll('input:not([type=hidden]),textarea,select').forEach(function(f){if(f.value!==f.defaultValue)typed=true});if(typed)return;
+el.replaceWith(n);changed++});var say=document.getElementById('live-say');if(changed&&say){say.textContent='';setTimeout(function(){say.textContent='This page was updated.'},50)}})}
 function tick(){fetch(url,{cache:'no-store',credentials:'same-origin'}).then(function(r){return r.json()}).then(function(j){if(j.stamp!==stamp){stamp=j.stamp;refresh()}open=j.open||0;schedule()}).catch(schedule)}
 document.addEventListener('visibilitychange',function(){if(!document.hidden)tick()});schedule()})();"""
+
+
+def _local_path(p: str) -> bool:
+    """A redirect target on this hub only: '/x', never '//host' or '/\\host' or a scheme."""
+    return bool(p) and p.startswith("/") and not p.startswith(("//", "/\\")) and "\n" not in p and "\r" not in p
 
 
 class QueueMixin:
@@ -59,15 +67,25 @@ class QueueMixin:
             return f"<span class='chip crit'>failed</span> <span class='muted'>{esc(short(t.get('error') or '', 160))}</span>"
         return f"<span class='chip'>{esc(t['status'])}</span> <span class='muted'>{esc(short(t.get('error') or '', 120))}</span>"
 
+    def _task_visible(self, t: dict) -> bool:
+        """What was asked of a cog is shown to the asker, policy owners, and whoever may read the item it is about."""
+        if self.user == t.get("by") or self._policy_owner():
+            return True
+        rec = self.hub.kernel.get(t["record"]) if t.get("record") else None
+        return bool(rec) and self._readable(rec)
+
     def _task_what(self, t: dict, with_record: bool = True) -> str:
+        visible = self._task_visible(t)
         rec = self.hub.kernel.get(t["record"]) if with_record and t.get("record") else None
-        where = f" on {self._number_link(rec['locator'], rec['number'])}" if rec else ""
+        where = f" on {self._number_link(rec['locator'], rec['number'])}" if rec and visible else ""
+        if not visible:
+            return f"{esc(KINDS.get(t['kind'], t['kind']))} <span class='muted'>(asked by {esc(t.get('by') or 'someone')}; not yours to see)</span>"
         res = t.get("result") or {}
         link = ""
-        if res.get("run") and t["kind"] in ("task", "duty"):
+        if res.get("run") and t["kind"] in ("task", "duty", "assigned"):
             link = f" <a href='{href('/agent-run/' + res['run'], self.user)}'>see the run</a>"
         title = short(t.get("title") or "", 140)
-        return f"{esc(KINDS.get(t['kind'], t['kind']))}{where}: <q>{esc(title)}</q>{link}"
+        return f"{esc(KINDS.get(t['kind'], t['kind']))}{where}: <q>{self._human(title)}</q>{link}"
 
     def _withdraw_button(self, t: dict, back: str) -> str:
         if t["status"] != "queued" or self._viewing_cog() or not (t.get("by") == self.user or self._policy_owner()):
@@ -79,7 +97,8 @@ class QueueMixin:
     def _live_meta(self, *, record: str | None = None, cog: str | None = None) -> str:
         stamp, n_open = self._live_stamp(record=record, cog=cog)
         url = href("/queue-status", self.user, **({"record": record} if record else {"cog": cog} if cog else {}))
-        return f"<span id='live' hidden data-url='{esc(url)}' data-stamp='{esc(stamp)}' data-open='{n_open}'></span><script>{LIVE_JS}</script>"
+        return (f"<span id='live' hidden data-url='{esc(url)}' data-stamp='{esc(stamp)}' data-open='{n_open}'></span>"
+                f"<span id='live-say' class='vh' role='status' aria-live='polite'></span><script>{LIVE_JS}</script>")
 
     def _live_stamp(self, *, record: str | None = None, cog: str | None = None) -> tuple[str, int]:
         q = self.hub.queue
@@ -152,7 +171,10 @@ class QueueMixin:
             now = self.hub.queue.list(cog=c, status=("working",), limit=1)
             rows.append([f"{self._avatar(c, size='sm')} <a href='{href('/user/' + c, user)}#cog-work'>{esc(c)}</a>",
                          self._task_what(now[0]) if now else "<span class='muted'>free</span>", str(n.get("queued", 0))])
-        body = (f"<h1>{icon('inbox')} Cog queues</h1><p class='why'>Each cog works from its own queue, one task at a time, oldest first, like a person's tray. "
+        health = self.hub.queue.health()
+        stalled = ("<p class='status crit' role='alert'>The cogs' queue is stalled: no worker is running and the oldest task has waited "
+                   f"{health['oldest_queued_seconds'] // 60} min. Restart the hub, or ask an administrator.</p>") if health.get("stalled") else ""
+        body = (f"<h1>{icon('inbox')} Cog queues</h1>{stalled}<p class='why'>Each cog works from its own queue, one task at a time, oldest first, like a person's tray. "
                 "Asking a cog never waits for it: the answer lands where you asked.</p><section id='queues' data-live>"
                 + table(["Cog", "Working on", "Waiting"], rows, "No cogs in this release."))
         recent = self.hub.queue.list(status=("done", "failed", "withdrawn"), limit=15, newest_first=True)
@@ -176,5 +198,5 @@ class QueueMixin:
         except ValueError as e:
             raise ShellError(str(e)) from None
         back = self._f("return")
-        back = back if back.startswith("/") else href("/user/" + t["cog"], self.user)
+        back = back if _local_path(back) else href("/user/" + t["cog"], self.user)
         self._redirect(self._once_finish(back + ("&" if "?" in back else "?") + "done=" + quote(f"Withdrawn from {t['cog']}'s queue.")))

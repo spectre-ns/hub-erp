@@ -38,14 +38,22 @@ def test_a_frame_draft_is_compiled_reviewed_and_released_into_the_frame(released
     assert any(p["subject"] == "role:staff" and p["resource"] == "folder:Finance/Payables" and p["action"] == "read" for p in bundle["permissions"])
 
 
-def test_a_recompile_carries_a_pending_draft_forward(released):
+def test_a_pending_draft_keeps_its_own_proposal(released):
+    """Review ux-3 / governance-14: one proposal per draft. A compile of the files leaves someone's pending draft in
+    its own open proposal (never merged into another), and proposing the same draft again replaces its own earlier
+    proposal, carrying the decisions given on it."""
     hub = released
     draft = hub.frame_draft("finance-policy", by="alice")
     text = hub.draft_text(draft) + "\nStaff may read Finance.\n"
     first = hub.compile(overrides={"finance-policy": text}, drafts={"finance-policy": draft["locator"]})
-    second = hub.compile()  # someone recompiles from the CLI
-    assert hub.proposals.load(first["id"])["status"] == "superseded"
-    assert second["overrides"]["finance-policy"]["draft"] == draft["locator"] and "Staff may read Finance." in second["overrides"]["finance-policy"]["text"]
+    files = hub.compile()  # someone recompiles the files from the CLI
+    assert hub.proposals.load(first["id"])["status"] == "open" and not files["overrides"]
+    hub.review(first["id"], "bob", approve_all=True)
+    again = hub.compile(overrides={"finance-policy": text}, drafts={"finance-policy": draft["locator"]})
+    old = hub.proposals.load(first["id"])
+    assert old["status"] == "superseded" and old["superseded_by_number"] == again["number"]
+    assert again["overrides"]["finance-policy"]["draft"] == draft["locator"]
+    assert all(any(d["by"] == "bob" for d in c["decisions"]) for c in again["changes"])
 
 
 def test_a_draft_may_not_rename_its_frame(released):
@@ -97,7 +105,7 @@ def test_a_frame_draft_can_be_withdrawn_and_is_no_longer_compiled(released):
     hub.dms.add_version(draft["locator"], text.encode("utf-8"), by="carol", filename="cogs.frame.md", mime="text/markdown", note="test")
     p = hub.compile(overrides={"cog-profiles": text}, drafts={"cog-profiles": draft["locator"]})
     assert "cog-profiles" in p["overrides"]
-    assert "cog-profiles" in hub.compile()["overrides"]  # an open draft carries into every compile
+    assert not hub.compile()["overrides"]  # a draft stays in its own proposal; a compile of the files does not take it
     import pytest as _pt
     with _pt.raises(ValueError):
         hub.withdraw_frame_draft(draft["locator"], "alice")  # neither its author nor a policy owner

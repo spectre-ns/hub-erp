@@ -112,10 +112,17 @@ class ActionsMixin:
         number = rec["number"] if rec else self._process_name(process)
         if state["status"] == "waiting" and state.get("pending"):
             p = state["pending"]
-            msg = f"Filed {number}; waiting for {', '.join(p['assignees'])} at {p['title']}" + (f" (approval due {day(p['due'])})" if p.get("due") else "") + "."
+            cog = p.get("assignee_type") == "cog"
+            msg = (f"Filed {number}; waiting for {', '.join(p['assignees'])} at {p['title']}" + (f" (approval due {day(p['due'])})" if p.get("due") else "")
+                   + (". It is a cog and takes its turn from its queue; this page shows what it decides" if cog else "") + ".")
         elif state["status"] == "failed":
             ev = self._failure_of(run_id)
-            msg = f"Filed {number}, but it stopped at {(ev.get('step') or '?').replace('-', ' ')}: {ev.get('reason', '')} Fix it below and retry."
+            if self._org_stop(ev):
+                headline, why = self._stop_reasons(run_id, ev)
+                msg = (f"Filed {number}, but nobody may take it now: " + ("; ".join(why) if why else headline).rstrip(".")
+                       + ". See below for who can fix it.")
+            else:
+                msg = f"Filed {number}, but it stopped at {ev.get('gate') or (ev.get('step') or '?').replace('-', ' ')}: {ev.get('reason', '')} Change what it names below and retry."
         elif state["status"] == "completed":
             msg = f"Filed {number}; it completed" + (f" and is now {rec['state']}" if rec else "") + "."
         else:
@@ -346,12 +353,20 @@ class ActionsMixin:
         members = self.bundle["members"]
         opts = "".join(f"<option value='{esc(n)}'>{esc(n)}{' (cog)' if members[n]['type'] == 'cog' else ''}</option>"
                        for n in sorted(members, key=lambda n: (members[n]["type"] != "cog", n)) if n != self.user)
-        return (f"<details class='inline restart'><summary class='button ghost'>{icon('users')}Assign</summary>"
-                f"<form method='post' action='/assign' class='card'>{hidden_as(self.user)}{self._once()}<input type='hidden' name='record' value='{esc(rec['locator'])}'>"
+        mine = self.err is not None and self.route == "/assign" and self.vals.get("record") == rec["locator"]
+        chosen = self._val("to") if mine else ""
+        if mine:
+            opts = opts.replace(f"<option value='{esc(chosen)}'>", f"<option value='{esc(chosen)}' selected>", 1)
+        err = self._form_error(["to", "instruction"]) if mine else ""
+        bad = mine and self.err and self.err[1] == "instruction"
+        return (f"<details class='inline restart'{' open' if mine else ''}><summary class='button ghost'>{icon('users')}Assign</summary>"
+                f"<form method='post' action='/assign' class='card'>{hidden_as(self.user)}{self._once()}<input type='hidden' name='record' value='{esc(rec['locator'])}'>{err}"
                 f"<label class='f'><span>To <b>*</b></span><select name='to' required><option value=''>choose…</option>{opts}</select></label>"
-                f"<label class='f'><span>What to do <i>(a cog needs this)</i></span><textarea name='instruction' rows='3' "
-                f"placeholder='e.g. review the containment and draft the disposition'></textarea></label>"
-                f"<p class='why'>A cog takes it from its queue, works it within its autonomy and reports here; a person is told in their inbox.</p>"
+                f"<label class='f{' bad' if bad else ''}'><span>What to do <i>(required for a cog)</i></span><textarea name='instruction' rows='3' "
+                f"placeholder='e.g. review the containment and draft the disposition'{' aria-invalid=true aria-describedby=err-instruction' if bad else ''}>{esc(self._val('instruction') if mine else '')}</textarea>"
+                + (f"<span class='err' id='err-instruction'>{esc(self.err[0])}</span>" if bad else "") + "</label>"
+                f"<p class='why'>A cog takes it from its queue, works it within its autonomy and reports here; a person is told in their inbox. "
+                f"If the item waits at an approval, an assigned cog may also take that turn, within its own approval rules only.</p>"
                 f"<div class='actions'><button>{icon('send')}Assign</button></div></form></details>")
 
     def post_assign(self):
@@ -427,11 +442,19 @@ class ActionsMixin:
         if process not in bundle["ops"]:
             raise ShellError(f"There is no process '{process}' in the release.", 404)
         rec = self.hub.kernel.require(self._f("record"))
+        self._require_read(rec["folder"])
+        op = bundle["ops"][process]
+        wanted = op.get("record_type") or op.get("object")
+        if wanted and rec["type"] != wanted:
+            raise ShellError(f"{process} runs on a {type_name(wanted).lower()}, and {rec['number']} is a {type_name(rec['type']).lower()}.", 400)
         live = self.hub.runner.run_for_record(rec["locator"])
         if live and live["status"] in ("waiting", "submitted", "running"):
             raise ShellError(f"{rec['number']} is already in {live['process']} ({live['status']}); finish or cancel that run first.")
+        given = {}
+        if self._f("change_type") in ("minor", "major"):
+            given["change_type"] = self._f("change_type")
         try:
-            run_id = self.hub.runner.submit(process, {"record": {}}, owner=user, record=rec["locator"])
+            run_id = self.hub.runner.submit(process, {"record": given}, owner=user, record=rec["locator"])
         except RunError as e:
             raise ShellError(str(e)) from None
         state = self.hub.runner.load(run_id)
@@ -521,8 +544,8 @@ class ActionsMixin:
         if not target:
             raise ShellError("Name the item to link to.", field="target")
         t = self.hub.kernel.get(target)
-        if t is None:
-            raise ShellError(f"There is no item '{target}'.", field="target")
+        if t is None or not self._can_read(t["folder"])["allowed"]:
+            raise ShellError(f"There is no item '{target}' you may read.", field="target")
         rel = self._f("rel")
         if rel not in self.hub.kernel.link_vocab:
             raise ShellError(f"'{rel}' is not a link relation; choose one from the list.", field="rel")

@@ -122,6 +122,9 @@ def test_one_task_at_a_time_per_cog_oldest_first(tmp_path):
     assert q.claim() is None
     assert q.position(q.get(a2["id"])) == 2 and q.counts() == {"cog-a": {"working": 1, "queued": 1}, "cog-b": {"working": 1}}
     # A worker that stopped mid-task: the task goes back in the queue.
+    assert q.recover() == 0  # a live worker (this process, a fresh lease) keeps its tasks
+    with q._db() as db:  # its lease runs out (it stopped renewing): now they go back in the queue
+        db.execute("UPDATE tasks SET lease_until = 0 WHERE status = 'working'")
     assert q.recover() == 2 and q.get(a1["id"])["status"] == "queued"
     with pytest.raises(ValueError):
         q.submit("cog-a", "nonsense", by="alice", title="?")

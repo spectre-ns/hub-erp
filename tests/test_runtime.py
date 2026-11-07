@@ -69,7 +69,7 @@ def test_cog_outside_criteria_escalates(released):
     state = released.runner.load(run_id)
     assert state["status"] == "waiting" and state["pending"]["assignees"] == ["dave"]
     review = next(e for e in released.runner.track(run_id) if e["type"] == "gate.cog_review")
-    assert review["verdict"] == "escalate" and any("match_within_tolerance" in r for r in review["reasons"])
+    assert review["verdict"] == "escalate" and any("the three-way match is within tolerance" in r for r in review["reasons"])
 
 
 def test_bill_against_another_suppliers_po_fails_at_the_default_gate(released):
@@ -144,16 +144,23 @@ def test_unbalanced_journal_is_refused_by_the_kernel(released):
 
 
 def test_document_control_minor_change_approved_by_doc_reviewer(released):
+    # A new document is major whatever its author claims: a person approves it (review governance-1).
+    run_id = released.runner.submit("document-control", {"record": {"title": "SOP-7 Calibration", "change_type": "minor"}},
+                                    owner="alice")
+    state = released.runner.load(run_id)
+    assert state["status"] == "waiting" and set(state["pending"]["assignees"]) == {"bob", "carol"}
+    released.runner.decide(run_id, "bob", "approve", meaning="fit for use", payload_digest=state["seen_digest"])
+    first = released.kernel.get(released.runner.load(run_id)["record"])
+    assert first["state"] == "effective" and first["fields"]["approved_by"] == "bob"
+    # A minor revision of it, by its author: the doc-reviewer cog approves within its criteria, and the revision
+    # (named when it was submitted) supersedes the one in force.
     run_id = released.runner.submit("document-control", {"record": {"title": "SOP-7 Calibration", "change_type": "minor"}},
                                     owner="alice")
     state = released.runner.load(run_id)
     assert state["status"] == "completed"
-    doc = next(iter(released.kernel.documents().values()))
-    assert doc["state"] == "effective" and doc["approved_by"] == "doc-reviewer" and doc["author"] == "alice"
-    run_id = released.runner.submit("document-control", {"record": {"title": "SOP-7 Calibration", "change_type": "major"}},
-                                    owner="alice")
-    state = released.runner.load(run_id)
-    assert state["status"] == "waiting" and set(state["pending"]["assignees"]) == {"bob", "carol"}
+    rev = released.kernel.get(state["record"])
+    assert rev["fields"]["revises"] == first["number"] and rev["fields"]["approved_by"] == "doc-reviewer"
+    assert released.kernel.get(first["locator"])["state"] == "obsolete"
 
 
 def test_cog_answers_dm_and_files_from_an_attachment(released):

@@ -23,7 +23,7 @@ TYPE_NAMES = {
 # What a person does when they start the process that creates a record of this type (the button and the entry title).
 VERBS = {
     "bill": "File a supplier bill", "purchase-request": "Raise a purchase request", "ncr": "Report a nonconformance",
-    "capa": "Open a corrective action", "design": "Submit a design for release", "document": "Propose a document change",
+    "capa": "Open a corrective action", "design": "Submit a design for release", "document": "New controlled document",
     "task": "Create a task", "requirement": "Capture a requirement", "receipt": "Record a goods receipt",
     "calibration": "Record a calibration", "complaint": "Log a complaint", "change-request": "Raise a change request",
     "audit": "Plan an internal audit", "management-review": "Prepare a management review",
@@ -245,8 +245,8 @@ def value_text(name: str, v, fields: dict | None = None) -> str:
         return ""
     if name in ("amount", "unit_cost", "billed_to_date"):
         return money(v, f.get("currency") or "USD")
-    if name == "quantity":
-        return qty(v, f.get("unit"))
+    if name in ("quantity", "stock", "lead_time_days"):
+        return qty(v, f.get("unit") if name != "lead_time_days" else None)
     if name in ("date", "due", "needed_by", "planned", "review_date", "effective_from", "reevaluation_date", "effectiveness_check_date"):
         return day(v)
     if isinstance(v, bool):
@@ -257,11 +257,41 @@ def value_text(name: str, v, fields: dict | None = None) -> str:
 
 
 # ---------------------------------------------------------------- sentences
+_DATE_ONLY = re.compile(r"(?<![\d-])(\d{4}-\d{2}-\d{2})(?![\dT:-])")
+_STATE_SLUG = re.compile(r"\bawaiting-([a-z][a-z-]*[a-z])\b")
+_PY_LIST = re.compile(r"\[((?:'[^'\]]*'(?:,\s*)?)+)\]")
+_FLOAT_MONEY = re.compile(r"\b(\d+)\.0\b(?=\s*(?:USD|EUR|GBP|percent|days)\b)")
+_CONDITION_KEY = None
+
+
+def _condition_words(m) -> str:
+    from ..rules import CONDITION_VOCABULARY
+
+    names = {}
+    for phrase, key in CONDITION_VOCABULARY.items():
+        names.setdefault(key, phrase)
+    return names.get(m.group(0), m.group(0))
+
+
+def machine_words(s: str) -> str:
+    """Engine text in words: date-only ISO dates, 'awaiting-<step>' states, Python lists, '1000.0 USD', condition keys."""
+    global _CONDITION_KEY
+    if _CONDITION_KEY is None:
+        from ..rules import CONDITION_VOCABULARY
+
+        _CONDITION_KEY = re.compile(r"\b(" + "|".join(sorted(set(CONDITION_VOCABULARY.values()), key=len, reverse=True)) + r")\b")
+    s = _DATE_ONLY.sub(lambda m: day(m.group(1)), s)
+    s = _STATE_SLUG.sub(lambda m: "waiting at " + m.group(1).replace("-", " ").capitalize(), s)
+    s = _PY_LIST.sub(lambda m: ", ".join(x.strip().strip("'") for x in m.group(1).split(",") if x.strip()), s)
+    s = _FLOAT_MONEY.sub(lambda m: f"{int(m.group(1)):,}", s)
+    return _CONDITION_KEY.sub(_condition_words, s)
+
+
 def humanize(text: str, link_number=None) -> str:
-    """Locators and ISO timestamps out of a sentence written by the engine; the result is escaped HTML."""
+    """Locators, ISO timestamps and other machine text out of a sentence written by the engine; escaped HTML."""
     out = []
     pos = 0
-    s = clean(str(text or ""))
+    s = machine_words(clean(str(text or "")))
     for m in _LOCATOR.finditer(s):
         out.append(esc(_TIMESTAMP.sub(lambda t: when(t.group(0)), s[pos:m.start()])))
         number = m.group(1)
@@ -274,6 +304,23 @@ def humanize(text: str, link_number=None) -> str:
 def friendly(message: str) -> str:
     """An engine message as a sentence for the person who hit it: no class names, no match counts, a next step."""
     m = str(message or "").strip()
+    g = re.match(r"^proposal (\w+) is (superseded|released|withdrawn); compile a new one$", m)
+    if g:
+        return {"superseded": "This proposal was replaced by a newer one; open the newer proposal from the Proposals page.",
+                "released": "This proposal is already released.",
+                "withdrawn": "This proposal was withdrawn; propose the draft again to review it."}[g.group(2)]
+    g = re.match(r"^proposal #?(\w+) is stale: (.*)$", m)
+    if g:
+        return f"Proposal #{g.group(1)} is out of date: {g.group(2)}."
+    g = re.match(r"^(\S+) is (\w[\w-]*)'s draft: only its author or a policy owner proposes it$", m)
+    if g:
+        return f"{g.group(1)} is {g.group(2)}'s draft; only {g.group(2)} or a policy owner proposes it."
+    g = re.match(r"^proposal #?(\w+) is superseded \(replaced by #(\d+): release that one\)$", m)
+    if g:
+        return f"Proposal #{g.group(1)} was replaced by a newer one, #{g.group(2)}: review and release that one."
+    if m.startswith("the proposal is based on release"):
+        return ("The policy in force changed after this proposal was made, so releasing it would undo that change. Propose the drafts "
+                "again so they are compared with the policy in force.")
     g = re.match(r"^run '(.*)': (\d+) matches$", m)
     if g:
         ident, n = g.group(1), int(g.group(2))
@@ -440,7 +487,7 @@ def track_sentence(ev: dict, link_number=None) -> str:
     if t == "run.failed":
         return f"stopped at {step}: {esc(ev.get('reason', ''))}"
     if t == "run.retried":
-        return f"{by} retried from {step}" + (f": {esc(ev.get('note'))}" if ev.get("note") else "")
+        return f"{by} retried " + (f"from {step}" if ev.get("step") else "the run") + (f": {esc(ev.get('note'))}" if ev.get("note") else "")
     if t == "run.cancelled":
         return f"{by} cancelled the run" + (f": {esc(ev.get('reason'))}" if ev.get("reason") else "")
     if t == "run.resubmitted":
@@ -462,11 +509,21 @@ def notification_sentence(m: dict, link_number=None) -> str:
     """A notification as one sentence with the item named by its number (escaped HTML)."""
     kind = m.get("kind", "")
     subj = humanize(m.get("subject", ""), link_number)
-    body = humanize(short(m.get("body", ""), 400), link_number)
+    full = str(m.get("body", "") or "")
+    head = full
+    if len(full) > 400:  # cut at a word, never mid-word; the rest is one click away
+        cut = full.rfind(" ", 0, 400)
+        head = full[: cut if cut > 200 else 400].rstrip(",;: ") + "…"
+    body = humanize(head, link_number)
+    rest = humanize(full, link_number) if head != full else ""
     lead = {"failure": "Stopped", "returned": "Returned to you", "rejection": "Rejected", "escalation": "Escalated",
-            "auto-decided": "Decided automatically", "approval": "Waiting for you", "request": "Asked of you", "review": "Review posted",
-            "mention": "Mention"}.get(kind, kind.capitalize())
-    return f"<b>{lead}:</b> {subj}" + (f" <span class='muted'>{body}</span>" if body and body != subj else "")
+            "auto-decided": "Decided by a cog", "approval": "Waiting for you", "request": "Asked of you", "review": "Review posted",
+            "mention": "Mention", "agent-run": "A cog finished a task", "cog-task": "A cog could not do a task", "cog-done": "A cog finished",
+            "handed-back": "Handed back to you", "proposal": "Policy proposal"}.get(kind, kind.replace("-", " ").capitalize())
+    out = f"<b>{lead}:</b> {subj}" + (f" <span class='muted'>{body}</span>" if body and body != subj else "")
+    if rest:
+        out += f"<details class='more'><summary>more</summary><span class='muted'>{rest}</span></details>"
+    return out
 
 
 def version_label(meta: dict, releases: list[dict]) -> str:

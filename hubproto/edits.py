@@ -40,14 +40,18 @@ after it (until the next '@@') are its content, written in the markup below.
 @@ insert before: <text of a paragraph or heading>    then the lines to add right before it
 @@ append to section: <heading>          then the lines to add at the end of that section
 @@ replace: <exact text as it is in the document>
-@@ with: <new text>                      (replaces every occurrence inside its paragraph; keeps the formatting)
+@@ with: <new text>                      (replaces EVERY occurrence in the WHOLE document; keeps the formatting)
+@@ in section: <heading>                 (optional, right after a replace or delete: only inside that section)
 @@ replace paragraph: <text from the paragraph>       then the new line(s) for it
 @@ replace section: <heading>            then the new body of the section (the heading stays)
-@@ delete: <exact text>                  (removes it; a whole paragraph's text removes the paragraph)
+@@ delete: <exact text>                  (removes it everywhere; a whole paragraph's text removes the paragraph)
 @@ delete paragraph: <text from the paragraph>
 @@ delete section: <heading>             (the heading and everything under it, up to the next heading of its level)
 @@ rewrite                               then the WHOLE document (only when asked to rewrite all of it)
 Put content on the lines AFTER the '@@' line, never on the same line: the '@@' line holds only the operation and its target.
+To change ONE place, quote a longer phrase that occurs only there, add '@@ in section:', or use replace paragraph.
+Paragraph operations work on paragraphs outside tables and lists; delete paragraph on a table row's or list item's text
+removes that row or item; change words inside a table with a replace.
 Quote text EXACTLY as it appears in the document above (copy it, short but unique). Use the fewest operations that do
 what was asked; never rewrite to make a small change. No explanation, no code fences.
 MARKUP for content lines: '# ', '## ', '### ' headings; a plain line is a paragraph; '- item' bullets; '1. item' numbers;
@@ -131,6 +135,11 @@ def parse_ops(text: str) -> list[dict]:
         m = re.match(r"^\s*@@\s*(.*?)\s*(?:@@)?\s*$", line)
         if m:
             head = m.group(1).strip()
+            sec = re.match(r"(?i)^(?:only )?in (?:the )?section:?\s*(.+)$", head)
+            if sec and ops and ops[-1]["op"] in ("replace", "delete"):
+                ops[-1]["section"] = _unquote(sec.group(1))
+                cur = ops[-1]
+                continue
             w = re.match(r"(?i)^with:?\s*(.*)$", head)
             if w and ops and ops[-1]["op"] == "replace" and ops[-1].get("with") is None:
                 ops[-1]["with"] = _unquote(w.group(1))
@@ -180,6 +189,9 @@ def describe(op: dict) -> str:
                  f"after “{_short(op['after'])}”" if op.get("after") else f"before “{_short(op['before'])}”" if op.get("before") else
                  f"at the end of section “{_short(op['section_end'])}”")
         return f"insert {n} line(s) {where}"
+    if o in ("replace", "delete") and op.get("section"):
+        base = describe({k: v for k, v in op.items() if k != "section"})
+        return f"{base} in section \u201c{_short(op['section'])}\u201d"
     if o == "replace":
         if op.get("with") is None:
             return f"replace “{_short(op['target'])}” (no new text given)"
@@ -210,9 +222,14 @@ def _short(s: str, n: int = 60) -> str:
 _FOLD = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"', " ": " ", "–": "-", "—": "-", " ": " "})
 
 
+def _fold_char(c: str) -> str:
+    f = c.translate(_FOLD).lower()
+    return f if len(f) == 1 else c  # 'İ'.lower() is two characters: keep it as it is, so offsets never shift
+
+
 def fold(s: str) -> str:
-    """Same length as s: curly quotes, dashes and non-breaking spaces made plain, lower case."""
-    return (s or "").translate(_FOLD).lower()
+    """Same length as s, character for character: curly quotes, dashes and non-breaking spaces made plain, lower case."""
+    return "".join(_fold_char(c) for c in (s or ""))
 
 
 def squash(s: str) -> str:
@@ -331,7 +348,7 @@ def _odt_block(raw: str, name: str) -> Block:
     if name == "text:p":
         return Block(raw, "p", 0, _odt_text(raw))
     if name == "text:list":
-        return Block(raw, "p", 0, _odt_text(raw))
+        return Block(raw, "list", 0, _odt_text(raw))
     if name == "table:table":
         rows = re.findall(r"<table:table-row\b.*?</table:table-row>", raw, re.S)
         return Block(raw, "tbl", 0, "\n".join(" | ".join(_odt_text(c) for c in re.findall(r"<table:table-cell\b.*?</table:table-cell>", r, re.S)) for r in rows))
@@ -383,9 +400,16 @@ class TextDoc:
         self.files: dict[str, bytes] = {}
         self.names: list[str] = []
         self.saved: list[str] = []
+        self.bom, self.crlf = False, False
         if ext in ("md", "txt"):
-            text = content.decode("utf-8", "replace")
-            self.blocks = [self._md_block(x) for x in text.split("\n")]
+            if content.startswith(b"\xef\xbb\xbf"):
+                self.bom, content = True, content[3:]
+            try:
+                text = content.decode("utf-8")
+            except UnicodeDecodeError:
+                raise ValueError("the file is not UTF-8 text (an older encoding); save it as UTF-8 first, or change it in the editor") from None
+            self.crlf = text.count("\r\n") > 0 and text.count("\r\n") >= text.count("\n") / 2
+            self.blocks = [self._md_block(x) for x in text.replace("\r\n", "\n").split("\n")]
             return
         z = _zip(content)
         if z is None:
@@ -437,7 +461,38 @@ class TextDoc:
             hi -= 1
         return lo, hi
 
-    def find_block(self, target: str, kinds=("p", "h", "tbl", "other")) -> int | None:
+    def find_inside(self, target: str) -> int | None:
+        """The container block (table, list, section, content control) whose text holds the target."""
+        want = squash(target)
+        lo, hi = self.content_range()
+        for i in range(lo, hi):
+            if self.blocks[i].kind in ("tbl", "list", "other") and want and want in squash(self.blocks[i].text):
+                return i
+        return None
+
+    def remove_row_in(self, i: int, target: str) -> str | None:
+        """Inside a table or a list, remove the one row or list item that holds the target; None when there is none."""
+        b = self.blocks[i]
+        child = {"tbl": ("w:tr" if self.ext == "docx" else "table:table-row"), "list": "text:list-item"}.get(b.kind)
+        if not child:
+            return None
+        open_end = b.raw.find(">") + 1
+        close_start = b.raw.rfind("</")
+        inner = b.raw[open_end:close_start]
+        want = squash(target)
+        spans = [(a, e) for a, e, name in _top_spans(inner) if name == child]
+        texts = [(a, e, squash(_docx_text(inner[a:e]) if self.ext == "docx" else _odt_text(inner[a:e]))) for a, e in spans]
+        hit = next((x for x in texts if x[2] == want), None) or next((x for x in texts if want in x[2]), None)
+        if hit is None:
+            return None
+        a, e, _ = hit
+        removed = Block(inner[a:e], "p")
+        b.raw = b.raw[:open_end] + inner[:a] + inner[e:] + b.raw[close_start:]
+        b.text = _docx_text(b.raw) if self.ext == "docx" else _odt_text(b.raw)
+        self._attach(self._markers([removed]), i + 1)
+        return "table row" if b.kind == "tbl" else "list item"
+
+    def find_block(self, target: str, kinds=("p", "h")) -> int | None:
         want = squash(target)
         if not want:
             return None
@@ -499,12 +554,13 @@ class TextDoc:
     def insert(self, at: int, new: list[Block]) -> None:
         self.blocks[at:at] = new
 
-    def inline_replace(self, target: str, new: str, *, whole_para_removes: bool = False) -> int:
-        """Replace every occurrence of target inside paragraphs (tables too), keeping the runs' formatting."""
+    def inline_replace(self, target: str, new: str, *, whole_para_removes: bool = False, within: tuple[int, int] | None = None) -> int:
+        """Replace every occurrence of target inside paragraphs (tables too), keeping the runs' formatting; ``within``
+        limits it to a range of blocks (one section)."""
         if self.ext in ("md", "txt"):
             count = 0
-            for b in self.blocks:
-                if b.kind == "blank":
+            for idx, b in enumerate(self.blocks):
+                if b.kind == "blank" or (within and not within[0] <= idx < within[1]):
                     continue
                 if whole_para_removes and squash(b.text) == squash(target):
                     b.raw, b.kind, b.text = "", "gone", ""
@@ -525,7 +581,7 @@ class TextDoc:
         lo, hi = self.content_range()
         keep: list[Block] = []
         for idx, b in enumerate(self.blocks):
-            if idx < lo or idx >= hi or b.kind not in ("p", "h", "tbl", "other"):
+            if idx < lo or idx >= hi or b.kind not in ("p", "h", "tbl", "list", "other") or (within and not within[0] <= idx < within[1]):
                 keep.append(b)
                 continue
             if whole_para_removes and b.kind in ("p", "h") and squash(b.text) == squash(target):
@@ -549,7 +605,10 @@ class TextDoc:
     def to_bytes(self) -> bytes:
         if self.ext in ("md", "txt"):
             out = "\n".join(b.raw for b in self.blocks)
-            return (out.rstrip("\n") + "\n").encode("utf-8") if out.strip() else b""
+            out = (out.rstrip("\n") + "\n") if out.strip() else ""
+            if self.crlf:
+                out = out.replace("\n", "\r\n")
+            return (b"\xef\xbb\xbf" if self.bom else b"") + out.encode("utf-8")
         body = "".join(b.raw for b in self.blocks)
         if self.ext == "docx":
             lo, hi = self.content_range()
@@ -620,40 +679,101 @@ def _replace_once(raw: str, segs: list[tuple[int, int, str]], s: int, e: int, ne
     return raw
 
 
+_DOCX_TOKEN = re.compile(r"<w:p(?=[\s>/])[^>]*?/>|<w:p(?=[\s>])[^>]*>|</w:p>|<w:t(?:\s[^>]*)?>(.*?)</w:t>", re.S)
+
+
+def _para_groups(raw: str, ext: str) -> list[list[tuple[int, int, str]]]:
+    """The text pieces of a block grouped by the paragraph that holds each one (a textbox's paragraphs are their
+    own; the outer paragraph's runs after a textbox stay with it). Positions are absolute in raw."""
+    groups: list[list[tuple[int, int, str]]] = []
+    stack: list[int] = []
+    if ext == "docx":
+        for m in _DOCX_TOKEN.finditer(raw):
+            tok = m.group(0)
+            if tok.startswith("<w:t"):
+                if stack:
+                    groups[stack[-1]].append((m.start(1), m.end(1), html.unescape(m.group(1))))
+            elif tok == "</w:p>":
+                if stack:
+                    stack.pop()
+            elif not tok.endswith("/>"):
+                groups.append([])
+                stack.append(len(groups) - 1)
+        return groups
+    pos = 0
+    for m in re.finditer(r"<[^>]+>", raw):
+        if m.start() > pos and stack:
+            groups[stack[-1]].append((pos, m.start(), html.unescape(raw[pos:m.start()])))
+        tag = m.group(0)
+        if re.match(r"<text:[ph](?=[\s>])", tag) and not tag.endswith("/>"):
+            groups.append([])
+            stack.append(len(groups) - 1)
+        elif re.match(r"</text:[ph]>", tag) and stack:
+            stack.pop()
+        pos = m.end()
+    return groups
+
+
 def _replace_in_paragraphs(raw: str, target: str, new: str, ext: str) -> tuple[str, int]:
     """Replace inside every paragraph of a block (a table holds many) without crossing paragraph boundaries."""
-    pat = r"<w:p\b(?:(?!/>)[^>])*>.*?</w:p>" if ext == "docx" else r"<text:(p|h)\b(?:(?!/>)[^>])*>.*?</text:\1>"
-    count = 0
-
-    def one(m):
-        nonlocal count
-        para = m.group(0)
-        start = 0
-        while True:
-            segs = _segments(para, ext)
+    count, gi, start = 0, 0, 0
+    if not target:
+        return raw, 0
+    while True:
+        groups = _para_groups(raw, ext)
+        hit = None
+        while gi < len(groups):
+            segs = groups[gi]
             full = "".join(t for _, _, t in segs)
-            hit = _find(full, target, start)
-            if not hit:
-                return para
-            s0, e0 = hit
-            old = full[s0:e0]
-            # Change only the part that differs (replacing "suppliers shall be" with "suppliers must be" touches the
-            # word shall alone), so the runs around it keep their own formatting.
-            p = 0
-            while p < min(len(old), len(new)) and old[p] == new[p]:
-                p += 1
-            q = 0
-            while q < min(len(old), len(new)) - p and old[len(old) - 1 - q] == new[len(new) - 1 - q]:
-                q += 1
-            para = _replace_once(para, segs, s0 + p, e0 - q, new[p:len(new) - q], ext)
-            count += 1
-            start = s0 + len(new)
-            if not target:
-                return para
-    return re.sub(pat, one, raw, flags=re.S), count
+            h = _find(full, target, start)
+            if h:
+                hit = (segs, full, h)
+                break
+            gi, start = gi + 1, 0
+        if hit is None:
+            return raw, count
+        segs, full, (s0, e0) = hit
+        old = full[s0:e0]
+        # Change only the part that differs (replacing "suppliers shall be" with "suppliers must be" touches the
+        # word shall alone), so the runs around it keep their own formatting.
+        p = 0
+        while p < min(len(old), len(new)) and old[p] == new[p]:
+            p += 1
+        q = 0
+        while q < min(len(old), len(new)) - p and old[len(old) - 1 - q] == new[len(new) - 1 - q]:
+            q += 1
+        raw = _replace_once(raw, segs, s0 + p, e0 - q, new[p:len(new) - q], ext)
+        count += 1
+        start = s0 + len(new)
 
 
 # ---------------------------------------------------------------- applying to a text document
+_PROTECTED = re.compile(r"<w:(?:ins|del|moveFrom|moveTo)[\s>]|w:footnoteReference|w:endnoteReference|<w:fldChar|<w:fldSimple|<text:note[\s>]|"
+                        r"<text:(?:changed-region|change-start|change-end|change)[\s>/]")
+_KIND_WORDS = {"tbl": "a table", "list": "a list", "other": "a section or content control"}
+
+
+def _protected(blocks: list[Block]) -> str:
+    """Why these blocks must not be replaced or removed wholesale: pending tracked changes, footnotes or fields would be
+    accepted or orphaned silently. Empty when they may."""
+    raw = "".join(b.raw for b in blocks)
+    m = _PROTECTED.search(raw)
+    if not m:
+        return ""
+    t = m.group(0)
+    what = ("tracked changes" if ("ins" in t or "del" in t or "move" in t or "change" in t) else
+            "a footnote or endnote" if ("note" in t.lower()) else "a field")
+    return f"it holds {what}; accept or remove them in the editor first, or change the words with a replace"
+
+
+def _not_found(doc: TextDoc, target: str, what: str) -> tuple[bool, str]:
+    i = doc.find_inside(target)
+    if i is not None:
+        return False, (f"“{_short(target)}” is inside {_KIND_WORDS.get(doc.blocks[i].kind, 'a container')}; "
+                       f"{what} works on whole paragraphs outside it (use a replace for words inside it)")
+    return False, f"could not find a paragraph with “{_short(target)}”"
+
+
 def _apply_text(doc: TextDoc, op: dict) -> tuple[bool, str]:
     o = op["op"]
     lines = op.get("lines") or []
@@ -668,16 +788,12 @@ def _apply_text(doc: TextDoc, op: dict) -> tuple[bool, str]:
             at = hi
             if doc.ext == "docx" and hi - lo == 1 and doc.blocks[lo].kind == "p" and not doc.blocks[lo].text:
                 at = lo  # an empty document: write into it rather than after its empty paragraph
-        elif op.get("after") is not None:
-            i = doc.find_block(op["after"])
+        elif op.get("after") is not None or op.get("before") is not None:
+            target = op["after"] if op.get("after") is not None else op["before"]
+            i = doc.find_block(target)
             if i is None:
-                return False, f"could not find “{_short(op['after'])}” to insert after"
-            at = i + 1
-        elif op.get("before") is not None:
-            i = doc.find_block(op["before"])
-            if i is None:
-                return False, f"could not find “{_short(op['before'])}” to insert before"
-            at = i
+                return _not_found(doc, target, "insert after/before")
+            at = i + 1 if op.get("after") is not None else i
         else:
             i = doc.find_heading(op["section_end"])
             if i is None:
@@ -692,14 +808,33 @@ def _apply_text(doc: TextDoc, op: dict) -> tuple[bool, str]:
         repl = "" if o == "delete" else (op.get("with") if op.get("with") is not None else None)
         if repl is None:
             return False, "no replacement text given (“@@ with: …”)"
-        n = doc.inline_replace(target, repl, whole_para_removes=(repl == ""))
+        within = None
+        if op.get("section"):
+            h = doc.find_heading(op["section"])
+            if h is None:
+                return False, f"no section headed “{_short(op['section'])}”"
+            within = (h, doc.section_end(h))
+        n = doc.inline_replace(target, repl, whole_para_removes=(repl == ""), within=within)
+        where = f" in section “{_short(op['section'])}”" if within else " in the whole document"
         if not n:
-            return False, f"could not find “{_short(target)}”"
-        return True, (f"removed it ({n} place(s))" if repl == "" else f"replaced {n} occurrence(s)")
+            return False, f"could not find “{_short(target)}”{where if within else ''}"
+        return True, (f"removed it ({n} place(s){where})" if repl == "" else f"replaced {n} occurrence(s){where}")
     if o in ("delete_paragraph", "replace_paragraph"):
         i = doc.find_block(op["target"])
         if i is None:
-            return False, f"could not find a paragraph with “{_short(op['target'])}”"
+            if o == "delete_paragraph":
+                c = doc.find_inside(op["target"])
+                if c is not None:
+                    why = _protected([doc.blocks[c]])
+                    if why:
+                        return False, why
+                    what = doc.remove_row_in(c, op["target"])
+                    if what:
+                        return True, f"deleted the {what} with “{_short(op['target'])}”"
+            return _not_found(doc, op["target"], "delete or replace paragraph")
+        why = _protected([doc.blocks[i]])
+        if why:
+            return False, why
         if o == "replace_paragraph":
             if not lines:
                 return False, "no new text for the paragraph"
@@ -717,6 +852,9 @@ def _apply_text(doc: TextDoc, op: dict) -> tuple[bool, str]:
         if i is None:
             return False, f"no section headed “{_short(op['target'])}”"
         j = doc.section_end(i)
+        why = _protected(doc.blocks[i:j] if o == "delete_section" else doc.blocks[i + 1:j])
+        if why:
+            return False, why
         if o == "delete_section":
             doc.remove(i, j)
             return True, f"deleted the section ({j - i} block(s))"
@@ -734,6 +872,9 @@ def _apply_text(doc: TextDoc, op: dict) -> tuple[bool, str]:
         if not lines:
             return False, "nothing to write"
         lo, hi = doc.content_range()
+        why = _protected(doc.blocks[lo:hi])
+        if why:
+            return False, why
         markers = doc._markers(doc.blocks[lo:hi])
         del doc.blocks[lo:hi]
         doc.insert(lo, doc.new_blocks(lines))
@@ -760,8 +901,28 @@ def _range(rng: str) -> tuple[int, int, int, int]:
     return min(r1, r2), min(c1, c2), max(r1, r2), max(c1, c2)
 
 
+MAX_ROWS = 100_000   # an edit never reaches past these: a cog's typo must not allocate a million rows
+MAX_COLS = 16_384
+
+
+def _xlsx_first_sheet(files: dict[str, bytes]) -> str:
+    """The workbook's first sheet (its order in workbook.xml, resolved through the relationships)."""
+    wb = files.get("xl/workbook.xml", b"").decode("utf-8", "replace")
+    m = re.search(r'<(?:\w+:)?sheet\b[^>]*\s\w+:id="([^"]+)"', wb)
+    rels = files.get("xl/_rels/workbook.xml.rels", b"").decode("utf-8", "replace")
+    if m and rels:
+        r = re.search(r'<(?:\w+:)?Relationship\b[^>]*\bId="' + re.escape(m.group(1)) + r'"[^>]*\bTarget="([^"]+)"', rels) or \
+            re.search(r'<(?:\w+:)?Relationship\b[^>]*\bTarget="([^"]+)"[^>]*\bId="' + re.escape(m.group(1)) + '"', rels)
+        if r:
+            t = r.group(1)
+            return t.lstrip("/") if t.startswith("/") else "xl/" + t.replace("./", "")
+    return "xl/worksheets/sheet1.xml"
+
+
 class Sheet:
-    """The first sheet as {row: {col: cell xml}} (xlsx) or a list of expanded rows (ods)."""
+    """The first sheet. xlsx: {row: {col: cell xml}}, with the file's own namespace prefix. ods: the rows as runs
+    [row xml, count] in file order (a repeat of empty rows stays one run), after the header rows, which are counted
+    but not edited."""
 
     def __init__(self, content: bytes, ext: str):
         self.ext = ext
@@ -771,24 +932,42 @@ class Sheet:
         self.names = z.namelist()
         self.files = {n: z.read(n) for n in self.names}
         self.has_formulas = False
+        self.shared_formulas = False
+        self.merges = False
         if ext == "xlsx":
-            if "xl/worksheets/sheet1.xml" not in self.files:
+            self.part = _xlsx_first_sheet(self.files)
+            if self.part not in self.files:
                 raise ValueError("no first sheet")
-            self.xml = self.files["xl/worksheets/sheet1.xml"].decode("utf-8")
+            self.xml = self.files[self.part].decode("utf-8")
+            pm = re.search(r"<(\w+:)?worksheet\b", self.xml)
+            self.px = px = (pm.group(1) or "") if pm else ""
             self.shared = []
             if "xl/sharedStrings.xml" in self.files:
                 ss = self.files["xl/sharedStrings.xml"].decode("utf-8")
-                self.shared = [html.unescape("".join(re.findall(r"<t(?:\s[^>]*)?>(.*?)</t>", si, re.S))) for si in re.findall(r"<si>(.*?)</si>", ss, re.S)]
-            m = re.search(r"<sheetData\s*/>|<sheetData>(.*?)</sheetData>", self.xml, re.S)
+                self.shared = [html.unescape("".join(re.findall(r"<(?:\w+:)?t(?:\s[^>]*)?>(.*?)</(?:\w+:)?t>", si, re.S)))
+                               for si in re.findall(r"<(?:\w+:)?si>(.*?)</(?:\w+:)?si>", ss, re.S)]
+            self.merges = bool(re.search(rf"<{px}mergeCell\b", self.xml))
+            m = re.search(rf"<{px}sheetData\s*/>|<{px}sheetData>(.*?)</{px}sheetData>", self.xml, re.S)
             self.rows: dict[int, dict] = {}
-            for rm in re.finditer(r"<row\b([^>]*?)(?:/>|>(.*?)</row>)", (m.group(1) or "") if m else "", re.S):
+            prev_r = 0
+            for rm in re.finditer(rf"<{px}row\b([^>]*?)(?:/>|>(.*?)</{px}row>)", (m.group(1) or "") if m else "", re.S):
                 attrs, body = rm.group(1), rm.group(2) or ""
-                rn = int(re.search(r'\br="(\d+)"', attrs).group(1))
-                cells = {}
-                for cm in re.finditer(r"<c\b([^>]*?)(?:/>|>(.*?)</c>)", body, re.S):
-                    ref = re.search(r'\br="([A-Z]+\d+)"', cm.group(1)).group(1)
-                    cells[_cell_ref(ref)[1]] = cm.group(0)
-                    self.has_formulas |= "<f" in (cm.group(2) or "")
+                rr = re.search(r'\br="(\d+)"', attrs)
+                rn = int(rr.group(1)) if rr else prev_r + 1   # 'r' is optional: rows follow on
+                prev_r = rn
+                cells, prev_c = {}, -1
+                for cm in re.finditer(rf"<{px}c\b([^>]*?)(?:/>|>(.*?)</{px}c>)", body, re.S):
+                    raw = cm.group(0)
+                    ref = re.search(r'\br="([A-Z]+)(\d+)"', cm.group(1))
+                    col = _cell_ref(ref.group(1) + ref.group(2))[1] if ref else prev_c + 1
+                    prev_c = col
+                    if not ref:
+                        raw = re.sub(rf"^<{px}c\b", f'<{px}c r="{_col(col)}{rn}"', raw, count=1)
+                    cells[col] = raw
+                    f = re.search(rf"<{px}f\b[^>]*", raw)
+                    if f:
+                        self.has_formulas = True
+                        self.shared_formulas |= 't="shared"' in f.group(0)
                 self.rows[rn] = {"attrs": re.sub(r'\s*\br="\d+"', "", attrs), "cells": cells}
         elif ext == "ods":
             xml = self.files["content.xml"].decode("utf-8")
@@ -800,71 +979,132 @@ class Sheet:
             open_tag = re.match(r"<table:table\b[^>]*>", table).group(0)
             inner = table[len(open_tag):-len("</table:table>")]
             self.open_tag = open_tag
-            self.pre, self.ods_rows, self.tail = [], [], ""
+            self.pre, self.header, self.post, self.runs = [], "", [], []
+            self.header_count = 0
             for a, b, name in _top_spans(inner):
                 raw = inner[a:b]
                 if name == "table:table-row":
+                    if self.post:
+                        raise ValueError("rows after other content in the sheet: change it in the editor")
                     rep = re.search(r'table:number-rows-repeated="(\d+)"', raw[: raw.find(">") + 1])
-                    n = int(rep.group(1)) if rep else 1
-                    if n > 2000:
-                        self.tail += raw
-                        continue
                     one = re.sub(r'\s*table:number-rows-repeated="\d+"', "", raw, count=1)
-                    self.ods_rows += [one] * n
+                    self.runs.append([one, int(rep.group(1)) if rep else 1])
                     self.has_formulas |= "table:formula" in raw
-                elif self.ods_rows or self.tail:
-                    self.tail += raw
+                elif name == "table:table-header-rows":
+                    self.header = raw
+                    for _, _, rows_raw in [(0, 0, raw)]:
+                        for rmatch in re.finditer(r"<table:table-row\b([^>]*)", rows_raw):
+                            rep = re.search(r'table:number-rows-repeated="(\d+)"', rmatch.group(1))
+                            self.header_count += int(rep.group(1)) if rep else 1
+                elif name in ("table:table-row-group", "table:table-rows"):
+                    raise ValueError("grouped rows in the sheet: change it in the editor")
+                elif self.runs or self.header:
+                    self.post.append(raw)
                 else:
                     self.pre.append(raw)
         else:
             raise ValueError(f"cannot edit .{ext} sheets")
 
-    # xlsx helpers
+    # -- xlsx
     def _xlsx_text(self, cell: str) -> str:
+        px = self.px
         if 't="s"' in cell:
-            v = re.search(r"<v>(\d+)</v>", cell)
+            v = re.search(rf"<{px}v>(\d+)</{px}v>", cell)
             return self.shared[int(v.group(1))] if v and int(v.group(1)) < len(self.shared) else ""
         if 't="inlineStr"' in cell:
-            return html.unescape("".join(re.findall(r"<t(?:\s[^>]*)?>(.*?)</t>", cell, re.S)))
-        v = re.search(r"<v>(.*?)</v>", cell, re.S)
+            return html.unescape("".join(re.findall(rf"<{px}t(?:\s[^>]*)?>(.*?)</{px}t>", cell, re.S)))
+        v = re.search(rf"<{px}v>(.*?)</{px}v>", cell, re.S)
         return html.unescape(v.group(1)) if v else ""
 
-    @staticmethod
-    def _xlsx_cell(ref: str, value: str, style: str = "") -> str:
+    def _xlsx_cell(self, ref: str, value: str, style: str = "") -> str:
+        px = self.px
         v = (value or "").strip()
         s = f' s="{style}"' if style else ""
         if v.startswith("=") and len(v) > 1:
-            return f'<c r="{ref}"{s}><f>{_escape(v[1:])}</f></c>'
+            return f'<{px}c r="{ref}"{s}><{px}f>{_escape(v[1:])}</{px}f></{px}c>'
         if re.fullmatch(r"-?\d+(\.\d+)?", v):
-            return f'<c r="{ref}"{s}><v>{v}</v></c>'
-        return f'<c r="{ref}"{s} t="inlineStr"><is><t xml:space="preserve">{_escape(v)}</t></is></c>'
+            return f'<{px}c r="{ref}"{s}><{px}v>{v}</{px}v></{px}c>'
+        return f'<{px}c r="{ref}"{s} t="inlineStr"><{px}is><{px}t xml:space="preserve">{_escape(v)}</{px}t></{px}is></{px}c>'
 
+    # -- ods
     @staticmethod
-    def _ods_cell(value: str) -> str:
+    def _ods_cell(value: str, keep_attrs: str = "", keep_inner: str = "") -> str:
         v = (value or "").strip()
         if v.startswith("=") and len(v) > 1:
-            return f'<table:table-cell table:formula="of:{_escape(v)}" office:value-type="float" office:value="0"><text:p>0</text:p></table:table-cell>'
+            return f'<table:table-cell{keep_attrs} table:formula="of:{_escape(v)}" office:value-type="float" office:value="0">{keep_inner}<text:p>0</text:p></table:table-cell>'
         if re.fullmatch(r"-?\d+(\.\d+)?", v):
-            return f'<table:table-cell office:value-type="float" office:value="{v}"><text:p>{v}</text:p></table:table-cell>'
+            return f'<table:table-cell{keep_attrs} office:value-type="float" office:value="{v}">{keep_inner}<text:p>{v}</text:p></table:table-cell>'
         if not v:
-            return "<table:table-cell/>"
-        return f'<table:table-cell office:value-type="string"><text:p>{_escape(v)}</text:p></table:table-cell>'
+            return f"<table:table-cell{keep_attrs}>{keep_inner}</table:table-cell>" if (keep_attrs or keep_inner) else "<table:table-cell/>"
+        return f'<table:table-cell{keep_attrs} office:value-type="string">{keep_inner}<text:p>{_escape(v)}</text:p></table:table-cell>'
+
+    @staticmethod
+    def _ods_keep(old: str) -> tuple[str, str]:
+        """The parts of a cell an edit keeps: its style and validation, and its comments (office:annotation)."""
+        attrs = "".join(f' {m.group(0)}' for m in re.finditer(r'table:(?:style-name|content-validation-name)="[^"]*"', old[: old.find(">") + 1]))
+        inner = "".join(re.findall(r"<office:annotation\b.*?</office:annotation>|<office:annotation-end\b[^>]*/>", old, re.S))
+        return attrs, inner
+
+    @staticmethod
+    def _ods_cell_text(cell: str) -> str:
+        cell = re.sub(r"<office:annotation\b.*?</office:annotation>", "", cell, flags=re.S)
+        return _odt_text(cell) or (re.search(r'office:value="([^"]*)"', cell) or [None, ""])[1]
 
     @staticmethod
     def _ods_cells(row: str) -> tuple[str, list[str], str]:
-        """(row open tag, expanded cells, close) of an ods row; a huge trailing repeat stays one empty cell."""
+        """(row open tag, expanded cells, close); only a trailing repeat of empty cells may stay unexpanded (dropped)."""
         open_tag = re.match(r"<table:table-row\b[^>]*?/?>", row).group(0)
         if open_tag.endswith("/>"):
             return open_tag[:-2] + ">", [], "</table:table-row>"
         inner = row[len(open_tag):-len("</table:table-row>")]
+        spans = _top_spans(inner)
         cells = []
-        for a, b, _ in _top_spans(inner):
+        for k, (a, b, _) in enumerate(spans):
             raw = inner[a:b]
             rep = re.search(r'table:number-columns-repeated="(\d+)"', raw[: raw.find(">") + 1])
             n = int(rep.group(1)) if rep else 1
             one = re.sub(r'\s*table:number-columns-repeated="\d+"', "", raw, count=1)
-            cells += [one] * min(n, 200)
+            if n > 1024:
+                if k == len(spans) - 1 and not Sheet._ods_cell_text(one):
+                    break  # trailing empty columns
+                raise ValueError("a very wide repeated cell in the middle of a row: change it in the editor")
+            cells += [one] * n
         return open_tag, cells, "</table:table-row>"
+
+    def _split(self, idx: int) -> int:
+        """Make data row idx (1-based, after the header rows) a run of its own; extend with empty rows as needed."""
+        if idx > MAX_ROWS:
+            raise ValueError(f"row {idx + self.header_count} is beyond the {MAX_ROWS:,} rows an edit may reach")
+        pos = 0
+        for k, (raw, n) in enumerate(self.runs):
+            if pos < idx <= pos + n:
+                off = idx - pos - 1
+                parts = ([[raw, off]] if off else []) + [[raw, 1]] + ([[raw, n - off - 1]] if n - off - 1 else [])
+                self.runs[k:k + 1] = parts
+                return k + (1 if off else 0)
+            pos += n
+        if idx - pos - 1 > 0:
+            self.runs.append(["<table:table-row><table:table-cell/></table:table-row>", idx - pos - 1])
+        self.runs.append(["<table:table-row><table:table-cell/></table:table-row>", 1])
+        return len(self.runs) - 1
+
+    # -- both
+    def is_formula(self, rn: int, c: int) -> str:
+        """'' when the cell holds no formula; otherwise 'formula' or 'shared formula'."""
+        if self.ext == "xlsx":
+            raw = (self.rows.get(rn) or {}).get("cells", {}).get(c, "")
+            f = re.search(rf"<{self.px}f\b[^>]*", raw)
+            return "" if not f else ("shared formula" if 't="shared"' in f.group(0) else "formula")
+        cells = self._cells_at(rn)
+        return "formula" if c < len(cells) and "table:formula" in cells[c] else ""
+
+    def _cells_at(self, rn: int) -> list[str]:
+        idx, pos = rn - self.header_count, 0
+        for raw, n in self.runs:
+            if pos < idx <= pos + n:
+                return self._ods_cells(raw)[1]
+            pos += n
+        return []
 
     def grid(self) -> dict[tuple[int, int], str]:
         out = {}
@@ -874,17 +1114,34 @@ class Sheet:
                     t = self._xlsx_text(cell)
                     if t != "":
                         out[(rn, c)] = t
-        else:
-            for i, row in enumerate(self.ods_rows):
-                _, cells, _ = self._ods_cells(row)
-                for c, cell in enumerate(cells):
-                    t = _odt_text(cell) or (re.search(r'office:value="([^"]*)"', cell) or [None, ""])[1]
-                    if t:
-                        out[(i + 1, c)] = t
+            return out
+        for k, rraw in enumerate(re.findall(r"<table:table-row\b.*?</table:table-row>|<table:table-row\b[^>]*/>", self.header, re.S)):
+            for c, cell in enumerate(self._ods_cells(rraw)[1]):
+                t = self._ods_cell_text(cell)
+                if t:
+                    out[(k + 1, c)] = t
+        pos = self.header_count
+        for raw, n in self.runs:
+            cells = self._ods_cells(raw)[1]
+            texts = [(c, self._ods_cell_text(cell)) for c, cell in enumerate(cells)]
+            if any(t for _, t in texts):
+                for i in range(min(n, 1000)):
+                    for c, t in texts:
+                        if t:
+                            out[(pos + i + 1, c)] = t
+            pos += n
         return out
 
     def set(self, rn: int, c: int, value: str) -> None:
+        if rn < 1 or rn > MAX_ROWS or c < 0 or c >= MAX_COLS:
+            raise ValueError(f"{_col(max(c, 0))}{rn} is outside the {MAX_ROWS:,} rows and {MAX_COLS:,} columns an edit may reach")
         ref = f"{_col(c)}{rn}"
+        kind = self.is_formula(rn, c)
+        v = (value or "").strip()
+        if kind == "shared formula":
+            raise ValueError(f"{ref} is part of a shared formula; change it in the editor")
+        if kind and not v.startswith("="):
+            raise ValueError(f"{ref} holds a formula; write a formula ('=…') to change it, or change it in the editor")
         if self.ext == "xlsx":
             row = self.rows.setdefault(rn, {"attrs": "", "cells": {}})
             old = row["cells"].get(c, "")
@@ -894,24 +1151,36 @@ class Sheet:
             else:
                 row["cells"][c] = self._xlsx_cell(ref, value, style)
             return
-        while len(self.ods_rows) < rn:
-            self.ods_rows.append("<table:table-row><table:table-cell/></table:table-row>")
-        open_tag, cells, close = self._ods_cells(self.ods_rows[rn - 1])
+        if rn <= self.header_count:
+            raise ValueError(f"row {rn} is a header row of the sheet; change it in the editor")
+        k = self._split(rn - self.header_count)
+        open_tag, cells, close = self._ods_cells(self.runs[k][0])
         while len(cells) <= c:
             cells.append("<table:table-cell/>")
-        cells[c] = self._ods_cell(value)
-        while len(cells) > 1 and cells[-1] in ("<table:table-cell/>",):
+        attrs, inner = self._ods_keep(cells[c])
+        cells[c] = self._ods_cell(value, attrs, inner)
+        while len(cells) > 1 and cells[-1] == "<table:table-cell/>":
             cells.pop()
-        self.ods_rows[rn - 1] = open_tag + "".join(cells) + close
+        self.runs[k][0] = open_tag + "".join(cells) + close
 
     def last_row(self) -> int:
         if self.ext == "xlsx":
             used = [rn for rn, r in self.rows.items() if r["cells"]]
             return max(used) if used else 0
-        used = [i + 1 for i, r in enumerate(self.ods_rows) if "<text:p" in r or "office:value=" in r]
-        return max(used) if used else 0
+        last, pos = self.header_count if self.header else 0, self.header_count
+        for raw, n in self.runs:
+            if any(self._ods_cell_text(cell) for cell in self._ods_cells(raw)[1]):
+                last = pos + n
+            pos += n
+        return last
+
+    def _check_moves(self) -> None:
+        if self.shared_formulas or self.merges:
+            raise ValueError("the sheet has " + ("shared formulas" if self.shared_formulas else "merged cells") +
+                             "; moving rows would break them, so change the rows in the editor")
 
     def delete_rows(self, a: int, b: int) -> int:
+        self._check_moves()
         k = b - a + 1
         if self.ext == "xlsx":
             gone = sum(1 for rn in self.rows if a <= rn <= b)
@@ -925,13 +1194,24 @@ class Sheet:
                 new[nr] = row
             self.rows = new
             return gone
-        gone = len(self.ods_rows[a - 1:b])
-        del self.ods_rows[a - 1:b]
+        if a <= self.header_count:
+            raise ValueError("those rows include the sheet's header rows; change them in the editor")
+        total = sum(n for _, n in self.runs)
+        a, b = a - self.header_count, min(b - self.header_count, total)
+        if a > total:
+            return 0
+        first = self._split(a)
+        last = self._split(b)
+        gone = sum(n for _, n in self.runs[first:last + 1])
+        del self.runs[first:last + 1]
         return gone
 
     def insert_rows(self, at: int, rows: list[list[str]]) -> None:
-        k = len(rows)
+        self._check_moves()
+        if at < 1 or at + len(rows) > MAX_ROWS:
+            raise ValueError(f"row {at} is outside the {MAX_ROWS:,} rows an edit may reach")
         if self.ext == "xlsx":
+            k = len(rows)
             new = {}
             for rn, row in sorted(self.rows.items()):
                 nr = rn + k if rn >= at else rn
@@ -943,20 +1223,30 @@ class Sheet:
                 for c, v in enumerate(cells):
                     self.set(at + i, c, v)
             return
-        while len(self.ods_rows) < at - 1:
-            self.ods_rows.append("<table:table-row><table:table-cell/></table:table-row>")
-        block = ["<table:table-row>" + "".join(self._ods_cell(v) for v in cells) + "</table:table-row>" for cells in rows]
-        self.ods_rows[at - 1:at - 1] = block
+        if at <= self.header_count:
+            raise ValueError("rows cannot go above the sheet's header rows")
+        idx = at - self.header_count
+        total = sum(n for _, n in self.runs)
+        k = self._split(idx) if idx <= total else len(self.runs) if idx == total + 1 else self._split(idx - 1) + 1
+        block = [["<table:table-row>" + "".join(self._ods_cell(v) for v in cells) + "</table:table-row>", 1] for cells in rows]
+        self.runs[k:k] = block
 
     def to_bytes(self) -> bytes:
         if self.ext == "xlsx":
-            rows = "".join(f'<row r="{rn}"{row["attrs"]}>' + "".join(row["cells"][c] for c in sorted(row["cells"])) + "</row>"
+            px = self.px
+            rows = "".join(f'<{px}row r="{rn}"{row["attrs"]}>' + "".join(row["cells"][c] for c in sorted(row["cells"])) + f"</{px}row>"
                            for rn, row in sorted(self.rows.items()) if row["cells"] or row["attrs"].strip())
-            xml = re.sub(r"<sheetData\s*/>|<sheetData>.*?</sheetData>", lambda m: f"<sheetData>{rows}</sheetData>", self.xml, count=1, flags=re.S)
-            xml = re.sub(r"<dimension\b[^>]*/>", "", xml, count=1)
-            self.files["xl/worksheets/sheet1.xml"] = xml.encode("utf-8")
+            xml = re.sub(rf"<{px}sheetData\s*/>|<{px}sheetData>.*?</{px}sheetData>", lambda m: f"<{px}sheetData>{rows}</{px}sheetData>",
+                         self.xml, count=1, flags=re.S)
+            xml = re.sub(rf"<{px}dimension\b[^>]*/>", "", xml, count=1)
+            self.files[self.part] = xml.encode("utf-8")
         else:
-            table = self.open_tag + "".join(self.pre) + "".join(self.ods_rows) + self.tail + "</table:table>"
+            def run_xml(raw: str, n: int) -> str:
+                if n == 1:
+                    return raw
+                return re.sub(r"^<table:table-row\b", f'<table:table-row table:number-rows-repeated="{n}"', raw, count=1)
+            table = self.open_tag + "".join(self.pre) + self.header + "".join(run_xml(r, n) for r, n in self.runs if n > 0) + \
+                "".join(self.post) + "</table:table>"
             a, b = self.span
             self.files["content.xml"] = (self.xml[:a] + table + self.xml[b:]).encode("utf-8")
         return _rezip(self.names, self.files)
@@ -969,7 +1259,8 @@ def _apply_sheet(sheet: Sheet, op: dict) -> tuple[bool, str]:
         if not rows:
             return False, "no rows given"
         if o == "insert" and op.get("at") == "start":
-            sheet.insert_rows(1, rows)
+            first = sheet.header_count + 1 if sheet.ext == "ods" else 1
+            sheet.insert_rows(first, rows)
             return True, f"inserted {len(rows)} row(s) at the top"
         start = sheet.last_row() + 1
         for i, cells in enumerate(rows):
@@ -988,14 +1279,16 @@ def _apply_sheet(sheet: Sheet, op: dict) -> tuple[bool, str]:
         return True, f"set {op['cell']}"
     if o == "clear":
         r1, c1, r2, c2 = _range(op["range"])
-        n = 0
-        grid = sheet.grid()
-        for r in range(r1, r2 + 1):
-            for c in range(c1, c2 + 1):
-                if (r, c) in grid:
-                    sheet.set(r, c, "")
-                    n += 1
-        return True, f"cleared {n} cell(s)"
+        if r2 > MAX_ROWS or c2 >= MAX_COLS:
+            return False, "that range is outside what an edit may reach"
+        n, skipped = 0, 0
+        for (r, c) in sorted(k for k in sheet.grid() if r1 <= k[0] <= r2 and c1 <= k[1] <= c2):
+            if sheet.is_formula(r, c):
+                skipped += 1
+                continue
+            sheet.set(r, c, "")
+            n += 1
+        return True, f"cleared {n} cell(s)" + (f"; left {skipped} formula cell(s)" if skipped else "")
     if o == "delete_rows":
         a, b = sorted((int(op["from"]), int(op["to"])))
         n = sheet.delete_rows(a, b)
@@ -1004,13 +1297,18 @@ def _apply_sheet(sheet: Sheet, op: dict) -> tuple[bool, str]:
         target, new = op.get("target") or "", ("" if o == "delete" else op.get("with"))
         if new is None:
             return False, "no replacement text given (“@@ with: …”)"
-        n = 0
+        n, skipped = 0, 0
         for (r, c), t in sheet.grid().items():
             hit = _find(t, target)
-            if hit:
-                sheet.set(r, c, re.sub(re.escape(t[hit[0]:hit[1]]), lambda m: new, t))
-                n += 1
-        return (n > 0), (f"changed {n} cell(s)" if n else f"could not find “{_short(target)}” in any cell")
+            if not hit:
+                continue
+            if sheet.is_formula(r, c):  # a formula's shown value is a result, never text to rewrite
+                skipped += 1
+                continue
+            sheet.set(r, c, t[: hit[0]] + new + t[hit[1]:])
+            n += 1
+        note = f"; left {skipped} formula cell(s) unchanged" if skipped else ""
+        return (n > 0), (f"changed {n} cell(s){note}" if n else f"could not find “{_short(target)}” in any cell{note}")
     return False, f"{describe(op)} cannot be done in a spreadsheet"
 
 
@@ -1026,7 +1324,7 @@ def apply_ops(content: bytes, ext: str, ops: list[dict]) -> tuple[bytes | None, 
             return None, []
         try:
             target = Sheet(content, ext)
-        except ValueError as e:
+        except Exception as e:
             return None, [{"op": describe(o), "ok": False, "detail": str(e)} for o in ops]
         apply = _apply_sheet
     else:
@@ -1034,7 +1332,7 @@ def apply_ops(content: bytes, ext: str, ops: list[dict]) -> tuple[bytes | None, 
             return None, [{"op": describe(o), "ok": False, "detail": f"cannot edit .{ext} files"} for o in ops]
         try:
             target = TextDoc(content, ext)
-        except ValueError as e:
+        except Exception as e:
             return None, [{"op": describe(o), "ok": False, "detail": str(e)} for o in ops]
         apply = _apply_text
     changed = False

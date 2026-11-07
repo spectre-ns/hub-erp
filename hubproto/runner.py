@@ -31,11 +31,19 @@ from .kernel import Kernel, KernelGuardError, ScopedKernel
 from .release import ReleaseStore, utcnow
 from .routing import candidates, principals_for
 from .rules import sha256_of
-from .track import Track
+from .track import Track, hub_secret, sign, verify_signature
 
 FIELD_ROLES = {"assignee": "assignee", "owner": "owner", "author": "author", "requester": "requested_by",
                "auditor": "auditor", "chair": "chair", "evaluator": "evaluator", "reporter": "reported_by"}
 LIVE_STATUSES = ("submitted", "running", "waiting", "completed")
+OPEN_RUN = ("submitted", "running", "waiting")
+# Words in a segregation-of-duties sentence that name the deciding side, not a person to keep out.
+DECIDER_WORDS = {"approver", "reviewer", "verifier", "decider", "signer", "countersigner"}
+SOD_FIELDS = {**{k: v for k, v in {"assignee": "assignee", "owner": "owner", "author": "author", "requester": "requested_by",
+                                    "auditor": "auditor", "chair": "chair", "evaluator": "evaluator", "reporter": "reported_by"}.items()},
+              "designer": "designer", "preparer": "owner", "filer": "filed_by", "captured-by": "captured_by", "raiser": "raised_by"}
+
+
 def pending_title(step: dict) -> str:
     return (step.get("gate") or {}).get("title") or step.get("title") or "Approval"
 
@@ -72,7 +80,9 @@ class Runner:
         self.registry = registry
         self.inbox = inbox
         self.dms = dms
+        self.state_dir = self.root.parent  # <hub>/state: the signing secret lives there
         self.frames_store = None  # set by the Hub: the SOP texts a context cog reads
+        self.frames_for_release = None  # set by the Hub: the SOP texts as a given release pinned them
         self.model = None  # set by the Hub: the model gateway context cogs draft with
 
     # ------------------------------------------------------------ persistence
@@ -84,6 +94,11 @@ class Runner:
         if len(matches) != 1:
             raise RunError(f"run {run_id!r}: {len(matches)} matches")
         state = json.loads((matches[0] / "state.json").read_text())
+        # The Track is the source of truth: a crash between writing it and saving the state cannot leave a Gate that
+        # looks open after it was decided (see reconcile).
+        tracked = Track(matches[0]).status()
+        if tracked not in ("unknown", state.get("status")):
+            state["status"] = tracked
         if state.get("pending") and state["pending"].get("kind") == "decision":
             state["seen_digest"] = self.seen_digest(state)
         return state
@@ -98,10 +113,36 @@ class Runner:
             if rec:
                 seen["fields"] = rec["fields"]
                 seen["state"] = rec["state"]
-                seen["links"] = sorted((l["rel"], l["target"]) for l in rec["links"])
-                docs = self.dms.documents_of(rec["locator"]) if self.dms else []
-                seen["documents"] = sorted((d["locator"], str(d["fields"].get("content_sha") or ""), str(d["fields"].get("revision") or "")) for d in docs)
+                seen.update(self._content_of(rec))
         return sha256_of(seen)[:16]
+
+    def _content_of(self, rec: dict) -> dict:
+        """Links and attached documents as a signer sees them. Evidence filed about the item (a review, a snapshot) is
+        not the item: filing it does not change what is being approved."""
+        def evidence(loc):
+            r = self.kernel.get(loc) if str(loc).startswith("rec:document:") else None
+            return bool(r) and r["fields"].get("doc_class") == "evidence"
+        docs = [d for d in (self.dms.documents_of(rec["locator"]) if self.dms else []) if d["fields"].get("doc_class") != "evidence"]
+        return {"links": sorted((l["rel"], l["target"]) for l in rec["links"] if not evidence(l["target"])),
+                "documents": sorted((d["locator"], str(d["fields"].get("content_sha") or ""), str(d["fields"].get("revision") or "")) for d in docs)}
+
+    def record_digest(self, rec: dict) -> str:
+        """What a signature binds to: the record's fields and its documents' content (not only its fields)."""
+        return sha256_of({"fields": rec["fields"], **self._content_of(rec)})
+
+    def secret(self) -> str:
+        return hub_secret(self.state_dir)
+
+    def verify_signatures(self, run_id: str) -> list[str]:
+        """Problems with a run's signatures and Track chain (an empty list means it verifies)."""
+        state = self.load(run_id)
+        track = Track(self._dir(state["id"]))
+        problems = list(track.verify())
+        secret = self.secret()
+        for ev in track.read():
+            if ev["type"] in ("gate.decided", "gate.signed") and verify_signature(secret, ev) == "forged":
+                problems.append(f"the signature by {ev.get('by')} at {ev.get('step')} does not verify")
+        return problems
 
     def _save(self, state: dict) -> None:
         state["status"] = Track(self._dir(state["id"])).status()
@@ -153,6 +194,9 @@ class Runner:
             if owner_name not in (parent["owner"], grant.get("decided_by")):
                 raise RunError(f"{owner_name} may not start a child of run {parent_run}: only its owner or the person who approved it may")
             decision = {"allowed": True, "why": f"admitted by the grant on parent run {parent_run} ({parent['process']}), decided by {grant['decided_by']}"}
+            # Credit what opened it: the automatic step of the parent run (a CAPA opened from an NCR's disposition),
+            # not the person whose decision set it going.
+            opener = next((e.get("cog") for e in reversed(Track(self._dir(parent["id"])).read()) if e["type"] == "step.started"), None)
         else:
             decision = authz.check(bundle, owner, "create", manifest["object"], manifest["folder"])
             if not decision["allowed"]:
@@ -161,8 +205,13 @@ class Runner:
             if first_role not in ("system", *FIELD_ROLES) and first_role not in authz.roles_of(bundle, owner):
                 raise RunError(f"{owner} does not hold the role {first_role!r} that starts {process}")
         run_id = uuid.uuid4().hex[:10]
+        if not parent_run:
+            opener = None
         if record:
             rec = self.kernel.require(record)
+            why = self._may_submit_existing(bundle, rec, wf, owner_name)
+            if why:
+                raise RunError(why)
             if rec["folder"] != manifest["folder"]:
                 rec = self.kernel.move(record, manifest["folder"], by=owner_name, run_id=run_id, release=release["digest"],
                                        reason=f"filed by {process}")
@@ -181,8 +230,14 @@ class Runner:
             missing = [f for f in self.required_at_start(process, at) if fields.get(f) in (None, "", [], {})]
             if missing:
                 raise RunError(f"{process} needs {', '.join(missing)} before it can start")
+            if wf["record_type"] == "document" and fields.get("title"):
+                revises, why = self._revision_of(bundle, str(fields["title"]), owner_name)
+                if why:
+                    raise RunError(why)
+                if revises:
+                    fields["revises"] = revises
             try:
-                rec = self.kernel.create(wf["record_type"], manifest["folder"], fields, by=owner_name, run_id=run_id,
+                rec = self.kernel.create(wf["record_type"], manifest["folder"], fields, by=opener or owner_name, run_id=run_id,
                                          release=release["digest"], state="open")
             except KernelGuardError as e:
                 raise RunError(f"cannot create {wf['record_type']}: {e}") from None
@@ -190,16 +245,109 @@ class Runner:
             "id": run_id, "process": process, "owner": owner_name, "release": release["digest"], "manifest": manifest,
             "workflow": wf, "record": rec["locator"], "parent_run": parent_run, "inputs": inputs, "steps": {},
             "pending": None, "grant": None, "decision_fields": {}, "created_at": utcnow(), "created_ns": time.time_ns(),
-            "status": "submitted",
+            "status": "submitted", "opened_by": opener,
+            "opened_from": (self.load(parent_run).get("record") if parent_run else None),
         }
         track = Track(self._dir(run_id))
         track.append({"type": "run.submitted", "run_id": run_id, "release_digest": release["digest"], "process": process,
                       "owner": owner_name, "record": rec["locator"],
                       "owner_type": bundle["members"].get(owner_name, {}).get("type", "system"), "parent_run": parent_run,
-                      "manifest_digest": sha256_of(manifest), "inputs_digest": sha256_of(inputs), "admission": decision["why"]})
+                      "manifest_digest": sha256_of(manifest), "inputs_digest": sha256_of(inputs), "admission": decision["why"],
+                      "opened_by": opener, "opened_from": state["opened_from"]})
         self._save(state)
         self.advance(run_id)
         return run_id
+
+    def _may_submit_existing(self, bundle: dict, rec: dict, wf: dict, owner: str) -> str:
+        """Why an existing item may not be put through a process by this person (empty when it may): it must be of the
+        process's record type, not finished, not in a live run, not evidence or a received file, readable by the
+        starter, and theirs (owner, author, requester, filer), assigned to them, or (documents) a document controller's.
+        Checked before anything moves."""
+        f = rec["fields"]
+        if rec["type"] != wf["record_type"]:
+            return f"{rec['number']} is a {rec['type']}, not a {wf['record_type']}: this process cannot take it"
+        if f.get("doc_class") in ("evidence", "external"):
+            return f"{rec['number']} is {f['doc_class']}: it is kept as filed and never goes through approval again"
+        if rec["state"] in self.NOT_RESTARTABLE or rec["state"] == "closed" or rec["state"] == wf.get("terminal"):
+            return f"{rec['number']} is {rec['state']}; it changes through a new revision or a new item, not by approving it again"
+        live = self.run_for_record(rec["locator"])
+        if live and live["status"] in OPEN_RUN:
+            return f"{rec['number']} is already in a run ({live['process']}, {live['status']})"
+        if not authz.check(bundle, owner, "read", "*", rec["folder"])["allowed"]:
+            return f"{owner} may not read {rec['folder']}"
+        mine = owner in {f.get("owner"), f.get("author"), f.get("requested_by"), f.get("reported_by"), f.get("filed_by"), rec.get("created_by")}
+        if not (mine or owner in (rec.get("assignees") or [])
+                or (rec["type"] == "document" and "document-controller" in authz.roles_of(bundle, owner))):
+            return f"{rec['number']} is not {owner}'s: only its owner, whoever it is assigned to" + \
+                (" or a document controller" if rec["type"] == "document" else "") + " may start a process on it"
+        if rec["type"] == "document" and f.get("title"):
+            revises, why = self._revision_of(bundle, str(f["title"]), owner, exclude=rec["locator"])
+            if why:
+                return why
+            if revises and f.get("revises") != revises:
+                self.kernel.set_fields(rec["locator"], {"revises": revises}, by=owner)
+        return ""
+
+    def _revision_of(self, bundle: dict, title: str, by: str, exclude: str | None = None) -> tuple[str, str]:
+        """A document with the title of one in force is a revision of it: (its number, "") when ``by`` may revise it
+        (its owner or author, or a document controller), else ("", why not)."""
+        for other in self.kernel.query(type_="document", state="effective"):
+            if other["locator"] == exclude or other["fields"].get("title") != title:
+                continue
+            of = other["fields"]
+            if by in (of.get("owner"), of.get("author")) or "document-controller" in authz.roles_of(bundle, by):
+                return other["number"], ""
+            return "", (f"{other['number']} “{title}” is in force; only its owner ({of.get('owner') or of.get('author')}) or a document "
+                        f"controller may revise it. Give the new document another title, or ask them")
+        return "", ""
+
+    def fields_locked(self, rec: dict) -> str:
+        """Why a record's fields may not be changed outside a Gate (empty when they may): it waits at a Gate, it is
+        finished, or someone signed it since it was last open. A change after a signature goes through rework
+        (rejection and resubmission) or a new revision, so no signature ends up on content it did not see."""
+        state = rec.get("state") or ""
+        if state.startswith("awaiting-"):
+            return f"{rec['number']} waits at a Gate; change it through the decision or a rejection"
+        if state in self.NOT_RESTARTABLE or state in ("closed", "cancelled", "rejected", "approved", "acknowledged", "ordered",
+                                                      "received", "active", "accepted", "released", "posted", "effective"):
+            return f"{rec['number']} is {state}; it is finished"
+        live = self.run_for_record(rec["locator"])
+        if live and live["status"] in OPEN_RUN and state not in ("open", "draft", "returned", "failed"):
+            return f"{rec['number']} is in a run ({live['process']}) past its start"
+        if rec.get("decisions") and state not in ("open", "draft", "returned", "failed"):
+            return f"{rec['number']} carries signatures; change it through rework or a new revision"
+        return ""
+
+    def reconcile(self) -> list[str]:
+        """Runs whose saved state disagrees with their Track after a crash: a Gate decided in the Track but still open in
+        the state is closed (the decision recorded where it is missing) and the run carries on. Returns the run ids."""
+        fixed = []
+        for state in self.list():
+            if state.get("status") != "waiting" or not state.get("pending"):
+                continue
+            track = Track(self._dir(state["id"]))
+            if track.status() == "waiting":
+                continue
+            evs = track.read()
+            last = next((e for e in reversed(evs) if e["type"] == "gate.decided"), None)
+            if not last or last.get("step") not in (state["pending"].get("step"), state["pending"].get("checkpoint")):
+                continue
+            sid = state["pending"]["step"]
+            decision = {k: v for k, v in last.items() if k not in ("type", "seq", "prev", "entry_digest")}
+            state["steps"].setdefault(sid, {})["decision"] = decision
+            state["pending"] = None
+            if last.get("verdict") == "approve":
+                state["steps"][sid]["status"] = "passed"
+                grant = next((e["grant"] for e in reversed(evs) if e["type"] == "grant.issued"), None)
+                state["grant"] = grant
+                rec = self.kernel.get(state["record"]) if state.get("record") else None
+                if rec and not any(d.get("signature") == decision.get("signature") for d in rec.get("decisions") or []):
+                    self.kernel.append("record.decision", state["record"], decision, run_id=state["id"], release=state["release"], by=decision.get("by", ""))
+            self._save(state)
+            if last.get("verdict") == "approve":
+                self.advance(state["id"])
+            fixed.append(state["id"])
+        return fixed
 
     # -------------------------------------------------------------- execution
     def _ctx(self, state: dict, bundle: dict, cog) -> RunContext:
@@ -208,7 +356,9 @@ class Runner:
         dms = DMS(scoped, self.dms.blobs) if self.dms is not None else None
         return RunContext(run_id=state["id"], release=state["release"], bundle=bundle, owner=state["owner"],
                           kernel=scoped, grant=state.get("grant"), runner=self, inbox=self.inbox,
-                          record=state.get("record"), dms=dms, frames=self.frames_store, model=self.model,
+                          record=state.get("record"), dms=dms,
+                          frames=(lambda d=state["release"]: self.frames_for_release(d)) if self.frames_for_release else self.frames_store,
+                          model=self.model,
                           extras={"folder": state["manifest"]["folder"], "object": state["manifest"]["object"],
                                   "process": state["process"], "decision_fields": dict(state.get("decision_fields") or {}),
                                   "cog_profile": (bundle.get("cogs") or {}).get(cog.id)})
@@ -267,10 +417,11 @@ class Runner:
         self._complete(state, track)
         return state
 
-    def _fail(self, state: dict, track: Track, sid: str, reason: str) -> None:
+    def _fail(self, state: dict, track: Track, sid: str, reason: str, kind: str = "data", gate: str = "") -> None:
         """A failed run goes back to its owner: the record waits in state ``failed`` assigned to them, with a
-        message; the owner may fix the record and retry, or cancel."""
-        track.append({"type": "run.failed", "run_id": state["id"], "step": sid, "reason": reason})
+        message. ``kind`` says what fixes it: 'data' (correct the item and retry) or 'organisation' (nobody may take
+        the step; a policy owner changes who may, the item's fields cannot fix it)."""
+        track.append({"type": "run.failed", "run_id": state["id"], "step": sid, "reason": reason, "kind": kind, "gate": gate})
         state["pending"] = None
         if state.get("record"):
             try:
@@ -278,8 +429,15 @@ class Runner:
                                        reason=reason, assignees=[state["owner"]])
             except KernelGuardError:
                 pass
-        self._notify([state["owner"]], kind="failure", subject=f"{state['process']} {state.get('record') or state['id']} failed at {sid}",
-                     body=f"{reason}. Fix the record and retry the run, or cancel it.", run_id=state["id"])
+        rec = self.kernel.get(state["record"]) if state.get("record") else None
+        what = (rec or {}).get("number") or state.get("record") or state["id"]
+        where = gate or sid.replace("-", " ")
+        if kind == "organisation":
+            body = (f"{reason.rstrip('.')}. Changing the item will not help: a policy owner can add someone who may take this step "
+                    f"or change who it goes to; then retry, or cancel it.")
+        else:
+            body = f"{reason.rstrip('.')}. Correct what it says on the item and press Retry, or cancel it."
+        self._notify([state["owner"]], kind="failure", subject=f"{what} stopped at {where}", body=body, run_id=state["id"])
         self._save(state)
 
     def _close_record(self, state: dict, track: Track) -> bool:
@@ -313,6 +471,51 @@ class Runner:
     def _sod_applies(self, bundle: dict, state: dict) -> bool:
         return any(s["object"] == state["manifest"]["object"] for s in bundle["sod"])
 
+    def excluded(self, bundle: dict, state: dict, route: str = "role:") -> dict[str, str]:
+        """Who may not decide this item, and why. Every process keeps its preparer (who filed it, the run's owner)
+        from approving it on a route to a role or a cog; a segregation sentence also keeps out everyone it names on
+        the record (the reporter, the author, the requester...). A step the SOP routes to a named field (the
+        requester verifies, the assignee completes) is that person's by design, unless a sentence says otherwise."""
+        out: dict[str, str] = {}
+        rec = self.kernel.get(state["record"]) if state.get("record") else None
+        f = (rec or {}).get("fields") or {}
+        owner = authz.principal_name(state["owner"])
+        child = bool(state.get("parent_run"))
+        if child:
+            # A process opened automatically from another (a CAPA from an NCR's disposition) was prepared by whoever
+            # raised the original item, not by the person whose decision opened it.
+            try:
+                owner = authz.principal_name(self.load(state["parent_run"])["owner"])
+            except RunError:
+                pass
+        named_route = str(route or "").startswith(("field:", "person:"))
+        rules = [r for r in bundle.get("sod") or [] if r["object"] == state["manifest"]["object"]]
+        if not named_route or rules:
+            out[owner] = "segregation of duties: they prepared this item"
+            created = (rec or {}).get("created_by")
+            if created and not child and created not in ("hub", "system", "seed") and created not in out:
+                out[created] = "segregation of duties: they filed this item"
+        for r in rules:
+            for role in r.get("roles") or []:
+                if role in DECIDER_WORDS:
+                    continue
+                field = SOD_FIELDS.get(role) or role.replace("-", "_")
+                vals = f.get(field)
+                for v in vals if isinstance(vals, list) else [vals]:
+                    if v and isinstance(v, str):
+                        out.setdefault(authz.principal_name(v), f"segregation of duties: they are the {role.replace('-', ' ')} of this item "
+                                                                f"({r.get('source', {}).get('text', 'policy')})")
+        return out
+
+    def prepared_by_cog(self, bundle: dict, state: dict) -> str:
+        """The cog that prepared or wrote this item, if any: a cog's work needs a person's signature, never another cog's."""
+        rec = self.kernel.get(state["record"]) if state.get("record") else None
+        f = (rec or {}).get("fields") or {}
+        for who in (authz.principal_name(state["owner"]), f.get("author"), (rec or {}).get("created_by")):
+            if who and (bundle["members"].get(who) or {}).get("type") == "cog":
+                return who
+        return ""
+
     def _next_state(self, state: dict, step_id: str) -> tuple[str, str]:
         for t in state["workflow"]["transitions"]:
             if t["kind"] == "human" and t["step"] == step_id:
@@ -335,7 +538,8 @@ class Runner:
             cands = [{"assignee": f"{kind}:{FIELD_ROLES.get(role, role)}", "process": state["process"], "step": checkpoint,
                       "condition": None, "source": {"frame": "(process step)", "line": 0, "text": f"[{role}] {gate['title']}"}}]
         if not cands:
-            self._fail(state, track, step["id"], "no routing rule matches this item")
+            self._fail(state, track, step["id"], f"No routing sentence sends “{gate.get('title', 'the approval')}” of {state['process']} to anyone",
+                       kind="organisation", gate=gate.get("title", ""))
             return "failed"
         return self._pend_next(state, bundle, step, payload, rctx, track, cands)
 
@@ -343,19 +547,22 @@ class Runner:
         """Who may take this route: a cog with the permission, or the people holding the role or named in the field."""
         assignee = rule["assignee"]
         kind, _, name = assignee.partition(":")
-        sod = self._sod_applies(bundle, state)
-        owner = authz.principal_name(state["owner"])
+        excluded = self.excluded(bundle, state, assignee)
         obj, folder = state["manifest"]["object"], state["manifest"]["folder"]
+
+        def skip(reason):
+            track.append({"type": "gate.skipped", "run_id": state["id"], "step": step["id"], "candidate": assignee,
+                          "reason": reason, "route_rule": rule["source"]})
+            return []
         if kind == "cog":
             allowed = authz.check(bundle, name, "approve", obj, folder)
             if not allowed["allowed"]:
-                track.append({"type": "gate.skipped", "run_id": state["id"], "step": step["id"], "candidate": assignee,
-                              "reason": allowed["why"], "route_rule": rule["source"]})
-                return []
-            if sod and name == owner:
-                track.append({"type": "gate.skipped", "run_id": state["id"], "step": step["id"], "candidate": assignee,
-                              "reason": "segregation of duties: the cog prepared this item", "route_rule": rule["source"]})
-                return []
+                return skip(allowed["why"])
+            if name in excluded:
+                return skip(excluded[name])
+            by_cog = self.prepared_by_cog(bundle, state)
+            if by_cog:
+                return skip(f"{by_cog} (a cog) prepared or wrote this item: a person signs a cog's work, never another cog")
             if name not in self.registry.ids() or bundle["members"].get(name, {}).get("type") != "cog":
                 track.append({"type": "gate.skipped", "run_id": state["id"], "step": step["id"], "candidate": assignee,
                               "reason": "no such cog is a member", "route_rule": rule["source"]})
@@ -367,23 +574,33 @@ class Runner:
                 ok, why = cog_availability(bundle, name)
                 why = "" if ok else why
             if why:
-                track.append({"type": "gate.skipped", "run_id": state["id"], "step": step["id"], "candidate": assignee,
-                              "reason": why, "route_rule": rule["source"]})
-                return []
+                return skip(why)
             return [name]
 
+        dropped: list[str] = []
         if kind == "field":
             value = payload.get(name) or (record or {}).get("fields", {}).get(name)
-            people = [authz.principal_name(value)] if value and bundle["members"].get(authz.principal_name(value)) else []
+            who = authz.principal_name(value) if value else ""
+            people = [who] if who and bundle["members"].get(who) else []
+            if people and bundle["members"][who]["type"] == "cog" and name != "assignee":
+                # Only a task's assignee may be a cog: a cog named in requested_by, owner or reporter would sign a
+                # step with no approval criteria, chosen by whoever filled the field.
+                return skip(f"{who} is a cog: a cog cannot be named in {name} to take this step (only a task's assignee may be a cog)")
         else:
             people = [p for p in principals_for(bundle, assignee) if bundle["members"][p]["type"] == "person"]
-        people = [p for p in people if authz.check(bundle, p, "approve", obj, folder)["allowed"]]
-        if sod:
-            people = [p for p in people if p != owner]
-        if not people:
-            track.append({"type": "gate.skipped", "run_id": state["id"], "step": step["id"], "candidate": assignee,
-                          "reason": "no eligible person holds this route", "route_rule": rule["source"]})
-        return people
+            if not people:
+                dropped.append(f"nobody holds the {name.replace('-', ' ')} role")
+        allowed_people = []
+        for p in people:
+            if not authz.check(bundle, p, "approve", obj, folder)["allowed"]:
+                dropped.append(f"{p} may not approve a {obj.replace('-', ' ')} in {folder}")
+            elif p in excluded:
+                dropped.append(f"{p}: {excluded[p]}")
+            else:
+                allowed_people.append(p)
+        if not allowed_people:
+            return skip("; ".join(dropped) or "no eligible person holds this route")
+        return allowed_people
 
     @staticmethod
     def cog_follows(bundle: dict, cog_name: str, process: str) -> str:
@@ -403,6 +620,7 @@ class Runner:
         gate = step["gate"]
         checkpoint = gate["step"]
         remaining = list(cands)
+        mark = len(track.read())
         while remaining:
             rule = remaining.pop(0)
             people = self._eligible(state, bundle, step, rule, payload, record, track)
@@ -417,7 +635,7 @@ class Runner:
                                 "payload_digest": sha256_of(payload), "title": gate.get("title", "Approve"), "due": due,
                                 "remaining": remaining, "routing_ctx": rctx}
             track.append({"type": "gate.pending", "run_id": state["id"], "step": step["id"], "assignees": people,
-                          "assignee_type": state["pending"]["assignee_type"], "route_rule": rule["source"],
+                          "assignee_type": state["pending"]["assignee_type"], "route_rule": rule["source"], "route": rule["assignee"],
                           "payload_digest": sha256_of(payload), "routing_ctx": rctx, "due": due})
             if state.get("record"):
                 try:
@@ -431,7 +649,19 @@ class Runner:
                          body=f"Routed by {rule['source']['frame']} line {rule['source']['line']}: {rule['source']['text']}"
                               + (f" Due {due}." if due else ""), run_id=state["id"])
             return "waiting"
-        self._fail(state, track, step["id"], "no eligible approver: no person or cog holds any route for this item")
+        why = []
+        for ev in track.read()[mark:]:
+            if ev["type"] == "gate.skipped" and ev.get("step") == step["id"]:
+                who = str(ev.get("candidate") or "").partition(":")
+                label = f"the {who[2]} cog" if who[0] == "cog" else (who[2].replace("-", " ") if who[2] else "the route")
+                why.append(f"{label}: {ev.get('reason')}")
+        for ev in reversed(track.read()):
+            if ev["type"] == "gate.declined" and ev.get("step") == step["id"]:
+                why.insert(0, f"{ev.get('by')} declined: {'; '.join(ev.get('reasons') or []) or 'its criteria do not hold'}")
+                break
+        title = gate.get("title", "the approval")
+        self._fail(state, track, step["id"], f"Nobody can take “{title}”" + (": " + " | ".join(why) if why else ""),
+                   kind="organisation", gate=title)
         return "failed"
 
     # ------------------------------------------------------------ cogs as users
@@ -471,19 +701,22 @@ class Runner:
         cog = self.registry.get(cog_name)
         env = state["steps"].get(step["id"], {}).get("envelope") or {}
         payload = env.get("payload") or {}
+        # What the cog is shown, fixed before it starts: if the item changes while its model thinks, its decision no
+        # longer matches and is refused (the item goes on to people), exactly as for a person with a stale card.
+        seen = self.seen_digest(state)
         review = cog.invoke("review", {"payload": payload, "process": state["process"], "routing_ctx": pending.get("routing_ctx") or {}},
                             self._ctx(state, bundle, cog))
         rp = review.get("payload") or {}
         verdict = rp.get("verdict", "escalate")
         reasons = list(rp.get("reasons") or [])
         track.append({"type": "gate.cog_review", "run_id": state["id"], "step": step["id"], "cog": cog_name,
-                      "cog_version": cog.version, "verdict": verdict, "reasons": reasons,
+                      "cog_version": cog.version, "verdict": verdict, "reasons": reasons, "seen": seen, "judged": bool(rp.get("judged")),
                       "route_rule": pending["route_rule"], "delegating_rule": rp.get("delegating_rule")})
         if verdict in ("approve", "reject"):
             basis = "on its review, under its approval criteria" if rp.get("judged") else "within fixed criteria"
             meaning = f"{verdict}d {basis}: " + "; ".join(reasons) if reasons else f"{verdict}d {basis}"
             try:
-                return self.decide(run_id, cog_name, verdict, meaning=meaning, payload_digest=self.seen_digest(state),
+                return self.decide(run_id, cog_name, verdict, meaning=meaning, payload_digest=seen,
                                    delegating_rule=rp.get("delegating_rule"), countersign=rp.get("countersign"),
                                    evidence=rp.get("evidence"))
             except RunError as e:
@@ -518,13 +751,32 @@ class Runner:
         return self.load(run_id)
 
     # ------------------------------------------------------------ a cog asked to sign, or given the work
-    def may_step_in(self, state: dict, cog_name: str) -> str:
+    def may_step_in(self, state: dict, cog_name: str, asked_by: str | None = None) -> str:
         """Empty when the cog may take this Gate when asked (it has approval criteria for the process, may approve the
-        object, follows the SOP, is available and did not prepare the item); otherwise why not."""
+        object, follows the SOP, is available and did not prepare the item; and, when ``asked_by`` is given, the asker
+        is a person waited for at this Gate or a policy owner, not the item's preparer or author, and the cog's own
+        review of this very version has not already failed); otherwise why not."""
         pending = state.get("pending") or {}
         if state["status"] != "waiting" or pending.get("kind", "decision") != "decision":
             return f"it is not waiting for a decision (it is {state['status']})"
+        if pending.get("countersign_of"):
+            return "it waits for a person's countersignature"
         bundle = self.releases.bundle(state["release"])
+        excluded = self.excluded(bundle, state, "role:")
+        if asked_by is not None:
+            asker = authz.principal_name(asked_by)
+            if (bundle["members"].get(asker) or {}).get("type") != "person":
+                return f"only a person may ask a cog to sign ({asker} is not one)"
+            if asker in excluded:
+                return f"{asker} may not choose who approves an item they prepared or wrote"
+            if asker not in (pending.get("assignees") or []) and "policy-owner" not in authz.roles_of(bundle, asker):
+                return f"only someone this step waits for, or a policy owner, may ask a cog to sign it ({asker} is neither)"
+            seen = self.seen_digest(state)
+            for ev in Track(self._dir(state["id"])).read():
+                if (ev["type"] == "gate.cog_review" and ev.get("cog") == cog_name and ev.get("seen") == seen
+                        and ev.get("verdict") not in ("approve",)):
+                    return (f"{cog_name} already reviewed this version and could not sign it; its finding stands until the item "
+                            f"changes or a person decides")
         if (bundle["members"].get(cog_name) or {}).get("type") != "cog" or cog_name not in self.registry.ids():
             return f"{cog_name} is not a cog of the organization"
         from .routing import criteria_for
@@ -534,11 +786,14 @@ class Runner:
         allowed = authz.check(bundle, cog_name, "approve", state["manifest"]["object"], state["manifest"]["folder"])
         if not allowed["allowed"]:
             return allowed["why"]
-        if self._sod_applies(bundle, state) and cog_name == authz.principal_name(state["owner"]):
-            return f"segregation of duties: {cog_name} prepared this item"
+        if cog_name in excluded:
+            return excluded[cog_name]
         rec = self.kernel.get(state["record"]) if state.get("record") else None
-        if rec and self._sod_applies(bundle, state) and cog_name in (rec["fields"].get("author"), rec.get("created_by")):
+        if rec and cog_name == rec["fields"].get("author"):
             return f"segregation of duties: {cog_name} wrote this item"
+        by_cog = self.prepared_by_cog(bundle, state)
+        if by_cog:
+            return f"{by_cog} (a cog) prepared or wrote this item: a person signs it"
         why = self.cog_follows(bundle, cog_name, state["process"])
         if why:
             return why
@@ -556,6 +811,11 @@ class Runner:
         why = self.may_step_in(state, cog_name)
         if why:
             raise RunError(why)
+        why = self.may_step_in(state, cog_name, asked_by=asked_by)
+        if why:  # the cog could sign, but not because this person asked: recorded as its answer, nothing changes
+            Track(self._dir(state["id"])).append({"type": "gate.declined", "run_id": state["id"], "step": state["pending"]["step"],
+                                                  "by": cog_name, "reasons": [why], "asked_by": asked_by, "step_in_refused": True})
+            return self.load(run_id)
         before = {k: v for k, v in state["pending"].items() if k != "stepped_in_from"}
         state["pending"] = {**before, "assignees": [cog_name], "assignee_type": "cog", "stepped_in_from": before, "asked_by": asked_by}
         Track(self._dir(state["id"])).append({"type": "gate.stepped_in", "run_id": state["id"], "step": before["step"], "cog": cog_name,
@@ -568,7 +828,7 @@ class Runner:
         """The item waits for the cog because it was assigned the step (a field or a name), not routed to it to approve."""
         pending = state.get("pending") or {}
         return (state["status"] == "waiting" and cog_name in (pending.get("assignees") or [])
-                and not str(pending.get("route") or "cog:").startswith("cog:") and not pending.get("stepped_in_from"))
+                and pending.get("route") == "field:assignee" and not pending.get("stepped_in_from"))
 
     def cog_complete(self, run_id: str, cog_name: str, summary: str) -> dict:
         """A cog finishes a step it was assigned (complete the task, do the work): its summary is the signature's meaning."""
@@ -634,11 +894,11 @@ class Runner:
                          payload_digest: str, delegating_rule=None, meaning_given: bool = True) -> None:
         rec = self.kernel.get(state["record"]) if state.get("record") else None
         decision = {"by": by, "by_type": by_type, "verdict": verdict, "meaning": meaning, "meaning_given": meaning_given,
-                    "at": utcnow(), "payload_digest": payload_digest, "record_digest": sha256_of(rec["fields"]) if rec else None,
+                    "at": utcnow(), "payload_digest": payload_digest, "record_digest": self.record_digest(rec) if rec else None,
                     "delegating_rule": delegating_rule, "step": step["gate"]["step"], "run_id": state["id"],
-                    "release_digest": state["release"], "record": state.get("record")}
-        decision["signature"] = sha256_of({k: decision[k] for k in ("by", "verdict", "meaning", "payload_digest", "record_digest",
-                                                                       "at", "run_id", "step", "release_digest")})[:32]
+                    "release_digest": state["release"], "record": state.get("record"),
+                    "route": (state.get("pending") or {}).get("route"), "countersigns": (state.get("pending") or {}).get("countersign_of")}
+        decision["signature"] = sign(self.secret(), decision)
         state["steps"][step["id"]]["decision"] = decision
         state["pending"] = None
         track.append({"type": "gate.decided", "run_id": state["id"], "step": step["id"], **decision})
@@ -690,7 +950,7 @@ class Runner:
         track.append({"type": "gate.returned", "run_id": state["id"], "step": step["id"], "to_step": reject_to,
                       "assignees": [state["owner"]], "reason": meaning})
         self._notify([state["owner"]], kind="returned", subject=f"{state['process']} {state.get('record')} returned for rework",
-                     body=f"{decision['by']} rejected '{step['gate']['title']}': {meaning}. Fix the record and resubmit.", run_id=state["id"])
+                     body=f"{decision['by']} rejected '{step['gate']['title']}': {meaning}. Correct what it says and resubmit it, or use Back to the start.", run_id=state["id"])
 
     def _prior_pending(self, state: dict, track: Track, checkpoint: str) -> tuple[list[str], str | None]:
         step = next((s for s in state["manifest"]["steps"] if s.get("gate", {}).get("step") == checkpoint), None)
@@ -700,6 +960,12 @@ class Runner:
             if ev["type"] == "gate.pending" and ev.get("step") == step["id"]:
                 return list(ev.get("assignees") or []), ev.get("due")
         return [], None
+
+    def _prior_route(self, track: Track, step_id: str) -> str | None:
+        for ev in reversed(track.read()):
+            if ev["type"] == "gate.pending" and ev.get("step") == step_id and ev.get("route"):
+                return ev["route"]
+        return None
 
     def _rewind(self, state: dict, checkpoint: str, track: Track, people: list[str], due: str | None) -> None:
         target_step = next((s for s in state["manifest"]["steps"] if s.get("gate", {}).get("step") == checkpoint), None)
@@ -712,6 +978,7 @@ class Runner:
         state["steps"][target_step["id"]]["status"] = "gate-pending"
         state["steps"][target_step["id"]].pop("decision", None)
         state["pending"] = {"kind": "decision", "step": target_step["id"], "checkpoint": checkpoint, "assignees": people,
+                            "route": self._prior_route(track, target_step["id"]),
                             "route_rule": {"frame": "(rejection)", "line": 0, "text": "returned by a rejection"},
                             "payload_digest": sha256_of(env["payload"] or {}), "title": target_step["gate"]["title"], "due": due}
         track.append({"type": "gate.pending", "run_id": state["id"], "step": target_step["id"], "assignees": people,
@@ -774,18 +1041,31 @@ class Runner:
                fields: dict | None = None, delegating_rule=None, countersign: str | None = None, evidence: str | None = None) -> dict:
         state, pending = self._load_waiting(run_id, by, "decision")
         by = authz.principal_name(by)
-        bundle0 = self.releases.bundle(state["release"])
-        by_type = bundle0["members"].get(by, {}).get("type", "person")
+        if Track(self._dir(state["id"])).has_decision(pending["step"], pending.get("checkpoint")):
+            # One signature per Gate: a decision that landed before a crash is not followed by a second, contrary one.
+            raise RunError("this step was already decided; open the item again to see where it stands")
+        bundle = self.releases.bundle(state["release"])
+        by_type = bundle["members"].get(by, {}).get("type", "person")
         if by_type == "cog" and fields:
             raise RunError("a cog decides within fixed criteria and supplies no fields")
         if verdict not in ("approve", "reject"):
             raise RunError("verdict must be approve or reject")
-        bundle = self.releases.bundle(state["release"])
         allowed = authz.check(bundle, by, "approve", state["manifest"]["object"], state["manifest"]["folder"])
         if not allowed["allowed"]:
             raise RunError(allowed["why"])
-        if self._sod_applies(bundle, state) and by == authz.principal_name(state["owner"]):
-            raise RunError("segregation of duties: you prepared this item and cannot approve it")
+        if pending.get("countersign_of"):
+            role = pending.get("countersign_role") or str(pending.get("route") or "").partition(":")[2]
+            if by_type != "person":
+                raise RunError("a countersignature is a person's")
+            if role and role not in authz.roles_of(bundle, by):
+                raise RunError(f"a countersignature here needs a {role.replace('-', ' ')}; {by} is not one")
+            if by == pending["countersign_of"] or by in (pending.get("excluded") or []):
+                raise RunError(f"segregation of duties: {by} may not countersign this item")
+        excluded = self.excluded(bundle, state, pending.get("route") or "role:")
+        if by in excluded:
+            raise RunError(f"{excluded[by]}; {by} cannot decide it")
+        if by_type == "cog" and verdict == "approve" and not delegating_rule and not self.is_assigned_work(state, by):
+            raise RunError(f"{by} signs only within its approval criteria, and none covers this step")
         if not payload_digest:
             raise RunError("a decision must quote what you saw: pass the run's seen_digest (shown on the card and by inbox-pending)")
         if payload_digest != self.seen_digest(state):
@@ -825,6 +1105,7 @@ class Runner:
             return self._await_countersign(state, pending, step, track, bundle, by, meaning.strip(), countersign, delegating_rule, evidence)
         if pending.get("countersign_of"):
             meaning = f"{meaning.strip()} (countersigning {pending['countersign_of']})"
+        owner = authz.principal_name(state["owner"])
         if by_type == "cog" and self.is_assigned_work(state, by):
             self._notify([state["owner"]], kind="cog-done", subject=f"{by} finished {pending.get('title', 'the step')} on {state.get('record') or state['process']}",
                          body=meaning.strip(), run_id=state["id"])
@@ -839,6 +1120,19 @@ class Runner:
                               delegating_rule=delegating_rule)
         self._save(state)
         result = self.advance(run_id) if verdict == "approve" else self.load(run_id)
+        if (by_type == "person" and by != owner and verdict == "reject" and (bundle["members"].get(owner) or {}).get("type") == "person"
+                and result.get("status") == "waiting" and (result.get("pending") or {}).get("kind") == "decision"):
+            nxt = result["pending"]
+            self._notify([owner], kind="moved", subject=f"{by} rejected {pending.get('title', 'a step')}; it went back to {', '.join(nxt.get('assignees') or [])}",
+                         body=f"{by} rejected it: {meaning.strip()}. It now waits again at {nxt.get('title', 'an earlier step')}.", run_id=state["id"])
+        if by_type == "person" and by != owner and (bundle["members"].get(owner) or {}).get("type") == "person" and verdict == "approve":
+            # The owner hears when someone else moves their item, and where it is now.
+            now = self.kernel.get(state["record"]) if state.get("record") else None
+            nxt = result.get("pending") or {}
+            where = (f"it now waits for {', '.join(nxt.get('assignees') or [])} at {nxt.get('title', 'the next step')}" if result["status"] == "waiting"
+                     else f"it is now {(now or {}).get('state', result['status']).replace('-', ' ')}")
+            self._notify([owner], kind="moved", subject=f"{by} approved {pending.get('title', 'a step')} on {(now or {}).get('number') or state['process']}",
+                         body=f"{by} approved it: {meaning.strip()}. {where[0].upper() + where[1:]}.", run_id=state["id"])
         hook = POST_DECISION_HOOKS.get(rec["type"]) if rec is not None else None
         if hook:
             hook(self.kernel, self.kernel.get(rec["locator"]), verdict)
@@ -852,23 +1146,30 @@ class Runner:
         owner = authz.principal_name(state["owner"])
         rec = self.kernel.get(state["record"]) if state.get("record") else None
         author = (rec or {}).get("fields", {}).get("author")
-        people = [p for p in principals_for(bundle, f"role:{role}") if bundle["members"][p]["type"] == "person"
-                  and authz.check(bundle, p, "approve", obj, folder)["allowed"] and p not in (owner, author)]
+        excluded = set(self.excluded(bundle, state, "role:")) | {owner, by} | ({author} if author else set())
+        holders = [p for p in principals_for(bundle, f"role:{role}") if bundle["members"][p]["type"] == "person"]
+        people = [p for p in holders if authz.check(bundle, p, "approve", obj, folder)["allowed"] and p not in excluded]
         signature = {"by": by, "by_type": "cog", "verdict": "approve", "meaning": meaning, "at": utcnow(), "step": step["gate"]["step"],
                      "payload_digest": pending["payload_digest"], "delegating_rule": delegating_rule, "evidence": evidence,
                      "countersign_needed": role, "run_id": state["id"], "release_digest": state["release"], "record": state.get("record")}
-        signature["signature"] = sha256_of({k: signature[k] for k in ("by", "verdict", "meaning", "payload_digest", "at", "run_id", "step")})[:32]
+        signature["record_digest"] = self.record_digest(rec) if rec else None
+        signature["signature"] = sign(self.secret(), signature)
         track.append({"type": "gate.signed", "run_id": state["id"], "step": step["id"], **signature})
         state["steps"][step["id"]]["first_signature"] = signature
         if state.get("record"):
             self.kernel.append("record.decision", state["record"], {**signature, "countersign_needed": role}, run_id=state["id"],
                                release=state["release"], by=by)
         if not people:
-            self._fail(state, track, step["id"], f"{by} approved it, but no {role} who may approve it (and did not prepare it) can countersign")
+            who = ", ".join(sorted(holders)) or "nobody"
+            self._fail(state, track, step["id"],
+                       f"{by} approved it, but it needs a {role.replace('-', ' ')} to countersign and no one can: the role is held by {who}, "
+                       f"and whoever prepared or wrote the item may not countersign it. A policy owner can give the role to "
+                       f"another person or name another countersigner", kind="organisation", gate=pending.get("title", ""))
             self._save(state)
             return self.load(state["id"])
         rest = {k: v for k, v in pending.items() if k not in ("stepped_in_from", "asked_by")}
         state["pending"] = {**rest, "assignees": people, "assignee_type": "person", "route": f"role:{role}", "countersign_of": by,
+                            "countersign_role": role, "excluded": sorted(x for x in excluded if x),
                             "title": f"Countersign: {pending.get('title', 'Approve')}", "remaining": []}
         track.append({"type": "gate.pending", "run_id": state["id"], "step": step["id"], "assignees": people, "assignee_type": "person",
                       "route_rule": delegating_rule, "payload_digest": pending["payload_digest"], "countersign_of": by})
@@ -947,6 +1248,12 @@ class Runner:
         sid = failed.get("step") if failed else None
         ids = [s["id"] for s in state["manifest"]["steps"]]
         start = ids.index(sid) if sid in ids else 0
+        if fields or attachments:
+            # Changed inputs: every automatic step after the last signed Gate runs again on them (a supplier named now
+            # is checked now), but no signature already given is thrown away.
+            decided = [i for i, x in enumerate(ids) if (state["steps"].get(x) or {}).get("decision")]
+            start = min(start, (decided[-1] + 1) if decided else 0)
+            sid = ids[start] if start < len(ids) else sid
         for s in ids[start:]:
             state["steps"].pop(s, None)
         state["pending"] = None
@@ -1044,13 +1351,20 @@ class Runner:
             track = Track(self._dir(state["id"]))
             added: list[str] = []
             informed: list[str] = []
+            obj, folder = state["manifest"]["object"], state["manifest"]["folder"]
+            excluded = set(self.excluded(bundle, state, pending.get("route") or "role:")) | set(pending.get("excluded") or [])
+            role = pending.get("countersign_role") if pending.get("countersign_of") else None
+
+            def may_take(p):  # escalation adds only people who could have been routed this step themselves
+                return (authz.check(bundle, p, "approve", obj, folder)["allowed"] and p not in excluded
+                        and (role is None or role in authz.roles_of(bundle, p)))
             for rule in rules:
                 people = [p for p in principals_for(bundle, rule["assignee"]) if bundle["members"][p]["type"] == "person"]
                 if rule.get("mode") == "notify":
                     informed += people
                 else:
-                    added += [p for p in people if p not in pending["assignees"]]
-                    informed += [p for p in people if p in pending["assignees"]]
+                    added += [p for p in people if p not in pending["assignees"] and may_take(p)]
+                    informed += [p for p in people if p in pending["assignees"] or not may_take(p)]
             pending["escalated"] = today
             if added:
                 pending["assignees"] = pending["assignees"] + added

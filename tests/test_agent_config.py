@@ -24,7 +24,8 @@ def test_a_policy_change_becomes_an_open_proposal_and_nothing_changes_in_force(r
                                                   "ops": "@@ replace: The controller approval threshold is 10,000 USD.\n"
                                                          "@@ with: The controller approval threshold is 20,000 USD."})
     assert out["ok"] and out["proposal"] and not out["errors"] and out["reviewers"] == ["bob", "carol"]
-    assert out["widenings"] == ["change threshold controller-approval-threshold = 20000.0 USD (value: 10000.0 -> 20000.0)"], out
+    # The threshold widening, plus (since governance-8) the Frame text change itself.
+    assert "change threshold controller-approval-threshold = 20000.0 USD (value: 10000.0 -> 20000.0)" in out["widenings"], out
     assert "policy owners" in out["note"]
     p = hub.proposals.load(out["proposal_id"])
     assert p["status"] == "open" and "finance-policy" in p["overrides"] and "20,000 USD" in p["overrides"]["finance-policy"]["text"]
@@ -35,7 +36,9 @@ def test_a_policy_change_becomes_an_open_proposal_and_nothing_changes_in_force(r
     assert {m["to"] for m in notes} == {"bob", "carol"} and "invoices have grown" in notes[-1]["body"]
     lower = tools.execute("propose_policy_change", {"frame": "finance-policy", "reason": "tighter control",
                                                     "ops": "@@ replace: is 20,000 USD.\n@@ with: is 5,000 USD."})
-    assert lower["ok"] and not lower["widenings"]  # the cog's draft carries forward; lowering a limit is no widening
+    # The cog's draft carries forward (10,000 -> 5,000 against the release in force). Since governance-2/8 any changed
+    # threshold, and any Frame text a cog follows, is reviewed by both owners: a threshold can cut either way.
+    assert lower["ok"] and "change threshold controller-approval-threshold = 5000.0 USD (value: 10000.0 -> 5000.0)" in lower["widenings"]
     out = lower
     listed = tools.execute("list_proposals", {})
     row = next(r for r in listed["open"] if r["proposal_id"] == out["proposal_id"])

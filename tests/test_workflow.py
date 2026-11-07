@@ -601,9 +601,10 @@ def test_field_assignee_without_approve_permission_fails_the_run(widgets):
     assert state["status"] == "failed" and state["pending"] is None
     skipped = event(widgets, run_id, "gate.skipped")
     assert len(skipped) == 1 and skipped[0]["candidate"] == "field:assignee"
-    assert skipped[0]["reason"] == "no eligible person holds this route"
+    assert skipped[0]["reason"] == "gina may not approve a widget in Widgets/Requests"  # who and why, not a generic line
     failed = event(widgets, run_id, "run.failed")
-    assert len(failed) == 1 and failed[0]["reason"].startswith("no eligible approver")
+    assert len(failed) == 1 and failed[0]["reason"].startswith("Nobody can take") and "gina may not approve" in failed[0]["reason"]
+    assert failed[0]["kind"] == "organisation"
     rec = widgets.kernel.get(state["record"])
     assert rec["state"] == "failed" and rec["assignees"] == [widgets.runner.load(run_id)["owner"]]
     assert not [m for m in widgets.inbox.all() if m["kind"] == "approval" and m["run_id"] == run_id]

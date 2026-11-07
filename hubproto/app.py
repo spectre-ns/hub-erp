@@ -53,10 +53,16 @@ class Hub:
         self.lock = threading.RLock()  # the shell serializes on it; the queue worker holds it except while a model thinks
         self.queue = CogQueue(state / "queue.db", hub=self)
         self.runner.queue = self.queue
-        self.runner.frames_store = lambda: self.frames
+        self.runner.frames_store = lambda: self.released_frames()  # cogs read the SOPs as released, not the files on disk
+        self.runner.frames_for_release = lambda d: self.released_frames(d)
+        self._released_cache: dict = {}
         self.dms.machine_names = lambda: set(self.registry.ids()) | {"hub"}
         self.model = ModelGateway()
         self.runner.model = self.model
+        try:  # a crash between a decision's Track entry and its saved state: close the Gate and carry on
+            self.runner.reconcile()
+        except Exception:
+            pass
 
     @property
     def frames(self) -> FrameStore:
@@ -152,7 +158,8 @@ class Hub:
         return p
 
     def compile(self, scopes: list[str] | None = None, extractor=None, now: str | None = None,
-                overrides: dict[str, str] | None = None, drafts: dict[str, str] | None = None, save: bool = True) -> dict:
+                overrides: dict[str, str] | None = None, drafts: dict[str, str] | None = None, save: bool = True,
+                by: str | None = None) -> dict:
         """Compile the Frames into a proposal. ``overrides`` are drafts of Frames (name -> text) compiled in place of the
         files, written only when the proposal is released; ``drafts`` names the draft document of each. Drafts already in
         an open proposal on the same base carry forward, so a recompile never drops someone's pending policy change."""
@@ -161,10 +168,29 @@ class Hub:
                                "people and cogs read. Change a rule in Settings (or with a cog's propose tools), not by compiling the Frames.")
         existing = self.proposals.list() if save else []
         base = (self.releases.current(now) or {}).get("digest")
+        # One proposal per draft: a recompile of a draft carries forward its own earlier proposal (and the decisions
+        # given on it), never someone else's unrelated draft; a compile of the files on disk carries no draft at all.
+        my_drafts = {d for d in (drafts or {}).values() if d}
+
+        def same_work(old: dict) -> bool:
+            theirs = old.get("overrides") or {}
+            if my_drafts:  # the earlier proposal of these very drafts (another person's draft of the same Frame competes)
+                return bool({o.get("draft") for o in theirs.values()} & my_drafts)
+            if overrides:  # texts with no draft document: the same Frames compiled again
+                return bool(set(theirs) & set(overrides)) and not any(o.get("draft") for o in theirs.values())
+            return not theirs  # a compile of the files replaces the last compile of the files
+        related = [old for old in existing if old.get("status") == "open" and old.get("base") == base and old.get("source") != "settings"
+                   and same_work(old)]
+        if by and drafts:
+            meta = self.releases.current(now)
+            bundle = self.releases.bundle(meta["digest"]) if meta else {"members": {}}
+            for name, loc in drafts.items():
+                d = self.kernel.get(loc) if loc else None
+                if d and by != d["fields"].get("owner") and "policy-owner" not in authz.roles_of(bundle, by):
+                    raise CompileError(f"{d['number']} is {d['fields'].get('owner')}'s draft: only its author or a policy owner proposes it")
         carried: dict[str, dict] = {}
-        for old in existing:
-            if old.get("status") == "open" and old.get("base") == base:
-                carried.update(old.get("overrides") or {})
+        for old in related:
+            carried.update(old.get("overrides") or {})
         texts = {n: o["text"] for n, o in carried.items()}
         docs = {n: o.get("draft") for n, o in carried.items()}
         for name, text in (overrides or {}).items():
@@ -176,6 +202,12 @@ class Hub:
                                     record_types=self.kernel.types, config_digests=self.kernel.config_digests,
                                     resolve_document=self.resolve_document)
         proposal["overrides"] = {n: {"text": t, "draft": docs.get(n), "path": store.get(n).relpath} for n, t in texts.items()}
+        proposal["proposed_by"] = by
+        authors = {}
+        for n, o in proposal["overrides"].items():  # who wrote each draft, so a reviewer sees every hand in it
+            if o.get("draft") and self.kernel.get(o["draft"]):
+                authors[n] = sorted({v.get("by") for v in self.dms.versions(o["draft"]) if v.get("by")})
+        proposal["draft_authors"] = authors
         from .model import resolve_model
 
         for r in proposal["rules"]:  # a cog is bundled with its model: say now if this hub cannot reach it
@@ -190,10 +222,10 @@ class Hub:
         if not save:
             return proposal
         proposal["number"] = 1 + max(len(existing), max((int(x.get("number") or 0) for x in existing), default=0))
-        # An open proposal on the same base is superseded by this one; decisions already given on the same change
-        # (same change id, same rule) carry forward, so a recompile does not throw away a policy owner's approval.
-        for old in existing:
-            if old.get("status") != "open" or old.get("base") != proposal["base"]:
+        # The earlier proposal of the same draft (or the earlier compile of the files) is superseded by this one;
+        # decisions already given on the same change carry forward, so a recompile keeps a policy owner's approval.
+        for old in related:
+            if old.get("base") != proposal["base"]:
                 continue
             by_id = {c["id"]: c for c in old["changes"]}
             for c in proposal["changes"]:
@@ -202,6 +234,7 @@ class Hub:
                     c["decisions"] = [dict(d, carried_from=old["id"]) for d in prior["decisions"]]
             old["status"] = "superseded"
             old["superseded_by"] = proposal["id"]
+            old["superseded_by_number"] = proposal["number"]
             self.proposals.save(old)
         self.proposals.save(proposal)
         for name, o in proposal["overrides"].items():
@@ -300,7 +333,7 @@ class Hub:
         text = "\n".join(lines) + ("\n" if frame.text.endswith("\n") else "")
         d = self.frame_draft(frame.name, by=by)
         self.dms.add_version(d["locator"], text.encode("utf-8"), by=by, filename=frame.path.name, mime="text/markdown", note=f"{cog} uses {model}")
-        return self.compile(overrides={frame.name: text}, drafts={frame.name: d["locator"]})
+        return self.compile(overrides={frame.name: text}, drafts={frame.name: d["locator"]}, by=by)
 
     def propose_new_person(self, *, name: str, roles: list[str], by: str) -> dict:
         """A new person as a policy proposal: the member and their roles in the organization model. (In production
@@ -364,7 +397,7 @@ class Hub:
             self.dms.add_version(d["locator"], text.encode("utf-8"), by=by, filename=self.frames.get(frame_name).path.name, mime="text/markdown",
                                  note=f"new {kind} {name}")
             drafts[frame_name] = d["locator"]
-        return self.compile(overrides=texts, drafts=drafts)
+        return self.compile(overrides=texts, drafts=drafts, by=by)
 
     def withdraw_frame_draft(self, ref: str, by: str, reason: str = "") -> dict:
         """Withdraw a Frame draft: it leaves every open proposal (which is withdrawn with it, so the next compile reads
@@ -383,12 +416,13 @@ class Hub:
                 continue
             mine = [n for n, o in (p.get("overrides") or {}).items() if o.get("draft") == rec["locator"]]
             if mine:
-                for n in mine:
-                    p["overrides"].pop(n)
+                rest = {n: o for n, o in (p.get("overrides") or {}).items() if n not in mine}
                 p["status"] = "withdrawn"
                 p["withdrawn"] = {"by": by, "at": utcnow(), "reason": reason or f"draft {rec['number']} withdrawn", "draft": rec["locator"]}
                 self.proposals.save(p)
                 touched.append(p.get("number"))
+                if rest:  # other people's drafts in the same proposal stay proposed, with the decisions given on them
+                    self._recompile_drafts(p, rest, note=f"{rec['number']} was withdrawn by {by}")
         self.kernel.set_fields(rec["locator"], {"withdrawn": True, "withdrawn_by": by, "withdrawn_reason": reason, "proposal": None}, by=by)
         return {"draft": rec["number"], "proposals_withdrawn": touched}
 
@@ -400,7 +434,9 @@ class Hub:
                meaning: str = "") -> dict:
         proposal = self.proposals.load(proposal_id)
         if proposal.get("status") != "open":
-            raise CompileError(f"proposal {proposal_id} is {proposal.get('status')}; compile a new one")
+            raise CompileError(f"proposal #{proposal.get('number') or proposal_id} is {proposal.get('status')}"
+                               + (f": it was replaced by #{proposal['superseded_by_number']}, review that one" if proposal.get("superseded_by_number")
+                                  else f": {proposal['stale_reason']}" if proposal.get("stale_reason") else ""))
         if by not in proposal["reviewers"]:
             raise CompileError(f"{by} is not a policy owner and cannot review changes (policy owners: {', '.join(proposal['reviewers']) or 'none'})")
         if approve_all:
@@ -411,11 +447,22 @@ class Hub:
         return proposal
 
     def release(self, proposal_id: str, by: str, effective_from: str | None = None, now: str | None = None) -> dict:
+        from .compile import change_state
+
         proposal = self.proposals.load(proposal_id)
-        meta = finalize(proposal, self.releases, by=by, effective_from=effective_from, now=now)
+        base = proposal.get("base")
+        rejected_text = {c["frame"] for c in proposal.get("changes") or [] if c.get("op") == "text" and change_state(c) == "rejected"}
+        overrides = {n: o for n, o in (proposal.get("overrides") or {}).items() if n not in rejected_text}
+        texts = {}
+        for f in proposal.get("frames") or []:
+            try:
+                texts[f["name"]] = overrides[f["name"]]["text"] if f["name"] in overrides else self.frames.get(f["name"]).text
+            except Exception:
+                continue
+        meta = finalize(proposal, self.releases, by=by, effective_from=effective_from, now=now, frame_texts=texts)
         self.proposals.save(proposal)
         self.registry.install_profiles(self.releases.bundle(meta["digest"]))
-        overrides = proposal.get("overrides") or {}
+        self._released_cache = {}
         if overrides:
             # The drafts become the Frames: written in place, then every Frame document follows its file.
             for name, o in overrides.items():
@@ -432,7 +479,107 @@ class Hub:
                     self.kernel.transition(draft["locator"], "released", by=by, reason=f"released in policy {meta['digest'][:12]}")
         elif any(d["fields"].get("doc_type") == "frame" for d in self.kernel.query(type_="document")):
             self.frame_documents(create=False)
+        self._rebase_open_proposals(base, proposal, now=now)
         return meta
+
+    # --- keeping the other open proposals releasable ---------------------------
+    def _recompile_drafts(self, old: dict, overrides: dict, note: str = "") -> dict | None:
+        """Compile these drafts again against the policy in force, as the successor of ``old`` (decisions carried)."""
+        texts = {n: o["text"] for n, o in overrides.items()}
+        drafts = {n: o.get("draft") for n, o in overrides.items() if o.get("draft")}
+        try:
+            new = self.compile(overrides=texts, drafts=drafts)
+        except Exception as e:
+            old.setdefault("notes_for_owners", []).append(f"could not be recompiled: {e}")
+            self.proposals.save(old)
+            return None
+        by_id = {c["id"]: c for c in old.get("changes") or []}
+        for c in new["changes"]:
+            prior = by_id.get(c["id"])
+            if prior and prior.get("rule") == c["rule"] and prior.get("decisions") and not c.get("decisions"):
+                c["decisions"] = [dict(d, carried_from=old["id"]) for d in prior["decisions"]]
+        new["proposed_by"] = old.get("proposed_by")
+        new["recompiled_from"] = {"id": old["id"], "number": old.get("number"), "note": note}
+        self.proposals.save(new)
+        if old.get("status") == "open":
+            old["status"] = "superseded"
+        old["superseded_by"], old["superseded_by_number"] = new["id"], new.get("number")
+        self.proposals.save(old)
+        return new
+
+    def _rebase_open_proposals(self, old_base: str | None, released: dict, now: str | None = None) -> None:
+        """After a release, the other open proposals on the same base are compiled again against it, so each can still
+        be released on its own. A draft of a Frame the release just changed cannot be rebased silently: its owner
+        redoes it on the new text."""
+        changed = set((released.get("overrides") or {}).keys())
+        for p in self.proposals.list():
+            if p.get("status") != "open" or p.get("base") != old_base or p["id"] == released["id"]:
+                continue
+            if p.get("source") == "settings":
+                self._rebase_settings(p)
+                continue
+            overrides = p.get("overrides") or {}
+            if not overrides:
+                continue  # a compile of the files: compile again when ready
+            clash = sorted(set(overrides) & changed)
+            if clash:
+                p["status"] = "stale"
+                p["stale_reason"] = (f"{', '.join(clash)} changed in the release of #{released.get('number')}; redo the draft on the new text")
+                self.proposals.save(p)
+                for o in overrides.values():
+                    d = self.kernel.get(o["draft"]) if o.get("draft") else None
+                    if d:
+                        self.inbox.notify(d["fields"].get("owner") or "", kind="proposal", subject=f"Your draft {d['number']} needs redoing",
+                                          body=p["stale_reason"], record=d["locator"])
+                continue
+            self._recompile_drafts(p, overrides, note=f"rebased after the release of #{released.get('number')}")
+
+    def _rebase_settings(self, p: dict) -> dict | None:
+        from .rules import rule_key
+
+        current = self.settings_rules()
+        removed = {rule_key(c["rule"]) for c in p.get("changes") or [] if c["op"] == "remove"}
+        added = [c["rule"] for c in p.get("changes") or [] if c["op"] == "add"]
+        keys = {rule_key(r) for r in current}
+        rules = [r for r in current if rule_key(r) not in removed] + [r for r in added if rule_key(r) not in keys]
+        meta = self.releases.current()
+        new = self._settings_proposal(rules, meta["digest"] if meta else None, p.get("proposed_by") or "", p.get("reason") or "")
+        if not new["changes"]:
+            p["status"] = "superseded"
+            p["stale_reason"] = "the release in force already contains these changes"
+            self.proposals.save(p)
+            return None
+        by_id = {c["id"]: c for c in p.get("changes") or []}
+        for c in new["changes"]:
+            prior = by_id.get(c["id"])
+            if prior and prior.get("rule") == c["rule"] and prior.get("decisions"):
+                c["decisions"] = [dict(d, carried_from=p["id"]) for d in prior["decisions"]]
+        existing = self.proposals.list()
+        new["number"] = 1 + max(len(existing), max((int(x.get("number") or 0) for x in existing), default=0))
+        new["recompiled_from"] = {"id": p["id"], "number": p.get("number"), "note": "rebased after a release"}
+        self.proposals.save(new)
+        p["status"], p["superseded_by"], p["superseded_by_number"] = "superseded", new["id"], new["number"]
+        self.proposals.save(p)
+        return new
+
+    # --- the Frames as released -----------------------------------------------
+    def released_frames(self, digest: str | None = None):
+        """The Frame store as a release pinned it: each Frame's text from that release (the release in force by
+        default), so a cog judges against the reviewed SOP, not an unreleased edit on disk. Releases made before
+        texts were kept read the files."""
+        meta = self.releases.current() if digest is None else self.releases.get(digest)
+        if not meta:
+            return self.frames
+        key = (meta["digest"], id(self._frames))
+        if key not in self._released_cache:
+            texts = self.releases.frame_texts(meta["digest"])
+            store = self.frames
+            differ = {n: t for n, t in texts.items() if n in store.frames and store.get(n).text != t}
+            try:
+                self._released_cache[key] = store.with_overrides(differ) if differ else store
+            except Exception:
+                self._released_cache[key] = store
+        return self._released_cache[key]
 
     def readiness(self, proposal_id: str) -> list[str]:
         return readiness(self.proposals.load(proposal_id))
@@ -442,6 +589,33 @@ class Hub:
         return self.releases.bundle(meta["digest"]) if meta else None
 
     # --- questions ----------------------------------------------------------
+    def why_item(self, principal: str, ref: str) -> dict:
+        """Whether a member may decide this item now, and every reason why not: the permission sentence, segregation
+        of duties (by named role), whom the Gate waits for, a countersignature's role. For "why can't I approve X?"."""
+        rec = self.kernel.require(ref)
+        run = self.runner.run_for_record(rec["locator"])
+        if not run or run["status"] != "waiting" or not run.get("pending"):
+            return {"may": False, "reasons": [f"{rec['number']} is not waiting for a decision ({(run or {}).get('status') or rec['state']})"]}
+        bundle = self.releases.bundle(run["release"])
+        pending = run["pending"]
+        reasons = []
+        perm = authz.check(bundle, principal, "approve", run["manifest"]["object"], run["manifest"]["folder"])
+        if not perm["allowed"]:
+            reasons.append(perm["why"])
+        excluded = self.runner.excluded(bundle, run, pending.get("route") or "role:")
+        if principal in excluded:
+            reasons.append(excluded[principal])
+        if pending.get("countersign_of"):
+            role = pending.get("countersign_role") or ""
+            if role and role not in authz.roles_of(bundle, principal):
+                reasons.append(f"it waits for a {role.replace('-', ' ')} to countersign")
+            if principal in (pending.get("excluded") or []):
+                reasons.append("segregation of duties: they may not countersign it")
+        if principal not in (pending.get("assignees") or []):
+            reasons.append(f"it waits for {', '.join(pending.get('assignees') or [])} at {pending.get('title', 'its Gate')} "
+                           f"(routed by: {(pending.get('route_rule') or {}).get('text', 'the policy')})")
+        return {"may": not reasons, "reasons": reasons, "waiting_for": pending.get("assignees") or [], "gate": pending.get("title")}
+
     def why(self, principal: str, action: str, obj: str, folder: str, at: str | None = None) -> dict:
         bundle = self.current_bundle(at)
         if bundle is None:
@@ -479,7 +653,7 @@ class Hub:
         rec = self.kernel.get(about) if about else None
         profile = (bundle.get("cogs") or {}).get(cog) or {}
         ctx = RunContext(run_id="chat", release=meta["digest"], bundle=bundle, owner=cog, kernel=self.kernel, runner=self.runner,
-                         inbox=self.inbox, record=rec["locator"] if rec else None, dms=self.dms, frames=lambda: self.frames, model=self.model,
+                         inbox=self.inbox, record=rec["locator"] if rec else None, dms=self.dms, frames=lambda: self.released_frames(), model=self.model,
                          extras={"cog_profile": profile})
         queue = []
         for r in self.runner.pending_for(cog)[:10]:

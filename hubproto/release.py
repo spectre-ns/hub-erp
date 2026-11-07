@@ -248,11 +248,24 @@ class ReleaseStore:
 
     def save(self, bundle: dict, *, effective_from: str, released_by: str, proposal_id: str,
              bom: list[dict], rules: list[dict], parent: str | None, now: str | None = None,
-             config: dict | None = None, clauses: dict | None = None) -> dict:
-        d = digest(bundle)
+             config: dict | None = None, clauses: dict | None = None, frame_texts: dict[str, str] | None = None) -> dict:
+        """Save a release. Its identity is the bundle's digest, unless that bundle was already released from other
+        Frame texts: then the identity also covers the Frames' content, so a change to an SOP's wording is a new
+        release in the history, never a rewrite of an earlier one. An identical release (same bundle, same Frames)
+        returns the entry already there, unchanged."""
+        bd = digest(bundle)
+        shas = sorted((f.get("name"), f.get("sha256")) for f in bom or [])
+        same_bundle = [m for m in self._index() if m.get("bundle_digest", m["digest"]) == bd]
+        in_force = (self.current(now) or {}).get("digest")
+        for m in same_bundle:
+            if m["digest"] == in_force and sorted((f.get("name"), f.get("sha256")) for f in m.get("frames") or []) == shas:
+                return m  # nothing new: the release in force, from the same texts
+        # A bundle released before (from other texts, or an older release being put back) is a new entry in the history.
+        d = bd if not same_bundle else sha256_of({"bundle": bd, "frames": shas, "parent": parent, "at": now or utcnow()})
         rel_dir = self.root / d
         meta = {
             "digest": d,
+            "bundle_digest": bd,
             "created_at": now or utcnow(),
             "effective_from": effective_from,
             "released_by": released_by,
@@ -263,19 +276,27 @@ class ReleaseStore:
             "clauses": clauses or {},
             "inheritance": "transitive",
         }
-        # Re-saving the same digest refreshes the citations (same semantics, current Frame lines) but never
-        # rewrites who released it, when it took effect or what it descends from.
-        existing = next((m for m in self._index() if m["digest"] == d), None)
-        if existing:
-            meta = {**existing, "frames": bom, "clauses": clauses or existing.get("clauses", {})}
         rel_dir.mkdir(exist_ok=True)
         (rel_dir / "bundle.json").write_text(canonical(bundle))
         (rel_dir / "rules.json").write_text(json.dumps(rules, indent=1, sort_keys=True))
         (rel_dir / "release.json").write_text(json.dumps(meta, indent=1))
-        index = [m for m in self._index() if m["digest"] != d]
+        if frame_texts:
+            fdir = rel_dir / "frames"
+            fdir.mkdir(exist_ok=True)
+            for name, text in frame_texts.items():
+                (fdir / f"{name}.frame.md").write_text(text, encoding="utf-8")
+        index = self._index()
         index.append(meta)
         self.index_path.write_text(json.dumps(index, indent=1))
         return meta
+
+    def frame_texts(self, d: str) -> dict[str, str]:
+        """The Frame texts a release was compiled from (empty for releases made before texts were kept)."""
+        meta = self.get(d)
+        fdir = self.root / meta["digest"] / "frames"
+        if not fdir.exists():
+            return {}
+        return {p.name[: -len(".frame.md")]: p.read_text(encoding="utf-8") for p in sorted(fdir.glob("*.frame.md"))}
 
     def list(self) -> list[dict]:
         """Releases in the order they were made (timestamps are second-resolution, so the index order breaks ties)."""

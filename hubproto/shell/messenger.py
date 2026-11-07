@@ -27,7 +27,7 @@ var avatars={};try{avatars=JSON.parse(root.getAttribute('data-avatars')||'{}')}c
 function store(k,v){try{localStorage.setItem('mx.'+k,v)}catch(e){}}
 function load(k){try{return localStorage.getItem('mx.'+k)}catch(e){return null}}
 var cog=load('cog');var opt=cog&&sel.querySelector('option[value="'+cog+'"]');if(!opt||opt.disabled){var first=sel.querySelector('option:not([disabled])');cog=first?first.value:sel.value}sel.value=cog;
-function open(on){panel.hidden=!on;btn.setAttribute('aria-expanded',on?'true':'false');root.classList.toggle('open',on);store('open',on?'1':'0');if(on){refresh();setTimeout(function(){ta.focus()},30)}else{btn.focus()}}
+function open(on,quiet){panel.hidden=!on;btn.setAttribute('aria-expanded',on?'true':'false');root.classList.toggle('open',on);store('open',on?'1':'0');if(on){refresh();if(!quiet)setTimeout(function(){ta.focus()},30)}else if(!quiet){btn.focus()}}
 function li(cls){var x=document.createElement('li');x.className='mx-msg '+cls;return x}
 function bubble(m){var x=li(m.mine?'mine':'theirs');if(!m.mine){var a=document.createElement('span');a.className='mx-av';a.innerHTML=avatars[m.from]||'';x.appendChild(a)}
 var b=document.createElement('div');b.className='mx-bubble';b.textContent=m.body;x.appendChild(b);
@@ -50,7 +50,7 @@ var fd=new FormData();fd.append('as',me);fd.append('to',cog);fd.append('body',te
 fetch(postUrl,{method:'POST',body:fd}).then(function(r){return r.json().then(function(j){return{ok:r.ok,j:j}})}).then(function(res){typing.remove();
 if(res.ok&&res.j.reply){list.appendChild(bubble(res.j.reply))}else{var x=li('mx-error');x.textContent=(res.j&&res.j.error)||'The message was not delivered.';list.appendChild(x)}
 list.scrollTop=list.scrollHeight}).catch(function(){typing.remove();var x=li('mx-error');x.textContent='The hub did not answer; try again.';list.appendChild(x)}).then(function(){send.disabled=false;sel.disabled=false;ta.focus()})});
-if(load('open')==='1')open(true);
+if(load('open')==='1')open(true,true);
 })();"""
 
 
@@ -120,6 +120,8 @@ data-thread="{esc(href('/chat-thread', self.user, about=about))}" data-post="{es
         msgs = [{"from": m["from"], "mine": m["from"] == self.user, "body": m["body"], "when": (m.get("at") or "")[11:16],
                  "stand_in": bool(m.get("stand_in")), "looked": looked_words(m.get("tools") or [])} for m in self.hub.inbox.chat_thread(self.user, cog)]
         rec = self.hub.kernel.get(about) if about else None
+        if rec is not None and not self._can_read(rec["folder"])["allowed"]:
+            rec = None  # an item the person may not read is not named, not even its number or title
         context = (f"{cog} can see {rec['number']} ({(rec['fields'].get('title') or '')[:60]}) and the procedures it follows."
                    if rec else f"{cog} can see the procedures it follows and its queue.")
         return self._json({"messages": msgs, "context": context})

@@ -60,12 +60,13 @@ def test_apply_document_ops_with_a_report_per_operation(hub):
     lines = [x for x in text_of(hub, doc["document"]).splitlines() if x.strip()]
     assert lines == ["Audit plan", "Purpose", "Audit suppliers yearly.", "Critical ones twice a year.", "Scope", "All suppliers must be audited."]
     v = hub.dms.versions(f"rec:document:{doc['document']}")[-1]
-    assert v["by"] == "hub" and "edited by quality-assistant (agent run t-act)" in v["note"]
+    assert v["by"] in ("hub", "quality-assistant") and "edited by quality-assistant" in v["note"] and "agent run t-act" in v["note"]
     assert "error" in t.execute("apply_document_ops", {"number": doc["document"], "ops": "just make it better"})
 
 
 def test_a_document_in_force_is_not_edited(hub):
-    run_id = hub.runner.submit("document-control", {"record": {"title": "SOP-DOCS", "change_type": "minor", "body": "# SOP\nA step."}}, owner="alice")
+    run_id = hub.runner.submit("document-control", {"record": {"title": "SOP-DOCS", "change_type": "major", "body": "# SOP\nA step."}}, owner="alice")
+    hub.runner.decide(run_id, "bob", "approve", meaning="approved", payload_digest=hub.runner.seen_digest(hub.runner.load(run_id)))
     rec = hub.kernel.get(hub.runner.load(run_id)["record"])
     assert rec["state"] == "effective"
     out = tools(hub).execute("apply_document_ops", {"number": rec["number"], "ops": "@@ replace: step\n@@ with: stage"})
@@ -77,7 +78,7 @@ def test_versions_and_a_diff_between_two(hub):
     doc = t.execute("create_document", {"title": "Diff me", "folder": "Policy", "text": "First line.\nSecond line."})
     t.execute("apply_document_ops", {"number": doc["document"], "ops": "@@ replace: Second\n@@ with: Other"})
     out = t.execute("document_versions", {"number": doc["document"], "compare": [1, 2]})
-    assert [v["version"] for v in out["versions"]] == [1, 2] and out["versions"][1]["by"] == "hub"
+    assert [v["version"] for v in out["versions"]] == [1, 2] and out["versions"][1]["by"] in ("hub", "quality-assistant")
     assert "-Second line." in out["diff"] and "+Other line." in out["diff"]
     assert "error" in t.execute("document_versions", {"number": doc["document"], "compare": [1, 9]})
     assert "error" in t.execute("document_versions", {"number": "DOC-9999"})

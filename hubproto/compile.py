@@ -81,6 +81,7 @@ def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], re
     base = releases.current(now)
     old_rules = releases.rules(base["digest"]) if base else []
     changes = drift_guard(old_rules, rules)
+    changes += text_changes(base.get("frames") if base else [], store.bill_of_materials(frames), rules)
     for c in changes:
         c["decisions"] = []
     proposal = {
@@ -103,6 +104,26 @@ def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], re
         "release": None,
     }
     return proposal
+
+
+def text_changes(old_bom: list[dict], new_bom: list[dict], rules: list[dict]) -> list[dict]:
+    """A change to a Frame's wording is a change the policy owners review, whether or not any rule moved: the SOP is
+    what people follow and what cogs judge against. Two owners when a cog follows that Frame."""
+    old = {f["name"]: f for f in old_bom or []}
+    followed = {n for r in rules if r.get("kind") == "cog" for n in (r.get("follows") or []) + (r.get("reviews") or [])}
+    out = []
+    for f in new_bom or []:
+        prior = old.get(f["name"])
+        if prior and prior.get("sha256") == f.get("sha256"):
+            continue
+        what = (f"the text of {f['name']} changes (version {prior.get('version')} → {f.get('version')})" if prior
+                else f"{f['name']} is new (version {f.get('version')})")
+        if f["name"] in followed:
+            what += "; a cog follows it, so it changes what the cog judges against"
+        out.append({"id": f"text:{f['name']}:{str(f.get('sha256'))[:12]}", "op": "text", "frame": f["name"],
+                    "rule": {"kind": "text", "frame": f["name"], "sha256": f.get("sha256"), "version": f.get("version")},
+                    "widening": f["name"] in followed and prior is not None, "reason": what})
+    return out
 
 
 def blocking_findings(proposal: dict) -> list[dict]:
@@ -149,9 +170,10 @@ def readiness(proposal: dict) -> list[str]:
 
 
 def finalize(proposal: dict, releases: ReleaseStore, *, by: str, effective_from: str | None = None,
-             now: str | None = None) -> dict:
+             now: str | None = None, frame_texts: dict[str, str] | None = None) -> dict:
     if proposal.get("status") != "open":
-        raise CompileError(f"proposal {proposal['id']} is {proposal.get('status')}; compile a new one")
+        raise CompileError(f"proposal #{proposal.get('number') or proposal['id']} is {proposal.get('status')}"
+                           + (f" (replaced by #{proposal['superseded_by_number']}: release that one)" if proposal.get("superseded_by_number") else ""))
     if by not in proposal["reviewers"]:
         raise CompileError(f"{by} is not a policy owner and cannot release (policy owners: {', '.join(proposal['reviewers']) or 'none'})")
     current = releases.current(now)
@@ -167,10 +189,14 @@ def finalize(proposal: dict, releases: ReleaseStore, *, by: str, effective_from:
     kept_old = [c["rule"] for c in proposal["changes"] if c["id"] in rejected and c["op"] == "remove"]
     rules = [r for r in proposal["rules"] if rule_key(r) not in rejected_keys] + kept_old
     bundle = render(rules, proposal.get("record_types") or None)
+    # A rejected wording change keeps the Frame as released before: its entry in the bill of materials, its text.
+    rejected_text = {c["frame"] for c in proposal["changes"] if c["id"] in rejected and c.get("op") == "text"}
+    old_bom = {f["name"]: f for f in (current or {}).get("frames") or []}
+    bom = [old_bom[f["name"]] if f["name"] in rejected_text and f["name"] in old_bom else f for f in proposal["frames"]]
     meta = releases.save(bundle, effective_from=effective_from or (now or utcnow()), released_by=by,
-                         proposal_id=proposal["id"], bom=proposal["frames"], rules=rules,
+                         proposal_id=proposal["id"], bom=bom, rules=rules,
                          parent=proposal["base"], now=now, config=proposal.get("config", {}),
-                         clauses=proposal.get("clauses", {}))
+                         clauses=proposal.get("clauses", {}), frame_texts=frame_texts)
     proposal["status"] = "released"
     proposal["release"] = meta["digest"]
     return meta

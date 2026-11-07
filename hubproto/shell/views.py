@@ -11,7 +11,7 @@ from ..runner import RunError
 from .apps import app_for_type, avatar, avatars, plural
 from .charts import stacked_bars
 from .forms import ShellError, text_input, widget
-from .handler import hidden_as, href, kv, table
+from .handler import details, hidden_as, href, kv, table
 from .icons import icon, type_icon
 from .text import (NOTIFICATION_KINDS, chip, chip_class, day, days_from, esc, event_sentence, field_label, join_words, money, qty, role_words,
                    short, state_name, summary_of_record, tag, track_sentence, type_name, value_text, verb_for, when)
@@ -90,6 +90,14 @@ class ViewsMixin:
             if wf["record_type"] == rt:
                 return wf
         return None
+
+    def _msg_visible(self, m: dict) -> bool:
+        """A message is shown to its sender and recipient, and to whoever may read the item it is about."""
+        if self.user in (m.get("from"), m.get("to")):
+            return True
+        loc = m.get("record")
+        rec = self.hub.kernel.get(loc) if loc else None
+        return bool(rec) and self._readable(rec)
 
     def _readable(self, rec: dict) -> bool:
         cache = getattr(self, "_read_cache", None)
@@ -479,7 +487,7 @@ class ViewsMixin:
                 extra = (f"<div class='why'>{busy}</div><div class='why'>{icon('cpu')} {esc(prof.get('model') or 'stand-in')} &middot; follows "
                          + (", ".join(f'<a href="{href("/frame/" + fr, user)}">{esc(fr)}</a>' for fr in prof.get("follows") or []) or "no procedure") + "</div>")
             return (f'<div class="card">{avatar(name, bundle, size="lg")}<div><h3><a href="{href("/user/" + name, user)}">{esc(name)}</a> <span class="muted">{kind}</span></h3>'
-                    f'<div>{roles}</div>{extra}<div class="why">{pend_counts.get(name, 0)} waiting &middot; {dec_counts.get(name, 0)} decisions in 30 days</div></div></div>')
+                    f'<div>{roles}</div>{extra}<div class="why">{pend_counts.get(name, 0)} waiting &middot; {dec_counts.get(name, 0)} decision{"" if dec_counts.get(name, 0) == 1 else "s"} in 30 days</div></div></div>')
 
         people = sorted(n for n, m in members.items() if m["type"] == "person")
         cogs = sorted(n for n, m in members.items() if m["type"] == "cog")
@@ -503,7 +511,7 @@ class ViewsMixin:
         is_cog = m["type"] == "cog"
         roles = " ".join(tag(role_words(r)) for r in m["roles"]) or "no role"
         body = (f'<div class="profile-head">{avatar(name, bundle, size="lg")}<div><h1>{esc(name)} <span class="muted">{"cog" if is_cog else "person"}</span></h1>'
-                f'<div class="roles">{roles}</div><div class="why">{esc(m["source"]["text"]) if m.get("source") else ""}</div></div></div>')
+                f'<div class="roles">{roles}</div></div></div>')
         if is_cog:
             prof = (bundle.get("cogs") or {}).get(name) or {}
             follows = prof.get("follows") or []
@@ -540,7 +548,13 @@ class ViewsMixin:
                 rows.append(f"<label class='mopt{' off' if not c['available'] else ''}{' cur' if is_cur else ''}'><input type='radio' name='model' value='{esc(c['value'])}'"
                             f"{' checked' if is_cur else ''}{'' if c['available'] else ' disabled'}><span class='mname'>{esc(name_)}</span>"
                             f"<span class='mdetail'>{esc(detail)}{' · current' if is_cur else ''}</span></label>")
-            picker = ("" if not can_change else
+            servable = [c for c in avail["choices"] if c["available"] and c["value"] != current]
+            picker = ""
+            if can_change and not servable:
+                picker = (f"<p class='why'>No other model can be reached from this hub"
+                          + (f" ({esc(avail['ollama_error'])})" if avail["ollama_error"] else "") + ", so there is nothing to change to.</p>")
+                can_change = False
+            picker = picker or ("" if not can_change else
                       f"<details class='modelpick'><summary>Change model</summary><form method='post' action='/cog-model'>{hidden_as(user)}{self._once()}"
                       f"<input type='hidden' name='cog' value='{esc(name)}'><fieldset><legend class='vh'>Model for {esc(name)}</legend>{''.join(rows)}</fieldset>"
                       + (f"<p class='why'>{esc(avail['ollama_error'])}</p>" if avail["ollama_error"] else "")
@@ -567,7 +581,7 @@ class ViewsMixin:
                       + (f" ({sum(1 for c in calls if c.get('stand_in'))} answered by the stand-in, no model key)" if calls else ""))
             body += (f"<div class='card'><h2 style='margin-top:0;border:0'>{icon('robot')} About this cog</h2><p>{esc(desc)}</p>"
                      f"<p class='why'>A cog is routed work only from the procedures it follows; a model drafts its words and never signs.</p>"
-                     + kv(profile + about + [("Models", esc(models))]) + "</div>")
+                     + kv(profile) + (details("Technical details", kv(about + [("Model calls", esc(models))])) if about else "") + "</div>")
         if m.get("type") == "cog" and name in self.hub.registry.ids():
             body += self._cog_queue_section(name) + self._live_meta(cog=name)
             body += self._agent_section(name, prof if 'prof' in locals() else ((self.bundle.get("cogs") or {}).get(name) or {}))
@@ -592,7 +606,8 @@ class ViewsMixin:
             rows.append([esc(when(d.get("at"))), self._record_link(rec["locator"]), chip(d.get("verdict")), esc(short(d.get("meaning"), 300)),
                          self._rule_html(d["delegating_rule"]) if d.get("delegating_rule") else ""])
         body += table(["When", "Item", "Verdict", "Reason", "Under"], rows, "No decisions yet.")
-        msgs = [x for x in reversed(self.hub.inbox.all()) if x["from"] == name and x["kind"] not in NOTIFICATION_KINDS and x["kind"] != "chat"][:10]
+        msgs = [x for x in reversed(self.hub.inbox.all()) if x["from"] == name and x["kind"] not in NOTIFICATION_KINDS and x["kind"] != "chat"
+                and self._msg_visible(x)][:10]
         body += f"<h2>{icon('message')} Recent messages {'answered' if is_cog else 'sent'}</h2>"
         body += table(["When", "To", "Subject", "Text"], [[esc(when(x["at"])), self._avatar(x["to"], size="sm", named=True), esc(short(x["subject"], 120)),
                                                           esc(short(x["body"], 200))] for x in msgs], "No messages.")
@@ -692,7 +707,16 @@ class ViewsMixin:
             elif user in (m["from"], m["to"]) or m.get("record") or bundle["members"].get(m["to"], {}).get("type") == "cog" or bundle["members"].get(m["from"], {}).get("type") == "cog":
                 kind = "note" if (m["from"] == m["to"]) else ("reply" if m.get("kind") == "reply" else "message")
                 to = "" if kind == "note" else f"to {self._avatar(m['to'], size='sm', named=True)}: "
-                entries.append((m["at"], m["from"], kind, f"{to}<b>{self._human(m['subject'])}</b><div class='msg'>{self._mentions(short(m['body'], 2000))}</div>"))
+                see = ""
+                applied = m.get("applied_in")
+                if (m.get("edit") or {}) and isinstance(applied, int) and applied > 1 and rec["type"] == "document":
+                    see = f" <a href='{href('/compare/' + quote(loc, safe=':'), user, a=applied - 1, b=applied)}'>see what changed (version {applied})</a>"
+                elif (m.get("edit") or {}) and applied == "live":
+                    see = f" <a href='{href('/compare/' + quote(loc, safe=':'), user)}'>see the latest change</a>"
+                report = [r for r in (m.get("edit_report") or []) if not r.get("ok")]
+                if report:
+                    see += "<div class='why'>Not done: " + esc("; ".join(f"{r.get('op')} ({r.get('detail')})" for r in report)) + "</div>"
+                entries.append((m["at"], m["from"], kind, f"{to}<b>{self._human(m['subject'])}</b><div class='msg'>{self._mentions(short(m['body'], 2000))}</div>{see}"))
         entries.sort(key=lambda x: x[0], reverse=True)
         kinds = {"decision": ("check-circle", "decision"), "history": ("activity", "history"), "notification": ("alert", "notification"), "message": ("message", "message"),
                  "note": ("note", "note"), "reply": ("robot", "reply")}

@@ -16,10 +16,13 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections import deque
 from contextlib import contextmanager
 
 from .release import utcnow
 from .rules import sha256_of
+
+MAX_CALLS_KEPT = 500  # a long-running hub keeps only the most recent model calls in memory
 
 DEFAULT_MODEL = "stand-in"
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
@@ -205,7 +208,7 @@ def cog_availability(bundle: dict, cog: str) -> tuple[bool, str]:
 
 class ModelGateway:
     def __init__(self):
-        self.calls: list[dict] = []
+        self.calls: deque[dict] = deque(maxlen=MAX_CALLS_KEPT)  # the recent calls, for tests and /models; bounded
         self._last_usage = None
 
     def available(self, model: str) -> bool:

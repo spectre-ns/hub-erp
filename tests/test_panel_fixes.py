@@ -215,6 +215,8 @@ def test_design_cannot_be_released_with_unaccepted_or_no_requirements(hub, monke
 
 def test_notify_only_escalation_adds_no_approver(released):
     run_id = released.runner.submit("document-control", {"record": {"title": "SOP-X", "change_type": "minor", "training_roles": ["staff"]}}, owner="alice")
+    # A new document is a major change whatever its author says (review governance-1): a person approves it.
+    released.runner.decide(run_id, "bob", "approve", meaning="fit for use", payload_digest=seen(released.runner, run_id))
     assert released.runner.load(run_id)["status"] == "completed"
     escalated = released.runner.tick(today="2099-01-01")
     trainings = {e["record"]: e for e in escalated if released.kernel.get(e["record"])["type"] == "training"}
@@ -264,6 +266,7 @@ def test_two_processes_never_share_a_number(released, tmp_path):
 
 def test_effective_documents_are_immutable_and_reviewers_come_from_the_release(released, tmp_path):
     run_id = released.runner.submit("document-control", {"record": {"title": "SOP-Z", "change_type": "minor"}}, owner="alice")
+    released.runner.decide(run_id, "bob", "approve", meaning="fit for use", payload_digest=seen(released.runner, run_id))
     doc = released.kernel.get(released.runner.load(run_id)["record"])
     assert doc["state"] == "effective"
     with pytest.raises(KernelGuardError, match="controlled"):

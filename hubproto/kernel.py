@@ -59,6 +59,17 @@ def parse_locator(ref: str) -> tuple[str | None, str]:
     return None, ref
 
 
+def _clone(rec: dict) -> dict:
+    out = dict(rec)
+    for k in ("fields", "labels", "setters"):
+        if isinstance(out.get(k), dict):
+            out[k] = dict(out[k])
+    for k in ("events", "links", "decisions", "transitions", "assignees"):
+        if isinstance(out.get(k), list):
+            out[k] = list(out[k])
+    return out
+
+
 class Kernel:
     def __init__(self, path: Path, config_dir: Path | None = None):
         self.path = Path(path)
@@ -69,6 +80,9 @@ class Kernel:
             "CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT, type TEXT, "
             "aggregate TEXT, data TEXT, run_id TEXT, release_digest TEXT, by TEXT)"
         )
+        cols = {r[1] for r in self.db.execute("PRAGMA table_info(events)")}
+        if "chain" not in cols:  # events written before the chain carry none; verify_chain reports them as unchained
+            self.db.execute("ALTER TABLE events ADD COLUMN chain TEXT")
         self.db.commit()
         cfg = Path(config_dir) if config_dir else CONFIG_DIR
         self.config_dir = cfg
@@ -88,13 +102,39 @@ class Kernel:
     # ------------------------------------------------------------------ events
     def append(self, type_: str, aggregate: str, data: dict, *, run_id: str = "", release: str = "",
                by: str = "") -> int:
-        cur = self.db.execute(
-            "INSERT INTO events (at, type, aggregate, data, run_id, release_digest, by) VALUES (?,?,?,?,?,?,?)",
-            (utcnow(), type_, aggregate, json.dumps(data, sort_keys=True, default=str), run_id, release, by),
-        )
+        seq = self._insert(type_, aggregate, data, run_id=run_id, release=release, by=by)
         self.db.commit()
-        self._cache = None
+        return seq
+
+    def _insert(self, type_: str, aggregate: str, data: dict, *, run_id: str = "", release: str = "", by: str = "") -> int:
+        """Insert one event (the caller commits). Each event is chained to the last one written, so changing or
+        deleting an event breaks the chain from there on (``verify_chain``)."""
+        at = utcnow()
+        body = json.dumps(data, sort_keys=True, default=str)
+        prev = self.db.execute("SELECT chain FROM events WHERE chain IS NOT NULL ORDER BY seq DESC LIMIT 1").fetchone()
+        chain = sha256_of({"prev": prev[0] if prev else "", "at": at, "type": type_, "aggregate": aggregate, "data": body,
+                           "run_id": run_id, "release": release, "by": by})[:32]
+        cur = self.db.execute(
+            "INSERT INTO events (at, type, aggregate, data, run_id, release_digest, by, chain) VALUES (?,?,?,?,?,?,?,?)",
+            (at, type_, aggregate, body, run_id, release, by, chain),
+        )
         return int(cur.lastrowid)
+
+    def verify_chain(self) -> list[str]:
+        """Problems with the event chain (empty when every chained event is intact and in order)."""
+        problems, prev, unchained = [], "", 0
+        for seq, at, t, ag, d, r, rel, b, chain in self.db.execute(
+                "SELECT seq, at, type, aggregate, data, run_id, release_digest, by, chain FROM events ORDER BY seq"):
+            if chain is None:
+                unchained += 1
+                continue
+            want = sha256_of({"prev": prev, "at": at, "type": t, "aggregate": ag, "data": d, "run_id": r, "release": rel, "by": b})[:32]
+            if want != chain:
+                problems.append(f"event {seq} ({t} on {ag}) was changed, or an event before it was removed")
+            prev = chain
+        if unchained:
+            problems.append(f"{unchained} event(s) from before the chain was introduced are not chained")
+        return problems
 
     def events(self, aggregate: str | None = None, prefix: str | None = None) -> list[dict]:
         sql = "SELECT seq, at, type, aggregate, data, run_id, release_digest, by FROM events"
@@ -113,14 +153,27 @@ class Kernel:
 
     # ------------------------------------------------------------- projections
     def _records(self) -> dict[str, dict]:
-        """All records keyed by locator, rebuilt from the event stream when the file changed."""
+        """All records keyed by locator. The projection folds only the events written since it was last read (by this
+        process or another), so a save that reads records several times does not refold the whole history."""
         version = self._data_version()
         if self._cache is not None and self._cache_version == version:
             return self._cache
-        recs: dict[str, dict] = {}
-        for ev in self.events(prefix="rec:"):
+        last = getattr(self, "_cache_seq", 0) if self._cache is not None else 0
+        top = version[1]
+        recs: dict[str, dict] = dict(self._cache) if (self._cache is not None and top >= last) else {}
+        if not recs:
+            last = 0
+        touched: set[str] = set()  # records copied before this fold changes them: a caller's earlier get() stays as it was
+        rows = self.db.execute("SELECT seq, at, type, aggregate, data, run_id, release_digest, by FROM events "
+                               "WHERE aggregate LIKE 'rec:%' AND seq > ? ORDER BY seq", (last,))
+        new_events = ({"seq": sq, "at": a, "type": t, "aggregate": ag, "data": json.loads(d), "run_id": r, "release": rel, "by": b}
+                      for sq, a, t, ag, d, r, rel, b in rows)
+        for ev in new_events:
             loc = ev["aggregate"]
             rec = recs.get(loc)
+            if rec is not None and loc not in touched:
+                rec = recs[loc] = _clone(rec)
+                touched.add(loc)
             t = ev["type"]
             d = ev["data"]
             if t == "record.created":
@@ -170,6 +223,7 @@ class Kernel:
                 rec["archived"] = True
         self._cache = recs
         self._cache_version = version
+        self._cache_seq = top
         return recs
 
     def get(self, ref: str) -> dict | None:
@@ -295,16 +349,12 @@ class Kernel:
         try:
             number = self.next_number(type_)
             loc = locator(type_, number)
-            self.db.execute(
-                "INSERT INTO events (at, type, aggregate, data, run_id, release_digest, by) VALUES (?,?,?,?,?,?,?)",
-                (utcnow(), "record.created", loc, json.dumps({"type": type_, "number": number, "folder": folder, "fields": fields,
-                                                              "state": state, "labels": lab}, sort_keys=True, default=str),
-                 run_id, release, by))
+            self._insert("record.created", loc, {"type": type_, "number": number, "folder": folder, "fields": fields,
+                                                 "state": state, "labels": lab}, run_id=run_id, release=release, by=by)
             self.db.commit()
         except Exception:
             self.db.rollback()
             raise
-        self._cache = None
         missing = self.required_missing(self.get(loc), state)
         if missing and state not in ("open", "draft", "received", "filed", "captured"):
             self.append("record.transitioned", loc, {"from": state, "to": "open", "reason": f"missing {', '.join(missing)} for {state}"},
@@ -506,13 +556,21 @@ class Kernel:
         rec = self.require(f"document:{doc_id}")
         if rec["fields"].get("author") == approved_by:
             raise KernelGuardError("segregation-of-duties", f"{approved_by} authored and approved {doc_id}")
+        today = date.today()
+        try:
+            review = today.replace(year=today.year + 1).isoformat()
+        except ValueError:  # 29 February: a year on is 28 February
+            review = today.replace(year=today.year + 1, day=28).isoformat()
         self.set_fields(rec["locator"], {"approved_by": approved_by, "grant": grant.get("id"),
-                                         "effective_from": rec["fields"].get("effective_from") or date.today().isoformat(),
-                                         "review_date": rec["fields"].get("review_date") or f"{date.today().year + 1}-{date.today().month:02d}-{date.today().day:02d}"},
+                                         "effective_from": rec["fields"].get("effective_from") or today.isoformat(),
+                                         "review_date": rec["fields"].get("review_date") or review},
                         by=by, run_id=run_id, release=release)
-        # Withdraw the previously effective revision of the same title, if any.
-        for other in self.query(type_="document", state="effective"):
-            if other["fields"].get("title") == rec["fields"].get("title") and other["locator"] != rec["locator"]:
+        # Withdraw only the revision this document revises (named when it was submitted, by someone who may revise it),
+        # never another document because it happens to share the title.
+        revises = rec["fields"].get("revises")
+        if revises:
+            other = self.get(f"document:{revises}") or self.get(revises)
+            if other and other["state"] == "effective" and other["locator"] != rec["locator"]:
                 self.transition(other["locator"], "obsolete", by=by, run_id=run_id, release=release,
                                 reason=f"superseded by {rec['number']}")
                 self.link(rec["locator"], "supersedes", other["locator"], by=by, run_id=run_id, release=release)

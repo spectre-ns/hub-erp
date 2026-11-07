@@ -19,6 +19,7 @@ MANAGED_FIELDS = {"doc_class", "revision", "minor", "checked_out_by", "checked_o
                   "text", "office_comments", "owner", "author", "created_by", "filed_by", "proposal", "proposal_number",
                   "withdrawn", "withdrawn_by", "risk", "conditions", "state", "decisions", "assignees"}
 FINISHED_STATES = {"closed", "effective", "obsolete", "superseded", "posted", "cancelled", "rejected", "done", "completed"}
+START_STATES = {"draft", "open", "returned", "failed", "new"}
 
 
 def _type_of(hub, name: str) -> str | None:
@@ -108,16 +109,35 @@ def update_fields(t, a: dict) -> dict:
     if managed:
         return {"error": f"{', '.join(managed)} {'is' if len(managed) == 1 else 'are'} managed by the hub (its process, the document system "
                          "or the editor) and cannot be set directly"}
-    if rec["state"] in FINISHED_STATES:
-        return {"error": f"{rec['number']} is {rec['state']}; it is not changed in place"}
     if rec["type"] == "document" and rec["fields"].get("doc_class") in ("evidence", "external"):
         return {"error": f"{rec['number']} is {rec['fields'].get('doc_class')} and is kept as it was filed"}
+    # A record someone has signed, or that is moving through its process, is not changed in place: its approvers saw it
+    # as it is (rework and resubmission re-run the checks); and only a draft (a start state) is edited at all.
+    if rec.get("decisions"):
+        return {"error": f"{rec['number']} carries signed decisions; it changes only through its process (rework, resubmit or a new revision)"}
+    run = hub.runner.run_for_record(rec["locator"])
+    if run and run["status"] in ("submitted", "running", "waiting"):
+        return {"error": f"{rec['number']} is in a {run['process']} run ({run['status']}); change it by sending it back for rework, not in place"}
+    if rec["state"] not in START_STATES:
+        return {"error": f"{rec['number']} is {rec['state']}; only a draft ({', '.join(sorted(START_STATES))}) is changed in place"}
+    locked = hub.runner.fields_locked(rec) if hasattr(hub.runner, "fields_locked") else ""
+    if locked:  # the runner's rule: no field a signature or a Gate covers changes in place
+        return {"error": locked}
     obj = _object_of(hub, rec["type"])
     allowed = authz.check(bundle, t.cog, "update", obj, rec["folder"])
     if not allowed["allowed"]:
-        allowed = authz.check(bundle, t.cog, "create", obj, rec["folder"])
-    if not allowed["allowed"]:
-        return {"error": allowed["why"]}
+        # No 'update' for the cog: it may still change a draft of the person it works for, when that person filed, owns
+        # or is assigned it and may create such records there (the cog is their pen, not a wider right).
+        who = t.for_whom
+        f = rec["fields"]
+        theirs = who and who in (rec.get("created_by"), f.get("owner"), f.get("author"), f.get("requested_by"), *(rec.get("assignees") or []))
+        mine = authz.check(bundle, who, "update", obj, rec["folder"]) if who else {"allowed": False}
+        if not mine["allowed"] and theirs:
+            mine = authz.check(bundle, who, "create", obj, rec["folder"])
+        if not (theirs and mine["allowed"]):
+            return {"error": f"neither you nor {who or 'anyone you work for'} may change {rec['number']}: "
+                             f"{allowed['why']}" + ("" if theirs else f"; it is not {who}'s draft" if who else "")}
+        allowed = mine
     try:
         after = hub.kernel.set_fields(rec["locator"], fields, by=t.cog, run_id=f"agent-{t.run_id}")
     except KernelGuardError as e:
@@ -278,10 +298,22 @@ def create_task(t, a: dict) -> dict:
     fields = {"title": title, "description": str(a.get("description") or ""), "assignee": assignee, "due": a.get("due") or "",
               "priority": a.get("priority") or ""}
     fields = {k: v for k, v in fields.items() if v not in (None, "")}
+    about = None
+    if a.get("concerns"):
+        about = t._find(str(a["concerns"]))
+        if about is None:
+            return {"error": f"no record {a.get('concerns')!r} that you may read to link the task to"}
     run_id = hub.runner.submit("task", {"record": fields}, owner=t.cog)
     state = hub.runner.load(run_id)
     rec = hub.kernel.get(state["record"])
-    return {"ok": True, "number": rec["number"], "status": state["status"], "waiting_for": (state.get("pending") or {}).get("assignees")}
+    out = {"ok": True, "number": rec["number"], "status": state["status"], "waiting_for": (state.get("pending") or {}).get("assignees")}
+    if about is not None:
+        try:
+            hub.kernel.link(rec["locator"], "references", about["locator"], by=t.cog, run_id=f"agent-{t.run_id}")
+            out["linked_to"] = about["number"]
+        except KernelGuardError as e:
+            out["link_error"] = str(e)
+    return out
 
 
 register({"name": "create_task",
@@ -289,7 +321,9 @@ register({"name": "create_task",
                          "It waits for the assignee until they complete it.",
           "parameters": {"type": "object", "properties": {"title": {"type": "string"}, "description": {"type": "string"},
                                                          "assignee": {"type": "string"}, "due": {"type": "string"},
-                                                         "priority": {"type": "string"}}, "required": ["title"]}},
+                                                         "priority": {"type": "string"},
+                                                         "concerns": {"type": "string", "description": "the record number the task is about; it is linked"}},
+                         "required": ["title"]}},
          create_task, write=True)
 
 
@@ -316,10 +350,11 @@ def delegate_to_cog(t, a: dict) -> dict:
         if rec is None:
             return {"error": f"no record {a.get('number')!r} that {t.cog} may read"}
         hub.inbox.post(sender=t.cog, to=other, record=rec["locator"], subject=f"{t.cog} asks {other} about {rec['number']}", body=goal)
-        task = hub.queue.submit(other, "assigned", by=t.cog, title=goal, record=rec["locator"],
-                                payload={"record": rec["locator"], "instruction": goal}, key=key)
+        task = hub.queue.submit(other, "assigned", by=t.for_whom or t.cog, title=goal, record=rec["locator"],
+                                payload={"record": rec["locator"], "instruction": goal, "via": t.cog}, key=key)
     else:
-        task = hub.queue.submit(other, "task", by=t.cog, title=goal, payload={"goal": goal}, key=key)
+        # The other cog works for the same person (their reading and their rights), not with this cog's wider ones.
+        task = hub.queue.submit(other, "task", by=t.for_whom or t.cog, title=goal, payload={"goal": goal, "via": t.cog}, key=key)
     return {"ok": True, "cog": other, "task": task["id"], "status": task["status"],
             "result": (task.get("result") or {}).get("summary") if task["status"] == "done" else None}
 

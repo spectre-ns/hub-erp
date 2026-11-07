@@ -101,15 +101,23 @@ def test_widening_needs_two_approvers_and_release_is_deterministic(hub):
     assert {"purchase-to-pay", "document-control"} <= set(bundle["ops"])
 
 
-def test_no_op_edit_makes_no_new_release(released):
-    first = released.releases.current()["digest"]
+def test_a_wording_only_edit_is_reviewed_and_released_as_its_own_entry(released):
+    """Review governance-8: a change to an SOP's wording moves no rule but is still a change the owners review, and its
+    release is a new entry in the history (the earlier release's record is never rewritten)."""
+    first = released.releases.current()
     edit_frame(released, "finance-policy", "Everything else is approved by a person.",
                "Everything else is approved by a human being.", bump="1.2.1")
     proposal = released.compile()
-    assert proposal["changes"] == []
+    [change] = proposal["changes"]
+    assert change["op"] == "text" and change["frame"] == "finance-policy" and change["widening"]  # ap-reviewer follows it
+    with pytest.raises(CompileError, match="needs 2 approval"):
+        released.release(proposal["id"], "bob")
+    released.review(proposal["id"], "bob", approve_all=True)
+    released.review(proposal["id"], "carol", approve_all=True)
     meta = released.release(proposal["id"], "bob")
-    assert meta["digest"] == first
-    assert len(released.releases.list()) == 1
+    assert meta["digest"] != first["digest"] and meta["bundle_digest"] == first["digest"]
+    assert [m["digest"] for m in released.releases.list()] == [first["digest"], meta["digest"]]
+    assert released.releases.get(first["digest"])["frames"] == first["frames"], "the earlier release is kept as it was"
 
 
 def test_threshold_change_creates_child_release_and_is_widening(released):
@@ -138,7 +146,8 @@ def test_rejected_change_keeps_old_rule(released):
     proposal = released.compile()
     add = next(c for c in proposal["changes"] if c["op"] == "add")
     remove = next(c for c in proposal["changes"] if c["op"] == "remove")
-    released.review(proposal["id"], "bob", decisions={add["id"]: "reject", remove["id"]: "reject"})
+    text = next(c for c in proposal["changes"] if c["op"] == "text")
+    released.review(proposal["id"], "bob", decisions={add["id"]: "reject", remove["id"]: "reject", text["id"]: "reject"})
     meta = released.release(proposal["id"], "bob")
     assert released.releases.bundle(meta["digest"])["thresholds"]["match-tolerance"]["value"] == 2.0
 

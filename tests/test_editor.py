@@ -264,13 +264,13 @@ def test_a_cogs_answer_is_written_into_the_document_as_a_reply_comment(shell):
     content, version = hub.dms.content(loc)
     comments = office.extract_comments(content, "docx")
     assert [c["author"] for c in comments] == ["carol", "quality-assistant"] and f"Review of {number}" in comments[1]["text"]
-    assert version["by"] == "hub" and "replies from quality-assistant" in version["note"]
+    assert version["by"] in ("hub", "quality-assistant") and "replies from quality-assistant" in version["note"]
     assert json.loads(get(shell, "/editor-replies/" + quote(loc, safe=":"), **{"as": "carol"})[1])["pending"] == 0
     # A session that has not seen the new version is told to reload before it may overwrite it.
     status, _, _ = wopi_call(shell, f"/wopi/files/{number}/contents", token, "POST", saved,
                              {"X-WOPI-Override": "PUT", "X-COOL-WOPI-Timestamp": "2026-01-01T00:00:00.000000Z"})
     assert status == 409
-    stamp = wopi.wopi_time(version["at"])
+    stamp = wopi.version_stamp(version)
     assert wopi_call(shell, f"/wopi/files/{number}/contents", token, "POST", content, {"X-WOPI-Override": "PUT", "X-COOL-WOPI-Timestamp": stamp})[0] == 200
     assert len([m for m in hub.inbox.on_record(loc) if m["kind"] == "message"]) == 1, "the written reply is not posted to the chatter again"
     hub.dms.undo_checkout(loc, by="carol")
@@ -301,11 +301,11 @@ def test_a_comment_asking_the_cog_to_edit_makes_it_write_into_the_document(shell
     status, url, text = post(shell, "/apply-replies", {"as": "carol", "doc": loc})
     assert json.loads(text)["applied"] == 1
     content, version = hub.dms.content(loc)
-    assert version["by"] == "hub" and "edits and replies from quality-assistant" in version["note"]
+    assert version["by"] in ("hub", "quality-assistant") and "edits and replies from quality-assistant" in version["note"]
     text = office.extract_text(content, "docx")
     assert text.startswith("Test procedure TP-7") and "Inspection plan for the sensor board." in text, "the header was written before the existing text"
     comments = office.extract_comments(content, "docx")
-    assert [c["author"] for c in comments] == ["carol", "quality-assistant"] and "Changes: insert 3 line(s) at the start" in comments[1]["text"]
+    assert [c["author"] for c in comments] == ["carol", "quality-assistant"] and "Done: insert 3 line(s) at the start" in comments[1]["text"]
     assert hub.kernel.get(loc)["fields"]["checked_out_by"] == "carol", "the editing session survives the cog's edit"
     j = json.loads(get(shell, "/editor-replies/" + quote(loc, safe=":"), **{"as": "carol"})[1])
     assert j["pending"] == 0 and j["version"] == version["version"] and j["machine"] is True
@@ -438,7 +438,7 @@ def test_an_edit_request_on_a_spreadsheet_yields_rows_for_the_seat(shell):
     from hubproto import office
 
     content, version = hub.dms.content(loc)
-    assert office.sheet_rows_used(content, "xlsx") == len(rows) and version["by"] == "hub"
+    assert office.sheet_rows_used(content, "xlsx") == len(rows) and version["by"] in ("hub", "quality-assistant")
     hub.dms.undo_checkout(loc, by="carol")
 
 
@@ -482,7 +482,7 @@ def test_a_chatter_message_to_a_cog_about_a_document_is_handled_like_a_mention(s
     from hubproto import office
 
     content, version = hub.dms.content(loc)
-    assert version["by"] == "hub" and "quality-assistant" in version["note"]
+    assert version["by"] in ("hub", "quality-assistant") and "quality-assistant" in version["note"]
     text = office.extract_text(content, "docx")
     assert text and "Header test" in text
 

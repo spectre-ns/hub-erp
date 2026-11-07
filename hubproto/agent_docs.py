@@ -75,6 +75,9 @@ def apply_document_ops(tools, a: dict) -> dict:
         return {"error": f"{rec['number']} is being edited by {f['checked_out_by']}; comment on it instead"}
     if f.get("doc_class") in ("evidence", "external") or (f.get("doc_class") in ("controlled", "template") and rec["state"] not in LIVE_STATES):
         return {"error": f"{rec['number']} is not a working document ({f.get('doc_class')}, {rec['state']}); propose a change through its process instead"}
+    ok, why = tools.may_edit(rec)
+    if not ok:
+        return {"error": why}
     raw = str(a.get("ops") or "")
     # Here the agent writes the operations itself: text without any '@@' line is refused, not inserted at the top.
     ops = edits.parse_ops(raw) if re.search(r"(?m)^\s*@@", raw) else []
@@ -89,9 +92,11 @@ def apply_document_ops(tools, a: dict) -> dict:
     report += [{"op": edits.describe(o), "ok": False, "detail": "not an operation I know"} for o in unknown]
     if new is None:
         return {"error": "nothing was changed", "changes": report}
-    hub.dms.add_version(rec["locator"], new, by="hub", filename=latest.get("filename") or "", mime=latest.get("mime") or "",
-                        note=f"edited by {tools.cog} (agent run {tools.run_id})")
-    wopi.WopiHost(hub).index(hub.kernel.get(rec["locator"]), new, "hub")
+    hub.dms.add_version(rec["locator"], new, by=wopi.WopiHost.writer(hub.kernel.get(rec["locator"]), tools.cog),
+                        filename=latest.get("filename") or "", mime=latest.get("mime") or "",
+                        note=f"edited by {tools.cog}" + (f", asked by {tools.for_whom}" if getattr(tools, "for_whom", "") else "")
+                             + f" (agent run {tools.run_id})")
+    wopi.WopiHost(hub).index(hub.kernel.get(rec["locator"]), new, tools.cog)
     return {"ok": True, "document": rec["number"], "version": hub.dms.versions(rec["locator"])[-1]["version"], "changes": report}
 
 
@@ -141,16 +146,32 @@ register({"name": "document_versions",
 # ---------------------------------------------------------------- procedures
 def _released_frames(tools) -> list:
     """The Frames of the release in force (falling back to the store when the release lists none)."""
+    from .cogs import released_frame_texts
+    from .frames import load_frame_text
+
     hub = tools.hub
     meta = hub.releases.current() or {}
-    names = [x.get("name") for x in meta.get("frames") or [] if isinstance(x, dict)]
+    bom = {x.get("name"): x for x in meta.get("frames") or [] if isinstance(x, dict)}
+    texts = released_frame_texts(hub.releases, meta.get("digest") or "")
     store = hub.frames
     out = []
-    for n in names or sorted(store.frames):
+    for n in list(bom) or sorted(store.frames):
         try:
-            out.append(store.get(n))
+            disk = store.get(n)
         except Exception:
+            disk = None
+        if n in texts:  # the text the release was compiled from, never an unreleased edit on disk
+            try:
+                out.append(load_frame_text(texts[n], disk.path if disk else store.root / f"{n}.frame.md"))
+                continue
+            except Exception:
+                pass
+        if disk is None:
             continue
+        want = (bom.get(n) or {}).get("sha256")
+        if want and disk.sha256 and want != disk.sha256:
+            continue  # changed since the release and the released text is not kept: not policy, not shown
+        out.append(disk)
     return out
 
 

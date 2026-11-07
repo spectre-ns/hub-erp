@@ -39,12 +39,70 @@ TOOLS = [
      "description": "What is waiting for a person or a cog to decide or rework (their queue).",
      "parameters": {"type": "object", "properties": {"who": {"type": "string", "description": "a member's name or a role (e.g. payables-reviewer); default: the person asking"}}}},
     {"name": "record_history",
-     "description": "The history of a record: who created it, changed it, moved it on, and the run it is in.",
+     "description": "The history of a record: who created it, changed it, moved it on, and the run it is in. For a document, also every version: who wrote it, when and the note (which names the cog and who asked).",
      "parameters": {"type": "object", "properties": {"number": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["number"]}},
     {"name": "overview",
      "description": "How many records of each type there are, by state, in the folders the person may read.",
      "parameters": {"type": "object", "properties": {}}},
 ]
+
+
+EDITABLE_CONTROLLED_STATES = ("open", "draft", "returned", "failed")
+_RECORD_NUMBER = re.compile(r"\b[A-Z]{2,}(?:-\d{4})?-\d{2,}\b")
+
+
+def state_words(state: str | None) -> str:
+    """A state as people say it: 'awaiting-verify-the-actions' -> 'waiting at Verify the actions', 'in-review' -> 'in review'."""
+    s = str(state or "")
+    if s.startswith("awaiting-"):
+        return "waiting at " + s[len("awaiting-"):].replace("-", " ").capitalize()
+    return s.replace("-", " ").replace("_", " ")
+
+
+def may_edit_document(bundle: dict, who: str, rec: dict) -> tuple[bool, str]:
+    """Who may change a document's content (the same rule for a person in the editor, a cog asked to edit, an agent
+    tool): its author, owner or filer, a document controller, or someone who may create or update documents in its
+    folder; never evidence or received documents, never a controlled document in force; a Frame draft only by its
+    owner or a policy owner."""
+    f = rec.get("fields") or {}
+    number = rec.get("number") or rec.get("locator")
+    if rec.get("type") != "document":
+        return False, f"{number} is not a document"
+    if f.get("doc_class") in ("evidence", "external"):
+        return False, f"{number} is {'evidence' if f.get('doc_class') == 'evidence' else 'a received document'} and is never changed"
+    if f.get("doc_class") == "controlled" and rec.get("state") not in EDITABLE_CONTROLLED_STATES:
+        return False, f"{number} is a controlled document in force ({rec.get('state')}); it changes only through a new revision"
+    members = (bundle or {}).get("members") or {}
+    if who not in members:
+        return False, f"{who} is not a member"
+    roles = set(authz.roles_of(bundle, who))
+    if f.get("doc_type") == "frame-draft":
+        if who == f.get("owner") or "policy-owner" in roles:
+            return True, ""
+        return False, f"{number} is {f.get('owner')}'s draft of a policy; only its author or a policy owner changes it"
+    if who in (f.get("author"), f.get("owner")) or who == rec.get("created_by") or "document-controller" in roles:
+        return True, ""
+    for action in ("update", "create"):
+        if authz.check(bundle, who, action, "document", rec.get("folder") or "")["allowed"]:
+            return True, ""
+    return False, (f"only its author ({f.get('author') or f.get('owner') or '-'}), a document controller or someone who may create "
+                   f"documents in {rec.get('folder')} changes {number}")
+
+
+def record_numbers_in(text: str) -> list[str]:
+    return sorted(set(_RECORD_NUMBER.findall(text or "")))
+
+
+SEARCH_SKIP = {"office_comments", "conditions", "citations", "provenance", "grant", "content_sha", "mime", "editors", "checks", "exports"}
+
+
+def _values_text(v) -> str:
+    """A field's values as text, without the key names of nested data."""
+    if isinstance(v, dict):
+        return " ".join(_values_text(x) for x in v.values())
+    if isinstance(v, (list, tuple)):
+        return " ".join(_values_text(x) for x in v)
+    return str(v) if v is not None else ""
 
 
 def tool_specs() -> list[dict]:
@@ -95,8 +153,13 @@ class RecordTools:
         return ""
 
     def _brief(self, rec: dict) -> dict:
-        return {"number": rec["number"], "type": rec["type"], "title": self._title(rec), "state": rec["state"], "folder": rec["folder"],
-                "waiting_for": rec.get("assignees") or [], "updated": rec.get("updated_at") or rec.get("created_at")}
+        out = {"number": rec["number"], "type": rec["type"], "title": self._title(rec), "state": rec["state"], "folder": rec["folder"],
+               "waiting_for": rec.get("assignees") or [], "updated": rec.get("updated_at") or rec.get("created_at")}
+        f = rec["fields"]
+        for k in ("severity", "risk", "amount", "currency", "change_type", "due", "priority"):  # enough to tell items apart
+            if f.get(k) not in (None, "", [], {}):
+                out[k] = f[k]
+        return out
 
     @staticmethod
     def _value(v):
@@ -160,9 +223,12 @@ class RecordTools:
             if not self._state_ok(r["state"], state):
                 continue
             if words:
-                hay = (r["number"] + " " + r["type"] + " " + (TYPE_NAMES.get(r["type"]) or "") + " " + r["state"].replace("-", " ") + " "
-                       + json.dumps({k: v for k, v in r["fields"].items() if k not in ("office_comments",)}, default=str)).lower()
-                if not all(w.rstrip("s") in hay for w in words):
+                # Values only, as words: "high" must not match a field named risk_not_high.
+                hay = " ".join([r["number"], r["type"], TYPE_NAMES.get(r["type"]) or "", r["state"].replace("-", " "),
+                                *[_values_text(v) for k, v in r["fields"].items() if k not in SEARCH_SKIP]]).lower()
+                tokens = set(re.findall(r"[\w.-]+", hay))
+                if not all(any(t == w.rstrip("s") or t.rstrip("s") == w.rstrip("s") or (len(w) > 3 and t.startswith(w.rstrip("s"))) for t in tokens)
+                           for w in words):
                     continue
             out.append(self._brief(r))
             if len(out) >= limit:
@@ -250,10 +316,15 @@ class RecordTools:
         if rec is None:
             return {"error": f"no record {number!r} that you may read"}
         evs = self.hub.kernel.events(aggregate=rec["locator"])[-max(1, min(int(limit or 20), 60)):]
-        return {"number": rec["number"], "events": [{"at": e["at"], "by": e["by"], "what": e["type"].replace("record.", "").replace("document.", "document "),
-                                                     "detail": {k: self._value(v) for k, v in (e["data"] or {}).items() if k not in ("fields", "text_excerpt")}
-                                                     if e["type"] != "record.fields_set" else sorted((e["data"] or {}).get("fields", {}))}
-                                                    for e in evs]}
+        out = {"number": rec["number"], "events": [{"at": e["at"], "by": e["by"], "what": e["type"].replace("record.", "").replace("document.", "document "),
+                                                    "detail": {k: self._value(v) for k, v in (e["data"] or {}).items() if k not in ("fields", "text_excerpt")}
+                                                    if e["type"] != "record.fields_set" else sorted((e["data"] or {}).get("fields", {}))}
+                                                   for e in evs]}
+        if rec["type"] == "document" and getattr(self.hub, "dms", None) is not None:
+            # Who wrote each version, and why (the note names the cog and the person who asked): the answer to "who removed it?".
+            out["versions"] = [{"version": v.get("version"), "at": v.get("at"), "by": v.get("by"), "note": v.get("note") or "",
+                                "size": v.get("size")} for v in self.hub.dms.versions(rec["locator"])][-20:]
+        return out
 
     def overview(self) -> dict:
         counts: dict[str, dict[str, int]] = {}

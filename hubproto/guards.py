@@ -234,7 +234,9 @@ def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict |
     for (subject, obj, res), actions in allow.items():
         if {"create", "approve"} <= actions:
             out.append(Finding("consistency", "warning",
-                               f"{subject} may both create and approve {obj} in {res}; segregation of duties is enforced per person at run time"))
+                               f"{subject} may both create and approve {obj} in {res}: whoever files an item never approves it "
+                               f"(checked at every Gate routed to a role or a cog); a step routed to a named field "
+                               f"(the requester, the assignee) is that person's unless a segregation sentence says otherwise"))
     return out
 
 
@@ -287,11 +289,12 @@ def drift_guard(old_rules: list[dict], new_rules: list[dict]) -> list[dict]:
         if old_key:
             change["changes_from"] = removed[old_key]
             change["reason"] = _reason(rule, "change") + " (" + (_differences(removed[old_key], rule) or "restated") + ")"
-            change["widening"] = change["widening"] and _widens_over(removed[old_key], rule)
+            change["widening"] = _widens_over(removed[old_key], rule)
         changes.append(change)
     for key, rule in removed.items():
         change = {"id": "remove:" + key, "op": "remove", "rule": rule,
-                  "widening": rule["kind"] == "permission" and rule["effect"] == "deny",
+                  # Removing a deny or a segregation sentence lets someone do what they could not.
+                  "widening": (rule["kind"] == "permission" and rule["effect"] == "deny") or rule["kind"] == "sod",
                   "reason": _reason(rule, "remove")}
         if key in paired:
             change["changed_to"] = added[paired[key]]
@@ -307,13 +310,33 @@ def _widens_over(old: dict, new: dict) -> bool:
     if old.get("kind") != new.get("kind"):
         return True
     if new.get("kind") == "approval_criteria":
-        o, n = old.get("max_amount"), new.get("max_amount")
-        return (n is None and o is not None) or (o is not None and n is not None and n > o) or len(new.get("conditions") or []) < len(old.get("conditions") or [])
+        return _criteria_widens(old, new)
+    if new.get("kind") == "process":
+        def checkpoints(r):
+            return {s.get("id") for s in r.get("steps") or [] if s.get("kind") == "checkpoint"}
+        return not checkpoints(old) <= checkpoints(new) or old.get("folder") != new.get("folder")
     if new.get("kind") == "routing":
         return old.get("assignee") != new.get("assignee") or (old.get("mode") or "assign") != (new.get("mode") or "assign")
     if new.get("kind") == "member":
         return not set(new.get("roles") or []) <= set(old.get("roles") or [])
     return old != {**new, "source": old.get("source")}
+
+
+def _limit_raised(o, n) -> bool:
+    """A limit (None = no limit) that allows more than before."""
+    return (n is None and o is not None) or (o is not None and n is not None and float(n) > float(o))
+
+
+def _criteria_widens(old: dict, new: dict) -> bool:
+    """A cog's approval criterion allows more when it loses a condition, a countersignature or a running limit, or a
+    limit goes up (or away)."""
+    if not set(old.get("conditions") or []) <= set(new.get("conditions") or []):
+        return True
+    if old.get("countersign") and old.get("countersign") != new.get("countersign"):
+        return True
+    if (old.get("currency") or None) != (new.get("currency") or None) and old.get("max_amount") is not None:
+        return True
+    return any(_limit_raised(old.get(k), new.get(k)) for k in ("max_amount", "max_per_day", "max_amount_per_month"))
 
 
 def _widens(rule: dict, old_rules) -> bool:
@@ -327,17 +350,8 @@ def _widens(rule: dict, old_rules) -> bool:
     if kind == "routing":
         return rule["assignee"].startswith("cog:")
     if kind == "approval_criteria":
-        for o in old_rules:
-            if o["kind"] == kind and o["approver"] == rule["approver"] and o["process"] == rule["process"]:
-                if rule.get("max_amount") is None and o.get("max_amount") is not None:
-                    return True
-                if (rule.get("max_amount") or 0) > (o.get("max_amount") or 0):
-                    return True
-                if set(rule.get("conditions", [])) < set(o.get("conditions", [])):
-                    return True
-                if o.get("countersign") and not rule.get("countersign"):
-                    return True  # dropping a countersignature lets the cog's signature stand alone
-                return False
+        # A new criterion is more authority for a cog, whatever criteria it already has; a restatement of an existing
+        # one (paired in drift_guard) is judged by _criteria_widens.
         return True
     if kind == "threshold":
         for o in old_rules:

@@ -8,7 +8,7 @@ from ..agent import Agent, AgentStore, agents_enabled
 from .forms import ShellError
 from .handler import hidden_as, href, log_line, table
 from .icons import icon
-from .text import esc, when
+from .text import esc, short, when
 
 MODE_WORDS = {"act": "acts on its own through the system's governed paths", "propose": "proposes actions; a person confirms them",
               "read": "only looks and reports"}
@@ -39,11 +39,24 @@ class AgentsMixin:
                      f"placeholder='e.g. find nonconformances older than a week and remind their owners'>{esc(self._val('goal') if self.route == '/agent-task' else '')}</textarea></label>"
                      f"<div class='actions'><button>{icon('play')}Add to its queue</button><span class='why'>It takes it when it gets to it, looks things up, then acts within its autonomy and a budget of 5 actions; "
                      f"you are told what it did.</span></div></form>")
+        runs = [r for r in runs if self._run_seen_by(r.get("by"), cog)]
         if runs:
-            body += "<h3>Recent runs</h3>" + table(["When", "Goal", "By", "Status", "Actions"], [
-                [esc(when(r["at"])), f"<a href='{href('/agent-run/' + r['run'], user)}'>{esc(r['goal'][:90])}</a>", esc(r["by"]),
+            body += "<h3>Recent runs</h3>" + table(["When", "Asked", "By", "Status", "Actions"], [
+                [esc(when(r["at"])), f"<a href='{href('/agent-run/' + r['run'], user)}'>{esc(short(self._run_title(r), 90))}</a>", esc(r["by"]),
                  f"<span class='chip {'ok' if r['status'] in ('done', 'confirmed') else 'warn'}'>{esc(r['status'])}</span>", esc(r["actions"])] for r in runs])
         return body
+
+    def _run_seen_by(self, by: str | None, cog: str | None) -> bool:
+        """An agent run (its goal, tool calls and results) is shown to whoever asked for it, the cog, and policy owners."""
+        return self.user in (by, cog) or self._policy_owner()
+
+    def _run_title(self, run: dict) -> str:
+        """A run is titled by what was asked: the queue task's title, not the prompt the hub wrote for the cog."""
+        rid = run.get("run")
+        for t in self.hub.queue.list(cog=run.get("cog"), status=("done", "failed"), limit=200, newest_first=True):
+            if (t.get("result") or {}).get("run") == rid:
+                return t.get("title") or run.get("goal") or ""
+        return run.get("goal") or ""
 
     def page_agent_run(self):
         user = self.user
@@ -55,16 +68,22 @@ class AgentsMixin:
             raise ShellError(f"There is no agent run '{self.arg}'.", 404)
         start = evs[0]
         cog = start.get("cog")
+        if not self._run_seen_by(start.get("by"), cog):
+            raise ShellError(f"This run was asked by {start.get('by') or 'someone else'}; only they, the cog and the policy owners see what it read and did.", 403)
         end = next((e for e in reversed(evs) if e["type"] == "finished"), None)
-        body = (f"<h1>{self._avatar(cog, size='sm')} {esc(cog)}: {esc(start.get('goal'))}</h1>"
+        title = self._run_title({"run": self.arg, "cog": cog, "goal": start.get("goal")})
+        body = (f"<h1>{self._avatar(cog, size='sm')} {esc(cog)}: {esc(short(title, 160))}</h1>"
+                + (f"<details><summary>What the cog was told</summary><p class='why' style='white-space:pre-wrap'>{esc(start.get('goal'))}</p></details>"
+                   if title != start.get("goal") else "") +
                 f"<p class='why'>Started {esc(when(start['at']))} by {esc(start.get('by'))} ({esc(start.get('trigger'))}); autonomy {esc(start.get('mode'))}; "
                 f"budget {esc((start.get('budget') or {}).get('actions'))} actions.</p>")
         rows = []
         for e in evs:
             if e["type"] != "tool":
                 continue
-            args = json.dumps(e.get("arguments") or {}, default=str)
-            rows.append([f"{icon('edit' if e.get('write') else 'search')}" + esc(e["tool"]), f"<code>{esc(args[:200])}</code>",
+            a = e.get("arguments") or {}
+            words = "; ".join(f"{k.replace('_', ' ')}: {short(v if isinstance(v, str) else json.dumps(v, default=str), 120)}" for k, v in a.items()) if isinstance(a, dict) else str(a)
+            rows.append([f"{icon('edit' if e.get('write') else 'search')}" + esc(e["tool"].replace("_", " ")), esc(short(words, 260)),
                          "<span class='chip ok'>ok</span>" if e.get("ok") else "<span class='chip crit'>refused</span>", f"<span class='muted'>{esc((e.get('result') or '')[:300])}</span>"])
         body += "<h2>Steps</h2>" + table(["Tool", "With", "", "Result"], rows, "No steps yet.")
         if end:
@@ -137,8 +156,10 @@ class NewMemberMixin:
             return ""
         roles = "".join(f"<label class='check'><input type='checkbox' name='roles' value='{esc(r)}'> {esc(r.replace('-', ' '))}</label>" for r in sorted(bundle.get("roles") or []))
         chosen = self._val("model") if self.route == "/new-cog" else self._default_model()
-        frames = "".join(f"<label class='check'><input type='checkbox' name='follows' value='{esc(n)}'> {esc(n)}</label>"
-                         for n in sorted(self.hub.frames.frames) if self.hub.frames.get(n).scope != "reference")
+        frames = "".join(f"<label class='check'><input type='checkbox' name='follows' value='{esc(n)}'> {esc(n)}"
+                         f"<span class='muted'> {esc(short(self.hub.frames.get(n).description, 110))}</span></label>"
+                         for n in self._sop_names())
+        servable = [c for c in self._model_choices() if c["available"]]
         err = self._form_error(["name", "roles"]) if self.route in ("/new-person", "/new-cog") else ""
         return (f"<h2>{icon('plus')} Add someone</h2><p class='why'>A new member is a change to the organization model: it goes to the policy owners "
                 f"as a proposal and takes effect when they release it. Roles decide what a member may do.</p>{err}"
@@ -146,7 +167,10 @@ class NewMemberMixin:
                 f"<label class='f'><span>Name (as they sign in) <b>*</b></span><input name='name' required pattern='[a-z][a-z0-9-]+' value='{esc(self._val('name') if self.route == '/new-person' else '')}'></label>"
                 f"<fieldset><legend>Roles <b>*</b></legend><div class='checks'>{roles}</div></fieldset>"
                 f"<div class='actions'><button>{icon('send')}Propose</button></div></form></details>"
-                f"<details class='card'><summary><b>A new cog</b></summary><form method='post' action='/new-cog'>{hidden_as(user)}{self._once()}"
+                + ("<details class='card'><summary><b>A new cog</b></summary><p class='card warn'>No model can be reached from this hub, so a new cog "
+                   "could not answer: a cog comes with its model. Ask an administrator to make Ollama reachable (or set an Anthropic key), "
+                   "then add the cog.</p></details>" if not servable else "")
+                + (f"<details class='card'><summary><b>A new cog</b></summary><form method='post' action='/new-cog'>{hidden_as(user)}{self._once()}"
                 f"<label class='f'><span>Name <b>*</b></span><input name='name' required pattern='[a-z][a-z0-9-]+' placeholder='calibration-assistant' value='{esc(self._val('name') if self.route == '/new-cog' else '')}'></label>"
                 f"<label class='f'><span>Model <i>(what Ollama serves now; a cog comes with its model)</i></span><select name='model' required>"
                 + "".join(f"<option value='{esc(c['value'])}'{' selected' if c['value'] == chosen else ''}{'' if c['available'] else ' disabled'}>{esc(c['label'])}</option>"
@@ -157,7 +181,17 @@ class NewMemberMixin:
                 f"<label class='f'><span>Autonomy</span><select name='autonomy'><option value='propose'>propose: its actions wait for a person</option>"
                 f"<option value='act'>act: it acts on its own through governed paths</option><option value='read'>read: it only looks and reports</option></select></label>"
                 f"<label class='f'><span>Duties (one per line; taken up daily)</span><textarea name='duties' rows='2'></textarea></label>"
-                f"<div class='actions'><button>{icon('send')}Propose</button></div></form></details>")
+                f"<div class='actions'><button>{icon('send')}Propose</button></div></form></details>" if servable else ""))
+
+    def _sop_names(self) -> list[str]:
+        """The procedures a member can follow: SOPs and work instructions, not the organization model, cog profiles or references."""
+        out = []
+        for n in sorted(self.hub.frames.frames):
+            f = self.hub.frames.get(n)
+            if f.scope == "reference" or n in ("org-model", "cog-profiles"):
+                continue
+            out.append(n)
+        return out
 
     def _model_choices(self) -> list[dict]:
         from ..model import available_models

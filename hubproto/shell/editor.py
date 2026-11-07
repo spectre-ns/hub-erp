@@ -197,6 +197,9 @@ setInterval(poll,4000);}})();</script>"""
         self._need_release()
         rec = self.hub.kernel.require(self._f("doc"))
         self._require_read(rec["folder"])
+        may, _why = self._may_edit_document(rec)
+        if not may:  # only someone who may change the document writes pending answers into it, or marks them done
+            return self._json({"error": f"you may read {rec['number']} but not change it"}, 403)
         ids = [x for x in (self._f("ids") or "").split(",") if x]
         pending = {m["id"] for m in wopi.WopiHost(self.hub).pending_replies(rec)}
         done = [i for i in ids if i in pending]
@@ -210,6 +213,9 @@ setInterval(poll,4000);}})();</script>"""
         self._need_release()
         rec = self.hub.kernel.require(self._f("doc"))
         self._require_read(rec["folder"])
+        may, _why = self._may_edit_document(rec)
+        if not may:  # only someone who may change the document writes pending answers into it, or marks them done
+            return self._json({"error": f"you may read {rec['number']} but not change it"}, 403)
         try:
             out = wopi.WopiHost(self.hub).verify_edit(rec, self._f("id") or "", self.user)
         except KernelGuardError as e:
@@ -229,6 +235,9 @@ setInterval(poll,4000);}})();</script>"""
         if rec["type"] != "document":
             return self._json({"error": "not a document"}, 400)
         self._require_read(rec["folder"])
+        may, _why = self._may_edit_document(rec)
+        if not may:  # only someone who may change the document writes pending answers into it, or marks them done
+            return self._json({"error": f"you may read {rec['number']} but not change it"}, 403)
         try:
             applied = wopi.WopiHost(self.hub).apply_replies(rec, self.user)
         except KernelGuardError as e:
@@ -354,14 +363,23 @@ setInterval(poll,4000);}})();</script>"""
             if method == "POST" and tail == "contents" and override in ("PUT", ""):
                 seen_stamp = self.headers.get("X-COOL-WOPI-Timestamp") or self.headers.get("X-LOOL-WOPI-Timestamp")
                 _, latest = host.get_file(rec)
-                if seen_stamp and wopi.wopi_time(latest.get("at")) != seen_stamp and latest.get("by") == "hub":
-                    # The hub wrote a reply into the document after this session last saved: the editor reloads first.
+                machines = {n for n, m in ((self.bundle or {}).get("members") or {}).items() if m.get("type") == "cog"}
+                if wopi.is_stale_save(latest, seen_stamp or "", machines):
+                    # The hub or a cog wrote into the document after this session last saved: the editor reloads first.
                     return self._json({"COOLStatusCode": 1010, "LOOLStatusCode": 1010}, 409)
                 result = host.put_file(rec, claims, self.raw_body)
                 log_line(f"editor save doc={rec['number']} by={claims['u']} bytes={len(self.raw_body)}")
                 return self._json(result)
             if method == "POST" and not tail:
                 lock_id = self.headers.get("X-WOPI-Lock") or ""
+                if override in ("LOCK", "REFRESH_LOCK", "UNLOCK") and not claims.get("w"):
+                    # A view-only session never locks: only an editor's token may take, refresh or clear a lock.
+                    self.send_response(409)
+                    self.send_header("X-WOPI-Lock", "")
+                    self.send_header("X-WOPI-LockFailureReason", "this session may only view the document")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 if override == "LOCK":
                     old = self.headers.get("X-WOPI-OldLock")
                     status, headers = host.unlock(rec, claims, old) if old else (200, {})

@@ -41,7 +41,8 @@ from .runner import RunError
 
 DIGEST = 12
 POLICY_OWNER_ROLE = "policy-owner"
-BACKUP_PARTS = ("runs", "releases", "proposals", "blobs", "inbox")
+BACKUP_PARTS = ("runs", "releases", "proposals", "blobs", "inbox", "agents", "settings")
+SQLITE_PARTS = ("queue.db",)  # copied with the SQLite backup API (a consistent snapshot while the hub runs)
 NEEDS_FRAMES = {"seed", "compile", "frames", "bootstrap-release", "conformance", "status"}
 NO_HUB_NEEDED = {"init", "restore"}
 
@@ -972,6 +973,19 @@ def cmd_agent(args) -> int:
     require_member(hub, args.as_user, flag="--as", members=members_of(hub))
     agent = Agent(hub, args.cog)
     if args.confirm:
+        from . import authz
+        from .agent import AgentStore
+
+        evs = AgentStore(hub.root / "state" / "agents").load(args.confirm)
+        if not evs:
+            fail(f"no agent run {args.confirm}", 2)
+        started = evs[0]
+        if started.get("cog") != args.cog:
+            fail(f"run {args.confirm} is {started.get('cog')}'s; confirm it with --cog {started.get('cog')}", 2)
+        meta = hub.releases.current()
+        bundle = hub.releases.bundle(meta["digest"]) if meta else {"members": {}}
+        if args.as_user != started.get("by") and "policy-owner" not in authz.roles_of(bundle, args.as_user):
+            fail(f"only {started.get('by')} (who gave the task) or a policy owner confirms its actions", 1)
         try:
             out = agent.confirm(args.confirm, args.as_user)
         except ValueError as e:
@@ -1137,6 +1151,31 @@ def cmd_status(args) -> int:
     return rc
 
 
+def cmd_verify(args) -> int:
+    """Check the evidence: the kernel's event chain, every run's Track chain and signatures, and every stored blob
+    against its hash. Exit 1 when anything was changed after it was written."""
+    import hashlib
+
+    hub = _hub(args)
+    problems = [p for p in hub.kernel.verify_chain() if "not chained" not in p]
+    notes = [p for p in hub.kernel.verify_chain() if "not chained" in p]
+    for st in hub.runner.list():
+        for p in hub.runner.verify_signatures(st["id"]):
+            (notes if "not chained" in p else problems).append(f"run {st['id']} ({st['process']}): {p}")
+    blobs = Path(args.root) / "state" / "blobs"
+    damaged = 0
+    for b in blobs.iterdir() if blobs.exists() else []:
+        if b.is_file() and not b.name.startswith(".") and hashlib.sha256(b.read_bytes()).hexdigest() != b.name:
+            problems.append(f"blob {b.name[:12]} is damaged")
+            damaged += 1
+    for n in notes:
+        print(f"note: {n}")
+    for p in problems:
+        print(f"PROBLEM: {p}")
+    print(f"verify: {len(problems)} problem(s); {len(hub.runner.list())} run(s), kernel chain checked, blobs checked")
+    return 1 if problems else 0
+
+
 def cmd_backup(args) -> int:
     hub = _hub(args)
     state = Path(args.root) / "state"
@@ -1160,6 +1199,18 @@ def cmd_backup(args) -> int:
         else:
             (dest / part).mkdir()
             parts[part] = 0
+    for name in SQLITE_PARTS:
+        if (state / name).exists():
+            s_db = sqlite3.connect(str(state / name))
+            d_db = sqlite3.connect(str(dest / name))
+            with d_db:
+                s_db.backup(d_db)
+            d_db.close()
+            s_db.close()
+            parts[name] = 1
+    if (state / ".secret").exists():  # signatures and editor tokens verify against it
+        shutil.copyfile(state / ".secret", dest / ".secret")
+        parts[".secret"] = 1
     cur = hub.releases.current()
     manifest = {"created_at": utcnow(), "root": str(Path(args.root).resolve()), "kernel": "kernel.db", "parts": parts,
                 "release": cur["digest"] if cur else None}
@@ -1173,9 +1224,14 @@ def cmd_backup(args) -> int:
 
 def cmd_restore(args) -> int:
     src = Path(args.dir)
-    missing = [name for name in ("backup.json", "kernel.db", *BACKUP_PARTS) if not (src / name).exists()]
     if not src.exists():
         fail(f"no backup at {src}", 2)
+    try:
+        listed = list((json.loads((src / "backup.json").read_text()).get("parts") or {}).keys())
+    except (OSError, json.JSONDecodeError):
+        listed = []
+    # Every part the backup says it holds must be there (older backups list fewer parts).
+    missing = [name for name in ("backup.json", "kernel.db", *dict.fromkeys(listed or BACKUP_PARTS[:5])) if not (src / name).exists()]
     if missing:
         fail(f"{src} is not a complete backup: missing {', '.join(missing)}; a partial restore would leave records pointing at runs or releases that are not there", 2)
     try:
@@ -1193,7 +1249,11 @@ def cmd_restore(args) -> int:
     state.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(src / "kernel.db", state / "kernel.db")
     for part in BACKUP_PARTS:
-        shutil.copytree(src / part, state / part, symlinks=False)
+        if (src / part).exists():
+            shutil.copytree(src / part, state / part, symlinks=False)
+    for name in (*SQLITE_PARTS, ".secret"):
+        if (src / name).exists():
+            shutil.copyfile(src / name, state / name)
     if (src / "proposal-numbers.json").exists():
         shutil.copyfile(src / "proposal-numbers.json", state / "proposal-numbers.json")
     hub = Hub(root, frames_dir=root / "frames") if (root / "frames").exists() else None
@@ -1254,6 +1314,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("compile", help="read the Frames into a proposal of changes against the release in force; exit 1 on error findings")
     s.add_argument("--scope", action="append", metavar="FRAME", help="compile only this Frame (and what it inherits); repeatable")
     s.set_defaults(fn=cmd_compile)
+    s = sub.add_parser("verify", help="check the evidence: event chain, run Tracks and signatures, stored files; exit 1 on tampering")
+    s.set_defaults(fn=cmd_verify)
     s = sub.add_parser("withdraw-draft", help="withdraw a Frame draft: it leaves open proposals and is no longer compiled")
     s.add_argument("draft", help="the draft document's number (DOC-0431) or locator")
     s.add_argument("--as", dest="as_", required=True, help="the draft's author or a policy owner")

@@ -7,9 +7,11 @@ from ..compile import CompileError
 from ..frames import FrameError
 from ..rules import rule_key
 from .forms import ShellError
+from urllib.parse import quote
+
 from .icons import icon
 from .handler import details, hidden_as, href, table
-from .text import chip, esc, join_words, money, role_words, tag, type_name, version_label, when
+from .text import chip, esc, friendly, join_words, money, role_words, tag, type_name, version_label, when
 
 RULE_WORDS = {"permission": "permission", "routing": "routing", "threshold": "threshold", "sla": "deadline", "approval_criteria": "automatic approval",
               "member": "member", "role": "role", "folder": "folder", "process": "process", "sod": "segregation of duties"}
@@ -48,6 +50,14 @@ def sentence_diff(old_rules: list[dict], new_rules: list[dict]) -> dict[str, lis
     return {"added": sorted(plain_added, key=key), "removed": sorted(plain_removed, key=key), "changed": sorted(changed, key=lambda p: key(p[1]))}
 
 
+def _filled(text) -> str:
+    """A template placeholder ({{COMPANY_NAME}}) shown as not filled in, never as raw braces."""
+    import re as _re
+
+    t = str(text or "")
+    return _re.sub(r"\{\{\s*([A-Z_]+)\s*\}\}", lambda m: f"<i class='muted'>[{esc(m.group(1).lower().replace('_', ' '))}: not filled in]</i>", esc(t))
+
+
 class PolicyMixin:
     def _require_policy_owner(self, what: str) -> None:
         if not self._is_member():
@@ -70,7 +80,9 @@ class PolicyMixin:
             rows.append([f'<a href="{href("/release/" + m["digest"][:16], user)}">{esc(label)}</a>' + (" " + chip("in effect", "ok") if cur and cur["digest"] == m["digest"] else ""),
                          esc(when(m["effective_from"])), esc(m["released_by"]), esc(parent),
                          f'<a href="{href("/release/" + m["digest"][:16], user)}">What changed</a>', details("digest", f"<code>{esc(m['digest'])}</code>")])
+        n_open = sum(1 for q in self.hub.proposals.list() if q.get("status") == "open")
         body = "<h1>Policy versions</h1><p class='why'>Every released version of the policy, newest first. Open one to see what changed and who approved it.</p>" \
+            + (f"<p><a class='button ghost' href='{href('/proposals', user)}'>{icon('layers')}Policy proposals ({n_open} open)</a></p>") \
             + table(["Version", "Effective from", "Released by", "Based on", "Changes", "Digest"], rows, "No release yet.")
         if self.bundle:
             bundle = self.bundle
@@ -163,7 +175,7 @@ proposal <code>{esc(meta.get('proposal_id') or '-')}</code>{(' reviewed by ' + e
             frames = list(self.hub.frames.frames.values())
         except FrameError as e:
             raise ShellError(f"The policies on disk could not be read: {e}. Fix that file; the release in effect still applies.", 503) from None
-        rows = [[f"<a href='{href('/frame/' + f.name, user)}'>{esc(f.name)}</a>", esc(f.version), esc(f.scope), esc(f.maintainer), esc(", ".join(f.inherits) or "-"), esc(f.description)]
+        rows = [[f"<a href='{href('/frame/' + f.name, user)}'>{esc(f.name)}</a>", esc(f.version), esc(f.scope), _filled(f.maintainer), esc(", ".join(f.inherits) or "-"), _filled(f.description)]
                 for f in frames]
         self._page("Policies", "<h1>Policies</h1><p class='why'>The policy and procedure documents (Frames) the release is compiled from, as they are on disk now.</p>"
                    + table(["Policy", "Version", "Scope", "Maintainer", "Inherits", "Description"], rows), crumbs=[("Policies", None)])
@@ -183,14 +195,41 @@ proposal <code>{esc(meta.get('proposal_id') or '-')}</code>{(' reviewed by ' + e
                 f"visibility {esc(frame.visibility)}; inherits {esc(', '.join(frame.inherits) or 'nothing')}; file {esc(str(frame.path.name))}</span></div>"
                 f"<p class='why'>Line numbers are the file's own, frontmatter included, so a citation such as “line 34” matches an editor.</p>"
                 f"<div class='tbl'><table><thead><tr><th scope='col'>Line</th><th scope='col'>Text</th></tr></thead><tbody>{lines}</tbody></table></div>")
-        body = (f"<p><a class='button' href='{href('/frame-doc/' + frame.name, self.user)}'>{icon('file')}Open as a document</a> "
+        proposed = [q for q in self.hub.proposals.list() if q.get("status") == "open" and frame.name in (q.get("overrides") or {})]
+        banner = "".join(f"<div class='card warn' role='status'>A change to this policy is proposed: <a href='{href('/proposal/' + q['id'], self.user)}'>"
+                         f"proposal #{esc(q.get('number'))}</a>.</div>" for q in proposed)
+        body = banner + (f"<p><a class='button' href='{href('/frame-doc/' + frame.name, self.user)}'>{icon('file')}Open as a document</a> "
                 f"<span class='why'>to propose a change: Edit this policy makes a draft the policy owners review and release.</span></p>") + body
         self._page(frame.name, body, crumbs=[("Policies", href("/frames", self.user)), (frame.name, None)])
 
     # ----------------------------------------------------------------- why
+    def _why_item(self, rec: dict, principal: str) -> str:
+        """'Why not me?' for an item, from the hub's own answer (permission, segregation of duties, countersignature,
+        whom the approval waits for); the shell only adds the route's citation as a link."""
+        out = self.hub.why_item(principal, rec["locator"])
+        run = self.hub.runner.run_for_record(rec["locator"])
+        pending = (run or {}).get("pending") or {}
+        head = ""
+        if out.get("gate"):
+            head = (f"<p>{esc(rec['number'])} waits at <b>{esc(out['gate'])}</b> for <b>{esc(', '.join(out.get('waiting_for') or []) or 'nobody')}</b>"
+                    + (f", routed by {self._rule_html(pending.get('route_rule'))}" if pending.get("route_rule") else "") + ".</p>")
+        if out.get("may"):
+            return f"<div class='card ok'>{head}<p><b>{esc(principal)} may decide it now:</b> open it from the inbox.</p></div>"
+        reasons = "".join(f"<li>{self._human(friendly(r))}</li>" for r in out.get("reasons") or [])
+        return f"<div class='card'>{head}<p><b>{esc(principal)} may not decide it now:</b></p><ul>{reasons}</ul></div>"
+
     def page_why(self):
         user = self.user
         principal = (self.q.get("principal", [""])[0] or "").strip() or user
+        about = self.q.get("record", [""])[0]
+        if about:
+            rec = self.hub.kernel.get(about)
+            if rec is None or not self._can_read(rec["folder"])["allowed"]:
+                raise ShellError("There is no item by that name you may read.", 404)
+            body = f"<h1>Why not {esc(principal)}?</h1><p class='why'>What {esc(rec['number'])} waits for, and what stands between {esc(principal)} and deciding it.</p>"
+            body += self._why_item(rec, principal)
+            return self._page("Why", body, crumbs=[(rec["number"], href(("/document/" if rec["type"] == "document" else "/record/") + quote(rec["locator"], safe=":"), user)),
+                                                   ("Why", None)])
         action = self.q.get("action", ["create"])[0] or "create"
         obj = self.q.get("object", ["bill"])[0] or "bill"
         folder = self.q.get("folder", ["Finance/Payables"])[0] or "Finance/Payables"
@@ -222,7 +261,7 @@ proposal <code>{esc(meta.get('proposal_id') or '-')}</code>{(' reviewed by ' + e
         crit = {c["approver"].partition(":")[2]: c for c in bundle.get("approval_criteria", [])}
         body = "<h1>People and roles</h1><p class='why'>Who is a member of the organization and which roles they hold, as written in the org model. To change a role, edit the org model and release a new policy version.</p>"
         body += table(["Person", "Roles", "Written in"], [[esc(p), " ".join(tag(role_words(r)) for r in m["roles"]), self._rule_link(m.get("source"))] for p, m in people], "No release in effect.", row_header=True)
-        body += "<h2>Automatic reviewers</h2><p class='why'>Cogs act within fixed criteria; they never sign outside them, and the owner is told when one decides.</p>"
+        body += "<h2>Cogs</h2><p class='why'>Cogs act within fixed criteria; they never sign outside them, and the owner is told when one decides.</p>"
         body += table(["Reviewer", "Roles", "May approve", "Limit"], [[esc(p), " ".join(tag(role_words(r)) for r in m["roles"]),
                                                                         (esc(crit[p]["source"]["text"]) + f" <span class='why'>({self._rule_link(crit[p]['source'])})</span>") if p in crit else "nothing on its own",
                                                                         esc(money(crit[p]["max_amount"], crit[p].get("currency")) if p in crit and crit[p].get("max_amount") is not None else "-")] for p, m in cogs], row_header=True)

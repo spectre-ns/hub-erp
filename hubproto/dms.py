@@ -13,6 +13,7 @@ certificates, snapshots), external (received files, immutable), working
 from __future__ import annotations
 
 import hashlib
+import os
 import json
 import mimetypes
 from datetime import date
@@ -26,23 +27,66 @@ IMMUTABLE_CLASSES = ("evidence", "external")
 TEXT_MIMES = ("text/", "application/json", "application/x-yaml", "application/xml")
 
 
+class BlobError(OSError):
+    """A stored blob does not match its hash (torn by a crash or changed on disk)."""
+
+
 class BlobStore:
     def __init__(self, root: Path):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
 
     def put(self, content: bytes) -> str:
+        """Store content under its hash. Written to a temporary file, flushed to disk and renamed into place, so a
+        crash never leaves a half-written blob under the final name; a blob already there that does not match (torn
+        by an older crash) is rewritten."""
         sha = hashlib.sha256(content).hexdigest()
         path = self.root / sha
-        if not path.exists():
-            path.write_bytes(content)
+        if path.exists():
+            try:
+                if path.stat().st_size == len(content) and hashlib.sha256(path.read_bytes()).hexdigest() == sha:
+                    return sha
+            except OSError:
+                pass
+        tmp = self.root / f".{sha}.{os.getpid()}.tmp"
+        with open(tmp, "wb") as fh:
+            fh.write(content)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
         return sha
 
     def get(self, sha: str) -> bytes:
-        return (self.root / sha).read_bytes()
+        data = (self.root / sha).read_bytes()
+        if hashlib.sha256(data).hexdigest() != sha:
+            raise BlobError(f"stored content {sha[:12]} is damaged (its bytes no longer match its hash); restore it from a backup")
+        return data
 
     def exists(self, sha: str) -> bool:
         return (self.root / sha).exists()
+
+
+# The most a zip may inflate to (or inflate by) before its text is not extracted: a 600 KB "zip bomb" otherwise
+# takes gigabytes of memory under the hub lock.
+MAX_INFLATED = int(os.environ.get("HUBPROTO_MAX_INFLATED") or 200 * 1024 * 1024)
+MAX_RATIO = 200
+
+
+def zip_too_big(content: bytes) -> str:
+    """Why a zip package is not safe to open (empty when it is): what it would inflate to, by member and in total."""
+    import io
+    import zipfile
+
+    try:
+        z = zipfile.ZipFile(io.BytesIO(content))
+    except zipfile.BadZipFile:
+        return ""
+    total = sum(max(0, i.file_size) for i in z.infolist())
+    if total > MAX_INFLATED:
+        return f"it would inflate to {total:,} bytes (the limit is {MAX_INFLATED:,})"
+    if content and total / max(1, len(content)) > MAX_RATIO and total > 10 * 1024 * 1024:
+        return f"it inflates {total // max(1, len(content))} times its size"
+    return ""
 
 
 def extract_text(content: bytes, mime: str, filename: str = "") -> str:
@@ -62,6 +106,8 @@ def extract_text(content: bytes, mime: str, filename: str = "") -> str:
     if ext in ("docx", "xlsx", "pptx", "odt", "ods", "odp"):
         from . import office
 
+        if zip_too_big(content):
+            return ""
         try:
             return office.extract_text(content, ext)
         except Exception:

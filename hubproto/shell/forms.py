@@ -43,7 +43,7 @@ START_INPUTS: dict[str, list[tuple]] = {
 DEFAULT_START_INPUTS: list[tuple] = [("title",), ("description", "textarea")]
 # Fields a submission needs before the first automatic step can do its work, when the type's own required-by-state
 # list says nothing about the states before the first approval (the invoice extractor refuses a bill without them).
-REQUIRED_EXTRA = {"bill": ["supplier", "amount", "currency", "date"], "purchase-request": ["title"], "task": ["title"],
+REQUIRED_EXTRA = {"bill": ["supplier", "amount", "currency", "date"], "purchase-request": ["title", "supplier"], "task": ["title"],
                   "ncr": ["title", "description"], "design": ["title", "kind"], "requirement": ["statement"], "document": ["title"],
                   "receipt": ["po", "lines"], "complaint": ["title", "description"], "change-request": ["title", "description"],
                   "audit": ["title"], "management-review": ["title"], "calibration": ["asset", "result"], "capa": ["title"],
@@ -87,6 +87,20 @@ def coerce(name: str, spec: str | None, value: str, kind: str | None = None):
             out.append({"item": parts[0], "quantity": qty})
         return out
     spec = spec or "text"
+    if spec.startswith("list") and not value.startswith("[") and ";" in value:
+        # One row per line: 'action; owner; due date; status' (the CAPA actions editor), never JSON for a person.
+        rows = []
+        for line in value.splitlines():
+            parts = [p.strip() for p in line.split(";")]
+            if not parts or not parts[0]:
+                continue
+            row = {"action": parts[0]}
+            for key, v in zip(("owner", "due", "status"), parts[1:]):
+                if v:
+                    row[key] = v
+            row.setdefault("status", "open")
+            rows.append(row)
+        return rows
     if spec.startswith("enum:"):
         opts = spec[5:].split(",")
         if value not in opts:
@@ -175,6 +189,12 @@ def widget(name: str, spec: str | None, value="", required: bool = False, kind: 
     aria = f' aria-invalid="true" aria-describedby="{eid}"' if error else ""
     cls = ' class="f bad"' if error else ' class="f"'
     tail = f'<span class="err" id="{eid}">{esc(error)}</span>' if error else ""
+    if isinstance(value, list) and value and all(isinstance(x, dict) for x in value):
+        # A list of rows (e.g. CAPA actions) as editable lines, not JSON.
+        keys = ("action", "owner", "due", "status")
+        shown = "\n".join("; ".join(str(x.get(k, "") or "") for k in keys).rstrip("; ") for x in value)
+        lab = f"<span>{esc(text)}{star} <i>(one per line: action; owner; due date; status)</i></span>"
+        return f'<label{cls}>{lab}<textarea name="{esc(name)}" rows="{min(8, len(value) + 2)}"{req}{aria}>{esc(shown)}</textarea>{tail}</label>'
     val = prefill(value)
     if kind == "lines":
         shown = val if isinstance(value, str) else "\n".join(map(str, value or []))
