@@ -149,3 +149,19 @@ def test_frames_can_state_running_limits_too(tmp_path):
     m = _CRITERIA.match("The ap-reviewer cog may approve purchase-to-pay bills under 2,000 USD when the supplier is approved, "
                         "at most 10 a day, at most 20,000 USD a month, countersigned by a controller.")
     assert m and m.group("perday") == "10" and m.group("permonth") == "20,000" and m.group("counter") == "controller"
+
+
+def test_a_cog_proposes_a_setting_change_and_never_applies_it(hub):
+    from hubproto.agent import AgentStore, AgentTools
+
+    tools = AgentTools(hub, "qa-manager", "t-settings", "act", 6, AgentStore(hub.root / "state" / "agents"), requester="carol")
+    found = tools.execute("list_settings", {"kind": "approval_criteria", "contains": "ap-reviewer"})
+    [s] = found["settings"]
+    assert s["reads"].startswith("The ap-reviewer cog may approve purchase-to-pay bills under 2,000 USD")
+    before = hub.releases.current()["digest"]
+    out = tools.execute("propose_setting_change", {"action": "replace", "key": s["key"], "rule": {**s["rule"], "max_per_day": 15},
+                                                   "reason": "keep cog approvals to a reviewable volume"})
+    assert out["ok"] and out["proposal"] and out["changes"] >= 1 and hub.releases.current()["digest"] == before
+    assert hub.proposals.load(out["proposal_id"])["source"] == "settings"
+    assert "error" in tools.execute("propose_setting_change", {"action": "replace", "key": "nope", "rule": {}, "reason": "x"})
+    assert "error" in tools.execute("propose_setting_change", {"action": "remove", "key": s["key"], "reason": ""})

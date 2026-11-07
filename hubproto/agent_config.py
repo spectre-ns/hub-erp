@@ -49,6 +49,9 @@ def propose_policy_change(tools, a: dict) -> dict:
     from . import edits
 
     hub = tools.hub
+    if hub.settings_source():
+        return {"error": "the rules are edited as settings now: Frames are the SOPs people and cogs read. Use list_settings and "
+                         "propose_setting_change for a rule; a change to an SOP's wording is a document change (edit its document)."}
     name = str(a.get("frame") or "").strip()
     reason = str(a.get("reason") or "").strip()
     try:
@@ -213,3 +216,62 @@ register({"name": "list_proposals",
                          "Only the policy owners decide and release them.",
           "parameters": {"type": "object", "properties": {}}},
          list_proposals, write=False)
+
+
+# ---------------------------------------------------------------- settings (the rules as data)
+def list_settings(tools, a: dict) -> dict:
+    """The rules in force, as data with a key and the sentence each reads as, narrowed by kind and words."""
+    from .rules import rule_key
+    from .settings import sentence
+
+    hub = tools.hub
+    procs = (hub.current_bundle() or {}).get("processes") or {}
+    kind = str(a.get("kind") or "").strip()
+    words = [w for w in str(a.get("contains") or "").lower().split() if w]
+    out = []
+    for r in hub.settings_rules():
+        if kind and r.get("kind") != kind:
+            continue
+        text = sentence(r, procs)
+        if words and not all(w in text.lower() for w in words):
+            continue
+        out.append({"key": rule_key(r), "kind": r["kind"], "reads": text, "rule": {k: v for k, v in r.items() if k != "source"},
+                    "from": (r.get("source") or {}).get("frame")})
+        if len(out) >= int(a.get("limit") or 30):
+            break
+    return {"count": len(out), "settings": out, "source_of_truth": "settings" if hub.settings_source() else "frames"}
+
+
+def propose_setting_change(tools, a: dict) -> dict:
+    """One change to the rules as data (add, replace or remove a rule), proposed to the policy owners at once."""
+    hub = tools.hub
+    action = str(a.get("action") or "")
+    reason = str(a.get("reason") or "").strip()
+    if action not in ("add", "replace", "remove"):
+        return {"error": "action must be add, replace or remove"}
+    if not reason:
+        return {"error": "say why (reason): the policy owners read it"}
+    hub.settings_discard(tools.cog)  # a cog's change is proposed on its own, never mixed with a stale draft
+    try:
+        hub.settings_edit(tools.cog, {"action": action, "key": str(a.get("key") or ""), "rule": a.get("rule") or {}})
+        p = hub.settings_propose(tools.cog, reason=f"{reason} (proposed by {tools.cog}, agent run {tools.run_id})")
+    except ValueError as e:
+        hub.settings_discard(tools.cog)
+        return {"error": str(e)}
+    return {"ok": True, **_summary(p)}
+
+
+register({"name": "list_settings",
+          "description": "Look up the rules in force as data (roles, members, folders, permissions, thresholds, routing, due dates, "
+                         "approval criteria, segregation of duties, cog profiles) with each one's key and the sentence it reads as.",
+          "parameters": {"type": "object", "properties": {"kind": {"type": "string", "description": "e.g. approval_criteria, permission, threshold"},
+                                                         "contains": {"type": "string", "description": "words the sentence must contain"},
+                                                         "limit": {"type": "integer"}}}}, list_settings, write=False)
+register({"name": "propose_setting_change",
+          "description": "Propose one change to the rules as data (add, replace or remove a rule found with list_settings); it goes to the "
+                         "policy owners as a proposal. " + _OWNERS_DECIDE,
+          "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["add", "replace", "remove"]},
+                                                         "key": {"type": "string", "description": "the rule's key from list_settings (replace, remove)"},
+                                                         "rule": {"type": "object", "description": "the new rule's fields, as list_settings shows them (add, replace)"},
+                                                         "reason": {"type": "string"}},
+                         "required": ["action", "reason"]}}, propose_setting_change, write=True)
