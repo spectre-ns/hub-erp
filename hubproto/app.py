@@ -414,11 +414,14 @@ class Hub:
         or persona in Policy, titled by its own heading. (Once the SOPs are the source, it is the SOP document itself.)"""
         from . import sopdocs
 
-        frame = self.frames.get(name)
-        doc_type, folder = sopdocs.kind_of(frame)
-        title = sopdocs.title_of(frame)
         if self.sop_source():  # the SOP document in force is the Frame's document
             return sopdocs.in_force(self.kernel, name)
+        released = self.released_frames()
+        if name not in released.frames:
+            return None  # a Frame that is not in the release in force (a draft on disk) has no document: it is not policy
+        frame = released.get(name)
+        doc_type, folder = sopdocs.kind_of(frame)
+        title = sopdocs.title_of(frame)
         found = [d for d in self.kernel.query(type_="document")
                  if sopdocs.is_frame_doc(d["fields"]) and d["fields"].get("frame_name") == name]
         if found:
@@ -447,7 +450,16 @@ class Hub:
         return self.kernel.transition(doc["locator"], "effective", by=by, reason=f"the Frame as released (version {frame.version})")
 
     def frame_documents(self, create: bool = True) -> list[dict]:
-        return [d for d in (self.frame_document(n, create=create) for n in sorted(self.frames.frames)) if d]
+        """The document of every Frame in the release in force; a document of a Frame no longer (or never) released is retired."""
+        from . import sopdocs
+
+        released = self.released_frames()
+        if not self.sop_source():
+            for d in self.kernel.query(type_="document"):
+                f = d["fields"]
+                if sopdocs.is_frame_doc(f) and f.get("frame_name") not in released.frames and d["state"] == "effective":
+                    self.kernel.transition(d["locator"], "obsolete", by="hub", reason="its Frame is not in the release in force")
+        return [d for d in (self.frame_document(n, create=create) for n in sorted(released.frames)) if d]
 
     def frame_draft(self, name: str, by: str) -> dict:
         """A working draft of a Frame: the current text, edited in the hub and proposed for release. One per person.
@@ -467,7 +479,8 @@ class Hub:
         draft = self.dms.create(title=f"Draft change to {name}", doc_class="working", folder=self.FRAME_FOLDER, by=by,
                                 content=frame.text.encode("utf-8"), filename=frame.path.name, mime="text/markdown", doc_type="frame-draft",
                                 fields={"frame_name": name, "frame_path": frame.relpath, "based_on_version": frame.version})
-        self.kernel.link(draft["locator"], "references", doc["locator"], by=by)
+        if doc is not None:
+            self.kernel.link(draft["locator"], "references", doc["locator"], by=by)
         return self.kernel.get(draft["locator"])
 
     def propose_cog_model(self, cog: str, model: str, by: str) -> dict:
