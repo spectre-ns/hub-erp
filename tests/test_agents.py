@@ -84,7 +84,7 @@ def test_the_kill_switch_and_duties(released, monkeypatch):
 
 def test_a_new_cog_from_a_proposal_works_with_no_code(released, monkeypatch):
     hub = released
-    p = hub.propose_new_cog(name="calibration-assistant", roles=["quality-manager", "staff"], model="claude-sonnet-5-5",
+    p = hub.propose_new_cog(name="calibration-assistant", roles=["quality-manager", "staff"], model="ollama/qwen3:14b",
                             prompt="You keep calibration on schedule.", follows=["calibration-sop"], autonomy="act",
                             duties=["Find calibrations due this month and tell the quality manager."], by="carol")
     assert set(p["overrides"]) == {"org-model", "cog-profiles"} and not [f for f in p["findings"] if f["severity"] == "error"]
