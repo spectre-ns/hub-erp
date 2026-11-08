@@ -22,6 +22,10 @@ KINDS = {
     "sod": {"object", "roles"},
     "process": {"name", "folder", "steps", "terminal", "reject_to"},
     "cog": {"name", "model", "prompt", "follows", "reviews", "prompt_from", "references", "autonomy", "duties"},
+    # A scoping Frame: the SOP and policy Frames it compiles, in order, its level, and the scopes it layers on.
+    "scope": {"name", "level", "compiles", "layers_on"},
+    # A persona (a cog or a job role): the scopes and Frames it layers, in order (later layers add and may only narrow).
+    "persona": {"name", "of", "layers"},
 }
 
 CONDITION_VOCABULARY = {

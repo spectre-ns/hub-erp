@@ -221,3 +221,40 @@ def test_a_question_in_the_chatter_gets_an_answer_not_a_review(shell):
     reply = [m for m in hub.inbox.on_record(doc["locator"]) if m.get("kind") == "reply" and m["from"] == "quality-assistant"][-1]
     assert not reply["body"].startswith("Review of") and "Noted." in reply["body"]
     assert not [L for L in hub.kernel.get(doc["locator"])["links"] if L.get("rel") == "has-document"]  # nothing filed
+
+
+def test_a_cog_has_a_kanban_board_of_its_work(tmp_path):
+    """Like a person's board: what is in the cog's queue (in the order it takes it), what it works on, what waits on
+    others, what is assigned to it, done and stopped."""
+    import shutil
+
+    from conftest import ROOT, release_all
+    from hubproto.app import Hub
+    from hubproto.shell import free_port, serve_in_thread
+    from test_shell_views import get, main_of
+
+    shutil.copytree(ROOT / "frames", tmp_path / "frames")
+    hub = Hub(tmp_path)
+    hub.kernel.seed()
+    release_all(hub)
+    hub.queue.mode = "service"
+    hub.queue.submit("quality-assistant", "task", by="carol", title="Check the open NCRs", payload={"goal": "x"})
+    hub.queue.submit("quality-assistant", "chat", by="dave", title="where is the test document?", payload={"text": "?"})
+    port = free_port()
+    server = serve_in_thread(hub, "127.0.0.1", port)
+    try:
+        shell = {"hub": hub, "base": f"http://127.0.0.1:{port}"}
+        status, text = get(shell, "/board/quality-assistant", **{"as": "carol"})
+        body = main_of(text)
+        assert status == 200 and "quality-assistant's board" in body
+        for col in ("In its queue", "Working on", "Waiting on others", "Assigned to it", "Done", "Stopped"):
+            assert col in body
+        first = body.index("where is the test document?")
+        assert first < body.index("Check the open NCRs"), "the chat is first in line"
+        status, text = get(shell, "/boards", **{"as": "carol"})
+        assert "/board/quality-assistant" in text
+        status, text = get(shell, "/board/carol", **{"as": "carol"})
+        assert status == 404
+    finally:
+        server.shutdown()
+        server.server_close()

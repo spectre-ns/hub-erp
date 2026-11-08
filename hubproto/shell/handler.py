@@ -227,7 +227,7 @@ class BaseHandler(BaseHTTPRequestHandler):
                      "/admin": self.page_admin, "/conformance": self.page_conformance, "/download": self.page_download,
                      "/start": self.page_start, "/people": self.page_people, "/suppliers": self.page_suppliers, "/settings": self.page_settings, "/templates": self.page_templates,
                      "/change-orders": self.page_change_orders, "/automation": self.page_automation,
-                     "/automation-status": self.page_automation_status, "/forms": self.page_forms}
+                     "/automation-status": self.page_automation_status, "/scopes": self.page_scopes, "/forms": self.page_forms}
             if r in fixed:
                 return fixed[r]
             for prefix, fn in (("/record/", self.page_record), ("/document/", self.page_document), ("/doc/", self.page_document),
@@ -235,13 +235,13 @@ class BaseHandler(BaseHTTPRequestHandler):
                                ("/edit/", self.page_edit), ("/compare/", self.page_compare), ("/editor-replies/", self.page_editor_replies), ("/cog-seat/", self.page_cog_seat), ("/frame-doc/", self.page_frame_doc),
                                ("/text-edit/", self.page_text_edit), ("/frame-check/", self.page_frame_check), ("/proposal/", self.page_proposal),
                                ("/agent-run/", self.page_agent_run), ("/items/", self.page_items), ("/app/", self.page_app), ("/user/", self.page_user),
-                               ("/settings/", self.page_settings), ("/automation/", self.page_automation),
+                               ("/settings/", self.page_settings), ("/automation/", self.page_automation), ("/board/", self.page_cog_board),
                                ("/forms/", self.page_forms), ("/forms-preview/", self.page_forms_preview)):
                 if r.startswith(prefix) and len(r) > len(prefix):
                     self.arg = r[len(prefix):]
                     return fn
             return None
-        posts = {"/forms-check": self.post_forms_check, "/forms-save": self.post_forms_save, "/forms-discard": self.post_forms_discard,
+        posts = {"/folder-new": self.post_folder_new, "/folder-remove": self.post_folder_remove, "/forms-check": self.post_forms_check, "/forms-save": self.post_forms_save, "/forms-discard": self.post_forms_discard,
                  "/forms-carry": self.post_forms_carry, "/forms-uncarry": self.post_forms_uncarry,
                  "/withdraw-record": self.post_withdraw_record, "/automation-retry": self.post_automation_retry, "/automation-start": self.post_automation_start, "/start": self.post_start, "/decide": self.post_decide, "/msg": self.post_msg, "/attach": self.post_attach,
                  "/finish-edit": self.post_finish_edit, "/new-document": self.post_new_document, "/working-copy": self.post_working_copy, "/apply-replies": self.post_apply_replies, "/start-on": self.post_start_on, "/chat": self.post_chat, "/chat-clear": self.post_chat_clear, "/frame-draft": self.post_frame_draft, "/text-save": self.post_text_save,

@@ -563,6 +563,27 @@ class ActionsMixin:
         doc = self.hub.dms.render_snapshot(rec["locator"], by=user)
         self._redirect(self._once_finish(href("/document/" + quote(doc["locator"], safe=":"), user, done=f"Saved a snapshot of {rec['number']} as {doc['number']}.")))
 
+    def post_folder_new(self):
+        self._need_release()
+        parent, name = self._f("parent"), self._f("name")
+        try:
+            path = self.hub.library.add(self.hub, parent, name, by=self.user)
+        except ValueError as e:
+            raise ShellError(str(e)[:1].upper() + str(e)[1:] + ".", 403 if "only people" in str(e) else 400, field="name") from None
+        log_line(f"library folder added path={path!r} by={self.user}")
+        self._redirect(href("/files", self.user, folder=path, done=f"{path} is added, with the rights of {parent}."))
+
+    def post_folder_remove(self):
+        self._need_release()
+        path = self._f("path")
+        try:
+            self.hub.library.remove(self.hub, path, by=self.user)
+        except ValueError as e:
+            raise ShellError(str(e)[:1].upper() + str(e)[1:] + ".", 403) from None
+        log_line(f"library folder removed path={path!r} by={self.user}")
+        parent = path.rsplit("/", 1)[0]
+        self._redirect(href("/files", self.user, folder=parent, done=f"{path} is removed."))
+
     def _may_withdraw(self, rec: dict) -> str:
         """Empty when this person may withdraw the item: a draft (not in a running process) that is theirs (owner,
         author, filer, requester) or, for documents, any draft when they are a document controller."""

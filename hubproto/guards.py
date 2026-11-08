@@ -347,8 +347,8 @@ def _widens(rule: dict, old_rules) -> bool:
         return rule["effect"] == "allow"
     if kind == "member":
         return True
-    if kind == "cog":
-        return True  # a cog's model, prompt or SOPs change what it does: two policy owners
+    if kind in ("cog", "persona", "scope"):
+        return True  # what a cog or role works from (its model, prompt, persona, the scopes it layers): two policy owners
     if kind == "routing":
         return rule["assignee"].startswith("cog:")
     if kind == "approval_criteria":
@@ -387,5 +387,71 @@ def _reason(rule: dict, op: str) -> str:
     if kind == "sod":
         return f"{op} segregation of duties on {rule['object']}: {rule['roles']}"
     if kind == "cog":
-        return f"{op} cog profile {rule['name']}: model {rule.get('model') or 'none'}, follows {', '.join(rule.get('follows') or []) or 'nothing'}"
+        return f"{op} cog profile {rule['name']}: model {rule.get('model') or 'none'}" + (f", follows {', '.join(rule['follows'])}" if rule.get("follows") else "")
+    if kind == "persona":
+        return f"{op} persona {rule['name']} ({rule.get('of')}): layers {', '.join(rule.get('layers') or []) or 'nothing'}" + (
+            f", also reads {', '.join(rule['reads'])}" if rule.get("reads") else "")
+    if kind == "scope":
+        return f"{op} scope {rule['name']} ({rule.get('level')}): compiles {', '.join(rule.get('compiles') or [])}" + (
+            f", layers on {', '.join(rule['layers_on'])}" if rule.get("layers_on") else "")
     return f"{op} {kind} " + str({k: v for k, v in rule.items() if k not in ('kind', 'source')})
+
+
+def scope_guard(rules: list[dict], frame_names: set[str], frame_scopes: dict[str, str] | None = None) -> list[Finding]:
+    """Scopes and personas refer to what exists: a scope compiles Frames of this release and layers on scopes that
+    exist, with no cycle and never on a scope of a narrower level; a persona layers scopes or Frames that exist, and
+    belongs to a cog or a role the release declares. A Frame in no scope is worth a warning."""
+    from .extract import _LEVELS
+
+    out: list[Finding] = []
+    scopes = {r["name"]: r for r in rules if r["kind"] == "scope"}
+    personas = [r for r in rules if r["kind"] == "persona"]
+    roles = {r["name"] for r in rules if r["kind"] == "role"}
+    cogs = {r["principal"] for r in rules if r["kind"] == "member" and r["principal_type"] == "cog"}
+    rank = {lv: i for i, lv in enumerate(_LEVELS)}
+    for s in scopes.values():
+        key, (frame, line) = rule_key(s), _where(s)
+        if s.get("level") not in rank:
+            out.append(Finding("consistency", "error", f"scope {s['name']}: level must be one of {', '.join(_LEVELS)}", key, frame, line))
+        for f in s.get("compiles") or []:
+            if f not in frame_names:
+                out.append(Finding("consistency", "error", f"scope {s['name']} compiles {f!r}, which is not a Frame of this release", key, frame, line))
+        for parent in s.get("layers_on") or []:
+            if parent not in scopes:
+                out.append(Finding("consistency", "error", f"scope {s['name']} layers on {parent!r}, which is not a scope", key, frame, line))
+            elif rank.get(scopes[parent].get("level"), 0) > rank.get(s.get("level"), 0):
+                out.append(Finding("consistency", "error", f"scope {s['name']} ({s.get('level')}) layers on {parent} ({scopes[parent].get('level')}), a narrower scope",
+                                   key, frame, line))
+        seen, cur, stack = set(), s["name"], [s["name"]]
+        while stack:  # a cycle through layers_on
+            cur = stack.pop()
+            for parent in (scopes.get(cur) or {}).get("layers_on") or []:
+                if parent == s["name"]:
+                    out.append(Finding("consistency", "error", f"scope {s['name']} layers on itself (through {cur})", key, frame, line))
+                    stack = []
+                    break
+                if parent not in seen:
+                    seen.add(parent)
+                    stack.append(parent)
+    for p in personas:
+        key, (frame, line) = rule_key(p), _where(p)
+        if p.get("of") == "cog" and p["name"] not in cogs:
+            out.append(Finding("consistency", "error", f"persona {p['name']} is for a cog the organization does not have", key, frame, line))
+        if p.get("of") == "role" and p["name"] not in roles:
+            out.append(Finding("consistency", "error", f"persona {p['name']} is for a role the organization does not declare", key, frame, line))
+        for layer in (p.get("layers") or []) + (p.get("reads") or []):
+            if layer not in scopes and layer not in frame_names:
+                out.append(Finding("consistency", "error", f"persona {p['name']} layers {layer!r}, which is neither a scope nor a Frame", key, frame, line))
+    cog_personas = {p["name"] for p in personas if p.get("of") == "cog"}
+    for r in rules:
+        if r["kind"] == "cog" and r["name"] in cog_personas and r.get("follows"):
+            out.append(Finding("consistency", "warning", f"cog {r['name']}: its persona decides what it follows; the Follows line in its profile is ignored",
+                               rule_key(r), *_where(r)))
+    if scopes:
+        covered = {f for s in scopes.values() for f in s.get("compiles") or []}
+        for f in sorted(frame_names - covered):
+            if (frame_scopes or {}).get(f) in ("persona", "reference"):
+                continue  # personas layer scopes; references are read, not compiled
+            out.append(Finding("consistency", "warning", f"the {f} Frame is in no scope", "", f, 0))
+    return out
+

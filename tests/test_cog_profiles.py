@@ -16,11 +16,13 @@ def bundle_of(hub):
 def test_profiles_compile_into_the_release_and_change_as_a_widening(released):
     b = bundle_of(released)
     prof = b["cogs"]["ap-reviewer"]
-    assert prof["model"] == "ollama/qwen3:14b" and "payables reviewer" in prof["prompt"] and prof["follows"] == ["finance-policy"]
-    assert b["cogs"]["quality-assistant"]["follows"] == ["ncr-sop", "capa-sop", "training-sop", "design-control-sop"]
-    edit_frame(released, "cog-profiles", "Follows: finance-policy\n", "Follows: finance-policy, purchasing-policy\n", bump="1.1.0")
+    company = ["org-model", "quality-manual", "tasks-sop"]  # the company scope every persona layers first
+    assert prof["model"] == "ollama/qwen3:14b" and "payables reviewer" in prof["prompt"] and prof["follows"] == company + ["finance-policy"]
+    assert prof["persona"] == "ap-reviewer", "what a cog follows comes from its persona"
+    assert b["cogs"]["quality-assistant"]["follows"] == company + ["ncr-sop", "capa-sop", "training-sop", "design-control-sop"]
+    edit_frame(released, "persona-ap-reviewer", "Layers: company, finance-policy\n", "Layers: company, finance-policy, purchasing-policy\n", bump="1.1.0")
     proposal = released.compile()
-    change = next(c for c in proposal["changes"] if c["rule"]["kind"] == "cog" and c["rule"]["name"] == "ap-reviewer" and c["op"] == "add")
+    change = next(c for c in proposal["changes"] if c["rule"]["kind"] == "persona" and c["rule"]["name"] == "ap-reviewer" and c["op"] == "add")
     assert change["widening"] is True and "purchasing-policy" in change["reason"]
     released.review(proposal["id"], "bob", approve_all=True)
     with pytest.raises(CompileError, match="needs 2 approval"):
@@ -33,14 +35,14 @@ def test_a_cog_profile_must_name_a_cog_member_and_real_frames(released):
     errors = [f["detail"] for f in proposal["findings"] if f["severity"] == "error"]
     assert any("nobody-cog" in d and "no matching cog member" in d for d in errors)
     edit_frame(released, "cog-profiles", "## Cog: nobody-cog", "## Cog: ap-reviewer")
-    edit_frame(released, "cog-profiles", "Follows: finance-policy\n", "Follows: finance-policy, no-such-sop\n", bump="1.2.0")
+    edit_frame(released, "persona-ap-reviewer", "Layers: company, finance-policy\n", "Layers: company, finance-policy, no-such-sop\n", bump="1.2.0")
     proposal = released.compile()
-    assert any("no-such-sop" in f["detail"] and "not a Frame" in f["detail"] for f in proposal["findings"] if f["severity"] == "error")
+    assert any("no-such-sop" in f["detail"] and "neither a scope nor a Frame" in f["detail"] for f in proposal["findings"] if f["severity"] == "error")
 
 
 # ------------------------------------------------------------------ a cog works only from the SOPs it follows
 def test_a_cog_is_not_routed_work_from_an_sop_it_does_not_follow(released):
-    edit_frame(released, "cog-profiles", "Follows: finance-policy\n", "Follows: purchasing-policy\n", bump="1.1.0")
+    edit_frame(released, "persona-ap-reviewer", "Layers: company, finance-policy\n", "Layers: company, purchasing-policy\n", bump="1.1.0")
     release_all(released)
     run_id = released.runner.submit("purchase-to-pay", {"record": dated(SMALL_BILL)}, owner="alice")
     state = released.runner.load(run_id)

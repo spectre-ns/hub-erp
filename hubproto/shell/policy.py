@@ -204,6 +204,7 @@ proposal <code>{esc(meta.get('proposal_id') or '-')}</code>{(' reviewed by ' + e
         else:
             body = banner + (f"<p><a class='button' href='{href('/frame-doc/' + frame.name, self.user)}'>{icon('file')}Open as a document</a> "
                     f"<span class='why'>to propose a change: Edit this policy makes a draft the policy owners review and release.</span></p>") + body
+        body = self._dependency_html(frame.name) + body
         self._page(frame.name, body, crumbs=[("Policies", href("/frames", self.user)), (frame.name, None)])
 
     # ----------------------------------------------------------------- why

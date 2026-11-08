@@ -32,6 +32,8 @@ def kind_of(frame: Frame) -> tuple[str, str]:
         return "sop", QUALITY_FOLDER
     if frame.scope == "reference":
         return "guide", POLICY_FOLDER
+    if frame.scope == "persona":
+        return "persona", POLICY_FOLDER
     return "policy", POLICY_FOLDER  # finance-policy, purchasing-policy, quality-manual, org-model, cogs
 
 

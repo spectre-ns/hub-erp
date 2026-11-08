@@ -62,6 +62,10 @@ class Hub:
         from . import formlayout as _formlayout
 
         self.forms = _formlayout.FormStore(Path(self.root) / "state" / "forms")
+        from .library import LibraryFolders
+
+        self.library = LibraryFolders(Path(self.root) / "state" / "library")
+        self.releases.extra_folders = self.library.paths
         _formlayout.apply_custom_fields(self)  # released custom fields are fields of their record types
         self.runner.on_completed = [lambda state, rec: _automation.on_run_completed(self, state, rec)]
         self.runner.frames_store = lambda: self.released_frames()  # cogs read the SOPs as released, not the files on disk
@@ -261,6 +265,19 @@ class Hub:
                                     record_types=self.kernel.types, config_digests=self.kernel.config_digests,
                                     resolve_document=self.resolve_document)
         proposal["overrides"] = {n: {"text": t, "draft": docs.get(n), "path": store.get(n).relpath} for n, t in texts.items()}
+        # Explicit: what each Frame was compiled from (the SOP document and revision, or the Frame file).
+        if self.sop_source():
+            from . import sopdocs
+
+            for entry in proposal["frames"]:
+                n = entry["name"]
+                d = self.kernel.get((sop_drafts or {})[n]) if (sop_drafts or {}).get(n) else sopdocs.in_force(self.kernel, n)
+                if d:
+                    entry["source"] = {"document": d["number"], "revision": d["fields"].get("revision"), "lineage": d["fields"].get("lineage"),
+                                       "content_sha": d["fields"].get("content_sha"), "state": d["state"], "title": d["fields"].get("title")}
+        else:
+            for entry in proposal["frames"]:
+                entry["source"] = {"file": entry.get("path"), "sha256": entry.get("sha256")}
         proposal["proposed_by"] = by
         authors = {}
         for n, o in proposal["overrides"].items():  # who wrote each draft, so a reviewer sees every hand in it
@@ -551,22 +568,11 @@ class Hub:
         self._released_cache = {}
         if overrides:
             # The drafts become the Frames: written in place, then every Frame document follows its file.
-            base_texts = self.releases.frame_texts(base) if base and hasattr(self.releases, "frame_texts") else {}
             for name, o in overrides.items():
+                # The Frame is derived output: the released text overwrites the file.
                 path = self.frames.get(name).path
-                disk = path.read_text(encoding="utf-8") if path.exists() else ""
-                text = o["text"]
-                if base_texts.get(name) and disk and disk != base_texts[name]:
-                    # The file has edits that were not part of this proposal (other work in progress): apply this
-                    # proposal's change to the file instead of replacing it, so those edits are not lost.
-                    text, conflicts = merge3(base_texts[name], o["text"], disk)
-                    if conflicts:
-                        text = disk
-                        self.inbox.notify(by, kind="failure", subject=f"{name}: the released change could not be written into the file",
-                                          body="The file has other edits on the same lines; the release is in force, the file is unchanged. "
-                                               "Bring the file in line by hand: " + "; ".join(conflicts[:3]))
                 tmp = path.with_suffix(path.suffix + ".tmp")
-                tmp.write_text(text, encoding="utf-8")
+                tmp.write_text(o["text"], encoding="utf-8")
                 tmp.replace(path)
             self._frames = None
             for name, o in overrides.items():
@@ -882,46 +888,4 @@ def plain_chat(text: str) -> str:
     t = re.sub(r"(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])", r"\1", t)
     t = re.sub(r"(?m)^#{1,6}\s+", "", t)
     return t.strip()
-
-
-def merge3(base: str, theirs: str, mine: str) -> tuple[str, list[str]]:
-    """Apply the change base -> theirs to mine (a file with other edits). Each changed block is placed by the lines
-    it replaces (or, for an insertion, the line before it), found once in mine; a block that cannot be placed is a
-    conflict. Returns (merged text, conflicts)."""
-    import difflib
-
-    b, t, m = base.splitlines(), theirs.splitlines(), mine.splitlines()
-    ops = [op for op in difflib.SequenceMatcher(a=b, b=t, autojunk=False).get_opcodes() if op[0] != "equal"]
-    conflicts: list[str] = []
-
-    def place(cands: list[int], i1: int) -> list[int]:
-        """Of several places, the one whose preceding lines match the base's (as many as it takes to tell them apart)."""
-        for c in range(1, min(i1, 40) + 1):
-            if len(cands) <= 1:
-                break
-            before = b[i1 - c:i1]
-            narrowed = [k for k in cands if k - c >= 0 and m[k - c:k] == before]
-            if narrowed:
-                cands = narrowed
-        return cands
-
-    for tag, i1, i2, j1, j2 in reversed(ops):
-        new = t[j1:j2]
-        if i2 > i1:
-            old = b[i1:i2]
-            at = place([k for k in range(len(m) - len(old) + 1) if m[k:k + len(old)] == old], i1)
-            if len(at) != 1:
-                conflicts.append(f"lines “{old[0][:60]}”" + (" not found" if not at else " found more than once"))
-                continue
-            m[at[0]:at[0] + len(old)] = new
-        else:
-            if i1 == 0:
-                m[0:0] = new
-                continue
-            at = place([k + 1 for k, line in enumerate(m) if line == b[i1 - 1]], i1)
-            if len(at) != 1:
-                conflicts.append(f"the place after “{b[i1 - 1][:60]}”" + (" not found" if not at else " found more than once"))
-                continue
-            m[at[0]:at[0]] = new
-    return "\n".join(m) + ("\n" if mine.endswith("\n") else ""), conflicts
 

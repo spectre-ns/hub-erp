@@ -237,6 +237,27 @@ class PagesMixin:
 <div class="actions"><button>{esc(verb)}</button></div></form>
 {details("Why can I do this?", f"<div class='why'>{self._why_html(d, 'create', op['object'], op['folder'])}</div>")}</details>"""
 
+    def _run_cards(self, rec: dict, run: dict | None) -> str:
+        """The run's controls on an item's page (a record or a document): a stopped run goes back to its owner, a
+        returned item is reworked and resubmitted, and whoever a decision waits for decides here; others see who it
+        waits for."""
+        user = self.user
+        pending = (run or {}).get("pending") or {}
+        out = ""
+        if run and run["status"] == "failed" and rec["state"] == "failed":
+            out += self._failed_card(run, rec)
+        if run and pending and pending.get("kind") == "resubmit":
+            if user in pending["assignees"]:
+                out += f"<div class='card warn' id='rework'><h2 style='margin-top:0;border:0'>Returned to you for rework</h2><p><b>Reason:</b> {esc(pending.get('reason') or '-')}</p>{self._resubmit_form(run, rec)}{self._cancel_form(run, rec)}</div>"
+            else:
+                out += f"<div class='card warn'><b>Returned for rework</b>: {esc(pending.get('reason') or '')} <span class='why'>Waiting for {esc(', '.join(pending['assignees']))} to resubmit.</span></div>"
+        if run and pending and pending.get("kind", "decision") == "decision" and run["status"] == "waiting":
+            if user in pending["assignees"]:
+                out += f"<div id='decide'>{self._decision_card(run, standalone=True)}</div>"
+            else:
+                out += f"<div class='card warn'>Waiting for {' '.join(self._avatar(a, size='sm', named=True) for a in pending['assignees'])} at <b>{esc(pending['title'])}</b>{' (approval due ' + esc(day(pending['due'])) + ')' if pending.get('due') else ''}.</div>"
+        return out
+
     def _layout_sheet(self, rec: dict, layout: dict | None = None) -> str:
         """A record's fields as its form layout shows them (the one in force, or ``layout`` for a preview): each section
         a titled block of field rows, a row's visible_when tested on the server, its label and help. Values the layout
@@ -373,8 +394,20 @@ class PagesMixin:
                     f'<label class="f" style="width:auto"><span class="vh">Search this folder</span><input type="search" name="text" value="{esc(text)}" aria-label="Search this folder" title="number or words in the title"></label>'
                     f'<label class="f" style="width:auto"><span>Sort by</span><select name="sort" class="small">{sorts}</select></label><button class="ghost">{icon("search")}Search</button></form></div>')
         body += f"<div class='library'>{tree}<div>{toolbar}"
+        lib = self.hub.library.all()
         if subs:
-            body += "<h2>Folders</h2><ul class='folders'>" + "".join(f'<li>{icon("folder")} <a href="{href("/files", user, folder=s)}">{esc(s.split("/")[-1])}</a></li>' for s in subs) + "</ul>"
+            body += "<h2>Folders</h2><ul class='folders'>" + "".join(
+                f'<li>{icon("folder")} <a href="{href("/files", user, folder=s)}">{esc(s.split("/")[-1])}</a>'
+                + (f' <span class="why">added by {esc(lib[s].get("by"))}; the same rights as {esc(folder)}</span>' if s in lib else "") + "</li>" for s in subs) + "</ul>"
+        if folder and f["allowed"]:
+            body += (f'<details class="card quiet" id="new-folder"><summary>{icon("plus")}New folder in {esc(folder)}</summary>'
+                     f'<form method="post" action="/folder-new" class="sform row">{hidden_as(user)}<input type="hidden" name="parent" value="{esc(folder)}">'
+                     f'<label class="f"><span>Name</span><input name="name" required maxlength="60" placeholder="for example Work instructions"></label>'
+                     f'<button>{icon("plus")}Add the folder</button></form><p class="why">It has the same rights as {esc(folder)}: whoever may read or file '
+                     f'there may read or file in it. A folder with rights of its own is a policy folder: ask a policy owner (Settings).</p></details>')
+        if folder in lib and not docs and not any(x.startswith(folder + "/") for x in lib):
+            body += (f'<form method="post" action="/folder-remove" class="inline">{hidden_as(user)}<input type="hidden" name="path" value="{esc(folder)}">'
+                     f'<button class="ghost">{icon("x")}Remove this empty folder</button></form>')
         body += f"<h2>Documents <span class='muted'>{len(docs)}</span></h2>" + self._tiles(docs)
         body += "<h2>Items</h2><p class='why'>Newest first.</p>" + table(["Number", "Type", "State", "Title", "Owner", "With", "Due", "Updated"],
                                                                           [[f"{type_icon(r['type'])} {self._record_link(r['locator'], with_summary=False)}", tag(type_name(r["type"])), self._state_chip(r["state"]),
@@ -498,7 +531,9 @@ class PagesMixin:
             states = "".join(f'<option value="{esc(s)}"{" selected" if s == state else ""}>{esc(state_name(s, wf_for_type))}</option>' for s in columns)
             intro = f"Every {type_name(type_).lower()} you may read, by state."
         saved = href("/boards", user, type=type_, state=state, folder=folder, assignee=assignee, text=text)
-        body = f"""<h1>{esc(heading)}</h1><p class="why">{esc(intro)}</p>
+        cog_boards = " ".join(f"<a href='{href('/board/' + c, user)}'>{icon('robot')}{esc(c)}</a>"
+                              for c in sorted(n for n, m in bundle["members"].items() if m["type"] == "cog"))
+        body = f"""<h1>{esc(heading)}</h1><p class="why">{esc(intro)}</p>{('<div class="chips" role="group" aria-label="Cog boards"><span class="lbl">Cog boards</span>' + cog_boards + '</div>') if cog_boards else ''}
 <form method="get" action="/boards" class="card">{hidden_as(user)}<div class="fields">
 <label class="f"><span>Type</span><select name="type"><option value="">my work</option>{types}</select></label>
 {f'<label class="f"><span>State</span><select name="state"><option value="">any</option>{states}</select></label>' if states else ''}
@@ -690,19 +725,7 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
 {('<div class=why>You may ' + esc(' and '.join(can)) + '.</div>') if can else ''}</div>"""
         if rec["hold"]:
             body += f"<div class='card crit' role='status'><b>On hold:</b> {esc(short(rec.get('hold_reason') or 'no reason given', 400))}. Nothing can be decided until an approver releases the hold.</div>"
-        # Run controls: stopped runs go back to their owner; returned items are reworked and resubmitted; a waiting assignee decides here.
-        if run and run["status"] == "failed" and rec["state"] == "failed":
-            body += self._failed_card(run, rec)
-        if run and pending and pending.get("kind") == "resubmit":
-            if user in pending["assignees"]:
-                body += f"<div class='card warn' id='rework'><h2 style='margin-top:0;border:0'>Returned to you for rework</h2><p><b>Reason:</b> {esc(pending.get('reason') or '-')}</p>{self._resubmit_form(run, rec)}{self._cancel_form(run, rec)}</div>"
-            else:
-                body += f"<div class='card warn'><b>Returned for rework</b>: {esc(pending.get('reason') or '')} <span class='why'>Waiting for {esc(', '.join(pending['assignees']))} to resubmit.</span></div>"
-        if run and pending and pending.get("kind", "decision") == "decision" and run["status"] == "waiting":
-            if user in pending["assignees"]:
-                body += f"<div id='decide'>{self._decision_card(run, standalone=True)}</div>"
-            else:
-                body += f"<div class='card warn'>Waiting for {' '.join(self._avatar(a, size='sm', named=True) for a in pending['assignees'])} at <b>{esc(pending['title'])}</b>{' (approval due ' + esc(day(pending['due'])) + ')' if pending.get('due') else ''}.</div>"
+        body += self._run_cards(rec, run)
         if rec["type"] == "change-order":
             body += self._eco_panel(rec)
         tabs = [("details", "Details", "form"), ("documents", "Documents", "paperclip"), ("links", "Links", "link")] + \
@@ -948,6 +971,10 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
         btns += f'<a class="button ghost" href="#checkout">{icon("lock")}Check-out and check-in</a><button type="button" class="ghost" onclick="print()">{icon("printer")}Print</button>'
         body = f'<div class="formhead"><div class="btns">{btns}</div>{self._statusbar(wf, rec)}</div>' + self._ops_row(rec, self.hub.runner.run_for_record(loc))
         body += self._smart_buttons([("Versions", len(versions), "layers", "versions"), ("Attached to", len(attached), "paperclip", "attached"), ("Links", len(other), "link", "links")])
+        doc_run = self.hub.runner.run_for_record(loc)
+        if doc_run:
+            doc_run = self.hub.runner.load(doc_run["id"])
+        body += self._run_cards(rec, doc_run)
         body += (f"<div class='sheet' id='sheet' data-live><h1 class='title'>{esc(rec['number'])} {tag('Document')} {self._state_chip(rec['state'])}</h1>"
                  f"<div class='subtitle'><b>{file_icon(f.get('filename'))} {esc(f.get('title'))}</b></div><dl class='sheetfields'>"
                  + "".join(f"<div class='fld'><dt>{esc(k)}</dt><dd>{v}</dd></div>" for k, v in meta if v) + "</dl></div>")

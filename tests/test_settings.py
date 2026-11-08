@@ -167,9 +167,9 @@ def test_a_cog_proposes_a_setting_change_and_never_applies_it(hub):
     assert "error" in tools.execute("propose_setting_change", {"action": "remove", "key": s["key"], "reason": ""})
 
 
-def test_a_model_change_carries_only_itself_and_keeps_other_edits_in_the_file(hub):
+def test_a_model_change_carries_only_itself_and_its_release_overwrites_the_file(hub):
     """A model change is proposed on the release in force: unreleased edits on disk are not swept into it, and
-    releasing it writes the Model line into the file without losing those edits."""
+    releasing it overwrites the Frame file with the released text (the Frame is derived output)."""
     path = hub.frames.get("cog-profiles").path
     pending = "Prompt: You are the purchasing assistant. You check suppliers against the approved list"
     text = path.read_text()
@@ -186,4 +186,6 @@ def test_a_model_change_carries_only_itself_and_keeps_other_edits_in_the_file(hu
     b = hub.releases.bundle(hub.releases.current()["digest"])
     assert b["cogs"]["quality-assistant"]["model"] == "claude-opus-5-5"
     after = path.read_text()
-    assert "Model: claude-opus-5-5" in after and "(an unreleased edit)" in after, "the other edit in the file is kept"
+    assert "Model: claude-opus-5-5" in after and "(an unreleased edit)" not in after, "the released text overwrites the file"
+    assert after == hub.releases.frame_texts(hub.releases.current()["digest"])["cog-profiles"]
+

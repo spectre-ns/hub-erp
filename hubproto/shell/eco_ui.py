@@ -216,7 +216,7 @@ class EcoMixin:
     def _staged_html(self, co: dict, st: dict) -> str:
         user = self.user
         f = co["fields"]
-        out = f"<h2>{icon('layers')}Staged Frame</h2>"
+        out = f"<h2>{icon('layers')}Staged Frame</h2>" + self._impact_html([c["name"] for c in st.get("carried") or [] if c.get("name")])
         if f.get("staged_errors"):
             out += ("<div class='card crit' role='alert'><p><b>The staged Frame does not compile.</b> Fix these in the revisions:</p><ul>"
                     + "".join(f"<li>{esc(e)}</li>" for e in f["staged_errors"]) + "</ul></div>")
@@ -331,6 +331,10 @@ class EcoMixin:
     def _sop_doc_html(self, rec: dict) -> str:
         """On an SOP or policy document: compiled into the Frame, changed through a change order; or, on a carried draft,
         which change order carries it."""
+        return self._sop_doc_html_inner(rec) + (self._dependency_html(rec["fields"].get("sop_name"))
+                                                 if str(rec["fields"].get("lineage", "")).startswith(sopdocs.LINEAGE) else "")
+
+    def _sop_doc_html_inner(self, rec: dict) -> str:
         user, f = self.user, rec["fields"]
         if not str(f.get("lineage", "")).startswith(sopdocs.LINEAGE):
             return ""

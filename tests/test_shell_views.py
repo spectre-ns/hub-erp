@@ -447,3 +447,40 @@ def test_record_form_prints_and_links_back_to_its_list(shell):
     status, text = get(shell, "/record/" + quote(rec["locator"], safe=":"), **{"as": "bob"})
     assert 'onclick="print()"' in text and ".formhead .btns,.composer" in text.split("@media print")[1]
     assert re.search(r'<ol class="crumb"[^>]*>.*Supplier bill</a>', text, re.S) and 'href="/items/bill?as=bob">Supplier bill</a>' in text
+
+
+def test_a_document_waiting_for_your_approval_shows_the_decision_on_its_own_page(shell):
+    """A document in document control: whoever it waits for sees Approve and Reject on the document page too, not only
+    on the record page; anyone else sees who it waits for."""
+    hub = shell["hub"]
+    status, url, text = post(shell, "/start", {"as": "alice", "process": "document-control", "title": "[views] Decide on the document page",
+                                               "change_type": "major", "doc_type": "sop", "body": "steps"})
+    run_id = url.split("/run/")[1].split("?")[0]
+    state = hub.runner.load(run_id)
+    who = state["pending"]["assignees"][0]
+    loc = state["record"]
+    status, text = get(shell, "/document/" + loc, **{"as": who})
+    body = main_of(text)
+    assert status == 200 and "id='decide'" in body and 'value="approve"' in body.replace("'", '"'), "the decision card is on the document page"
+    other = next(p for p in ("dave", "bob", "carol") if p not in state["pending"]["assignees"] and p != "alice")
+    status, text = get(shell, "/document/" + loc, **{"as": other})
+    assert "Waiting for" in main_of(text)
+
+
+def test_people_who_file_in_a_folder_may_add_subfolders_with_the_same_rights(shell):
+    hub = shell["hub"]
+    status, url, text = post(shell, "/folder-new", {"as": "carol", "parent": "Quality/Controlled Documents", "name": "Work instructions"})
+    assert status == 200 and "Quality/Controlled Documents/Work instructions" in hub.releases.bundle(hub.releases.current()["digest"])["folders"]
+    from hubproto import authz
+
+    b = hub.releases.bundle(hub.releases.current()["digest"])
+    path = "Quality/Controlled Documents/Work instructions"
+    assert authz.check(b, "carol", "create", "document", path)["allowed"] == authz.check(b, "carol", "create", "document", "Quality/Controlled Documents")["allowed"]
+    status, text = get(shell, "/files", **{"as": "carol", "folder": "Quality/Controlled Documents"})
+    assert "Work instructions" in main_of(text) and "added by carol" in main_of(text)
+    status, url, text = post(shell, "/folder-new", {"as": "dave", "parent": "Quality/Controlled Documents", "name": "Mine"})
+    assert status == 403, "only people who may file there"
+    status, url, text = post(shell, "/folder-new", {"as": "carol", "parent": "Quality/Controlled Documents", "name": "../escape"})
+    assert status == 400
+    status, url, text = post(shell, "/folder-remove", {"as": "carol", "path": path})
+    assert status == 200 and path not in hub.releases.bundle(hub.releases.current()["digest"])["folders"]

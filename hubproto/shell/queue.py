@@ -147,7 +147,8 @@ class QueueMixin:
             items += (f"<li class='{'working' if t['status'] == 'working' else ''}'><div>{self._task_state(t)}</div>"
                       f"<div>{self._task_what(t)} <span class='muted'>&middot; asked by {esc(t.get('by') or '-')} {esc(when(t['enqueued_at']))}</span> "
                       f"{self._withdraw_button(t, back)}</div></li>")
-        body = (f"<section id='cog-work' data-live><h2>{icon('inbox')} Queue <span class='muted'>{len(opened)} open</span></h2>"
+        body = (f"<section id='cog-work' data-live><h2>{icon('inbox')} Queue <span class='muted'>{len(opened)} open</span> "
+                f"<a class='button ghost' href='{href('/board/' + cog, self.user)}'>{icon('kanban')}Board</a></h2>"
                 f"<p class='why'>Everything asked of {esc(cog)} lands here: mentions, messages, items waiting for it at a Gate, tasks and duties. "
                 f"It takes them one at a time, oldest first, and answers where it was asked.</p>")
         body += f"<ol class='cogq'>{items}</ol>" if items else "<p class='muted'>Nothing waiting: it is free.</p>"
@@ -156,6 +157,77 @@ class QueueMixin:
                      + table(["Asked", "What", "By", "Outcome"], [[esc(when(t["enqueued_at"])), self._task_what(t), esc(t.get("by") or "-"), self._task_state(t)] for t in recent])
                      + "</details>")
         return body + "</section>"
+
+    # ------------------------------------------------------------ a cog's board
+    def page_cog_board(self):
+        """A cog's work as a kanban board, like a person's: in its queue (in the order it takes them: chats first),
+        working on, waiting on others (a countersignature after it signed, actions it proposed for confirmation),
+        assigned to it, done and stopped. Cards link to the item; what a person may not read is not named."""
+        bundle = self._need_release()
+        if not self._is_member():
+            raise ShellError("Only members of the organization see the cogs' boards.", 403)
+        cog = self.arg
+        if (bundle["members"].get(cog) or {}).get("type") != "cog":
+            raise ShellError(f"{cog} is not a cog of the organization.", 404)
+        from ..agent import AgentStore
+        from ..workqueue import KINDS
+
+        q = self.hub.queue
+        readable = lambda loc: (lambda r: r is None or self._can_read(r["folder"])["allowed"])(self.hub.kernel.get(loc) if loc else None)
+
+        def card(title: str, loc: str | None, chips: str, foot: str, cls: str = "") -> str:
+            rec = self.hub.kernel.get(loc) if loc else None
+            if rec is not None and not self._can_read(rec["folder"])["allowed"]:
+                title, rec = "an item you may not read", None
+            head = (f"<a href='{href('/record/' + quote(rec['locator'], safe=':'), self.user)}'>{esc(rec['number'])}</a> " if rec else "")
+            return (f"<div class='kcard {cls}'><div class='kc-head'><span class='kc-title'>{head}{esc(short(title, 140))}</span></div>"
+                    f"<div class='kc-meta'>{chips}</div><div class='kc-foot'>{foot}</div></div>")
+
+        queued = sorted(q.list(cog=cog, status=("queued",), limit=200), key=lambda t: (-(t.get("priority") or 0), t["seq"]))
+        working = q.list(cog=cog, status=("working",), limit=10)
+        done = q.list(cog=cog, status=("done",), limit=15, newest_first=True)
+        stopped = q.list(cog=cog, status=("failed", "withdrawn"), limit=10, newest_first=True)
+        chip = lambda t: f"<span class='chip{' info' if t['kind'] == 'chat' else ''}'>{esc(KINDS.get(t['kind'], t['kind']))}</span>"
+        cols: dict[str, list[str]] = {"In its queue": [], "Working on": [], "Waiting on others": [], "Assigned to it": [], "Done": [], "Stopped": []}
+        for i, t in enumerate(queued, 1):
+            cols["In its queue"].append(card(t["title"], t.get("record"), chip(t) + f" <span class='why'>#{i} in line</span>",
+                                             f"asked by {esc(t.get('by') or '-')} &middot; {esc(when(t['enqueued_at']))}"))
+        for t in working:
+            cols["Working on"].append(card(t["title"], t.get("record"), chip(t) + " " + self._task_state(t), f"asked by {esc(t.get('by') or '-')}", "risk-low"))
+        in_queue = {t.get("record") for t in queued + working if t.get("record")}
+        for s in self.hub.runner.list():
+            p = s.get("pending") or {}
+            if s["status"] != "waiting" or not s.get("record"):
+                continue
+            if p.get("countersign_of") == cog:
+                cols["Waiting on others"].append(card(p.get("title") or "Countersignature", s["record"], "<span class='chip warn'>countersignature</span>",
+                                                      f"signed by {esc(cog)}; waiting for {esc(', '.join(p.get('assignees') or []))}"))
+            elif cog in (p.get("assignees") or []) and s["record"] not in in_queue:
+                cols["Assigned to it"].append(card(p.get("title") or s["process"], s["record"], "<span class='chip'>waiting for it</span>",
+                                                   f"{esc(s['process'])} &middot; since {esc(when(s.get('created_at') or ''))}"))
+        for r in self.hub.kernel.query(assignee=cog):
+            if r["locator"] not in in_queue and not any(c for c in cols["Assigned to it"] if r["number"] in c) and r["state"] not in ("closed", "effective", "cancelled", "rejected"):
+                cols["Assigned to it"].append(card(r["fields"].get("title") or r["number"], r["locator"], f"<span class='chip'>{esc(r['state'].replace('-', ' '))}</span>", "assigned"))
+        try:
+            for run in AgentStore(self.hub.root / "state" / "agents").runs(cog=cog, limit=30):
+                if run.get("status") == "proposed":
+                    cols["Waiting on others"].append(card((run.get("goal") or "proposed actions")[:140], None, "<span class='chip warn'>to confirm</span>",
+                                                          f"<a href='{href('/agent-run/' + run['run'], self.user)}'>actions for {esc(run.get('by') or '')} to confirm</a>"))
+        except Exception:
+            pass
+        for t in done:
+            cols["Done"].append(card(t["title"], t.get("record"), chip(t), f"{esc(when(t.get('finished_at') or t['enqueued_at']))}"))
+        for t in stopped:
+            cols["Stopped"].append(card(t["title"], t.get("record"), chip(t) + " " + self._task_state(t), esc(short(t.get("error") or "", 120)), "risk-high"))
+        board = "".join(f"<div class='col{' empty' if not items else ''}'><h3>{esc(name)}<span class='n'>{len(items)}</span></h3>{''.join(items)}</div>"
+                        for name, items in cols.items())
+        others = " ".join(f"<a href='{href('/board/' + c, self.user)}'{' aria-current="true"' if c == cog else ''}>{esc(c)}</a>"
+                          for c in sorted(n for n, m in bundle["members"].items() if m["type"] == "cog"))
+        body = (f"<h1>{self._avatar(cog)} {esc(cog)}'s board</h1><p class='why'>What {esc(cog)} has on its desk, like a person's board: "
+                f"its queue in the order it takes it (chats first), what it is working on, what waits on someone else, and what is done.</p>"
+                f"<div class='chips' role='group' aria-label='Cogs'>{others}</div>"
+                f"<section id='cog-board' data-live><div class='board'>{board}</div></section>" + self._live_meta(cog=cog))
+        self._page(f"{cog}'s board", body, crumbs=[("People", href("/people", self.user)), (cog, href("/user/" + cog, self.user)), ("Board", None)])
 
     # ------------------------------------------------------------ all cogs
     def page_queue(self):

@@ -93,6 +93,10 @@ _PROCESS_STEP = re.compile(
     r"^(?P<n>\d+)\. \[(?P<role>[a-z][\w-]*)\] (?P<title>[^()]+?)(?: \((?P<cog>[a-z][\w-]*(?:, ?[a-z][\w-]*)*)\))?$"
 )
 _COG_HEAD = re.compile(r"^## Cog: (?P<name>[a-z0-9][\w-]*)$")
+_SCOPE_HEAD = re.compile(r"^## Scope: (?P<name>[a-z0-9][\w-]*)$")
+_PERSONA_HEAD = re.compile(r"^## Persona: (?P<name>[a-z0-9][\w-]*) \((?P<of>cog|role)\)$")
+_SECTION_KEY = re.compile(r"^(?P<key>Level|Layers on|Compiles|Layers|Reads): ?(?P<rest>.*)$")
+_LEVELS = ("company", "site", "department", "process")
 _COG_KEY = re.compile(r"^(?P<key>Model|Prompt from|Prompt|Follows|Reviews|References|Autonomy|Duty|Lenses): ?(?P<rest>.*)$")
 _DOC_REF = re.compile(r"\b[A-Z]{2,}-\d[\w-]*\b")
 _OPS = {"over": ">", "above": ">", "under": "<", "below": "<", "at or under": "<=", "at or over": ">="}
@@ -167,10 +171,52 @@ class ConventionExtractor:
                 cog_profile = None
                 cog_key = ""
 
+        layered: dict | None = None  # the scope or persona section being read
+
+        def close_layered():
+            nonlocal layered
+            if layered is not None:
+                out.rules.append(layered)
+                layered = None
+
+        def names(rest: str) -> list[str]:
+            return [slug(x) for x in re.split(r",| and ", rest.rstrip(".")) if x.strip()]
+
         for n, raw in enumerate(frame.lines, start=frame.body_start):
             line = raw.strip()
             if not line:
                 continue
+            m = _SCOPE_HEAD.match(line) or _PERSONA_HEAD.match(line)
+            if m:
+                close_process()
+                close_cog()
+                close_layered()
+                section = "layered"
+                if "of" in m.groupdict():
+                    layered = {"kind": "persona", "name": m.group("name"), "of": m.group("of"), "layers": [], "reads": [], "source": src(n, line)}
+                else:
+                    layered = {"kind": "scope", "name": m.group("name"), "level": "", "compiles": [], "layers_on": [], "source": src(n, line)}
+                continue
+            if layered is not None and not line.startswith("## "):
+                km = _SECTION_KEY.match(line)
+                if km:
+                    key, rest = km.group("key").lower(), km.group("rest").strip()
+                    if key == "level":
+                        layered["level"] = rest.rstrip(".").lower()
+                    elif key == "layers on":
+                        layered["layers_on"] = names(rest)
+                    elif key == "compiles":
+                        layered["compiles"] = names(rest)
+                    elif key == "layers":
+                        layered["layers"] = names(rest)
+                    elif key == "reads":
+                        layered["reads"] = names(rest)
+                else:
+                    out.notes.append({"frame": frame.name, "line": n, "text": line,
+                                      "note": "unparsed line in a scope or persona section (Level:, Layers on:, Compiles:, Layers:, Reads:)"})
+                continue
+            if layered is not None:
+                close_layered()
             m = _COG_HEAD.match(line)
             if m:
                 close_process()
@@ -289,6 +335,7 @@ class ConventionExtractor:
                 out.notes.append(note)
         close_process()
         close_cog()
+        close_layered()
         return out
 
     def _match_sentence(self, line: str, n: int, section: str, add) -> bool:

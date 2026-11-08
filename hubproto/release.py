@@ -144,6 +144,8 @@ def render(rules: list[dict], record_types: dict | None = None) -> dict:
     permissions, routing, criteria, sod, thresholds, processes = [], [], [], [], {}, {}
     cogs: dict[str, dict] = {}
     slas: list[dict] = []
+    scopes: dict[str, dict] = {}
+    personas: dict[str, dict] = {}
     for r in rules:
         body = {k: v for k, v in r.items() if k != "kind"}
         kind = r["kind"]
@@ -175,6 +177,19 @@ def render(rules: list[dict], record_types: dict | None = None) -> dict:
             processes[r["name"]] = body
         elif kind == "cog":
             cogs[r["name"]] = body
+        elif kind == "scope":
+            scopes[r["name"]] = body
+        elif kind == "persona":
+            personas[r["name"]] = body
+    # Scopes and personas: each scope's Frames are those of the scopes it layers on, then its own, in order; a
+    # persona's are those of its layers (scopes or Frames), then what it also reads. A cog's persona is what it works
+    # from: its profile follows exactly those Frames.
+    for name in scopes:
+        scopes[name]["frames"] = scope_frames(scopes, name)
+    for name, p in personas.items():
+        p["frames"] = persona_frames(scopes, p)
+        if p.get("of") == "cog" and name in cogs:
+            cogs[name] = {**cogs[name], "follows": list(p["frames"]), "persona": name}
     # Resolve the 'approve' alias and bare checkpoint names to checkpoint ids.
     for r in routing + slas:
         proc = processes.get(r["process"])
@@ -214,8 +229,37 @@ def render(rules: list[dict], record_types: dict | None = None) -> dict:
         "sod": sod,
         "processes": dict(sorted(processes.items())),
         "cogs": dict(sorted(cogs.items())),
+        "scopes": dict(sorted(scopes.items())),
+        "personas": dict(sorted(personas.items())),
         "ops": ops,
     }
+
+
+def _dedupe(names: list[str]) -> list[str]:
+    seen, out = set(), []
+    for n in names:
+        if n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out
+
+
+def scope_frames(scopes: dict, name: str, seen: tuple = ()) -> list[str]:
+    """The Frames a scope compiles: those of the scopes it layers on (recursively), then its own."""
+    if name in seen or name not in scopes:
+        return []
+    s = scopes[name]
+    out: list[str] = []
+    for parent in s.get("layers_on") or []:
+        out += scope_frames(scopes, parent, seen + (name,))
+    return _dedupe(out + list(s.get("compiles") or []))
+
+
+def persona_frames(scopes: dict, persona: dict) -> list[str]:
+    out: list[str] = []
+    for layer in persona.get("layers") or []:
+        out += scope_frames(scopes, layer) if layer in scopes else [layer]
+    return _dedupe(out + list(persona.get("reads") or []))
 
 
 def strip_sources(obj):
@@ -309,9 +353,19 @@ class ReleaseStore:
             raise KeyError(f"release {d!r}: {len(matches)} matches")
         return matches[0]
 
+    extra_folders = None  # a callable giving the library's subfolders (hubproto.library), set by the Hub
+
     def bundle(self, d: str) -> dict:
         meta = self.get(d)
-        return json.loads((self.root / meta["digest"] / "bundle.json").read_text())
+        b = json.loads((self.root / meta["digest"] / "bundle.json").read_text())
+        if self.extra_folders is not None:
+            # Subfolders people added to the library: each under a policy folder, with that folder's rights (prefix).
+            policy = list(b.get("folders") or [])
+            extra = [f for f in self.extra_folders() if any(f.startswith(p + "/") for p in policy)]
+            if extra:
+                b["folders"] = sorted(set(policy) | set(extra))
+                b["library_folders"] = sorted(extra)
+        return b
 
     def rules(self, d: str) -> list[dict]:
         meta = self.get(d)

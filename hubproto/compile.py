@@ -78,6 +78,9 @@ def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], re
     findings += schema_guard(rules)
     findings += grounding_guard(rules, store.frames)
     findings += consistency_guard(rules, cog_ids, record_types)
+    from .guards import scope_guard
+
+    findings += scope_guard(rules, set(store.frames), {n: f.scope for n, f in store.frames.items()})
     base = releases.current(now)
     old_rules = releases.rules(base["digest"]) if base else []
     changes = drift_guard(old_rules, rules)
@@ -111,6 +114,10 @@ def text_changes(old_bom: list[dict], new_bom: list[dict], rules: list[dict]) ->
     what people follow and what cogs judge against. Two owners when a cog follows that Frame."""
     old = {f["name"]: f for f in old_bom or []}
     followed = {n for r in rules if r.get("kind") == "cog" for n in (r.get("follows") or []) + (r.get("reviews") or [])}
+    from .release import persona_frames
+
+    scopes = {r["name"]: r for r in rules if r.get("kind") == "scope"}
+    followed |= {n for r in rules if r.get("kind") == "persona" and r.get("of") == "cog" for n in persona_frames(scopes, r)}
     out = []
     for f in new_bom or []:
         prior = old.get(f["name"])

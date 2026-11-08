@@ -502,6 +502,10 @@ class ViewsMixin:
         body += self._new_member_forms()
         self._page("People", body, crumbs=[("People", None)])
 
+    def _user_reading(self, person: str) -> str:
+        m = ((self.bundle or {}).get("members") or {}).get(person) or {}
+        return self._required_reading_html(person) if m.get("type") == "person" else ""
+
     def page_user(self):
         user = self.user
         bundle = self._need_release()
@@ -619,6 +623,7 @@ class ViewsMixin:
                      f'<input type="hidden" name="to" value="{esc(name)}"><input type="hidden" name="return" value="{esc(href("/user/" + name, user))}">'
                      f'<div class="fields">{text_input("subject", "Subject", required=True)}{text_input("body", "Message", required=True, textarea=True)}</div>'
                      f'<div class="actions"><button>{icon("send")}Send</button>{(" <span class=why>" + esc(name) + " answers with what it filed or found.</span>") if is_cog else ""}</div></form>')
+        body += self._user_reading(name)
         self._page(name, body, crumbs=[("People", href("/people", user)), (name, None)])
 
     # ------------------------------------------------------------ suppliers

@@ -36,7 +36,7 @@ APP_PAGES: dict[str, list[tuple[str, str, str]]] = {
     "settings": [("Your changes", "/settings", "edit"), ("People and roles", "/settings/people", "users"), ("Permissions", "/settings/permissions", "lock"),
                  ("Limits and due dates", "/settings/limits", "clock"), ("Cog rails", "/settings/rails", "robot"),
                  ("Segregation of duties", "/settings/sod", "shield"), ("Workflows", "/settings/workflows", "activity"), ("Forms", "/forms", "form")],
-    "policy": [("Policy versions", "/releases", "layers"), ("Policies", "/frames", "book"), ("Automation", "/automation", "activity"), ("Why", "/why", "help"),
+    "policy": [("Policy versions", "/releases", "layers"), ("Policies", "/frames", "book"), ("Scopes and personas", "/scopes", "layers"), ("Automation", "/automation", "activity"), ("Why", "/why", "help"),
                ("Conformance", "/conformance", "check-circle"), ("People and roles", "/admin", "users")],
 }
 PLURALS = {"ncr": "Nonconformances", "capa": "CAPAs", "audit": "Audits", "calibration": "Calibration", "complaint": "Complaints",
