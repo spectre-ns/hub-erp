@@ -243,7 +243,7 @@ def test_quality_manager_cannot_disposition_her_own_ncr(seeded):
 
 # ----------------------------------------------------------------- documents, training, escalation
 
-def test_effective_document_assigns_training_and_tick_escalates_overdue_items(seeded):
+def test_effective_document_assigns_training_and_tick_reports_overdue_trainings(seeded):
     run_id = seeded.runner.submit("document-control", {"record": {"title": "SOP-12 Handling", "change_type": "minor",
                                                                    "training_roles": ["staff"]}}, owner="alice")
     # A new document is a major change whatever its author says (review governance-1): a person approves it.
@@ -261,11 +261,13 @@ def test_effective_document_assigns_training_and_tick_escalates_overdue_items(se
         seeded.runner.decide(tr["id"], "bob", "approve", meaning="ok", payload_digest=seen(seeded.runner, tr["id"]))
     state = seeded.runner.decide(tr["id"], "alice", "approve", meaning="read and understood", payload_digest=seen(seeded.runner, tr["id"]))
     assert state["status"] == "completed" and seeded.kernel.get(mine["locator"])["state"] == "acknowledged"
-    escalated = [e for e in seeded.runner.tick(today="2099-01-01") if e["to"]]  # overdue items that gained an assignee
-    assert {e["record"] for e in escalated} == {t["locator"] for t in trainings if t["fields"]["person"] in ("bob", "dave")}
-    assert all(e["to"] == ["carol"] for e in escalated)
+    # Only the trainee acknowledges a training: an overdue one is reported to the quality manager, never reassigned.
+    mine_too = {t["locator"] for t in trainings}
+    overdue = [e for e in seeded.runner.tick(today="2099-01-01") if e["record"] in mine_too]
+    assert {e["record"] for e in overdue} == {t["locator"] for t in trainings if t["fields"]["person"] != "alice"}
+    assert all(e["to"] == [] and e["informed"] == ["carol"] for e in overdue)
     bobs = next(t for t in seeded.kernel.query(type_="training") if t["fields"]["person"] == "bob")
-    assert bobs["assignees"] == ["bob", "carol"]
+    assert bobs["assignees"] == ["bob"]
     assert any(m["to"] == "carol" and m["kind"] == "escalation" for m in seeded.inbox.all())
     assert seeded.runner.tick(today="2099-01-02") == [], "an item is escalated once"
 
