@@ -237,6 +237,32 @@ class PagesMixin:
 <div class="actions"><button>{esc(verb)}</button></div></form>
 {details("Why can I do this?", f"<div class='why'>{self._why_html(d, 'create', op['object'], op['folder'])}</div>")}</details>"""
 
+    def _new_folder_control(self, bundle: dict, folder: str) -> str:
+        """The New folder button: inside a folder the person may file in, a name; at the top of the library, a choice of
+        the folders they may file in; where they may not, why and who may."""
+        user = self.user
+        name_input = '<label class="f"><span>Name</span><input name="name" required maxlength="60" placeholder="for example Work instructions"></label>'
+        note = ('<p class="why">A new folder has the same rights as the folder it is in: whoever may read or file there may read or file in it. '
+                'A folder with rights of its own is a policy folder: a policy owner adds it in Settings.</p>')
+        if folder:
+            d = may_file(bundle, user, folder)
+            if d["allowed"]:
+                inner = (f'<form method="post" action="/folder-new">{hidden_as(user)}<input type="hidden" name="parent" value="{esc(folder)}">'
+                         f'{name_input}<div class="actions"><button>{icon("plus")}Add to {esc(folder)}</button></div></form>{note}')
+            else:
+                inner = (f'<p>You may not file documents in {esc(folder)}, so you cannot add folders to it.</p>'
+                         f'<p class="why">{esc(d.get("why") or "")}. People who may file here, or a document controller, add folders in it.</p>')
+        else:
+            mine = [x for x in bundle.get("folders") or [] if may_file(bundle, user, x)["allowed"]]
+            if mine:
+                opts = "".join(f'<option value="{esc(x)}">{esc(x)}</option>' for x in mine)
+                inner = (f'<form method="post" action="/folder-new">{hidden_as(user)}<label class="f"><span>In</span><select name="parent">{opts}</select></label>'
+                         f'{name_input}<div class="actions"><button>{icon("plus")}Add the folder</button></div></form>{note}')
+            else:
+                inner = '<p>You may not file documents in any folder, so you cannot add folders.</p>' + note
+        return (f'<details class="tb-menu" id="new-folder"><summary class="button secondary">{icon("folder")}New folder</summary>'
+                f'<div class="tb-pop card">{inner}</div></details>')
+
     def _run_cards(self, rec: dict, run: dict | None) -> str:
         """The run's controls on an item's page (a record or a document): a stopped run goes back to its owner, a
         returned item is reworked and resubmitted, and whoever a decision waits for decides here; others see who it
@@ -368,6 +394,7 @@ class PagesMixin:
                              f'<span class="why">{self._why_html(d, "read", "*", f)}</span>'])
             recent = sorted(self._records("document"), key=lambda r: r.get("updated_at") or r["created_at"], reverse=True)[:24]
             body = (f"<h1>{icon('folder', cls='lg')} Documents</h1><div class='library'>{tree}<div>"
+                    f"<div class='toolbar'>{self._new_folder_control(bundle, '')}</div>"
                     f"<p class='why'>Folders you may open, and why. Recent documents across them below.</p>" + table(["Folder", "Access", "Why"], rows)
                     + "<h2>Recent documents</h2>" + self._tiles(recent) + "</div></div>")
             return self._page("Files", body, crumbs=[("Files", None)])
@@ -389,22 +416,18 @@ class PagesMixin:
         toolbar = '<div class="toolbar">'
         if f["allowed"]:
             toolbar += f'<a class="button" href="#new-document">{icon("plus")}New document</a><a class="button secondary" href="#upload">{icon("upload")}Upload</a>'
+
         sorts = "".join(f'<option value="{k}"{" selected" if sort == k else ""}>{v}</option>' for k, v in (("date", "newest first"), ("name", "name"), ("revision", "revision")))
         toolbar += (f'<form method="get" action="/files" class="sort">{hidden_as(user)}<input type="hidden" name="folder" value="{esc(folder)}">'
                     f'<label class="f" style="width:auto"><span class="vh">Search this folder</span><input type="search" name="text" value="{esc(text)}" aria-label="Search this folder" title="number or words in the title"></label>'
-                    f'<label class="f" style="width:auto"><span>Sort by</span><select name="sort" class="small">{sorts}</select></label><button class="ghost">{icon("search")}Search</button></form></div>')
+                    f'<label class="f" style="width:auto"><span>Sort by</span><select name="sort" class="small">{sorts}</select></label><button class="ghost">{icon("search")}Search</button></form>'
+                    + self._new_folder_control(bundle, folder) + '</div>')
         body += f"<div class='library'>{tree}<div>{toolbar}"
         lib = self.hub.library.all()
         if subs:
             body += "<h2>Folders</h2><ul class='folders'>" + "".join(
                 f'<li>{icon("folder")} <a href="{href("/files", user, folder=s)}">{esc(s.split("/")[-1])}</a>'
                 + (f' <span class="why">added by {esc(lib[s].get("by"))}; the same rights as {esc(folder)}</span>' if s in lib else "") + "</li>" for s in subs) + "</ul>"
-        if folder and f["allowed"]:
-            body += (f'<details class="card quiet" id="new-folder"><summary>{icon("plus")}New folder in {esc(folder)}</summary>'
-                     f'<form method="post" action="/folder-new" class="sform row">{hidden_as(user)}<input type="hidden" name="parent" value="{esc(folder)}">'
-                     f'<label class="f"><span>Name</span><input name="name" required maxlength="60" placeholder="for example Work instructions"></label>'
-                     f'<button>{icon("plus")}Add the folder</button></form><p class="why">It has the same rights as {esc(folder)}: whoever may read or file '
-                     f'there may read or file in it. A folder with rights of its own is a policy folder: ask a policy owner (Settings).</p></details>')
         if folder in lib and not docs and not any(x.startswith(folder + "/") for x in lib):
             body += (f'<form method="post" action="/folder-remove" class="inline">{hidden_as(user)}<input type="hidden" name="path" value="{esc(folder)}">'
                      f'<button class="ghost">{icon("x")}Remove this empty folder</button></form>')

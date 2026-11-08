@@ -478,6 +478,11 @@ def test_people_who_file_in_a_folder_may_add_subfolders_with_the_same_rights(she
     assert authz.check(b, "carol", "create", "document", path)["allowed"] == authz.check(b, "carol", "create", "document", "Quality/Controlled Documents")["allowed"]
     status, text = get(shell, "/files", **{"as": "carol", "folder": "Quality/Controlled Documents"})
     assert "Work instructions" in main_of(text) and "added by carol" in main_of(text)
+    assert 'id="new-folder"' in main_of(text) and "Add to Quality/Controlled Documents" in main_of(text), "the New folder button is in the toolbar"
+    status, text = get(shell, "/files", **{"as": "carol"})
+    assert 'id="new-folder"' in main_of(text) and 'name="parent"' in main_of(text), "at the top of the library: choose where"
+    status, text = get(shell, "/files", **{"as": "bob", "folder": "Quality/Controlled Documents"})
+    assert 'id="new-folder"' in main_of(text) and "you cannot add folders to it" in main_of(text), "where you may not, it says why"
     status, url, text = post(shell, "/folder-new", {"as": "dave", "parent": "Quality/Controlled Documents", "name": "Mine"})
     assert status == 403, "only people who may file there"
     status, url, text = post(shell, "/folder-new", {"as": "carol", "parent": "Quality/Controlled Documents", "name": "../escape"})
