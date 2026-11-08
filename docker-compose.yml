@@ -28,7 +28,8 @@ services:
       # Cogs work from queues: asking one returns at once and its answer lands where it was asked. "worker" works the
       # queues on a thread in this process; "service" leaves them to the cog-users service below.
       HUBPROTO_COG_QUEUE: ${HUBPROTO_COG_QUEUE:-worker}
-      # Optional: HUBPROTO_EXTRACTOR=claude and ANTHROPIC_API_KEY for guided-mode extraction
+      # Claude models (claude-* in a cog's profile) and guided-mode extraction (HUBPROTO_EXTRACTOR=claude); the key is in .env
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -63,6 +64,7 @@ services:
       - ./profiles:/hub/profiles
     environment:
       HUBPROTO_ROOT: /hub
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       HUBPROTO_CAD_WORKER_URL: http://cad-worker:9000
       HUBPROTO_OLLAMA_URL: ${HUBPROTO_OLLAMA_URL:-http://host.docker.internal:11434}
     extra_hosts:
@@ -84,6 +86,7 @@ services:
       - ./profiles:/hub/profiles
     environment:
       HUBPROTO_ROOT: /hub
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       HUBPROTO_OLLAMA_URL: ${HUBPROTO_OLLAMA_URL:-http://host.docker.internal:11434}
     extra_hosts:
       - "host.docker.internal:host-gateway"

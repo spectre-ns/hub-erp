@@ -42,8 +42,8 @@ AUTOMATIONS = {
     "release-change-order": {
         "title": "Release the change order",
         "trigger": "a change order is approved",
-        "steps": ["Check the change order is ready", "Bring the Frame into force", "Publish the revisions", "Assign training",
-                  "Restage the other open change orders", "Tell the people involved"],
+        "steps": ["Check the change order is ready", "Bring the Frame into force", "Publish the revisions", "Apply the form layouts",
+                  "Assign training", "Restage the other open change orders", "Tell the people involved"],
     },
 }
 
@@ -272,7 +272,10 @@ def r_check(hub, job, memo):
 def r_frame(hub, job, memo):
     from . import eco
 
+    co = hub.kernel.get(job["subject"])
     meta = eco.activate_frame(hub, job["subject"])
+    if not co["fields"].get("staged_proposal") and not eco.carried(hub, co):
+        return f"no Frame change: release {meta['digest'][:12]} stays in force", {"release": meta["digest"]}
     return f"release {meta['digest'][:12]} is in force", {"release": meta["digest"]}
 
 
@@ -280,7 +283,14 @@ def r_publish(hub, job, memo):
     from . import eco
 
     done = eco.publish_revisions(hub, job["subject"], memo["release"])
-    return "published " + ", ".join(done), {"published": done}
+    return ("published " + ", ".join(done)) if done else "no revision to publish", {"published": done}
+
+
+def r_forms(hub, job, memo):
+    from . import formlayout
+
+    done = formlayout.activate(hub, hub.kernel.get(job["subject"]), memo["release"])
+    return ("in force: " + ", ".join(done)) if done else "no form change", {}
 
 
 def r_training(hub, job, memo):
@@ -315,7 +325,7 @@ def r_tell(hub, job, memo):
 
 
 STEPS = {"compile-frame": [c_collect, c_compile, c_guards, c_stage, c_tell],
-         "release-change-order": [r_check, r_frame, r_publish, r_training, r_restage, r_tell]}
+         "release-change-order": [r_check, r_frame, r_publish, r_forms, r_training, r_restage, r_tell]}
 
 
 # ---------------------------------------------------------------- triggers

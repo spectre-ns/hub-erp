@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from urllib.parse import quote
 
 from ..agent import Agent, AgentStore, agents_enabled
 from .forms import ShellError
@@ -223,8 +224,15 @@ class NewMemberMixin:
             p = self.hub.propose_cog_model(cog, model, by=self.user)
         except ValueError as e:
             raise ShellError(str(e)) from None
+        if p.get("change_order"):
+            log_line(f"cog model change on {p['change_order']} cog={cog} model={model} by={self.user}")
+            return self._redirect(self._once_finish(href("/record/" + quote(p["change_order"]), self.user,
+                                                         done=f"{cog} → {model} is written into the cog profiles on {p['change_order']}. "
+                                                              f"{cog} keeps {current} until that revision is approved and the change order is released.")))
         log_line(f"cog model proposed cog={cog} model={model} by={self.user} proposal={p['id']}")
-        self._redirect(self._once_finish(href("/proposal/" + p["id"], self.user, done=f"Proposed {model} for {cog}; the policy owners review it here.")))
+        self._redirect(self._once_finish(href("/proposal/" + p["id"], self.user,
+                                              done=f"Proposed {model} for {cog} as #{p.get('number')}. A cog's model is part of the policy: "
+                                                   f"{cog} keeps {current} until both policy owners approve this change and one of them releases it.")))
 
     def _multi(self, name: str) -> list[str]:
         vals = (getattr(self, "multi", None) or {}).get(name)
@@ -241,6 +249,9 @@ class NewMemberMixin:
             p = self.hub.propose_new_person(name=self._f("name"), roles=self._multi("roles"), by=self.user)
         except ValueError as e:
             raise ShellError(str(e), field="name") from None
+        if p.get("change_order"):
+            return self._redirect(self._once_finish(href("/record/" + quote(p["change_order"]), self.user,
+                                                         done=f"{self._f('name')} is written into the organization model on {p['change_order']}.")))
         log_line(f"new person proposed name={self._f('name')} by={self.user} proposal={p['id']}")
         self._redirect(self._once_finish(href("/proposal/" + p["id"], self.user, done=f"Proposed {self._f('name')} as a new person; the policy owners review it here.")))
 
@@ -255,5 +266,8 @@ class NewMemberMixin:
                                          duties=[d for d in (self.form.get("duties") or "").splitlines() if d.strip()], by=self.user)
         except ValueError as e:
             raise ShellError(str(e), field="name") from None
+        if p.get("change_order"):
+            return self._redirect(self._once_finish(href("/record/" + quote(p["change_order"]), self.user,
+                                                         done=f"{self._f('name')} is written into the organization model and the cog profiles on {p['change_order']}.")))
         log_line(f"new cog proposed name={self._f('name')} by={self.user} proposal={p['id']}")
         self._redirect(self._once_finish(href("/proposal/" + p["id"], self.user, done=f"Proposed {self._f('name')} as a new cog; the policy owners review it here.")))

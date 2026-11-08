@@ -59,6 +59,10 @@ class Hub:
         from . import automation as _automation
 
         self.automation = _automation.JobStore(Path(self.root) / "state" / "automation")
+        from . import formlayout as _formlayout
+
+        self.forms = _formlayout.FormStore(Path(self.root) / "state" / "forms")
+        _formlayout.apply_custom_fields(self)  # released custom fields are fields of their record types
         self.runner.on_completed = [lambda state, rec: _automation.on_run_completed(self, state, rec)]
         self.runner.frames_store = lambda: self.released_frames()  # cogs read the SOPs as released, not the files on disk
         self.runner.frames_for_release = lambda d: self.released_frames(d)
@@ -86,23 +90,29 @@ class Hub:
     def settings_to_change_order(self, user: str, reason: str = "") -> dict:
         """The person's Settings changes written into the SOPs they belong to, as draft revisions on their open
         settings change order (one is started when they have none). Returns {"change_order", "locator", "report"}."""
+        d = self.settings_draft(user)
+        out = self.rules_to_change_order(user, d["rules"], reason=reason or "Changes made in Settings.")
+        self.settings_drafts.discard(user)
+        return out
+
+    def rules_to_change_order(self, user: str, new_rules: list[dict], reason: str = "") -> dict:
+        """Rule changes (the rules in force -> ``new_rules``) written into the SOP documents they belong to, as draft
+        revisions on the person's open settings change order. The Frame is derived from those documents: nothing
+        changes until the revisions are approved and the change order is released."""
         from . import eco, sop_settings
 
-        d = self.settings_draft(user)
         meta = self.releases.current()
         bundle = self.releases.bundle(meta["digest"])
-        planned = sop_settings.plan(self.settings_rules(), d["rules"], bundle.get("processes") or {})
+        planned = sop_settings.plan(self.settings_rules(), new_rules, bundle.get("processes") or {})
         if not planned:
-            raise ValueError("your draft changes nothing")
+            raise ValueError("that changes nothing")
         co = next((r for r in self.kernel.query(type_="change-order") if r["state"] in eco.OPEN_STATES
                    and r["fields"].get("requested_by") == user and r["fields"].get("from_settings")), None)
         if co is None:
             co = self.kernel.create("change-order", "Quality/Changes",
-                                    {"title": f"Settings changes by {user}", "description": reason or "Changes made in Settings.",
+                                    {"title": f"Policy changes by {user}", "description": reason or "Changes to the policy.",
                                      "requested_by": user, "from_settings": True}, by=user)
         report = sop_settings.apply_plan(self, co["locator"], planned, by=user)
-        eco.stage(self, co["locator"])
-        self.settings_drafts.discard(user)
         return {"change_order": co["number"], "locator": co["locator"], "report": report}
 
     def sop_source(self) -> bool:
@@ -197,14 +207,14 @@ class Hub:
 
     def compile(self, scopes: list[str] | None = None, extractor=None, now: str | None = None,
                 overrides: dict[str, str] | None = None, drafts: dict[str, str] | None = None, save: bool = True,
-                by: str | None = None, sop_drafts: dict[str, str] | None = None) -> dict:
+                by: str | None = None, sop_drafts: dict[str, str] | None = None, from_release: bool = False) -> dict:
         """Compile the Frames into a proposal. ``overrides`` are drafts of Frames (name -> text) compiled in place of the
         files, written only when the proposal is released; ``drafts`` names the draft document of each. Drafts already in
         an open proposal on the same base carry forward, so a recompile never drops someone's pending policy change."""
         if self.settings_source():
             raise CompileError("the rules are edited in Settings since the release in force came from there; the Frames are the SOPs "
                                "people and cogs read. Change a rule in Settings (or with a cog's propose tools), not by compiling the Frames.")
-        frames = self.frames
+        frames = self.released_frames() if from_release else self.frames  # from_release: only the overrides change
         if self.sop_source():
             # The Frame is derived from the SOP documents: the documents in force (or the drafts an ECO carries, in
             # ``sop_drafts``: {frame name: draft locator}) on top of the release in force; the files on disk are not read.
@@ -375,7 +385,15 @@ class Hub:
         model = (model or "").strip()
         if not model or "\n" in model:
             raise ValueError("name a model")
-        frame = next((f for f in self.frames.frames.values() if f"## Cog: {cog}" in f.text), None)
+        if self.sop_source():
+            # The Frame is derived from the SOPs: the Model line is changed in the cog-profiles policy document.
+            rules = self.settings_rules()
+            if not any(r["kind"] == "cog" and r["name"] == cog for r in rules):
+                raise ValueError(f"{cog} has no profile to change")
+            new = [({**r, "model": model} if r["kind"] == "cog" and r["name"] == cog else r) for r in rules]
+            return self.rules_to_change_order(by, new, reason=f"{cog} uses {model}")
+        released = self.released_frames()  # the change is made to the policy in force, not to unreleased edits on disk
+        frame = next((f for f in released.frames.values() if f"## Cog: {cog}" in f.text), None)
         if frame is None:
             raise ValueError(f"{cog} has no profile to change")
         lines = frame.text.splitlines()
@@ -389,7 +407,7 @@ class Hub:
         text = "\n".join(lines) + ("\n" if frame.text.endswith("\n") else "")
         d = self.frame_draft(frame.name, by=by)
         self.dms.add_version(d["locator"], text.encode("utf-8"), by=by, filename=frame.path.name, mime="text/markdown", note=f"{cog} uses {model}")
-        return self.compile(overrides={frame.name: text}, drafts={frame.name: d["locator"]}, by=by)
+        return self.compile(overrides={frame.name: text}, drafts={frame.name: d["locator"]}, by=by, from_release=True)
 
     def propose_new_person(self, *, name: str, roles: list[str], by: str) -> dict:
         """A new person as a policy proposal: the member and their roles in the organization model. (In production
@@ -408,6 +426,17 @@ class Hub:
         import re as _re
 
         follows, duties = list(follows or []), list(duties or [])
+        if self.sop_source():
+            # The Frame is derived from the SOPs: the member goes into the organization model, a cog's profile into
+            # the cog profiles, both as revisions on a change order.
+            rules = self.settings_rules()
+            if any(r["kind"] == "member" and r["principal"] == name for r in rules):
+                raise ValueError(f"{name} is already a member")
+            new = rules + [{"kind": "member", "principal": name, "principal_type": kind, "roles": list(roles)}]
+            if kind == "cog":
+                new.append({"kind": "cog", "name": name, "model": model, "prompt": prompt, "prompt_from": "", "follows": follows,
+                            "reviews": [], "references": [], "autonomy": autonomy, "duties": duties})
+            return self.rules_to_change_order(by, new, reason=f"add {name} ({kind})")
         meta = self.releases.current()
         bundle = self.releases.bundle(meta["digest"]) if meta else {}
         name = (name or "").strip().lower()
@@ -522,10 +551,22 @@ class Hub:
         self._released_cache = {}
         if overrides:
             # The drafts become the Frames: written in place, then every Frame document follows its file.
+            base_texts = self.releases.frame_texts(base) if base and hasattr(self.releases, "frame_texts") else {}
             for name, o in overrides.items():
                 path = self.frames.get(name).path
+                disk = path.read_text(encoding="utf-8") if path.exists() else ""
+                text = o["text"]
+                if base_texts.get(name) and disk and disk != base_texts[name]:
+                    # The file has edits that were not part of this proposal (other work in progress): apply this
+                    # proposal's change to the file instead of replacing it, so those edits are not lost.
+                    text, conflicts = merge3(base_texts[name], o["text"], disk)
+                    if conflicts:
+                        text = disk
+                        self.inbox.notify(by, kind="failure", subject=f"{name}: the released change could not be written into the file",
+                                          body="The file has other edits on the same lines; the release is in force, the file is unchanged. "
+                                               "Bring the file in line by hand: " + "; ".join(conflicts[:3]))
                 tmp = path.with_suffix(path.suffix + ".tmp")
-                tmp.write_text(o["text"], encoding="utf-8")
+                tmp.write_text(text, encoding="utf-8")
                 tmp.replace(path)
             self._frames = None
             for name, o in overrides.items():
@@ -841,4 +882,46 @@ def plain_chat(text: str) -> str:
     t = re.sub(r"(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])", r"\1", t)
     t = re.sub(r"(?m)^#{1,6}\s+", "", t)
     return t.strip()
+
+
+def merge3(base: str, theirs: str, mine: str) -> tuple[str, list[str]]:
+    """Apply the change base -> theirs to mine (a file with other edits). Each changed block is placed by the lines
+    it replaces (or, for an insertion, the line before it), found once in mine; a block that cannot be placed is a
+    conflict. Returns (merged text, conflicts)."""
+    import difflib
+
+    b, t, m = base.splitlines(), theirs.splitlines(), mine.splitlines()
+    ops = [op for op in difflib.SequenceMatcher(a=b, b=t, autojunk=False).get_opcodes() if op[0] != "equal"]
+    conflicts: list[str] = []
+
+    def place(cands: list[int], i1: int) -> list[int]:
+        """Of several places, the one whose preceding lines match the base's (as many as it takes to tell them apart)."""
+        for c in range(1, min(i1, 40) + 1):
+            if len(cands) <= 1:
+                break
+            before = b[i1 - c:i1]
+            narrowed = [k for k in cands if k - c >= 0 and m[k - c:k] == before]
+            if narrowed:
+                cands = narrowed
+        return cands
+
+    for tag, i1, i2, j1, j2 in reversed(ops):
+        new = t[j1:j2]
+        if i2 > i1:
+            old = b[i1:i2]
+            at = place([k for k in range(len(m) - len(old) + 1) if m[k:k + len(old)] == old], i1)
+            if len(at) != 1:
+                conflicts.append(f"lines “{old[0][:60]}”" + (" not found" if not at else " found more than once"))
+                continue
+            m[at[0]:at[0] + len(old)] = new
+        else:
+            if i1 == 0:
+                m[0:0] = new
+                continue
+            at = place([k + 1 for k, line in enumerate(m) if line == b[i1 - 1]], i1)
+            if len(at) != 1:
+                conflicts.append(f"the place after “{b[i1 - 1][:60]}”" + (" not found" if not at else " found more than once"))
+                continue
+            m[at[0]:at[0]] = new
+    return "\n".join(m) + ("\n" if mine.endswith("\n") else ""), conflicts
 

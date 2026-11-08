@@ -174,7 +174,7 @@ def backend_for(model: str) -> str:
     return "stand-in" if stand_in_allowed() else "none"
 
 
-CLAUDE_MODELS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]
+CLAUDE_MODELS = ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]
 _TAGS: dict = {"at": 0.0, "models": None, "error": ""}
 
 

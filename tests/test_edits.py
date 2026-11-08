@@ -324,7 +324,7 @@ def test_the_agent_tool_edits_with_operations(shell, monkeypatch):
     hub = shell["hub"]
     doc = _doc(hub, ext="md", title="Agent target")
     monkeypatch.setattr(hub, "model", FakeModel("@@ delete section: Records\n@@ insert at end\n## Review\nReviewed yearly."))
-    refused = AgentTools(hub, "quality-assistant", "t-edit0", "act", 5, AgentStore(shell["root"] / "state" / "agents"), requester="carol")
+    refused = AgentTools(hub, "ap-reviewer", "t-edit0", "act", 5, AgentStore(shell["root"] / "state" / "agents"), requester="carol")
     assert "error" in refused.execute("edit_document", {"number": doc["number"], "request": "x"})  # it may not change documents there
     tools = AgentTools(hub, "doc-reviewer", "t-edit", "act", 5, AgentStore(shell["root"] / "state" / "agents"), requester="carol")
     out = tools.execute("edit_document", {"number": doc["number"], "request": "drop the records section and add a review section"})

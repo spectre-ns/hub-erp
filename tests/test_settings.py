@@ -165,3 +165,25 @@ def test_a_cog_proposes_a_setting_change_and_never_applies_it(hub):
     assert hub.proposals.load(out["proposal_id"])["source"] == "settings"
     assert "error" in tools.execute("propose_setting_change", {"action": "replace", "key": "nope", "rule": {}, "reason": "x"})
     assert "error" in tools.execute("propose_setting_change", {"action": "remove", "key": s["key"], "reason": ""})
+
+
+def test_a_model_change_carries_only_itself_and_keeps_other_edits_in_the_file(hub):
+    """A model change is proposed on the release in force: unreleased edits on disk are not swept into it, and
+    releasing it writes the Model line into the file without losing those edits."""
+    path = hub.frames.get("cog-profiles").path
+    pending = "Prompt: You are the purchasing assistant. You check suppliers against the approved list"
+    text = path.read_text()
+    assert pending in text
+    path.write_text(text.replace(pending, pending + " (an unreleased edit)"))
+    hub._frames = None
+    p = hub.propose_cog_model("quality-assistant", "claude-opus-5-5", by="bob")
+    assert {c["rule"].get("kind") for c in p["changes"] if c.get("rule")} <= {"cog", "text"}, [c["reason"] for c in p["changes"]]
+    assert all(c.get("frame") in (None, "cog-profiles") for c in p["changes"] if c["op"] == "text"), "only the cog's own Frame"
+    assert all((c.get("rule") or {}).get("name") == "quality-assistant" for c in p["changes"] if (c.get("rule") or {}).get("kind") == "cog")
+    for who in ("bob", "carol"):
+        hub.review(p["id"], who, approve_all=True)
+    hub.release(p["id"], "bob")
+    b = hub.releases.bundle(hub.releases.current()["digest"])
+    assert b["cogs"]["quality-assistant"]["model"] == "claude-opus-5-5"
+    after = path.read_text()
+    assert "Model: claude-opus-5-5" in after and "(an unreleased edit)" in after, "the other edit in the file is kept"

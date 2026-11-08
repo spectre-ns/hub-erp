@@ -188,10 +188,15 @@ def preview(hub, co_ref: str) -> dict | None:
 def frame_reasons(hub, co: dict) -> list[str]:
     """Why the compiled Frame is not ready (empty when it is): every carried revision approved, compiled from exactly
     those approved revisions against the release in force, with no problem that stops it."""
+    from . import formlayout
+
     reasons = []
     carried_now = carried(hub, co)
+    forms = co["fields"].get("form_changes") or {}
+    if not carried_now and not forms:
+        return ["it carries no SOP or policy revision and no form change"]
     if not carried_now:
-        return ["it carries no SOP or policy revision"]
+        return formlayout.carried_reasons(hub, co)  # forms only: no Frame to compile
     for c in carried_now:
         d = c["draft"]
         if not (d["state"] == "approved" and d["fields"].get("held_for") == co["number"]):
@@ -209,7 +214,7 @@ def frame_reasons(hub, co: dict) -> list[str]:
         elif f.get("staged_base") != (hub.releases.current() or {}).get("digest"):
             reasons.append("the Frame was compiled against a release no longer in force: compile it again")
     reasons += list(f.get("staged_errors") or [])
-    return reasons
+    return reasons + formlayout.carried_reasons(hub, co)
 
 
 def status(hub, co_ref: str) -> dict:
@@ -263,6 +268,8 @@ def activate_frame(hub, co_ref: str) -> dict:
     co = _co(hub, co_ref)
     if co["fields"].get("released_release"):
         return hub.releases.get(co["fields"]["released_release"]) or {"digest": co["fields"]["released_release"]}
+    if not co["fields"].get("staged_proposal") and not carried(hub, co):
+        return hub.releases.current()  # it changes forms only: the Frame in force stays
     proposal = hub.proposals.load(co["fields"]["staged_proposal"])
     for c in proposal["changes"]:
         if (not c.get("widening") or c.get("op") == "text") and change_state(c) == "pending":
@@ -325,8 +332,11 @@ def release(hub, co_ref: str, *, by: str) -> dict:
     blocked = check_approval(hub, co_ref)
     if blocked:
         raise ValueError("the change order cannot be released: " + "; ".join(blocked))
+    from . import formlayout
+
     meta = activate_frame(hub, co_ref)
     publish_revisions(hub, co_ref, meta["digest"])
+    formlayout.activate(hub, _co(hub, co_ref), meta["digest"])
     assign_revision_training(hub, co_ref, meta["digest"])
     co = _co(hub, co_ref)
     if co["state"] != "released":

@@ -42,7 +42,8 @@ def test_create_a_working_document_with_content_where_the_cog_may(hub):
     assert md["ok"] and hub.dms.content(f"rec:document:{md['document']}")[0].decode().startswith("## Plain")
     sheet = t.execute("create_document", {"title": "Log", "folder": "Policy", "format": "xlsx", "text": "| Item | Qty |\n| Washer | 12 |"})
     assert sheet["ok"] and "Washer" in text_of(hub, sheet["document"])
-    refused = t.execute("create_document", {"title": "Nope", "folder": "Quality/Controlled Documents"})
+    ap = type(t)(hub, "ap-reviewer", "t-ap", "act", 5, t.store, requester="carol")  # a cog with no rights on quality documents
+    refused = ap.execute("create_document", {"title": "Nope", "folder": "Quality/Controlled Documents"})
     assert "error" in refused and "create document in Quality/Controlled Documents" in refused["error"]
     assert "error" in t.execute("create_document", {"title": "Nowhere", "folder": "No/Such"})
     assert "error" in t.execute("create_document", {"title": "Bad", "folder": "Policy", "format": "exe"})

@@ -563,6 +563,38 @@ class ActionsMixin:
         doc = self.hub.dms.render_snapshot(rec["locator"], by=user)
         self._redirect(self._once_finish(href("/document/" + quote(doc["locator"], safe=":"), user, done=f"Saved a snapshot of {rec['number']} as {doc['number']}.")))
 
+    def _may_withdraw(self, rec: dict) -> str:
+        """Empty when this person may withdraw the item: a draft (not in a running process) that is theirs (owner,
+        author, filer, requester) or, for documents, any draft when they are a document controller."""
+        from ..agent_records import START_STATES
+
+        if rec["state"] not in START_STATES:
+            return f"{rec['number']} is {rec['state']}: only a draft is withdrawn"
+        run = self.hub.runner.run_for_record(rec["locator"])
+        if run and run["status"] not in ("completed", "cancelled", "rejected"):
+            return f"{rec['number']} is in a {run['process']} run: cancel the run instead"
+        f = rec["fields"]
+        if self.user in (rec.get("created_by"), f.get("owner"), f.get("author"), f.get("requested_by")):
+            return ""
+        if rec["type"] == "document" and "document-controller" in authz.roles_of(self.bundle, self.user):
+            return ""
+        return f"{rec['number']} is not yours: its owner, author or filer withdraws it"
+
+    def post_withdraw_record(self):
+        user = self.user
+        self._need_release()
+        rec = self.hub.kernel.require(self._f("record"))
+        self._require_read(rec["folder"])
+        why = self._may_withdraw(rec)
+        if why:
+            raise ShellError(why[:1].upper() + why[1:] + ".", 403)
+        reason = self._f("reason")
+        if not reason:
+            raise ShellError("Say why you withdraw it; the reason stays in the history.", field="reason")
+        self.hub.kernel.transition(rec["locator"], "withdrawn", by=user, reason=reason)
+        log_line(f"withdraw record={rec['locator']} by={user} reason={reason!r}")
+        self._redirect(href("/record/" + quote(rec["locator"], safe=":"), user, done=f"{rec['number']} is withdrawn: {reason}"))
+
     def post_hold(self):
         user = self.user
         bundle = self._need_release()

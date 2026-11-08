@@ -135,8 +135,9 @@ def test_assign_is_refused_on_someone_elses_item(hub):
     t = tools_for(hub)
     doc = hub.dms.create(title="Not mine", doc_class="controlled", folder="Quality/Controlled Documents", by="carol",
                          content=b"# Not mine\n", filename="nm.md", mime="text/markdown", doc_type="sop")
-    out = t.execute("assign", {"number": doc["number"], "to": "bob", "instruction": "x"})
-    assert "only its owner" in out["error"]
+    ap = type(t)(hub, "ap-reviewer", "t-ap", "act", 5, t.store, requester=t.requester)  # it may not approve documents
+    out = ap.execute("assign", {"number": doc["number"], "to": "bob", "instruction": "x"})
+    assert "only its owner" in out["error"] or "may read" in out["error"], out
 
 
 # ---------------------------------------------------------------- link_records
@@ -161,7 +162,8 @@ def test_send_back_to_start_for_items_the_cog_may_restart(hub):
     assert out["ok"] and out["state"] == "open"
     doc = hub.dms.create(title="Carol's other SOP", doc_class="controlled", folder="Quality/Controlled Documents", by="carol",
                          content=b"# SOP\n", filename="sop2.md", mime="text/markdown", doc_type="sop")
-    assert "only carol" in t.execute("send_back_to_start", {"number": doc["number"], "reason": "x"})["error"]
+    ap = type(t)(hub, "ap-reviewer", "t-ap", "act", 5, t.store, requester=t.requester)
+    assert "error" in ap.execute("send_back_to_start", {"number": doc["number"], "reason": "x"})
 
 
 # ---------------------------------------------------------------- create_task

@@ -1341,7 +1341,9 @@ class ReviewerCog(Cog):
         kernel = ctx.runner.kernel if ctx.runner is not None else ctx.kernel
         proc = (ctx.bundle.get("processes") or {}).get(crit["process"]) or {}
         rtype = proc.get("record_type") or proc.get("object") or ""
-        today = date.today().isoformat()
+        from .release import utcnow
+
+        today = utcnow()[:10]  # decisions are stamped in UTC: count the day (and month) in UTC too, or the count is off near midnight
         n_today, month_amount = 0, 0.0
         for r in kernel.query(type_=rtype) if rtype else []:
             for d in r.get("decisions") or []:

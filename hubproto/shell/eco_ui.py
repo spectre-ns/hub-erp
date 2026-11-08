@@ -82,7 +82,8 @@ class EcoMixin:
             f = co["fields"]
             carried = eco.carried(self.hub, co)
             rows.append([f"<a href='{self._co_href(co)}'>{esc(co['number'])}</a>", esc(f.get("title") or ""), self._state_chip(co["state"]),
-                         esc(", ".join(c["name"] for c in carried) or "-"), esc(", ".join(f.get("implements") or []) or "-"),
+                         esc(", ".join([c["name"] for c in carried] + [f"{t} form" for t in sorted(f.get("form_changes") or {})]) or "-"),
+                         esc(", ".join(f.get("implements") or []) or "-"),
                          (f"<span class='chip warn'>{len(f['staged_errors'])} error(s)</span>" if f.get("staged_errors") else
                           (f"{int(f.get('staged_changes') or 0)} change(s)" if f.get("staged_proposal") else "-"))])
         body = (f"<h1>{icon('layers', cls='lg')} Change orders</h1>"
@@ -193,6 +194,8 @@ class EcoMixin:
                 out += (f"<form method='post' action='/co-implements' class='sform row'>{hidden_as(user)}{self._once()}<input type='hidden' name='co' value='{esc(co['locator'])}'>"
                         f"<input type='hidden' name='action' value='add'><label class='f'><span>Add an approved change request</span><select name='cr'>{sel}</select></label>"
                         f"<button class='secondary'>{icon('plus')}Add</button></form>")
+        # Forms
+        out += self._forms_co_section(co, mine, preparing)
         # Staged Frame
         out += self._staged_html(co, st)
         # What blocks it, and Send for approval

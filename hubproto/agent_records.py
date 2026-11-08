@@ -278,8 +278,69 @@ def send_back_to_start(t, a: dict) -> dict:
     ok, why = hub.runner.may_restart(rec, t.cog)
     if not ok:
         return {"error": why}
+    if getattr(t, "for_whom", ""):
+        ok, why = hub.runner.may_restart(rec, t.for_whom)
+        if not ok:
+            return {"error": f"{t.for_whom}, for whom you work, may not: {why}"}
     after = hub.runner.restart(rec["locator"], t.cog, reason)
     return {"ok": True, "number": after["number"], "state": after["state"]}
+
+
+# ---------------------------------------------------------------- change_state
+STATE_ACTIONS = ("hold", "release_hold", "withdraw", "send_back_to_start")
+
+
+def change_state(t, a: dict) -> dict:
+    """State changes that need no signature, checked like the buttons in the hub: put on hold or release (approvers of
+    the item), withdraw a draft (its owner, author or filer, or a document controller; never one in a running
+    process), send back to the start. Approving, making effective and making obsolete stay with their processes."""
+    hub, bundle = t.hub, t.bundle
+    action = str(a.get("action") or "")
+    if action not in STATE_ACTIONS:
+        return {"error": f"action is one of {', '.join(STATE_ACTIONS)}; approvals and publishing go through the item's process"}
+    rec = t._find(str(a.get("number") or ""))
+    if rec is None:
+        return {"error": f"no record {a.get('number')!r} that {t.cog} may read"}
+    reason = str(a.get("reason") or "").strip()
+    if not reason:
+        return {"error": "give a reason; it goes in the item's history"}
+    if action == "send_back_to_start":
+        return send_back_to_start(t, a)
+    obj = _object_of(hub, rec["type"])
+    who = getattr(t, "for_whom", "") or t.cog
+    if action in ("hold", "release_hold"):
+        if action == "hold" and rec["hold"]:
+            return {"error": f"{rec['number']} is already on hold"}
+        if action == "release_hold" and not rec["hold"]:
+            return {"error": f"{rec['number']} is not on hold"}
+        allowed = t.both_may("approve", obj, rec["folder"]) if hasattr(t, "both_may") else authz.check(bundle, t.cog, "approve", obj, rec["folder"])
+        if not allowed["allowed"]:
+            return {"error": f"only approvers of {rec['number']} put it on hold or release it: {allowed['why']}"}
+        after = hub.kernel.hold(rec["locator"], action == "hold", reason, by=t.cog, run_id=f"agent-{t.run_id}")
+        return {"ok": True, "number": after["number"], "on_hold": after["hold"]}
+    # withdraw
+    if rec["state"] not in START_STATES:
+        return {"error": f"{rec['number']} is {rec['state']}: only a draft is withdrawn (a document in force is replaced by a new revision)"}
+    run = hub.runner.run_for_record(rec["locator"])
+    if run and run["status"] not in ("completed", "cancelled", "rejected"):
+        return {"error": f"{rec['number']} is in a {run['process']} run: send it back to the start, or cancel the run, instead"}
+    f = rec["fields"]
+    for person in {who, t.cog}:
+        theirs = person in (rec.get("created_by"), f.get("owner"), f.get("author"), f.get("requested_by"))
+        if not theirs and "document-controller" not in authz.roles_of(bundle, person):
+            return {"error": f"{rec['number']} is not {person}'s: only its owner, author or filer, or a document controller, withdraws it"}
+    after = hub.kernel.transition(rec["locator"], "withdrawn", by=t.cog, run_id=f"agent-{t.run_id}", reason=reason)
+    return {"ok": True, "number": after["number"], "state": after["state"]}
+
+
+register({"name": "change_state",
+          "description": "Change an item's state where no signature is needed: action 'hold' or 'release_hold' (approvers of it), "
+                         "'withdraw' (a draft of its owner, author or filer; never one in a running process) or 'send_back_to_start'. "
+                         "Approving, making a document effective and making it obsolete happen only through the item's process.",
+          "parameters": {"type": "object", "properties": {"number": {"type": "string"}, "action": {"type": "string", "enum": list(STATE_ACTIONS)},
+                                                          "reason": {"type": "string"}},
+                         "required": ["number", "action", "reason"]}},
+         change_state, write=True)
 
 
 register({"name": "send_back_to_start",

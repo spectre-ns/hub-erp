@@ -237,6 +237,42 @@ class PagesMixin:
 <div class="actions"><button>{esc(verb)}</button></div></form>
 {details("Why can I do this?", f"<div class='why'>{self._why_html(d, 'create', op['object'], op['folder'])}</div>")}</details>"""
 
+    def _layout_sheet(self, rec: dict, layout: dict | None = None) -> str:
+        """A record's fields as its form layout shows them (the one in force, or ``layout`` for a preview): each section
+        a titled block of field rows, a row's visible_when tested on the server, its label and help. Values the layout
+        leaves off stay on the record and are listed under "Not on the form"."""
+        from .. import formlayout
+
+        lay = layout or formlayout.active_layout(self.hub, rec["type"])
+        f = rec["fields"]
+        filled = lambda k: k not in BLOB_FIELDS and k != "reviews" and f.get(k) not in (None, "", [], {})
+        blocks, placed = [], set()
+        sections = formlayout.visible_rows(lay, f, rec["state"])
+        for i, (sec, rows) in enumerate(sections):
+            items = ""
+            for r in rows:
+                k = r["field"]
+                placed.add(k)
+                if not filled(k):
+                    continue
+                label = r.get("label") or ((lay.get("custom_fields") or {}).get(k) or {}).get("label") or field_label(k)
+                hint = f'<span class="why">{esc(r["help"])}</span>' if r.get("help") else ""
+                ro = " <span class='chip' title='read-only now'>read-only</span>" if r.get("readonly_when") and formlayout.evaluate(r["readonly_when"], f, rec["state"]) else ""
+                items += f'<div class="fld" data-field="{esc(k)}"><dt>{esc(label)}{ro}</dt><dd>{self._field_html(k, f[k], f)}{hint}</dd></div>'
+            if not items:
+                continue
+            head = f"<h3 class='sec'>{esc(sec.get('title') or '')}</h3>" if len(sections) > 1 or (sec.get("title") or "Details") != "Details" else ""
+            blocks.append(f'<div class="fsec" id="sec-{esc(sec.get("id") or i)}">{head}<dl class="sheetfields">{items}</dl></div>')
+        td = self.hub.kernel.types.get(rec["type"], {})
+        system = set(td.get("system_fields") or [])
+        hidden_rows = [s for s, _ in sections for r in s.get("fields") or [] if False]  # (kept for clarity: hidden rows are not listed)
+        rest = [k for k in sorted(f) if k not in placed and k not in system and filled(k) and k not in formlayout.NOT_ON_FORMS
+                and not any(r.get("field") == k for s in lay.get("sections") or [] for r in s.get("fields") or [])]
+        if rest:
+            items = "".join(f'<div class="fld"><dt>{esc(field_label(k))}</dt><dd>{self._field_html(k, f[k], f)}</dd></div>' for k in rest)
+            blocks.append(details("Not on the form", f'<dl class="sheetfields">{items}</dl>'))
+        return "".join(blocks) or "<p class='muted'>No fields.</p>"
+
     def _required_at_start(self, process: str, rt: str) -> list[str]:
         req = list(self.hub.runner.required_at_start(process))
         for f in REQUIRED_EXTRA.get(rt, []):
@@ -245,14 +281,15 @@ class PagesMixin:
         return req
 
     def _start_spec(self, rt: str) -> list[tuple[str, str | None, str | None]]:
-        """(field, widget kind, type spec) for the Start form of a record type."""
+        """(field, widget kind, type spec) for the Start form of a record type, from the form layout in force."""
+        from .. import formlayout
+
         td = self.hub.kernel.types.get(rt, {}).get("fields", {})
+        if rt not in self.hub.kernel.types:
+            return [(e[0], e[1] if len(e) > 1 else None, (e[2] if len(e) > 2 else None) or td.get(e[0])) for e in START_INPUTS.get(rt, DEFAULT_START_INPUTS)]
         out = []
-        for entry in START_INPUTS.get(rt, DEFAULT_START_INPUTS):
-            name = entry[0]
-            kind = entry[1] if len(entry) > 1 else None
-            spec = entry[2] if len(entry) > 2 and entry[2] else td.get(name)
-            out.append((name, kind, spec))
+        for r in formlayout.active_layout(self.hub, rt).get("start") or []:
+            out.append((r["field"], r.get("widget"), r.get("spec") or td.get(r["field"])))
         return out
 
     def _start_field_names(self, rt: str) -> list[str]:
@@ -672,17 +709,13 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
                ([("reviews", "Reviews", "eye")] if reviews else []) + [("history", "History", "activity"), ("workflow", "Workflow and decisions", "workflow")]
         body += '<nav class="tabs" role="tablist" aria-label="Sections">' + "".join(
             f'<a href="#{t}" data-tab="tab-{t}" role="tab" aria-selected="{"true" if i == 0 else "false"}">{icon(ic)}{label}</a>' for i, (t, label, ic) in enumerate(tabs)) + "</nav>"
-        # Details: a two-column sheet of fields, then the hold form.
+        # Details: the sections of the form layout in force, then the hold form.
         td = self.hub.kernel.types.get(rec["type"], {})
         system = set(td.get("system_fields") or [])
-        lead = ["title", "description", "statement", "kind", "severity", "supplier", "amount", "currency", "quantity", "unit_cost", "item", "po", "date", "due"]
-        declared = [k for k in lead if k in rec["fields"]] + [k for k in sorted(td.get("fields") or {}) if k not in lead and k not in system and k in rec["fields"]]
-        declared += [k for k in sorted(rec["fields"]) if k not in declared and k not in system]
         shown = lambda k, v: k not in BLOB_FIELDS and k != "reviews" and v not in (None, "", [], {})
         row = lambda k: f'<div class="fld"><dt>{esc(field_label(k))}</dt><dd>{self._field_html(k, rec["fields"][k], rec["fields"])}</dd></div>'
-        flds = "".join(row(k) for k in declared if shown(k, rec["fields"][k]))
         sys_rows = "".join(row(k) for k in sorted(system) if k in rec["fields"] and shown(k, rec["fields"][k]))
-        body += '<section class="tab-panel active" id="tab-details"><h2 id="details">Details</h2>' + (f'<dl class="sheetfields">{flds}</dl>' if flds else "<p class='muted'>No fields.</p>")
+        body += '<section class="tab-panel active" id="tab-details"><h2 id="details">Details</h2>' + self._layout_sheet(rec)
         if sys_rows:
             body += details("Set by the system", f'<dl class="sheetfields">{sys_rows}</dl>')
         err_hold = self._field_error("reason") if self.route == "/hold" else None
@@ -690,7 +723,12 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
         body += f"""<div class="card" id="hold">{err_form}<form method="post" action="/hold">{hidden_as(user)}<input type="hidden" name="record" value="{esc(loc)}"><input type="hidden" name="on" value="{'0' if rec['hold'] else '1'}">
 <div class="fields">{text_input("reason", "Reason for the hold" if not rec["hold"] else "Reason for releasing the hold", self._val("reason") if self.route == "/hold" else "", required=True, error=err_hold)}</div>
 <div class="actions"><button class="secondary"{'' if may_approve['allowed'] else ' disabled'}>{icon('pause')}{'Release the hold' if rec['hold'] else 'Put on hold'}</button>
-{'' if may_approve['allowed'] else '<span class="why">Only approvers of this item may hold it: ' + self._why_html(may_approve, 'approve', obj, rec['folder']) + '</span>'}</div></form></div></section>"""
+{'' if may_approve['allowed'] else '<span class="why">Only approvers of this item may hold it: ' + self._why_html(may_approve, 'approve', obj, rec['folder']) + '</span>'}</div></form></div>"""
+        if not self._may_withdraw(rec):
+            body += f"""<details class="card quiet" id="withdraw"><summary>Withdraw this draft</summary><form method="post" action="/withdraw-record">{hidden_as(user)}
+<input type="hidden" name="record" value="{esc(loc)}"><div class="fields">{text_input("reason", "Why it is withdrawn", "", required=True)}</div>
+<div class="actions"><button class="reject">{icon('x')}Withdraw</button><span class="why">It stays in the history, closed; nothing else changes.</span></div></form></details>"""
+        body += "</section>"
         # Documents
         body += '<section class="tab-panel" id="tab-documents"><h2 id="documents">Documents</h2>' + table(["Number", "Title", "Class", "Type", "Rev", "State", "Size", "Open"],
                                                                                         [[f"{file_icon(d['fields'].get('filename'))} " + self._record_link(d["locator"], with_summary=False), esc(d["fields"].get("title")),
