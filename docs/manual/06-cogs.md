@@ -1,4 +1,4 @@
-# 5. Cogs: the AI team members
+# 6. Cogs: the AI team members
 
 A **cog** is a member of the organization like a person. It holds roles from the organization model, is routed work
 by the same sentences, is assigned items and sent messages, and signs its decisions through the same signature path,
@@ -7,29 +7,35 @@ as it binds people (README.md, "Cogs are users"; frames/company/cogs.frame.md).
 
 What makes a cog different:
 
-* **It comes with its model.** Each cog's profile names the language model it uses (all five use `ollama/qwen3:14b`,
-  a local model). If that model cannot be reached, the cog is **not available**: Gates route past it to the next
-  person, and chat, mentions, tasks and reviews tell you so. Nothing stands in for it (hubproto/model.py,
-  `cog_availability`).
+* **It comes with its model.** Each cog's profile names the language model it uses (all seven use `ollama/qwen3:14b`,
+  a local model served by Ollama). The hub talks only to local models: hosted (Claude) models are off unless an
+  administrator switches them on (chapter 8.4). If a cog's model cannot be reached, the cog is **not available**:
+  Gates route past it to the next person, and chat, mentions, tasks and reviews tell you so. Nothing stands in for it
+  (hubproto/model.py, `cog_availability`).
 * **Models draft and answer; they never sign.** Whether a cog may sign is decided by the hub from the approval-criteria
   sentences in the SOPs. A model's review can be one of the conditions, never the whole rule.
-* **It works only from the procedures it follows.** A cog is routed work only from processes defined in the SOPs its
-  profile lists, "as a person is only given work they are trained on" (cogs.frame.md).
+* **It works only from the procedures it follows.** A cog is routed work only from processes defined in the Frames
+  it follows, "as a person is only given work they are trained on" (cogs.frame.md). What it follows is its
+  **persona**: the scopes and SOPs the persona layers (chapter 7.1). Every cog's persona starts with the company scope
+  (the organization model, the quality manual and the tasks SOP). The profiles no longer have **Follows** lines.
 
 Besides these team-member cogs, the automatic steps of every process (filing, risk scoring, matching, posting,
-publishing and so on) are also called cogs in the code. They are not members; chapter 8 lists them under "code cog".
+publishing and so on) are also called cogs in the code. They are not members; chapter 9 lists them under "code cog".
 
-## 5.1 The cogs of the example company
+## 6.1 The cogs of the example company
 
-| Cog | Roles | Follows (SOPs) | Autonomy | May approve on its own | Standing duty |
+| Cog | Roles | Persona layers (besides the company scope) | Autonomy | May approve on its own | Standing duty |
 |---|---|---|---|---|---|
 | **ap-reviewer** | payables reviewer, finance clerk | finance-policy | act | supplier bills under 2,000 USD when the three-way match is within tolerance and the supplier is approved | none |
-| **doc-reviewer** | reviewer, author | document-control-sop, quality-manual | propose | controlled documents when the change is minor | none |
-| **quality-assistant** | quality manager, staff, design review committee | ncr-sop, capa-sop, training-sop, design-control-sop | act | nonconformance dispositions when the risk is low | "Find nonconformances that have waited more than three days for a disposition and remind whoever they wait for, in the item's chatter." |
-| **purchasing-assistant** | buyer, staff | purchasing-policy, design-control-sop | act | purchase requests under 500 USD when the supplier is approved and the item is known | "Find purchase requests waiting for a buyer and tell the buyer which are the oldest, in one message." |
-| **qa-manager** | quality manager, reviewer, author, staff | document-control-sop, change-control-sop, quality-manual, ncr-sop, capa-sop | act | only when asked: controlled documents after 3 adversarial reviews pass (a minor revision on its own signature, any other change countersigned by a quality manager), and change requests when its review passes, countersigned by a quality manager | none |
+| **doc-reviewer** | reviewer, author | document-control-sop | propose | controlled documents when the change is minor | none |
+| **quality-assistant** | quality manager, author, reviewer, staff, design review committee | ncr-sop, capa-sop, training-sop, design-control-sop | act | nonconformance dispositions when the risk is low | "Find nonconformances that have waited more than three days for a disposition and remind whoever they wait for, in the item's chatter." |
+| **purchasing-assistant** | buyer, staff, stock reviewer | purchasing-policy, inventory-policy, design-control-sop | act | purchase requests under 500 USD when the supplier is approved and the part is active; stock adjustments under 100 USD when the variance is within tolerance | "Find purchase requests waiting for a buyer and tell the buyer which are the oldest, in one message." |
+| **qa-manager** | quality manager, reviewer, author, staff | document-control-sop, change-control-sop, ncr-sop, capa-sop | act | only when asked: controlled documents after 3 adversarial reviews pass (a minor revision on its own signature, any other change countersigned by a quality manager), and change requests when its review passes, countersigned by a quality manager | none |
+| **organization** | staff | the policy scope (scopes, cog-profiles) | read | nothing: it sits on the compile-frame committee (chapter 7.4) and signs nothing | none |
+| **stores** | storekeeper, staff | the inventory scope (inventory-policy), purchasing-policy | act | nothing: it keeps stock (chapter 4.9) and never signs a write-off or a release | none |
 
-(frames/company/cogs.frame.md; frames/company/org-model.frame.md; frames/purchasing/purchasing-policy.frame.md; the
+(frames/company/cogs.frame.md, version 1.6.0; frames/company/org-model.frame.md;
+frames/purchasing/purchasing-policy.frame.md; frames/inventory/inventory-policy.frame.md; frames/personas/; the
 approval-criteria sentences in the SOPs.)
 
 What each one does, in its own prompt:
@@ -38,24 +44,33 @@ What each one does, in its own prompt:
   suppliers, and you say plainly what does not match." It takes small bills routed to it (chapter 3.5) and files
   invoices sent to it as messages with attachments.
 * **doc-reviewer**: "You check controlled documents for completeness, numbering, revision and review dates, and plain
-  wording, against the document control procedure." It takes minor revisions routed to it (chapter 4.10) and reviews
+  wording, against the document control procedure." It takes minor revisions routed to it (chapter 5.10) and reviews
   documents when asked.
 * **quality-assistant**: "You review drawings, designs and nonconformances for risk, containment and traceability to
   requirements." It dispositions low-risk nonconformances routed to it, reviews design packages with the
   purchasing-assistant (chapter 3.16) and files nonconformances sent to it as messages with attachments.
-* **purchasing-assistant**: "You check suppliers against the approved list, prices against items, and quantities
-  against stock, and you order only inside your criteria." It approves small purchase requests routed to it and
-  reviews design packages.
+* **purchasing-assistant**: "You check suppliers against the approved list, prices against supplier parts and their
+  price breaks, and quantities against available stock, and you order only inside your criteria." It approves small
+  purchase requests routed to it, signs small stock adjustments within its criteria (chapter 4.7.1), and reviews
+  design packages. It keeps no stock.
 * **qa-manager**: "You own the quality management system. You draft and revise procedures, work instructions and
   forms ... approve what is ready, and say exactly what must change when it is not." It is on no route, so people
   stay first in line; it acts when asked or assigned, and it can draft controlled documents as their author (it never
-  signs its own drafts).
+  signs its own drafts). It is one of the two members of the compile-frame committee (chapter 7.4).
+* **organization**: "You know the organization: its people and roles, its folders, its processes and who decides
+  what. On the compile-frame committee, with the QA manager, you read the SOPs and policies and list the rules they
+  state, quoting the exact words of each ... You never invent a rule, and you sign nothing." Its autonomy is read.
+* **stores**: "You keep the stock: you move lots within a site, count them, split and merge them, and quarantine
+  anything suspect at once. You act only where the person who asks you may act too." It asks for adjustments and
+  releases and signs neither (chapter 4.9).
 
 A cog's roles also carry permissions. The quality-assistant and qa-manager hold the quality-manager role, so they may
-read what quality managers read and open CAPAs and supplier evaluations; the ap-reviewer holds the finance-clerk role,
-so it may file bills and request journal reversals (chapter 9 discusses this).
+read what quality managers read and open CAPAs and supplier evaluations; the quality-assistant also holds author and
+reviewer, so it may draft controlled documents; the ap-reviewer holds the finance-clerk role, so it may file bills and
+request journal reversals; the stores cog may move and count stock; every cog on the staff may quarantine stock
+(chapter 10 discusses this).
 
-## 5.2 Autonomy: read, propose, act
+## 6.2 Autonomy: read, propose, act
 
 A cog's **Autonomy** says how far it may go when it works on its own: when it is given a task, takes up a duty, is
 assigned an item, or acts from a chat (hubproto/agent.py).
@@ -63,27 +78,33 @@ assigned an item, or acts from a chat (hubproto/agent.py).
 | Autonomy | What the cog may do |
 |---|---|
 | **read** | look things up and report; every action is refused ("describe what should be done instead") |
-| **propose** | look things up; each action it wants to take is recorded as a proposal that a person confirms (5.8) |
-| **act** | act through the hub's governed paths: comment on an item, message a person, start a process (the hub checks it may), take its own turn at a Gate within its approval criteria, complete or hand back a step assigned to it, draft a controlled document, review a document, edit a working document, and the record and configuration tools below |
+| **propose** | look things up; each action it wants to take is recorded as a proposal that a person confirms (6.8) |
+| **act** | act through the hub's governed paths: comment on an item, message a person, start a process (the hub checks it may, and that the person it works for may), take its own turn at a Gate within its approval criteria, complete or hand back a step assigned to it, draft a controlled document, review a document, edit a working document, and the record and configuration tools below |
 
-Autonomy does not govern approvals at Gates: whether a cog may sign is decided only by its approval criteria (5.6).
+Autonomy does not govern approvals at Gates: whether a cog may sign is decided only by its approval criteria (6.6).
 Autonomy is set in the cog's profile; changing it is a widening that two policy owners approve.
 
 Every run has a budget: at most 5 actions and 10 model rounds (`HUBPROTO_AGENT_ACTIONS`, `HUBPROTO_AGENT_ROUNDS`); a
-chat turn at most 5 actions and 8 rounds. `HUBPROTO_AGENTS=off` switches all of it off (chapter 7).
+chat turn at most 5 actions and 8 rounds. `HUBPROTO_AGENTS=off` switches all of it off (chapter 8).
 
-The tools a cog has (hubproto/agent.py, hubproto/agent_records.py, hubproto/agent_docs.py, hubproto/agent_config.py):
+The tools a cog has (hubproto/agent.py, hubproto/agent_records.py, hubproto/agent_docs.py, hubproto/agent_config.py,
+hubproto/agent_inventory.py):
 
 * **Looking** (always): search records, read a record or document, see what waits for someone, a record's history,
-  counts, a document's versions, read and search procedures, list settings and proposals, check a permission.
+  counts, a document's versions, read and search procedures, list settings and proposals, check a permission, find
+  parts and a part's stock.
 * **Acting** (within autonomy): comment, message, start a process, take its turn, complete a step, hand back, draft a
-  document, review a document, edit a document, create a record, update fields (never fields the hub manages, such as
-  state, owner, revision or assignees), move a record, assign, link records, send back to the start, create a task,
-  delegate to another cog.
+  document, review a document, edit a document, create a record (never an archived type), update fields (never fields
+  the hub manages, such as state, owner, revision or assignees), move a record, assign, link records, change an item's
+  state where no signature is needed (`change_state`: put on hold or release a hold, as an approver of the item;
+  withdraw a draft that both it and the person it works for created, own or wrote; send back to the start), create a
+  task, delegate to another cog; and the stock tools: move, count and quarantine a lot, ask for a stock adjustment or a
+  release (chapter 4.9). Approving, making a document effective and making it obsolete happen only through the item's
+  process.
 * **Configuration** (within autonomy, and only ever as proposals for the policy owners): propose a policy change,
   propose a setting change, propose a cog's model, propose a new member.
 
-## 5.3 Queues: like a stack on a person's desk
+## 6.3 Queues: like a stack on a person's desk
 
 Everything asked of a cog lands in its queue, "like a task in a person's tray": an @mention, a message, an item
 waiting for it at a Gate, an item assigned to it, a task given on its profile, a standing duty, a chat line, one of
@@ -111,24 +132,30 @@ its adversarial reviews, and the hub's automations (hubproto/workqueue.py).
   recently finished tasks. A red alert says when the queue is stalled ("no worker is running and the oldest task has
   waited *n* min. Restart the hub, or ask an administrator").
 * **People**: each cog card shows **free** or **working** and how many tasks are in its queue.
+* **A cog's board** (`/board/<cog>`: **Board** beside its profile's **Queue**, and **Cog boards** on the Boards page),
+  laid out like a person's board, with the columns **In its queue** (in the order it takes them, chats first, each
+  with its place in line), **Working on**, **Waiting on others** (a countersignature after it signed; actions it
+  proposed that wait for a person's confirmation), **Assigned to it** (items whose step waits for it, and items
+  assigned to it), **Done** and **Stopped** (failed or withdrawn tasks). A card about an item you may not read says
+  only "an item you may not read" (hubproto/shell/queue.py, `page_cog_board`). Any member may open a cog's board.
 
 What was asked of a cog is shown to the person who asked, to policy owners, and to whoever may read the item it is
 about; others see only "(asked by *name*; not yours to see)".
 
-## 5.4 Asking a cog
+## 6.4 Asking a cog
 
 | Way | Where | What the cog does |
 |---|---|---|
-| **@mention** | an item's chatter (chapter 2.6), or a comment in a document (chapter 4.7) | reads the item as it is when it gets to it, decides what you asked, and answers on the chatter or in the comment thread |
+| **@mention** | an item's chatter (chapter 2.6), or a comment in a document (chapter 5.7) | reads the item as it is when it gets to it, decides what you asked, and answers on the chatter or in the comment thread |
 | **Message** | Inbox > **Send a message**, or **Send *cog* a message** on its profile | without an item: files records sent to it, reports status, or says what it can do (below) |
 | **Assign** | **Assign** on any item (chapter 2.7) | works the item within its autonomy and reports on the chatter |
 | **A task record** | a task with the cog as **Assignee** (chapter 3.15) | does the work, then completes the step or hands it back |
-| **A task on its profile** | **Give *cog* a task** | an agent run (5.8) |
-| **Chat** | the messenger (5.5) | answers, and acts within its autonomy and your rights |
+| **A task on its profile** | **Give *cog* a task** | an agent run (6.8) |
+| **Chat** | the messenger (6.5) | answers, and acts within its autonomy and your rights |
 
 **What a mention asks.** An explicit request to approve ("please approve", "can you sign off on this", "send it for
-approval") is an approval request (5.6); a question about approval is not. An explicit request to change a document
-("delete the Records section") is an edit (chapter 4.7). A request to review, check, look at, assess or inspect is a
+approval") is an approval request (6.6); a question about approval is not. An explicit request to change a document
+("delete the Records section") is an edit (chapter 5.7). A request to review, check, look at, assess or inspect is a
 review. Anything else is a question. When the wording is not plain, the cog's model classifies it, but a model's
 reading never counts as a request to approve (hubproto/mentions.py, `intent_of`).
 
@@ -138,18 +165,19 @@ reading never counts as a request to approve (hubproto/mentions.py, `intent_of`)
   its turn there; if the item waits for people, the review is attached for them and they are notified.
 * **A question**: an answer of a few sentences "a colleague can act on", from its procedures and the item, with the
   recent conversation on the item in view.
-* **An edit**: chapter 4.7. Only on documents, and only what the person asking may change.
+* **An edit**: chapter 5.7. Only on documents, and only what the person asking may change.
 
 **A message without an item.** The cog files the attached records into its process when the message has attachments
 and says "file", "please" or "process" (ap-reviewer files bills, doc-reviewer files documents for approval,
-quality-assistant files nonconformances, purchasing-assistant files purchase requests); answers "status" with what
+quality-assistant files nonconformances, purchasing-assistant files purchase requests, stores files stock
+adjustments); answers "status" with what
 waits for you and your open items; otherwise it says "I can file an attached record into a process, or report status.
 I approve only within the criteria in the current policy release." (hubproto/cogs.py, `task_inbox`).
 
 **Committees.** Mentioning a role (`@design-review-committee`) asks every member holding it: cogs review, people are
 asked in their inbox.
 
-## 5.5 The messenger (chat)
+## 6.5 The messenger (chat)
 
 **Chat with a cog** in the bottom-right corner of every page opens a chat window. It is for people who are members;
 it is not shown while you are watching a cog (hubproto/shell/messenger.py).
@@ -169,19 +197,22 @@ it is not shown while you are watching a cog (hubproto/shell/messenger.py).
 what waits for it; and the conversation so far (the last 12 lines). When you ask it to find something, the hub first
 searches with your rights and gives the cog the results, so it answers with real record numbers.
 
-**What the cog may do from the chat.** A chat turn is recorded as an agent run with the cog's tools (5.2): it may
+**What the cog may do from the chat.** A chat turn is recorded as an agent run with the cog's tools (6.2): it may
 look things up, and, within its **autonomy**, act. With **propose** autonomy (doc-reviewer) its answer ends "*n*
-action(s) wait for your confirmation" with a **review and confirm** link to the run page (5.8). With **act** autonomy
+action(s) wait for your confirmation" with a **review and confirm** link to the run page (6.8). With **act** autonomy
 it acts. While it works for you, it reads only what both it and you may read, and it may change, move, create (without
 a process) or edit only what both it and you may (hubproto/app.py, `chat_tools`; hubproto/agent.py, `both_may`).
-Starting a process is checked against the cog's own permissions only (chapter 9).
+Starting a process with its `start_process` tool is checked against your rights too ("dave, for whom you work, may
+not: ..."). Filing a record with `create_record`, which starts the record type's process, is still checked against
+the cog's rights only (checked by running the code; chapter 10, C1).
 
-The empty chat window still says the cog "will not change anything from here", which is no longer true for cogs with
-propose or act autonomy (chapter 9).
+The empty chat window says: "Say hello to *cog*. It can see what you are looking at, the procedures it follows and
+its queue, and it can act on your behalf: only what both it and you may do, and you confirm what it proposes."
+(With **act** autonomy nothing waits for your confirmation.)
 
-## 5.6 Approvals by cogs, within their rails
+## 6.6 Approvals by cogs, within their rails
 
-A cog's **rails** are its approval-criteria sentences (chapter 6.7 shows how to edit them in Settings). A cog signs a
+A cog's **rails** are its approval-criteria sentences (chapter 7.7 shows how to edit them in Settings). A cog signs a
 step only within them; outside them it declines and the item goes to the next route.
 
 ### When the route sends the item to the cog
@@ -190,8 +221,9 @@ step only within them; outside them it declines and the item goes to the next ro
    turn from its queue".
 2. When it gets there, the cog checks its criteria for this process (hubproto/cogs.py, `task_review`):
    * **fixed conditions**, evaluated by the hub: an amount under its limit (in the same currency), the three-way match
-     within tolerance, the supplier approved, the risk low or not high, the change minor, the item known, no open
-     nonconformance, the bill of materials resolved, the design checks clean, every requirement accepted;
+     within tolerance, the supplier approved, the risk low or not high, the change minor, the part active (or the item
+     known, in older rules), the stock variance within the count tolerance, no open nonconformance, the bill of
+     materials resolved, the design checks clean, every requirement accepted;
    * **running limits**, if its rail has them: at most *n* approvals a day, at most an amount a month, counted from its
      own signed approvals of that process;
    * **judgment conditions**: "its review passes" or "*n* adversarial reviews pass" (below).
@@ -267,7 +299,7 @@ In the example company: a **major** document (or any new one) that the qa-manage
 after three adversarial reviews and then countersigned by carol; a **minor** revision is final on its signature
 (tests/test_qa_manager.py).
 
-## 5.7 Cogs and assigned work
+## 6.7 Cogs and assigned work
 
 When a cog is assigned an item (chapter 2.7), or a task names it as assignee (chapter 3.15), it works the item like a
 person picking up an assignment (hubproto/workqueue.py, `assigned_work`):
@@ -278,7 +310,7 @@ person picking up an assignment (hubproto/workqueue.py, `assigned_work`):
   ("completed: ..."), or hands back to the person who filed the item with the reason. If it does neither, for example
   because its actions wait for confirmation, the step goes back to that person automatically with what it found.
 
-## 5.8 Agent runs and confirming proposed actions
+## 6.8 Agent runs and confirming proposed actions
 
 A cog given a task works "on its own" in an **agent run**: its model plans, looks things up with its tools and acts
 within its autonomy and budget. Runs start from **Give *cog* a task** on its profile, from its standing duties, from
@@ -305,12 +337,12 @@ cog and policy owners can open a run page.
    (they can still be refused). The status line says how many were carried out.
 
 **Standing duties** ("Duty:" lines in a cog's profile) are taken up once a day each, when the duty runner is running
-(the `agents` service, or `hubproto agent-duties`, chapter 7.7). A duty runs on the cog's own rights, for nobody in
+(the `agents` service, or `hubproto agent-duties`, chapter 8.7). A duty runs on the cog's own rights, for nobody in
 particular.
 
 A run cut short by a restart is closed as "interrupted" and not started again, so nothing is done twice.
 
-## 5.9 What a cog will refuse
+## 6.9 What a cog will refuse
 
 A cog refuses, or the hub refuses for it:
 
@@ -329,21 +361,30 @@ A cog refuses, or the hub refuses for it:
   reviewers or cogs is flagged as an error in reviews;
 * and nobody may act in a cog's name: watching a cog is read-only.
 
-## 5.10 Cog profiles, models and new cogs
+## 6.10 Cog profiles, models and new cogs
 
-**A cog's profile page** (**People** > the cog) shows: **About this cog** (its description; **Model** with whether
-it answers and its size; **Change model**; **Prompt**; **Follows**; **Written in** with a link to the profile's
-line; pinned **Prompt from** and **References** documents if any; **Edit this cog's profile**; **Technical
-details**), its **Queue**, **Working on its own** (autonomy, duties, give a task, recent runs), **May approve** (its
-criteria sentences), **Waiting for *cog***, **Recent decisions**, **Recent messages answered** and **Send *cog* a
-message**.
+**A cog's profile page** (**People** > the cog) shows: **About this cog** (its description; **Model** with whether it
+answers and its size; **Change model**; **Prompt**; **Follows**, the Frames its persona layers; **Written in** with a
+link to the profile's line; pinned **Prompt from** and **References** documents if any; **Edit this cog's profile**;
+**Technical details**), its **Queue**, **Working on its own** (autonomy, duties, give a task, recent runs), **May
+approve** (its criteria sentences), **Waiting for *cog***, **Recent decisions**, **Recent messages answered** and **Send
+*cog* a message**.
 
-**How to propose a different model for a cog** (any member who is a person)
+**How to propose a different model for a cog** (any member who is a person; once the SOPs are documents, only those
+who may revise the cog-profiles document)
 
-1. On the cog's profile open **Change model**. The list shows the models Ollama serves now (largest first, the current
-   one first) and Claude models (which need an Anthropic key).
-2. Choose one and press **Propose the change**. It becomes a policy proposal for the policy owners ("A cog comes with
-   its model: the policy owners approve a change"); a cog profile change is a widening, so both must approve.
+1. On the cog's profile open **Change model**. The list shows the models Ollama serves here, largest first, with the
+   current one marked; Claude models are listed only when hosted models are switched on (chapter 8.4).
+2. Choose one and press **Propose the change**. "A cog comes with its model: the policy owners approve a change."
+   * While the rules come from the Frame files, it becomes a policy proposal that carries only this change: it is
+     compiled from the Frames of the release in force, never from other files on disk (hubproto/app.py,
+     `propose_cog_model`). A cog profile change is a widening, so both policy owners must approve; the cog keeps its
+     model until one of them releases it.
+   * Once the SOPs are documents (chapter 7.8), the Model line is written into the cog-profiles document on your open
+     settings change order ("stores → ollama/granite4.2:3b is written into the cog profiles on CO-..."), and the cog
+     keeps its model "until that revision is approved and the change order is released". Only document controllers and
+     policy owners may revise that document; anyone else is refused ("only operations, its author, a document controller
+     or a policy owner revises DOC-...") (checked by running the code; chapter 10, E4).
 
 **How to propose a new cog** (any member who is a person)
 
@@ -351,9 +392,13 @@ message**.
 2. Give its **Name\*** (lower case, digits and hyphens), its **Model** (what Ollama serves now; it defaults to the
    model the other cogs use), its **Prompt\***, its **Roles\***, the **Procedures it follows** (it is routed work only
    from these), its **Autonomy** (propose by default) and any **Duties** (one per line).
-3. Press **Propose**. The organization model and the cog profiles are drafted as one policy proposal; when the policy
-   owners release it, the hub installs the cog. No code is needed: a profile is enough. If no model can be reached the
-   form says so and cannot be used.
+3. Press **Propose**. The organization model and the cog profiles are drafted as one policy proposal (once the SOPs
+   are documents, as revisions on your open settings change order, with the same limit as a model change); when it is
+   released, the hub installs the cog. No code is needed: a profile is enough. If no model can be reached the form says
+   so and cannot be used.
+
+The new cog's profile gets a **Follows** line with the procedures chosen. It has no persona until someone writes one
+(chapter 7.1); the existing cogs all have one.
 
 Proposing a new person works the same way (**A new person**: name and roles). Approval criteria for a new cog are
-added separately, in its SOP or in Settings > **Cog rails** (chapter 6).
+added separately, in its SOP or in Settings > **Cog rails** (chapter 7).

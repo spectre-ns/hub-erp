@@ -1,7 +1,7 @@
 # 1. Getting started
 
 The hub is one web application for records (bills, nonconformances, tasks and so on), documents, the processes that
-move them, and the policy that says who may do what. People and AI team members ("cogs", chapter 5) work in it side
+move them, and the policy that says who may do what. People and AI team members ("cogs", chapter 6) work in it side
 by side. Everything you see is trimmed to what the policy in force lets you read, and every refusal says which policy
 sentence caused it.
 
@@ -29,10 +29,10 @@ a cog is refused; choose your own name to act.
 
 **Not a member.** If the name in the address is not a member of the organization under the policy in force, the
 home page says so ("*name* is not a member of the organization ... Ask a policy owner (bob or carol) to add you to the
-org model") and nothing else is available. Adding people is described in chapters 5 and 6.
+org model") and nothing else is available. Adding people is described in chapters 6 and 7.
 
 If no policy release is in force at all, pages say "No policy release is in effect" and name the command an
-administrator runs (chapter 7).
+administrator runs (chapter 8).
 
 ## 1.2 The screen
 
@@ -44,7 +44,7 @@ Every page has the same frame:
 | App bar | under the top bar, on pages that belong to an app | the app's name, its record types (for example **Nonconformances**, **CAPAs**), its fixed pages, and up to four "start" links such as **+ Report a nonconformance** |
 | Rail | left | **Home**, **Inbox**, **Documents**, **Boards**, **People**, **Why?**; for policy owners also a **Policy** group (**Runs**, **Policy versions**, **Policies**, **Conformance**, **People and roles**); on document pages a **Folders** tree |
 | Status line | top of the page | after an action, one sentence saying what happened, for example "Filed NCR-2026-0004; waiting for carol at Disposition the nonconformance (approval due 12 Nov 2026)." |
-| Messenger | bottom right | **Chat with a cog** (chapter 5.5) |
+| Messenger | bottom right | **Chat with a cog** (chapter 6.5) |
 
 A **Skip to content** link is the first thing a keyboard user reaches. Refused actions re-display the form you sent
 with what you typed kept and the reason beside the field. A page that cannot be shown says **Not done** with the
@@ -59,17 +59,18 @@ three of its pages (hubproto/shell/apps.py):
 |---|---|---|
 | Inbox | Tasks | Waiting for me, My work (boards), Runs |
 | Documents | Documents | Files by folder, Controlled documents, Templates |
-| Quality | Nonconformances, CAPAs, Audits, Calibration, Complaints, Management reviews, Training, Change requests, Change orders, Supplier evaluations, Assets | Change orders |
-| Engineering | Designs, Requirements, Parts, Items | |
-| Purchasing | Purchase requests, Purchase orders, Receipts | Suppliers |
-| Inventory | Items, Receipts | |
+| Quality | Nonconformances, CAPAs, Audits, Calibration, Complaints, Management reviews, Training, Change requests, Change orders, Supplier evaluations, Assets | Change orders, Forms |
+| Engineering | Designs, Requirements, Parts, Manufacturer parts | Archived items |
+| Purchasing | Purchase requests, Purchase orders, Receipts, Supplier parts | Suppliers |
+| Inventory | Stock lots, Parts, Locations, Receipts, Stock adjustments, Stock releases, Supplier parts, Manufacturer parts, Part categories | Parts and stock, Locations |
 | Finance | Supplier bills, Journals, Reversals | |
 | People | | Members and cogs |
-| Settings | | Your changes, People and roles, Permissions, Limits and due dates, Cog rails, Segregation of duties, Workflows |
-| Policy (policy owners only) | | Policy versions, Policies, Automation, Why, Conformance, People and roles |
+| Settings | | Your changes, People and roles, Permissions, Limits and due dates, Cog rails, Segregation of duties, Workflows, Forms |
+| Policy (policy owners only) | | Policy versions, Policies, Scopes and personas, Automation, Why, Conformance, People and roles |
 
 Every member sees every app except **Policy**. The lists inside an app only show records in folders you may read, so
-an app can be empty for you (carol, a quality manager, may not read the Finance folder and sees no bills).
+an app can be empty for you (carol, a quality manager, may not read the Finance folder and sees no bills). Archived
+record types (inventory items) are in no app; their records stay readable (chapter 4.10).
 
 Clicking an app's name opens its app page: one card per record type with the number of open items, **List**,
 **Kanban** and a start button, and a chart of its items by stage.
@@ -105,7 +106,7 @@ is offered when the policy gives you a `create` permission for its kind of recor
 role of its first step (hubproto/runner.py, `submit`). Processes you may not start are listed under **Not available to
 you** with the reason, for example "Who may: finance clerks; you are: ...; ask: bob or carol to change the policy."
 The forms themselves are described with each process in chapter 3. A **change order** is not started here: its
-button opens the change-order page (chapter 6.9).
+button opens the change-order page (chapter 7.9).
 
 The page ends with the policy in force: "Policy in effect: policy version *n*, released by *name*."
 
@@ -116,7 +117,7 @@ The page ends with the policy in force: "Policy in effect: policy version *n*, r
 | Section | Shows |
 |---|---|
 | **Waiting for me** | every item that waits for your decision, overdue first, then soonest due; 25 per page; a **Show only** filter by type when there are several |
-| **Policy proposals waiting for your decision** | policy owners only: open proposals with changes you have not decided (chapter 6) |
+| **Policy proposals waiting for your decision** | policy owners only: open proposals with changes you have not decided (chapter 7) |
 | **Returned or stopped, mine** | items rejected back to you for rework (with the reason and a rework form) and your runs that stopped (with a "Fix and retry" form) |
 | **Waiting on others (mine)** | your items that wait for someone else, where and until when |
 | **Your items that moved** | items you own, wrote or filed that someone else moved in the last seven days |
@@ -127,7 +128,7 @@ The page ends with the policy in force: "Policy in effect: policy version *n*, r
 
 The email channel does not send mail: the hub stores the message like a direct message and also writes it as an
 `.eml` file into its outbox folder (`state/inbox/outbox`) (hubproto/inbox.py). A message sent to a cog goes into the
-cog's queue and is answered there (chapter 5.4).
+cog's queue and is answered there (chapter 6.4).
 
 ### Each row in "Waiting for me"
 
@@ -191,9 +192,12 @@ directly (hubproto/shell/policy.py, `page_why`).
    create bills in Finance/Payables.”" or "Who may: finance clerks; you are: ...; ask: bob or carol to change the
    policy." A link opens the policy at that line.
 
-Rules for the answer (hubproto/authz.py): a permission on a folder also covers its subfolders; a "may not" sentence
-wins over any "may"; reading a folder needs its own "may read" sentence. The policy today has no sentences for
-"update" or "delete", so those are always denied.
+Rules for the answer (hubproto/authz.py): a permission on a folder also covers its subfolders, including folders
+people added to the library; a top-level library folder has the rights of the folder it was given (chapter 5.1); a
+"may not" sentence wins over any "may"; reading a folder needs its own "may read" sentence. The only "update"
+sentence is "Storekeepers may update stock items in Inventory/Stock." and there is none for "delete", so delete is
+always denied. The inventory policy also uses the action "quarantine" ("Staff may quarantine stock items in
+Inventory/Stock."), which the **Action** list does not offer.
 
 **How to find out why an item waits for someone else** (any member who may read the item)
 
@@ -207,5 +211,5 @@ wins over any "may"; reading a folder needs its own "may read" sentence. The pol
 
 * Every form marks required fields with **\***.
 * Many sections have a **Why can I do this?** or similar disclosure that shows the permission sentence.
-* The messenger (bottom right) lets you ask a cog about the page you are on (chapter 5.5).
+* The messenger (bottom right) lets you ask a cog about the page you are on (chapter 6.5).
 * Keyboard shortcuts for record pages are in chapter 2.8.

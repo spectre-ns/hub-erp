@@ -2,7 +2,7 @@
 
 Everything the hub keeps is a **record**: a bill, a nonconformance, a task, a document. One record system spans every
 module (hubproto/kernel.py). This chapter explains what a record is and the pages you use to find, read and work on
-records. The processes that move records are in chapter 3; documents have extra features, covered in chapter 4.
+records. The processes that move records are in chapter 3; documents have extra features, covered in chapter 5.
 
 ## 2.1 Record types and numbers
 
@@ -20,28 +20,36 @@ without gaps (config/record-types.json).
 | Purchase request | PR-00001 | purchase-request | Purchasing/Requests | Purchasing |
 | Purchase order | PO-0001 (gapless) | issued automatically when a purchase request is approved | Purchasing/Orders | Purchasing |
 | Goods receipt | GR-00001 | goods-receipt | Inventory/Receipts | Purchasing, Inventory |
-| Item | ITEM-00001 | item-request; the design process | Inventory/Items | Engineering, Inventory |
+| Item (archived) | ITEM-00001 | nothing: items are archived and read-only (chapter 4.10) | Inventory/Items | none (**Engineering** > **Archived items**) |
 | Nonconformance | NCR-2026-0001 (yearly) | nonconformance | Quality/Nonconformances | Quality |
 | Corrective action (CAPA) | CAPA-2026-0001 (yearly) | capa | Quality/CAPA | Quality |
 | Complaint | CMP-2026-0001 (yearly) | complaint | Quality/Complaints | Quality |
 | Internal audit | AUD-2026-001 (yearly) | internal-audit | Quality/Audits | Quality |
 | Calibration | CAL-00001 | calibration | Quality/Calibration | Quality |
-| Asset | AST-0001 | nothing in the web pages or the policy creates assets today (see 3.12 and chapter 9) | | Quality |
+| Asset | AST-0001 | nothing in the web pages or the policy creates assets today (see 3.12 and chapter 10) | | Quality |
 | Management review | MR-2026-001 (yearly) | management-review | Quality/Management Review | Quality |
 | Training sign-off | TRN-00001 | training-acknowledgement | Quality/Training | Quality |
 | Supplier evaluation | SUP-0001 | supplier-evaluation | Quality/Suppliers | Quality |
 | Change request | CR-2026-0001 (yearly) | change-control | Quality/Changes | Quality |
-| Change order | CO-2026-0001 (yearly) | change-order (chapter 6.9) | Quality/Changes | Quality |
+| Change order | CO-2026-0001 (yearly) | change-order (chapter 7.9) | Quality/Changes | Quality |
 | Design | DSN-2026-0001 (yearly) | design-release | Engineering/Designs | Engineering |
 | Requirement | REQ-2026-0001 (yearly) | requirements-capture | Engineering/Requirements | Engineering |
-| Part | PN-00001 | released automatically with a design | Engineering/Designs | Engineering |
+| Part | PN-00001 | part-request; the design process (its assembly, and new parts for unknown BOM lines) | Inventory/Parts (an assembly: Engineering/Designs) | Engineering, Inventory |
+| Manufacturer part | MP-00001 | with a part made by the design process; a cog's `create_record` tool | Inventory/Parts | Engineering, Inventory |
+| Supplier part | SP-00001 | a cog's `create_record` tool (no page creates one) | Inventory/Parts | Purchasing, Inventory |
+| Part category | CAT-0001 | the sample data; a cog's `create_record` tool | Inventory/Parts | Inventory |
+| Stock location | LOC-0001 | the sample data; a cog's `create_record` tool | Inventory/Locations | Inventory |
+| Stock lot | LOT-000001 | booking a goods receipt; splitting a lot (also by a partial move or quarantine) | Inventory/Stock | Inventory |
+| Stock adjustment | ADJ-00001 | stock-adjustment (chapter 4.7.1) | Inventory/Adjustments | Inventory |
+| Stock release | REL-00001 | stock-release (chapter 4.7.2) | Inventory/Releases | Inventory |
 
 **States.** A record created by a process starts **Open**. While it waits at a step it is **Awaiting: *step*** (for
 example "Awaiting: Approve the bill"). It ends in its process's finishing state (Closed, Posted, Effective, Ordered,
-Received, Active, Accepted, Released, Acknowledged, Done or Approved). Four side exits exist for every process:
-**Returned** (rejected back to its owner for rework), **Failed** (a step stopped; the owner fixes and retries),
-**Cancelled** and **Rejected**. Documents also use Draft, Effective, Obsolete, Filed (evidence) and Received
-(external files) (chapter 4).
+Received, Active, Accepted, Released, Acknowledged, Done, Applied or Approved). Four side exits exist for every
+process: **Returned** (rejected back to its owner for rework), **Failed** (a step stopped; the owner fixes and
+retries), **Cancelled** and **Rejected**. Documents also use Draft, Effective, Obsolete, Filed (evidence) and Received
+(external files) (chapter 5); stock lots use In stock, Depleted, Scrapped and Returned (chapter 4.4); a draft that is
+withdrawn is **Withdrawn** (2.4).
 
 **Fields.** Each type has typed fields (text, number, money, date, list, a reference to another record, a member, a
 choice). Some fields are set only by the system (a bill's match result, a record's risk); the hub refuses them in
@@ -67,7 +75,9 @@ type you may read, newest first, with its count in the heading (hubproto/shell/v
 | Pages | 25 rows a page |
 
 Columns: Number, Title (with an **on hold** chip), State, Key fact (an amount and supplier, a severity, a quantity, a
-revision, a change class, a priority or stock), Owner, With (who it waits for), Due, Updated.
+revision, a change class, a priority; for a lot its quantity, status and batch or serial number; for a part its
+revision, IPN and minimum stock; for a location its kind; for a supplier part its SKU and pack), Owner, With (who it
+waits for), Due, Updated.
 
 **How to put several items on hold** (approvers of those items)
 
@@ -85,15 +95,15 @@ shows the type icon, the number and title, the key fact, the folder and owner, w
 a cogs' review verdict, the due date, **on hold** and **escalated**. Its foot counts attached documents and links. A
 card's left edge is coloured by risk.
 
-**Boards** (in the rail) opens **My work**: your records (those you own, created or wait on) in five columns named by
-what happens next: **Waiting for me**, **Waiting on others**, **Returned or stopped**, **Done**, **Cancelled or
-rejected**. Choose a **Type** to see every record of that type by state instead. Filters: State, Folder, **Assigned
-to**, Search. **Link to this filter** gives an address you can bookmark; **Open as the *type* kanban** switches to the
-type's kanban view.
+**Boards** (in the rail) also links each cog's board (chapter 6.3). It opens **My work**: your records (those you own,
+created or wait on) in five columns named by what happens next: **Waiting for me**, **Waiting on others**, **Returned or
+stopped**, **Done**, **Cancelled or rejected**. Choose a **Type** to see every record of that type by state instead.
+Filters: State, Folder, **Assigned to**, Search. **Link to this filter** gives an address you can bookmark; **Open as
+the *type* kanban** switches to the type's kanban view.
 
 ## 2.4 Form view (the record page)
 
-Clicking a number opens the record page (`/record/<number>`). Documents open their own page instead (chapter 4). The
+Clicking a number opens the record page (`/record/<number>`). Documents open their own page instead (chapter 5). The
 page has, from top to bottom:
 
 1. **Action buttons** (left) and the **status bar** (right).
@@ -115,11 +125,12 @@ page has, from top to bottom:
 | **Rework and resubmit** | the item was returned to you | 3.1 |
 | **Fix and retry** | the item's run stopped | 3.1 |
 | **Put on hold** / **Release the hold** | you may approve this kind of item | 2.9 |
-| **Attach**, **New document** | you may file documents in the item's folder | 2.9, 4.3 |
+| **Attach**, **New document** | you may file documents in the item's folder | 2.9, 5.3 |
 | **Start a process** | you may start any process | 1.3 |
 | **Why not me?** | the item waits for someone else | 1.5 |
 | **Assign** | you own it, created it, it is with you, or you may approve it (for a document, also a document controller) | 2.7 |
 | **Back to the start** | you own it or may approve it, or (documents) you are a document controller; not for an effective, obsolete or superseded item, nor one already at its start | 3.1 |
+| **Withdraw this draft** (on the **Details** tab; not on documents) | the item is still at its start (Draft, Open or New) and no run holds it (a stopped or returned run still does), and you created, own, wrote or requested it | below |
 | **Render snapshot** | always | 2.9 |
 | **Print** | always | |
 
@@ -131,9 +142,12 @@ Cancelled, Rejected) are marked as exits. On a narrow screen the bar scrolls to 
 
 ### The tabs
 
-* **Details**: the fields in two columns, the main ones first (title, description, supplier, amount ...). Fields the
-  system set (risk, match results, conditions and the like) are folded under **Set by the system**. The tab ends with
-  the hold form.
+* **Details**: the fields in the sections of the record type's form layout (chapter 7.12), main ones first (title,
+  description, supplier, amount ...). Fields the layout leaves off are folded under **Not on the form**, and fields the
+  system set (risk, match results, conditions and the like) under **Set by the system**. The tab ends with the hold
+  form and, for a draft you may withdraw, **Withdraw this draft**: give **Why it is withdrawn** and press **Withdraw**.
+  The item is closed as Withdrawn and stays in the history; nothing else changes (hubproto/shell/actions.py,
+  `post_withdraw_record`).
 * **Documents**: attached documents (number, title, class, type, revision, state, size, and **Edit** or **View**), a
   **New document** form and an **Attach** form (2.9).
 * **Links**: links to other records with their relation and direction, and an **Add link** form (2.9).
@@ -180,13 +194,13 @@ the item and is sent to nobody else.
 | You write | What happens |
 |---|---|
 | `@bob ...` (a person) | bob gets a request in his inbox Notifications, linked to the item ("alice asks you to review DOC-0123") |
-| `@quality-assistant ...` (a cog) | the request goes into that cog's queue; the cog reads the item as it is when it gets there and answers on the chatter (chapter 5.4) |
+| `@quality-assistant ...` (a cog) | the request goes into that cog's queue; the cog reads the item as it is when it gets there and answers on the chatter (chapter 6.4) |
 | `@design-review-committee ...` (a role) | every member holding the role is asked: people in their inbox, cogs in their queues |
 | `@nobody` (not a member or role) | you get a notice "No member or role is called @nobody" |
 | "... please approve" (or "sign off", "release", "send it for approval") with nothing in flight | the hub starts the item's own process, if you may start it, and the reply says whom it now waits for |
 
 What a cog does with a mention depends on what you ask: an explicit request to approve, a request to change a
-document, a request to review, or a question. Chapter 5.4 describes each. Sending a message **To** a cog about an item
+document, a request to review, or a question. Chapter 6.4 describes each. Sending a message **To** a cog about an item
 counts as mentioning it.
 
 A cog's own words never set off another cog.
@@ -206,12 +220,12 @@ is with you, or one you may approve; a document controller may also assign docum
 
 * **To a person**: they are added to the item's "with" list and told in their inbox ("Assigned NCR-2026-0004 to
   you").
-* **To a cog**: the cog must be available (its model must answer, chapter 5.1). It is added to the "with" list, the
+* **To a cog**: the cog must be available (its model must answer, chapter 6.1). It is added to the "with" list, the
   instruction is posted on the chatter, and a task goes into its queue. The status line says where it is in line ("it
-  is next", "it is 3rd in line"). The cog works the item within its autonomy (chapter 5.2) and reports on the chatter.
+  is next", "it is 3rd in line"). The cog works the item within its autonomy (chapter 6.2) and reports on the chatter.
   If the item waits at an approval the cog could sign under its own approval criteria, it may take that turn, but only
   when the person who assigned it is one the approval waits for (or a policy owner) and did not prepare the item
-  (chapter 5.6).
+  (chapter 6.6).
 
 Assigning does not change who a waiting step is routed to: a person you assign can read and discuss the item, but only
 the people the step waits for can decide it.
@@ -225,8 +239,9 @@ The **Ops** row on a record or document page offers one-click actions on this it
   **Send for approval** on a document, **Request the purchase** on a purchase request, **Open the nonconformance** on a
   nonconformance. The process starts on this item, not on a copy. Only processes you may start are offered. On a
   document (other than evidence) you must also choose **minor or major?** before the button works.
-* **Ask *cog* to review**, lettered q, w, e and on: one for each cog that follows a procedure for this kind of item.
-  It sends "@*cog* please review this *type*" on the chatter.
+* **Ask *cog* to review**, lettered q, w, e and on: one for each cog that works from the SOP defining this kind of
+  item's process (its persona, chapter 7.1). It sends "@*cog* please review this *type*" on the chatter. Every cog
+  works from the company scope, which includes the tasks SOP, so a task offers all seven cogs.
 
 **How to use the keyboard shortcuts**
 
@@ -251,7 +266,7 @@ shortcuts: on/off** in the Ops row turns them off in your browser.
 
 1. On the **Documents** tab (or **Attach** at the top), choose **Upload and attach a file** and optionally a title,
    or choose an existing document from the same folder under **Or attach an existing document**.
-2. Press **Attach**. An uploaded file is filed as an *external* document, kept exactly as received (chapter 4.2).
+2. Press **Attach**. An uploaded file is filed as an *external* document, kept exactly as received (chapter 5.2).
 
 "May file documents" means the policy lets you create documents in that folder, or create any kind of record there
 (hubproto/shell/pages.py, `may_file`).
@@ -294,4 +309,4 @@ card if it waits (with the routing sentence) or stopped, the **Steps** table (ea
 it, its result and problems, and each approval with who decided and under which rule), and the **History** (the
 Track, each entry with its details folded).
 
-An administrator checks the whole chain with `hubproto verify` (chapter 7.6).
+An administrator checks the whole chain with `hubproto verify` (chapter 8.6).

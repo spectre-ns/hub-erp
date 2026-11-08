@@ -1,40 +1,70 @@
-# 4. Documents
+# 5. Documents
 
 A document is a record of type `document` with a file behind it. Its content is kept in a store keyed by the file's
 hash, with a history of versions; the record carries the title, class, revision, state and who owns it. A document can
 be attached to any number of other records (hubproto/dms.py). This chapter covers the library, the five document
 classes, editing and versions, and the approval of controlled documents.
 
-## 4.1 The library
+## 5.1 The library
 
 **Documents** in the rail (or the **Documents** app) opens the library (hubproto/shell/pages.py, `page_files`).
 
-* **The folder tree** on the left lists every folder of the policy release. Folders you may not read are greyed and
-  marked "(no access)".
-* **The top level** lists the root folders with **Access** (readable or no access) and **Why** (the permission
-  sentence), then the 24 most recently changed documents you may read.
+* **The folder tree** on the left lists every folder of the policy release and the folders people added to the
+  library (below). Folders you may not read are greyed and marked "(no access)".
+* **The top level** has a toolbar with **New folder**, lists the root folders with **Access** (readable or no access)
+  and **Why** (the permission sentence), then the 24 most recently changed documents you may read.
 * **A folder** shows a toolbar (**New document** and **Upload** when you may file documents there; a search box; **Sort
-  by** newest first, name or revision), its subfolders, its documents as tiles, and the other items filed in it
-  (number, type, state, title, owner, who it is with, due date, last change).
+  by** newest first, name or revision; **New folder**), its subfolders (an added one says "added by *name*; the same
+  rights as *parent*"), its documents as tiles, and the other items filed in it (number, type, state, title, owner, who
+  it is with, due date, last change).
 
 Each **tile** shows a text preview (Markdown and text files) or a file-type icon, the title, the number, the revision
 (for example "rev A.2"), the state, a **checked out** chip, the owner, when it changed, and links **Open**, **Edit
 online** or **View**, and **Download**.
 
 **Controlled documents** (Documents app) lists every controlled document you may read. **Templates** is described in
-4.12.
+5.12.
 
 Who may read a folder comes from the policy. In the example company staff may read Quality, Policy, Purchasing,
 Inventory and Tasks; only finance clerks, payables reviewers and controllers may read Finance; only design engineers,
 design authorities and quality managers may read Engineering.
 
-## 4.2 Document classes
+### Adding and removing folders
+
+The policy declares the folders that carry rights (the organization model's **Folders**, and Settings). People may
+add **library folders** to organise documents without a policy change (hubproto/library.py):
+
+* **A subfolder** has exactly its parent's rights: whoever may read or file in the parent may read or file in it. It
+  may be added by anyone who may create documents in the parent, and anywhere by a policy owner or a document
+  controller, "who keep the library's structure".
+* **A top-level folder** is added only by a policy owner, who chooses the policy folder whose rights it takes ("A
+  top-level folder has the rights of"). The other policy owners are told ("New top-level folder *name*").
+* A library folder is removed only while it is empty (no documents, no records, no folders in it), by whoever added
+  it, a document controller or a policy owner: **Remove this empty folder** in the folder. A folder with rights of its
+  own is a policy folder, changed in Settings (chapter 7.7).
+
+**How to add a folder** (see above for who may)
+
+1. Open the folder to add it in, or the top of the library, and press **New folder** in the toolbar. Where you may not
+   add one, the menu says why and who may.
+2. Give the **Name** (up to 60 letters, digits, spaces and `. _ ( ) & -`, starting with a letter or digit). At the
+   top of the library choose **In** (one of your folders, or "the top of the library" for a policy owner) and, for a
+   top-level folder, the folder whose rights it takes.
+3. Press **Add to *folder*** (or **Add the folder**). The status line says "*path* is added, with the rights of
+   *folder*."
+
+Checked by running the code: alice added "Quality/Controlled Documents/Work instructions"; bob added a top-level
+"Projects" with the rights of Quality and carol was told; a folder with a document in it could not be removed. The
+**New folder** menu offers the folders where you may file any kind of record, but adding one needs the right to create
+documents there (chapter 10, D8).
+
+## 5.2 Document classes
 
 | Class | Used for | Starts as | Can it change? |
 |---|---|---|---|
-| **controlled** | SOPs, work instructions, forms, drawings; anything that goes through document control | Draft (revision A) | While Draft, Open, Returned or Failed. Once in review or effective, only through a new revision (4.10) |
-| **template** | controlled forms and outlines (4.12) | Draft | As controlled |
-| **working** | drafts and everyday files | Open (revision 1) | Yes, by whoever may change it (4.5) |
+| **controlled** | SOPs, work instructions, forms, drawings; anything that goes through document control | Draft (revision A) | While Draft, Open, Returned or Failed. Once in review or effective, only through a new revision (5.10) |
+| **template** | controlled forms and outlines (5.12) | Draft | As controlled |
+| **working** | drafts and everyday files | Open (revision 1) | Yes, by whoever may change it (5.5) |
 | **evidence** | snapshots, cog reviews, CAD exports, rendered records | Filed | Never. File a new one instead |
 | **external** | files received from outside, kept exactly as received, with where they came from (channel, sender, when) | Received | Never |
 
@@ -51,7 +81,7 @@ Where documents come from:
 | **Render snapshot**, a cog review, a CAD export, a process closing | evidence |
 | The document-control process (**New controlled document**) | controlled |
 
-## 4.3 Creating and uploading
+## 5.3 Creating and uploading
 
 You may file documents in a folder when the policy lets you create documents there, or create any kind of record
 there (hubproto/shell/pages.py, `may_file`).
@@ -63,7 +93,7 @@ there (hubproto/shell/pages.py, `may_file`).
    OpenDocument spreadsheet (.ods), Markdown (.md) or Plain text (.txt).
 3. Press **Create and open**. A blank working document is created (attached to the record, if you started there) and
    opens in the online editor. A Markdown document opens on its page instead, to be edited with **Edit the text**
-   (4.5); so does any document when no online editor is configured ("Download it to edit, then check it in").
+   (5.5); so does any document when no online editor is configured ("Download it to edit, then check it in").
 
 **How to upload a file** (anyone who may file documents in the folder)
 
@@ -77,27 +107,28 @@ there (hubproto/shell/pages.py, `may_file`).
 document in force): on its page press **Make a working copy**. You need to be allowed to file documents in its folder
 and the file must be a kind the editor edits.
 
-## 4.4 The document page
+## 5.4 The document page
 
 A document's page (`/document/DOC-0123`) has:
 
 * **Buttons**: **Edit online** (or **Join the editing** when someone else is editing, or **Open in the viewer** when
   you may only read it), **Edit the text** (Markdown, text and CSV files), **Make a working copy**, **Why not me?**,
   **Assign**, **Back to the start**, **Download**, **Check-out and check-in**, **Print**. Policy documents and SOP
-  documents add their own buttons (chapter 6).
+  documents add their own buttons (chapter 7).
 * The **status bar**, the **Ops** row (**Send for approval**, **Ask *cog* to review**; chapter 2.8) and smart buttons
   for **Versions**, **Attached to** and **Links**.
 * **The sheet**: title, class, type, revision, state, folder, owner, author, who has it checked out, file name and
   format, labels, provenance (for received files), effective from, review date, approved by.
 * **Versions**: every version with when, who, file, size and note, a **Download version *n*** link and **what
-  changed** (4.8).
+  changed** (5.8).
 * **Text**: the text the hub extracted from the latest version (this is what reviews and cogs read).
-* **Check-out and check-in** (4.6), **Attached to**, **Links**, **History** and the **Chatter**.
+* **Check-out and check-in** (5.6), **Attached to**, **Links**, **History** and the **Chatter**.
 
-A document waiting for approval has no approve form on its page: approvers decide it from their **Inbox** (or from
-the run's page).
+When a document waits for your decision, its page shows the same decision card as the inbox (chapter 1.4): approve
+or reject it there. Everyone else sees whom it waits for and at which step ("Waiting for bob, carol at Approve the
+document (approval due 18 Nov 2026)") (checked by running the code).
 
-## 4.5 Editing online (Collabora)
+## 5.5 Editing online (Collabora)
 
 Documents open in Collabora Online inside the hub; the hub is the file host the editor reads from and saves to
 (hubproto/wopi.py, hubproto/shell/editor.py). Office files (docx, xlsx, pptx, odt, ods, odp, doc, xls, txt, csv, rtf)
@@ -124,7 +155,7 @@ The editor opens **read-only** when you may not change the document, when it is 
 controlled document or template that is not Draft, Open, Returned or Failed (a controlled document in force changes
 only through a new revision), or when someone has it checked out by hand.
 
-If no editor is configured, the editor page says how to configure it (chapter 7.3); documents can still be
+If no editor is configured, the editor page says how to configure it (chapter 8.3); documents can still be
 downloaded, changed and checked in.
 
 **How to edit a Markdown or text document in the hub** (anyone who may change it)
@@ -132,7 +163,7 @@ downloaded, changed and checked in.
 1. On its page press **Edit the text**.
 2. Change the text in the box and press **Save**. A new version is added only if the text changed.
 
-## 4.6 Check-out and check-in
+## 5.6 Check-out and check-in
 
 Without the online editor, you change a document by checking it out, editing a copy and checking the new version in
 (hubproto/dms.py).
@@ -147,10 +178,10 @@ Without the online editor, you change a document by checking it out, editing a c
 4. To give the document back unchanged, press **Undo the check-out**.
 
 Only the person who holds a check-out can check in or undo it ("checked out by alice; only alice can check it in or
-undo the check-out"). An editing session started in the online editor is shared instead (4.5). **Back to the start**
+undo the check-out"). An editing session started in the online editor is shared instead (5.5). **Back to the start**
 also releases any check-out.
 
-## 4.7 Comments in documents, and cog replies
+## 5.7 Comments in documents, and cog replies
 
 You can talk to a cog inside a document, the way you would with a colleague (hubproto/wopi.py, `index`;
 hubproto/mentions.py).
@@ -180,25 +211,25 @@ A cog changes a document only if the person asking may change it: "The cog write
 mentions.py). Formulas are not adjusted when spreadsheet rows move, merged cells and charts are not edited, and
 spreadsheet changes apply to the first sheet only.
 
-## 4.8 Comparing versions
+## 5.8 Comparing versions
 
 Each version after the first has a **what changed** link in the **Versions** table. It shows the differences between
 that version and the one before it, line by line, as text. Formatting is not compared. A cog's reply on the chatter
 also links to the change it made ("see what changed (version 4)").
 
-## 4.9 Downloading
+## 5.9 Downloading
 
 **Download** gives the latest version; **Download version *n*** in the versions table gives any earlier one. You need
 to be allowed to read the document's folder.
 
-## 4.10 Controlled-document approval (document control)
+## 5.10 Controlled-document approval (document control)
 
 Controlled documents are drafted, filed, risk-scored, approved and published. When a document becomes effective, the
 revision it replaces is withdrawn and everyone in its training roles is asked to acknowledge it (document-control-sop;
 wi-review-a-document; hubproto/cogs.py, `DocumentDrafter`, `DocumentPublisher`).
 
-**Who may start it:** anyone who may create documents in Quality/Controlled Documents: authors and document
-controllers in the example company (alice, carol, and the doc-reviewer and qa-manager cogs, which hold the author
+**Who may start it:** anyone who may create documents in Quality/Controlled Documents: authors and document controllers
+in the example company (alice, carol, and the doc-reviewer, quality-assistant and qa-manager cogs, which hold the author
 role).
 
 **How to send a new controlled document for approval** (an author or document controller)
@@ -238,7 +269,7 @@ kept as it is. Evidence and external documents cannot be sent.
 * "The qa-manager cog may approve document-control documents when 3 adversarial reviews pass, countersigned by a
   quality manager."
 
-The qa-manager is on no route; it signs only when asked (chapter 5.6).
+The qa-manager is on no route; it signs only when asked (chapter 6.6).
 
 **Segregation of duties:** "The author and the approver of a document must be different people." The hub also
 refuses to publish a document approved by its own author.
@@ -256,8 +287,8 @@ Points the routing table leads to (checked by running the code):
 
 **How to review a document** (the reviewer, process owner or policy owner it is routed to)
 
-1. Open "Approve the document: DOC-..." in your inbox. The card names the document, the author, the change type and
-   revision, and the routing sentence.
+1. Open "Approve the document: DOC-..." in your inbox, or the document's own page, which carries the same card. The
+   card names the document, the author, the change type and revision, and the routing sentence.
 2. Open the document from the card and read it. Check that the title and revision are right, that the change type
    matches the content, that the training roles list who must read it, and that the content is fit to use
    (wi-review-a-document). The review date is set automatically on approval.
@@ -273,27 +304,35 @@ them"). When the revision becomes effective, the earlier one becomes **Obsolete*
 superseding it (hubproto/runner.py, `_revision_of`; hubproto/kernel.py, `publish_document`).
 
 Each revision is a new document number. Its revision field starts at A again: the revision letter is not advanced for
-SOP revisions made this way (checked by running the code; templates are different, 4.12).
+SOP revisions made this way (checked by running the code; templates are different, 5.12).
 
 A cog's review of a document flags a reference to an obsolete controlled document as an error.
 
 ### Review dates
 
 On approval the review date is set to one year after the approval date, unless one was given. It shows on the
-document's page. Nothing in the hub reminds anyone when a review date passes (chapter 9).
+document's page. Nothing in the hub reminds anyone when a review date passes (chapter 10).
 
 ### Documents carried by a change order
 
 A revision of an SOP or policy that a change order carries is approved through the same process, but on approval it
 is **held**: it waits in state Approved and becomes effective only when its change order is released, together with
-the other revisions and the compiled Frame (chapter 6.9).
+the other revisions and the compiled Frame (chapter 7.9).
 
-## 4.11 Policy documents and Frames as documents
+## 5.11 Policy documents and Frames as documents
 
-Every policy Frame also has a controlled document in Policy/Frames that carries its text, and policy owners approve
-documents in Policy. Editing a Frame through its document, and SOPs as documents, are covered in chapter 6.
+Every Frame in the release in force has a controlled document that carries its text, filed as what it is: SOPs and
+work instructions in Quality/Controlled Documents (types `sop` and `wi`, titled "Nonconformance SOP", "WI: run an
+internal audit"), and policies, the scopes and the personas in Policy (types `policy` and `persona`, "Organization
+model", "Persona: Staff"). Before the SOPs are converted (chapter 7.8) its revision is the Frame's version, for
+example "1.6.0" (hubproto/app.py, `frame_document`).
 
-## 4.12 Templates
+Only released Frames have documents. A Frame file on disk that no release has gets none, and the document of a Frame
+that leaves the release in force is retired (Obsolete); it comes back, the same document, when its Frame is released
+again. Policy owners approve documents in Policy. Editing a Frame through its document, and SOPs as documents, are
+covered in chapter 7.
+
+## 5.12 Templates
 
 Templates are controlled forms and outlines (an NCR form, a CAPA form, a change request form, an audit plan) kept in
 the library beside the SOPs (hubproto/templates.py; hubproto/shell/templates_ui.py).
@@ -303,14 +342,14 @@ is for, the revision **In force** (number, revision, since when), any **Open rev
 is a draft), and the number of **Placeholders** such as `{{number}}`. With no templates yet it says "An administrator
 brings the profile's templates in with `hubproto templates import --as PERSON`."
 
-**How templates get into the library.** An administrator runs `hubproto templates import --as carol` (chapter 7.8).
+**How templates get into the library.** An administrator runs `hubproto templates import --as carol` (chapter 8.8).
 Each Markdown file under `frames/<profile>/templates/` becomes a .docx document of class template, keyed by its source
 file. Headings, lists, tables and placeholders are kept as plain text. Importing again changes nothing unless a source
 changed: then the template's open draft gets a new version, or, when the template is in force, a new revision is
 created. With `--submit` each new or changed template is sent for approval at once. Seeding a profile with an author
 also imports its templates.
 
-**Lifecycle.** A template draft is edited online and sent for approval through document control like an SOP (4.10).
+**Lifecycle.** A template draft is edited online and sent for approval through document control like an SOP (5.10).
 Once effective it is read-only.
 
 **How to revise a template in force** (its owner or author, or a document controller, who may also file documents in
@@ -323,4 +362,4 @@ its folder)
 4. When it becomes effective it supersedes the earlier revision of the same template only.
 
 Nothing in the hub creates a record or document from a template yet, so placeholders are never filled in
-automatically (chapter 9).
+automatically (chapter 10).
