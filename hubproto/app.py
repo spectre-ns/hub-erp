@@ -48,6 +48,9 @@ class Hub:
         self.proposals = ProposalStore(state / "proposals")
         self.kernel = Kernel(state / "kernel.db")
         self.registry = CogRegistry()
+        from .org_cog import OrganizationCog
+
+        self.registry.register(OrganizationCog())  # the compile-frame committee's organization member
         try:
             meta = self.releases.current()
             self.registry.install_profiles(self.releases.bundle(meta["digest"]) if meta else None)
