@@ -3,7 +3,7 @@ type: frame [0.2]
 name: inventory-policy
 description: "Parts, stock locations and lots: what moves freely, what needs an approval, and how stock is held, counted and released."
 visibility: internal
-version: "1.0.0"
+version: "1.1.0"
 scope: department
 maintainer: dave
 inherits: org-model
@@ -23,12 +23,15 @@ Every movement of stock is written to the ledger and cannot be undone or
 switched off. Receiving into a location, moving stock within a site, splitting
 a lot, merging lots of one batch, a count within the count variance tolerance
 and moving stock into quarantine are free: containment never waits. A count is
-measured from the quantity the lot was last set to by anything but a count, so
-a run of small counts shares one tolerance. A count outside the tolerance is
-an adjustment. Whoever keeps the stock does not approve its write-off, so the
+measured from the quantity the lot was received or last adjusted to, carried
+through splits and merges, so a run of small counts shares one tolerance
+however the lot is split or merged. A count outside the tolerance is an
+adjustment. Whoever keeps the stock does not approve its write-off, so the
 controller approves adjustments; a small one within the tolerance may be
 signed by the purchasing assistant, which holds the stock reviewer role for
-that and for nothing else. Whoever asked for an adjustment, and whoever
+that and for nothing else. The stores cog keeps stock as a storekeeper does,
+moving and counting it only where the person who asks may too; it signs no
+adjustment and no release. Whoever asked for an adjustment, and whoever
 approved the order the stock came from, never signs it. An adjustment is
 applied only to the quantity it was checked and approved on: if the lot
 changed in between, it is checked and approved again. Stock leaves quarantine
@@ -43,6 +46,7 @@ return to the supplier.
 ## Members
 - dave (person): storekeeper
 - purchasing-assistant (cog): stock-reviewer
+- stores (cog): storekeeper, staff
 
 ## Folders
 - Inventory/Parts

@@ -9,12 +9,13 @@
   adjustment itself.
 * ``release-checker`` / ``stock-releaser``: release from quarantine only for a quarantined lot no open nonconformance
   names, not expired; then, approved, the release.
+* ``stores``: the stores cog, a team member with custody of the stock and no approval right over it.
 """
 
 from __future__ import annotations
 
 from . import authz, inventory
-from .cogs import Cog, RunContext
+from .cogs import Cog, ReviewerCog, RunContext
 from .envelope import make_envelope, problem
 
 
@@ -211,6 +212,17 @@ class StockReleaser(Cog):
         return self.ok("run", {**prior, "released": True, "location": lot["fields"].get("location")})
 
 
+class StoresCog(ReviewerCog):
+    """The stores cog: a team member that keeps stock as a storekeeper does. It moves, counts, splits, merges and
+    quarantines lots where the person who asks may too (its tools check both), and asks for adjustments; it holds no
+    approval right over stock, so it never signs a write-off or a release."""
+
+    id = "stores"
+    files_process = "stock-adjustment"
+    description = ("Stores team member: keeps the stock, moving, counting and quarantining lots where the person who asks may too, "
+                   "and asks for adjustments; it never approves a write-off or a release.")
+
+
 def register(registry) -> None:
-    for cls in (StockQuarantiner, DispositionApplier, AdjustmentChecker, AdjustmentApplier, ReleaseChecker, StockReleaser):
+    for cls in (StockQuarantiner, DispositionApplier, AdjustmentChecker, AdjustmentApplier, ReleaseChecker, StockReleaser, StoresCog):
         registry.register(cls())

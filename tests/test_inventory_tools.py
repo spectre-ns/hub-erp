@@ -71,3 +71,25 @@ def test_a_cog_with_custody_moves_and_counts_where_both_may(hub):
     req = t.execute("request_stock_adjustment", {"lot": lot["number"], "new_quantity": 970, "reason": "count found 970"})
     assert req["ok"] and req["process"] == "stock-adjustment" and req["status"] == "waiting", req
     assert req["waiting_for"] == ["bob"], "0.50 USD, but outside the tolerance from the baseline: not the purchasing assistant's to sign"
+
+
+def test_the_stores_cog_keeps_stock_where_the_person_who_asks_may(inv):
+    """The stores cog holds custody (storekeeper), so moves and counts asked for in chat work, only where the person
+    it works for may too; it holds no approval right over stock, so a write-off it asks for goes to someone else."""
+    from hubproto import authz
+
+    k = inv.kernel
+    b = inv.releases.bundle(inv.releases.current()["digest"])
+    assert b["cogs"]["stores"]["persona"] == "stores" and "inventory-policy" in b["cogs"]["stores"]["follows"]
+    for obj, folder in (("stock-adjustment", "Inventory/Adjustments"), ("stock-release", "Inventory/Releases")):
+        assert not authz.check(b, "stores", "approve", obj, folder)["allowed"], f"custody, never the {obj}'s approval"
+    part = make_part(k, "WASHER-M4", title="M4 washer", unit_cost=0.05, stock=1000)
+    [lot] = inventory.lots(k, part=part)
+    prod = inventory.location_of_kind(k, "MAIN", "production")["locator"]
+    refused = tools(inv, "alice", cog="stores").execute("transfer_stock", {"lot": lot["number"], "to_location": prod, "quantity": 10})
+    assert refused.get("refused") and "alice, for whom you work, may not" in refused["error"], "the cog is never her way round it"
+    t = tools(inv, "dave", cog="stores")
+    moved = t.execute("transfer_stock", {"lot": lot["number"], "to_location": prod, "quantity": 10})
+    assert moved["ok"] and moved["location"] == "Main site / Production"
+    req = t.execute("request_stock_adjustment", {"lot": lot["number"], "new_quantity": 900, "reason": "count found 900"})
+    assert req["ok"] and req["process"] == "stock-adjustment" and "stores" not in req["waiting_for"], req
