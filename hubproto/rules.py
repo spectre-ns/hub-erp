@@ -26,6 +26,9 @@ KINDS = {
     "scope": {"name", "level", "compiles", "layers_on"},
     # A persona (a cog or a job role): the scopes and Frames it layers, in order (later layers add and may only narrow).
     "persona": {"name", "of", "layers"},
+    # A committee of cogs that does one piece of work together, each on its own: "compile-frame" reads the SOPs into
+    # rules; a rule needs ``quorum`` of the members to read it the same way.
+    "committee": {"name", "members", "quorum"},
 }
 
 CONDITION_VOCABULARY = {
@@ -39,6 +42,8 @@ CONDITION_VOCABULARY = {
     "the bill of materials is resolved": "bom_resolved",
     "the design checks are clean": "design_checks_clean",
     "the item is known": "item_known",
+    "the part is active": "part_active",
+    "the variance is within tolerance": "variance_within_tolerance",
     "every requirement is accepted": "requirements_accepted",
     # Judgment: the cog reviews the item against the procedures it follows (with its model) and the review passes.
     # The review is filed as evidence and cited in the signature.

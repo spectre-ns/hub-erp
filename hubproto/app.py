@@ -29,6 +29,15 @@ def default_scopes(store) -> list[str]:
     return [f.name for f in store.frames.values() if f.scope != "reference"]
 
 
+COMPILER_COG = "organization"  # reads SOPs into rules in the Compile the Frame Op when there is no committee
+
+
+def _is_frame_doc(fields: dict) -> bool:
+    from .sopdocs import is_frame_doc
+
+    return is_frame_doc(fields)
+
+
 class Hub:
     def __init__(self, root: Path, frames_dir: Path | None = None):
         self.root = Path(root)
@@ -65,6 +74,7 @@ class Hub:
         from .library import LibraryFolders
 
         self.library = LibraryFolders(Path(self.root) / "state" / "library")
+
         self.releases.extra_folders = self.library.paths
         self.releases.extra_rights = self.library.rights
         _formlayout.apply_custom_fields(self)  # released custom fields are fields of their record types
@@ -119,6 +129,54 @@ class Hub:
                                      "requested_by": user, "from_settings": True}, by=user)
         report = sop_settings.apply_plan(self, co["locator"], planned, by=user)
         return {"change_order": co["number"], "locator": co["locator"], "report": report}
+
+    def extractor(self, calls: bool = False):
+        """How this hub reads SOPs (hubproto.extract.get_extractor), with its cache and the names a model may use.
+        ``calls``: may ask the local model (background jobs, the command line); a page uses only what was read before."""
+        from .llm_extract import context_for
+
+        ex = get_extractor(cache_dir=Path(self.root) / "state" / "extract-cache", context=context_for(self), gateway=self.model, calls=calls)
+        if getattr(ex, "name", "") != "hybrid":
+            return ex
+        committee = self.compile_committee()
+        if committee:
+            from .llm_extract import CommitteeExtractor
+
+            return CommitteeExtractor(committee["members"], committee["quorum"], cache_dir=Path(self.root) / "state" / "extract-cache",
+                                      context=context_for(self), gateway=self.model, calls=calls)
+        if not __import__("os").environ.get("HUBPROTO_EXTRACTOR_MODEL"):
+            ex.model = self.compiler_model() or ex.model
+        return ex
+
+    def compile_committee(self) -> dict | None:
+        """The compile-frame committee of the release in force: {"members": [(cog, its model)], "quorum"}; each member
+        reads with the model its profile names (when the hub can reach it)."""
+        from .model import backend_for
+
+        meta = self.releases.current()
+        if not meta:
+            return None
+        b = self.releases.bundle(meta["digest"])
+        c = (b.get("committees") or {}).get("compile-frame")
+        if not c:
+            return None
+        members = []
+        for name in c.get("members") or []:
+            m = ((b.get("cogs") or {}).get(name) or {}).get("model") or ""
+            members.append((name, m if m and backend_for(m) not in ("none", "stand-in") else ""))
+        return {"members": members, "quorum": int(c.get("quorum") or 1)}
+
+    def compiler_model(self) -> str:
+        """The model of the organization cog, which reads SOPs in the Compile the Frame Op when no committee is set: its
+        profile names it, like any cog's (changed through the policy). When it names none the hub can reach, the largest
+        local model."""
+        from .llm_extract import local_model
+        from .model import backend_for
+
+        meta = self.releases.current()
+        prof = ((self.releases.bundle(meta["digest"]).get("cogs") or {}).get(COMPILER_COG) or {}) if meta else {}
+        m = prof.get("model") or ""
+        return m if m and backend_for(m) not in ("none", "stand-in") else local_model()
 
     def sop_source(self) -> bool:
         """True once the SOPs and policies are documents in the library: the Frame is then compiled from them."""
@@ -262,7 +320,7 @@ class Hub:
             docs[name] = (drafts or {}).get(name) or docs.get(name)
         store = frames.with_overrides(texts) if texts else frames
         proposal = compile_proposal(store, scopes or default_scopes(store), self.registry.ids(), self.releases,
-                                    extractor=extractor or get_extractor(), now=now,
+                                    extractor=extractor or self.extractor(), now=now,
                                     record_types=self.kernel.types, config_digests=self.kernel.config_digests,
                                     resolve_document=self.resolve_document)
         proposal["overrides"] = {n: {"text": t, "draft": docs.get(n), "path": store.get(n).relpath} for n, t in texts.items()}
@@ -348,12 +406,25 @@ class Hub:
         return extract_text(content, v.get("mime") or "", v.get("filename") or "")[:limit]
 
     def frame_document(self, name: str, create: bool = True, by: str = "hub") -> dict | None:
-        """The controlled document that carries a Frame's text: created on first use, versioned on every release."""
+        """The controlled document that carries a Frame's text: created on first use, versioned on every release. It is
+        filed as the quality document it is: an SOP or work instruction in Quality/Controlled Documents, a policy, scope
+        or persona in Policy, titled by its own heading. (Once the SOPs are the source, it is the SOP document itself.)"""
+        from . import sopdocs
+
         frame = self.frames.get(name)
+        doc_type, folder = sopdocs.kind_of(frame)
+        title = sopdocs.title_of(frame)
+        if self.sop_source():  # the SOP document in force is the Frame's document
+            return sopdocs.in_force(self.kernel, name)
         found = [d for d in self.kernel.query(type_="document")
-                 if d["fields"].get("doc_type") == "frame" and d["fields"].get("frame_name") == name]
+                 if sopdocs.is_frame_doc(d["fields"]) and d["fields"].get("frame_name") == name]
         if found:
             rec = found[0]
+            if rec["folder"] != folder:  # filed as a quality document (it was in Policy/Frames)
+                self.kernel.move(rec["locator"], folder, by=by, reason="an SOP is a quality document; policies stay in Policy")
+            if rec["fields"].get("doc_type") != doc_type or rec["fields"].get("title") != title:
+                self.kernel.set_fields(rec["locator"], {"doc_type": doc_type, "frame_mirror": True, "title": title}, by=by)
+            rec = self.kernel.get(rec["locator"])
             content, _ = self.dms.content(rec["locator"])
             if content.decode("utf-8", "replace") != frame.text:
                 self.dms.add_version(rec["locator"], frame.text.encode("utf-8"), by=by, filename=frame.path.name, mime="text/markdown",
@@ -364,9 +435,9 @@ class Hub:
             return None
         from datetime import date, timedelta
 
-        doc = self.dms.create(title=f"{name} (policy Frame)", doc_class="controlled", folder=self.FRAME_FOLDER, by=by,
-                              content=frame.text.encode("utf-8"), filename=frame.path.name, mime="text/markdown", doc_type="frame",
-                              fields={"frame_name": name, "frame_path": frame.relpath, "frame_version": frame.version,
+        doc = self.dms.create(title=title, doc_class="controlled", folder=folder, by=by,
+                              content=frame.text.encode("utf-8"), filename=frame.path.name, mime="text/markdown", doc_type=doc_type,
+                              fields={"frame_name": name, "frame_mirror": True, "frame_path": frame.relpath, "frame_version": frame.version,
                                       "revision": frame.version, "owner": frame.maintainer or by,
                                       "review_date": (date.today() + timedelta(days=365)).isoformat(),
                                       "description": frame.description})
@@ -584,7 +655,7 @@ class Hub:
                 if draft and draft["state"] == "open":
                     self.kernel.set_fields(draft["locator"], {"released_in": meta["digest"]}, by=by)
                     self.kernel.transition(draft["locator"], "released", by=by, reason=f"released in policy {meta['digest'][:12]}")
-        elif not self.sop_source() and any(d["fields"].get("doc_type") == "frame" for d in self.kernel.query(type_="document")):
+        elif not self.sop_source() and any(_is_frame_doc(d["fields"]) for d in self.kernel.query(type_="document")):
             self.frame_documents(create=False)
         self._rebase_open_proposals(base, proposal, now=now)
         return meta
@@ -853,7 +924,8 @@ _STOP = {"find", "the", "a", "an", "please", "provide", "give", "me", "link", "l
          "we", "have", "any", "in", "on", "about", "called", "named", "there", "that", "this", "us", "your", "help", "need", "want"}
 _TYPE_WORDS = {"document": "document", "doc": "document", "file": "document", "sop": "document", "bill": "bill", "invoice": "bill",
                "purchase": "purchase-request", "order": "purchase-order", "ncr": "ncr", "nonconformance": "ncr", "capa": "capa",
-               "design": "design", "requirement": "requirement", "task": "task", "receipt": "receipt", "item": "item", "part": "item"}
+               "design": "design", "requirement": "requirement", "task": "task", "receipt": "receipt", "item": "part", "part": "part",
+               "stock": "part", "lot": "stock-item"}
 
 
 def chat_lookup(call_tool, text: str) -> dict | None:

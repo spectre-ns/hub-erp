@@ -35,6 +35,7 @@ FINAL = ("success", "some-errors", "no-actions", "failed")
 AUTOMATIONS = {
     "compile-frame": {
         "title": "Compile the Frame",
+        "committee": "compile-frame",  # its member cogs read the SOPs' prose into rules, each on its own; the quorum decides
         "trigger": "a revision carried by a change order is approved, or another release comes into force",
         "steps": ["Collect the approved revisions", "Compile the Frame", "Check the guards", "Stage it on the change order",
                   "Tell the people involved"],
@@ -215,11 +216,20 @@ def c_collect(hub, job, memo):
 def c_compile(hub, job, memo):
     from . import eco
 
-    fields = eco.stage(hub, job["subject"], drafts=memo["approved"])
+    # The background job may ask the local model to read the SOPs' prose (pages never wait on it).
+    fields = eco.stage(hub, job["subject"], drafts=memo["approved"], extractor=hub.extractor(calls=True))
     if fields.get("staged_errors") and not fields.get("staged_proposal"):
         raise StepError("the Frame does not compile: " + "; ".join(fields["staged_errors"][:3]))
+    committee = hub.compile_committee()
+    if committee:
+        ready = [n for n, m in committee["members"] if m]
+        who = (f"; prose read by the compile-frame committee ({', '.join(ready)}; {committee['quorum']} of {len(committee['members'])} must agree)"
+               if len(ready) >= committee["quorum"] else "; sentence shapes only (the committee lacks a model for enough members)")
+    else:
+        model = hub.compiler_model()
+        who = f"; prose read by the organization cog ({model})" if model else "; sentence shapes only (no local model)"
     return (f"compiled as proposal #{fields.get('staged_number')}: {fields.get('staged_changes')} change(s), "
-            f"{fields.get('staged_widenings')} widening(s)"), {"proposal": fields.get("staged_proposal")}
+            f"{fields.get('staged_widenings')} widening(s)" + who), {"proposal": fields.get("staged_proposal")}
 
 
 def c_guards(hub, job, memo):

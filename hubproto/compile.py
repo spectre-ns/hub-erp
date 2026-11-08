@@ -74,6 +74,12 @@ def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], re
     from .guards import Finding as _Finding
     findings += [_Finding("grammar", "error", n["note"] + ": " + n["text"], frame=n["frame"], line=n["line"])
                  for n in notes if n.get("severity") == "error"]
+    findings += [_Finding("model", "warning", n["note"] + (f": {n['text']}" if n.get("text") else ""), frame=n["frame"], line=n["line"])
+                 for n in notes if n.get("severity") == "warning"]
+    # Every rule a model read is shown to the reviewers, with the words it read it from.
+    findings += [_Finding("model", "warning", f"read by {r['source']['read_by']}: “{r['source'].get('text')}” → {r['kind']}",
+                          frame=r["source"].get("frame"), line=r["source"].get("line") or 0)
+                 for r in rules if (r.get("source") or {}).get("read_by")]
     findings += doc_findings
     findings += schema_guard(rules)
     findings += grounding_guard(rules, store.frames)
@@ -87,6 +93,10 @@ def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], re
     changes += text_changes(base.get("frames") if base else [], store.bill_of_materials(frames), rules)
     for c in changes:
         c["decisions"] = []
+        src = (c.get("rule") or {}).get("source") or {}
+        if src.get("read_by"):
+            c["read_by"] = src["read_by"]
+            c["reason"] = f"{c['reason']} (read by {src['read_by']} from “{src.get('text')}”)"
     proposal = {
         "id": uuid.uuid4().hex[:12],
         "created_at": now or utcnow(),

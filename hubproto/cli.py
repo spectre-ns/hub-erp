@@ -517,7 +517,7 @@ def cmd_withdraw_draft(args) -> int:
 def cmd_compile(args) -> int:
     hub = _hub(args)
     _check_scopes(hub, args.scope)
-    proposal = hub.compile(args.scope or None)
+    proposal = hub.compile(args.scope or None, extractor=hub.extractor(calls=True))  # the command line may wait on the local model
     number = proposal_number(hub, proposal["id"])
     errors = [f for f in proposal["findings"] if f["severity"] == "error"]
     warnings = [f for f in proposal["findings"] if f["severity"] != "error"]

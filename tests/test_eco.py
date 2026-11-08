@@ -176,3 +176,24 @@ def test_once_the_sops_are_documents_a_model_change_is_an_sop_edit_on_a_change_o
     assert new["change_order"] == out["change_order"], "the same open change order collects the person's policy changes"
     names = sorted(x["name"] for x in eco.carried(hub, hub.kernel.get(out["locator"])))
     assert names == ["cog-profiles", "org-model"], names
+
+
+def test_converting_turns_the_frame_documents_into_the_sops_themselves(tmp_path):
+    """The document that carried a Frame becomes the SOP: one document per SOP, its number and history kept."""
+    import shutil
+
+    from conftest import ROOT, release_all
+
+    shutil.copytree(ROOT / "frames", tmp_path / "frames")
+    h = Hub(tmp_path)
+    h.kernel.seed()
+    release_all(h)
+    before = h.frame_document("document-control-sop")
+    assert before["folder"] == "Quality/Controlled Documents" and before["fields"]["doc_type"] == "sop"
+    sopdocs.convert(h, by="carol")
+    after = h.kernel.get(before["locator"])
+    assert after["fields"]["lineage"] == "sop:document-control-sop" and after["fields"]["filename"].endswith(".docx")
+    assert sopdocs.in_force(h.kernel, "document-control-sop")["locator"] == before["locator"], "the same document, not a copy"
+    sops = [d for d in h.kernel.query(type_="document") if d["fields"].get("sop_name") == "document-control-sop"]
+    assert len(sops) == 1
+    assert h.compile(save=False)["changes"] == []

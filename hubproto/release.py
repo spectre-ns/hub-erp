@@ -146,6 +146,7 @@ def render(rules: list[dict], record_types: dict | None = None) -> dict:
     slas: list[dict] = []
     scopes: dict[str, dict] = {}
     personas: dict[str, dict] = {}
+    committees: dict[str, dict] = {}
     for r in rules:
         body = {k: v for k, v in r.items() if k != "kind"}
         kind = r["kind"]
@@ -181,6 +182,8 @@ def render(rules: list[dict], record_types: dict | None = None) -> dict:
             scopes[r["name"]] = body
         elif kind == "persona":
             personas[r["name"]] = body
+        elif kind == "committee":
+            committees[r["name"]] = body
     # Scopes and personas: each scope's Frames are those of the scopes it layers on, then its own, in order; a
     # persona's are those of its layers (scopes or Frames), then what it also reads. A cog's persona is what it works
     # from: its profile follows exactly those Frames.
@@ -231,6 +234,7 @@ def render(rules: list[dict], record_types: dict | None = None) -> dict:
         "cogs": dict(sorted(cogs.items())),
         "scopes": dict(sorted(scopes.items())),
         "personas": dict(sorted(personas.items())),
+        "committees": dict(sorted(committees.items())),
         "ops": ops,
     }
 

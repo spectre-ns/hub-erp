@@ -159,6 +159,11 @@ def stand_in_allowed() -> bool:
     return (os.environ.get("HUBPROTO_ALLOW_STAND_IN") or "").lower() in ("1", "true", "yes", "on")
 
 
+def hosted_allowed() -> bool:
+    """Hosted models (Claude) only when switched on explicitly: by default the hub talks only to local models (Ollama)."""
+    return (os.environ.get("HUBPROTO_HOSTED_MODELS") or "").strip().lower() in ("1", "on", "yes", "true")
+
+
 def backend_for(model: str) -> str:
     """Which backend serves a profile's model: 'anthropic' for claude-* with a key, 'ollama' for 'ollama/<name>' or a
     bare name with an Ollama configured, 'stand-in' when allowed, else 'none'. A claude-* model is never served locally."""
@@ -167,6 +172,8 @@ def backend_for(model: str) -> str:
     if not model or model == DEFAULT_MODEL:
         return "stand-in" if stand_in_allowed() else "none"
     if model.startswith("claude"):
+        if not hosted_allowed():
+            return "none"  # hosted models are off: a claude-* cog is unavailable, never stood in for
         if os.environ.get("ANTHROPIC_API_KEY"):
             return "anthropic"
     elif ollama_url():
@@ -254,10 +261,11 @@ def available_models(refresh: bool = False) -> dict:
     """What a cog's profile can name: installed Ollama models, Claude models when a key is set, and what a claude-*
     name falls back to without one."""
     local, err = ollama_models(refresh)
-    key = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    key = bool(os.environ.get("ANTHROPIC_API_KEY")) and hosted_allowed()
     local = sorted(local, key=lambda m: -(m.get("size_gb") or 0))  # the most capable (largest) installed model first
     choices = [{"value": f"ollama/{m['name']}", "label": f"{m['name']} ({m['params']} {m['family']}, local)".replace("( ", "("), "available": True} for m in local]
-    choices += [{"value": c, "label": c + (" (Anthropic)" if key else " (needs an Anthropic key: not available here)"), "available": key} for c in CLAUDE_MODELS]
+    if hosted_allowed():  # otherwise the hub offers only the models Ollama serves here
+        choices += [{"value": c, "label": c + (" (Anthropic)" if key else " (needs an Anthropic key: not available here)"), "available": key} for c in CLAUDE_MODELS]
     return {"ollama": local, "ollama_error": err, "anthropic_key": key, "choices": choices}
 
 

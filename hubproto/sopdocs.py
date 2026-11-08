@@ -23,6 +23,12 @@ POLICY_FOLDER = "Policy"
 QUALITY_FOLDER = "Quality/Controlled Documents"
 
 
+def is_frame_doc(fields: dict) -> bool:
+    """The document that carries a Frame's text before the SOPs are the source (once "frame"; now filed as the quality
+    document it is: an SOP, a work instruction, a policy)."""
+    return fields.get("doc_type") == "frame" or bool(fields.get("frame_mirror"))
+
+
 def kind_of(frame: Frame) -> tuple[str, str]:
     """(doc_type, folder) for a Frame: policies in Policy, SOPs and work instructions as quality documents."""
     n = frame.name
@@ -135,7 +141,7 @@ def frame_text(hub, rec: dict, version: int | None = None) -> str:
     head = rec["fields"].get("frame_header") or header_text(dict(rec["fields"].get("frame_meta") or {}))
     while lines and not lines[-1].strip():
         lines.pop()
-    return head + "\n" + "\n".join(lines) + "\n"
+    return head + "\n" + "\n".join(lines) + "\n" * int(rec["fields"].get("frame_tail") or 1)
 
 
 def of_lineage(kernel, name: str) -> list[dict]:
@@ -163,11 +169,31 @@ def convert(hub, *, by: str, frames=None) -> list[dict]:
         frame = store.get(name)
         doc_type, folder = kind_of(frame)
         content = to_docx(frame.body)
+        fields = {"lineage": LINEAGE + name, "sop_name": name, "frame_meta": dict(frame.frontmatter),
+                  "frame_header": "\n".join((frame.text or "").splitlines()[: max(0, frame.body_start - 1)]),
+                  "frame_tail": max(1, len(frame.text) - len(frame.text.rstrip("\n"))),
+                  "revision": "A", "doc_type": doc_type, "frame_mirror": False, "description": frame.description,
+                  "converted_from": {"frame": frame.relpath, "version": frame.version, "release": meta["digest"] if meta else "",
+                                     "approved": "released by the policy owners in that release"}}
+        mirror = next((d for d in hub.kernel.query(type_="document")
+                       if is_frame_doc(d["fields"]) and d["fields"].get("frame_name") == name and d["state"] == "effective"), None)
+        if mirror is not None:
+            # The document that carried this Frame becomes the SOP itself: same number and history, now a .docx source.
+            hub.dms.add_version(mirror["locator"], content, by=by, filename=f"{name}.docx",
+                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                note="the SOP as the document the Frame is compiled from", system=True)
+            if mirror["folder"] != folder:
+                hub.kernel.move(mirror["locator"], folder, by=by, reason="an SOP is a quality document")
+            hub.kernel.set_fields(mirror["locator"], {**fields, "title": title_of(frame), "owner": mirror["fields"].get("owner") or frame.maintainer or by},
+                                  by=by)
+            made.append(hub.kernel.get(mirror["locator"]))
+            continue
         doc = hub.dms.create(title=title_of(frame), doc_class="controlled", folder=folder, by=by, content=content,
                              filename=f"{name}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                              doc_type=doc_type,
                              fields={"lineage": LINEAGE + name, "sop_name": name, "frame_meta": dict(frame.frontmatter),
                                      "frame_header": "\n".join((frame.text or "").splitlines()[: max(0, frame.body_start - 1)]),
+                                     "frame_tail": max(1, len(frame.text) - len(frame.text.rstrip("\n"))),
                                      "revision": "A", "owner": frame.maintainer or by, "description": frame.description,
                                      "review_date": (date.today() + timedelta(days=365)).isoformat(),
                                      "converted_from": {"frame": frame.relpath, "version": frame.version,
@@ -202,7 +228,8 @@ def roundtrip_problems(hub, frames=None) -> list[str]:
         while lines and not lines[-1].strip():
             lines.pop()
         head = "\n".join((frame.text or "").splitlines()[: max(0, frame.body_start - 1)])
-        if head + "\n" + "\n".join(lines) + "\n" != frame.text:
+        tail = max(1, len(frame.text) - len(frame.text.rstrip("\n")))
+        if head + "\n" + "\n".join(lines) + "\n" * tail != frame.text:
             problems.append(name)
     return problems
 

@@ -8,6 +8,7 @@ from urllib.parse import quote
 from datetime import date, timedelta
 
 from .. import authz, wopi
+from ..sopdocs import is_frame_doc
 from .apps import FOLDER_APPS, avatars, plural
 from .charts import day_bars, hbars, last_days, median, per_day, sparkline, stacked_bars
 from .editor import new_document_form
@@ -899,7 +900,7 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
         finished = rec["state"] in self.FINISHED_STATES
         if not live and not finished:
             for name, wf in sorted((bundle.get("workflows") or {}).items()):
-                if wf.get("record_type") != rec["type"] or (rec["fields"].get("doc_type") in ("frame", "frame-draft")):
+                if wf.get("record_type") != rec["type"] or is_frame_doc(rec["fields"]) or rec["fields"].get("doc_type") == "frame-draft":
                     continue
                 op = bundle["ops"].get(name) or {}
                 d = authz.check(bundle, user, "create", op.get("object", rec["type"]), op.get("folder") or rec["folder"])
@@ -978,7 +979,7 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
         immutable = f.get("doc_class") in ("evidence", "external")
         can, why_not = self._may_edit_document(rec)
         meta = [("Title", esc(f.get("title"))), ("Class", esc(f.get("doc_class"))), ("Type", esc(f.get("doc_type"))),
-                ("Revision", esc(f"version {f.get('frame_version')}" if f.get("doc_type") in ("frame", "frame-draft") and f.get("frame_version")
+                ("Revision", esc(f"version {f.get('frame_version')}" if (is_frame_doc(f) or f.get("doc_type") == "frame-draft") and f.get("frame_version")
                                  else f"{f.get('revision', '')}.{f.get('minor', 0)}")), ("State", self._state_chip(rec["state"])),
                 ("Folder", f'<a href="{href("/files", user, folder=rec["folder"])}">{esc(rec["folder"])}</a>'), ("Owner", self._avatar(f["owner"], size="sm", named=True) if f.get("owner") else ""),
                 ("Author", self._avatar(f["author"], size="sm", named=True) if f.get("author") else ""), ("Checked out by", (self._avatar(locked, size="sm", named=True) if locked else "")), ("File", esc(f.get("filename"))), ("Format", esc(f.get("mime"))),

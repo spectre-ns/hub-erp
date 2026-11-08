@@ -54,6 +54,7 @@ def test_a_cog_is_not_routed_work_from_an_sop_it_does_not_follow(released):
 # ------------------------------------------------------------------ the model gateway
 def test_the_gateway_stands_in_without_a_key_and_records_every_call(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("HUBPROTO_HOSTED_MODELS", "on")  # hosted models switched on deliberately (they are off by default)
     g = ModelGateway()
     out = g.complete(model="claude-sonnet-5-5", system="## Scope\n## Checks", user="Review. FINDINGS:\n- [warning] x: y", by="quality-assistant")
     assert out["stand_in"] is True and "Verdict:" in out["text"] and out["prompt_digest"] and g.calls[-1]["by"] == "quality-assistant"

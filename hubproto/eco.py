@@ -128,7 +128,7 @@ def compiled_from(hub, co: dict) -> dict[str, str]:
     return {n: str(d["fields"].get("content_sha") or "") for n, d in sorted(approved_of(hub, co).items())}
 
 
-def stage(hub, co_ref: str, drafts: dict[str, str] | None = None) -> dict:
+def stage(hub, co_ref: str, drafts: dict[str, str] | None = None, extractor=None) -> dict:
     """Compile the Frame the change order's approved revisions make (or the given ``drafts``: {SOP name: locator}),
     against the release in force, and stage it on the change order as its proposal (replacing the one staged before).
     The compile-frame automation does this when a revision is approved."""
@@ -145,7 +145,7 @@ def stage(hub, co_ref: str, drafts: dict[str, str] | None = None) -> dict:
         fields.update({"staged_proposal": None, "staged_number": None, "staged_changes": 0, "staged_widenings": 0})
     else:
         try:
-            p = hub.compile(sop_drafts=drafts, save=True)
+            p = hub.compile(sop_drafts=drafts, save=True, extractor=extractor)
             p["eco"] = co["number"]
             p["source"] = "eco"
             hub.proposals.save(p)

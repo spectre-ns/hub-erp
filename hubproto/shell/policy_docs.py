@@ -14,6 +14,7 @@ import difflib
 import re
 from urllib.parse import quote
 
+from ..sopdocs import is_frame_doc
 from ..compile import CompileError, change_state
 from ..frames import FrameError
 from ..kernel import KernelGuardError
@@ -57,9 +58,9 @@ class PolicyDocsMixin:
         """Buttons for a Frame's document and for a Frame draft, on the document page."""
         user, f, loc = self.user, rec["fields"], rec["locator"]
         out = ""
-        if f.get("doc_type") in ("frame", "frame-draft") and self.hub.sop_source():
+        if (is_frame_doc(f) or f.get("doc_type") == "frame-draft") and self.hub.sop_source():
             return self._frame_derived_html(f.get("frame_name") or "")
-        if f.get("doc_type") == "frame":
+        if is_frame_doc(f) and not f.get("lineage"):
             out += (f'<form method="post" action="/frame-draft" class="inline">{hidden_as(user)}{self._once()}<input type="hidden" name="frame" value="{esc(f.get("frame_name"))}">'
                     f'<button>{icon("edit")}Edit this policy</button></form>'
                     f'<a class="button ghost" href="{href("/frame/" + (f.get("frame_name") or ""), user)}">{icon("book")}Read the Frame with line numbers</a>')
@@ -113,7 +114,7 @@ class PolicyDocsMixin:
         locked = f.get("checked_out_by")
         blocked = (not can and f"you cannot change it: {why}") or (f.get("doc_class") in ("evidence", "external") and "it is kept as received") or \
             (f.get("doc_class") in ("controlled", "template") and rec["state"] not in ("open", "draft", "returned", "failed") and
-             ("it is the policy in force; use Edit this policy to make a draft" if f.get("doc_type") == "frame" else "it is in force; a controlled document changes through a new revision")) or \
+             ("it is the policy in force; use Edit this policy to make a draft" if is_frame_doc(f) and not f.get("lineage") else "it is in force; a controlled document changes through a new revision")) or \
             (locked and locked != user and f"{locked} has it checked out")
         text = self.hub.draft_text(rec) if self.hub.dms.versions(rec["locator"]) else ""
         if self.route == "/text-save" and self.err:

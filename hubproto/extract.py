@@ -95,7 +95,8 @@ _PROCESS_STEP = re.compile(
 _COG_HEAD = re.compile(r"^## Cog: (?P<name>[a-z0-9][\w-]*)$")
 _SCOPE_HEAD = re.compile(r"^## Scope: (?P<name>[a-z0-9][\w-]*)$")
 _PERSONA_HEAD = re.compile(r"^## Persona: (?P<name>[a-z0-9][\w-]*) \((?P<of>cog|role)\)$")
-_SECTION_KEY = re.compile(r"^(?P<key>Level|Layers on|Compiles|Layers|Reads): ?(?P<rest>.*)$")
+_COMMITTEE_HEAD = re.compile(r"^## Committee: (?P<name>[a-z0-9][\w-]*)$")
+_SECTION_KEY = re.compile(r"^(?P<key>Level|Layers on|Compiles|Layers|Reads|Members|Agree): ?(?P<rest>.*)$")
 _LEVELS = ("company", "site", "department", "process")
 _COG_KEY = re.compile(r"^(?P<key>Model|Prompt from|Prompt|Follows|Reviews|References|Autonomy|Duty|Lenses): ?(?P<rest>.*)$")
 _DOC_REF = re.compile(r"\b[A-Z]{2,}-\d[\w-]*\b")
@@ -179,20 +180,22 @@ class ConventionExtractor:
                 out.rules.append(layered)
                 layered = None
 
-        def names(rest: str) -> list[str]:
+        def name_list(rest: str) -> list[str]:
             return [slug(x) for x in re.split(r",| and ", rest.rstrip(".")) if x.strip()]
 
         for n, raw in enumerate(frame.lines, start=frame.body_start):
             line = raw.strip()
             if not line:
                 continue
-            m = _SCOPE_HEAD.match(line) or _PERSONA_HEAD.match(line)
+            m = _SCOPE_HEAD.match(line) or _PERSONA_HEAD.match(line) or _COMMITTEE_HEAD.match(line)
             if m:
                 close_process()
                 close_cog()
                 close_layered()
                 section = "layered"
-                if "of" in m.groupdict():
+                if m.re is _COMMITTEE_HEAD:
+                    layered = {"kind": "committee", "name": m.group("name"), "members": [], "quorum": 0, "source": src(n, line)}
+                elif "of" in m.groupdict():
                     layered = {"kind": "persona", "name": m.group("name"), "of": m.group("of"), "layers": [], "reads": [], "source": src(n, line)}
                 else:
                     layered = {"kind": "scope", "name": m.group("name"), "level": "", "compiles": [], "layers_on": [], "source": src(n, line)}
@@ -204,13 +207,18 @@ class ConventionExtractor:
                     if key == "level":
                         layered["level"] = rest.rstrip(".").lower()
                     elif key == "layers on":
-                        layered["layers_on"] = names(rest)
+                        layered["layers_on"] = name_list(rest)
                     elif key == "compiles":
-                        layered["compiles"] = names(rest)
+                        layered["compiles"] = name_list(rest)
                     elif key == "layers":
-                        layered["layers"] = names(rest)
+                        layered["layers"] = name_list(rest)
                     elif key == "reads":
-                        layered["reads"] = names(rest)
+                        layered["reads"] = name_list(rest)
+                    elif key == "members":
+                        layered["members"] = name_list(rest)
+                    elif key == "agree":
+                        agree = re.match(r"^(\d+)(?: of \d+)?", rest.strip())
+                        layered["quorum"] = int(agree.group(1)) if agree else 0
                 else:
                     out.notes.append({"frame": frame.name, "line": n, "text": line,
                                       "note": "unparsed line in a scope or persona section (Level:, Layers on:, Compiles:, Layers:, Reads:)"})
@@ -503,7 +511,17 @@ class ClaudeExtractor:
         return out
 
 
-def get_extractor():
-    if os.environ.get("HUBPROTO_EXTRACTOR", "convention") == "claude":
+def get_extractor(cache_dir=None, context: dict | None = None, gateway=None, calls: bool = False):
+    """How SOPs are read: "convention" (the sentence shapes only) or "hybrid" (those, then a local model for the prose,
+    behind the guards and approvals; hubproto.llm_extract). Hybrid by default when the hub has an Ollama. ("claude",
+    a hosted model for everything, only when hosted models are switched on.)"""
+    from .model import hosted_allowed, ollama_url
+
+    mode = os.environ.get("HUBPROTO_EXTRACTOR") or ("hybrid" if ollama_url() else "convention")
+    if mode == "claude" and hosted_allowed():
         return ClaudeExtractor()
+    if mode in ("hybrid", "claude"):
+        from .llm_extract import ModelExtractor
+
+        return ModelExtractor(cache_dir=cache_dir, context=context, gateway=gateway, calls=calls)
     return ConventionExtractor()

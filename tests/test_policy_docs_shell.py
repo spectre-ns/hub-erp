@@ -31,7 +31,7 @@ def test_a_policy_change_from_draft_to_release_in_the_shell(pshell):
     hub = pshell["hub"]
     status, text = get(pshell, "/frame-doc/finance-policy", **{"as": "alice"})
     assert status == 200 and "Edit this policy" in text and "Send for approval" not in text, "a Frame changes by release, not by document control"
-    doc = next(d for d in hub.kernel.query(type_="document") if d["fields"].get("frame_name") == "finance-policy" and d["fields"].get("doc_type") == "frame")
+    doc = next(d for d in hub.kernel.query(type_="document") if d["fields"].get("frame_name") == "finance-policy" and d["fields"].get("frame_mirror"))
     status, url, text = post(pshell, "/frame-draft", {"as": "alice", "frame": "finance-policy"})
     assert status == 200 and "/text-edit/" in url and "<textarea" in text and "Save and check the change" in text
     draft = next(d for d in hub.kernel.query(type_="document") if d["fields"].get("doc_type") == "frame-draft")

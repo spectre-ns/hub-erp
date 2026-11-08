@@ -38,6 +38,7 @@ messages, and are bound by segregation of duties.
 - doc-reviewer (cog): reviewer, author
 - quality-assistant (cog): quality-manager, author, reviewer, staff, design-review-committee
 - qa-manager (cog): quality-manager, reviewer, author, staff
+- organization (cog): staff
 
 ## Folders
 - Finance

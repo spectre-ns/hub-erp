@@ -12,7 +12,10 @@ from hubproto.frames import FrameError
 def test_a_frame_draft_is_compiled_reviewed_and_released_into_the_frame(released):
     hub = released
     doc = hub.frame_document("finance-policy")
-    assert doc["fields"]["doc_class"] == "controlled" and doc["state"] == "effective" and doc["folder"] == "Policy/Frames"
+    assert doc["fields"]["doc_class"] == "controlled" and doc["state"] == "effective" and doc["folder"] == "Policy"
+    assert doc["fields"]["doc_type"] == "policy" and doc["fields"]["title"] != "finance-policy (policy Frame)", "filed as the policy it is"
+    sop = hub.frame_document("document-control-sop")
+    assert sop["folder"] == "Quality/Controlled Documents" and sop["fields"]["doc_type"] == "sop", "an SOP is a quality document"
     draft = hub.frame_draft("finance-policy", by="alice")
     assert draft["fields"]["doc_type"] == "frame-draft" and hub.frame_draft("finance-policy", by="alice")["locator"] == draft["locator"]
     text = hub.draft_text(draft).replace("Finance clerks may create bills in Finance/Payables.",

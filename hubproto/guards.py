@@ -347,7 +347,7 @@ def _widens(rule: dict, old_rules) -> bool:
         return rule["effect"] == "allow"
     if kind == "member":
         return True
-    if kind in ("cog", "persona", "scope"):
+    if kind in ("cog", "persona", "scope", "committee"):
         return True  # what a cog or role works from (its model, prompt, persona, the scopes it layers): two policy owners
     if kind == "routing":
         return rule["assignee"].startswith("cog:")
@@ -442,6 +442,14 @@ def scope_guard(rules: list[dict], frame_names: set[str], frame_scopes: dict[str
         for layer in (p.get("layers") or []) + (p.get("reads") or []):
             if layer not in scopes and layer not in frame_names:
                 out.append(Finding("consistency", "error", f"persona {p['name']} layers {layer!r}, which is neither a scope nor a Frame", key, frame, line))
+    for c in (r for r in rules if r["kind"] == "committee"):
+        key, (frame, line) = rule_key(c), _where(c)
+        for m in c.get("members") or []:
+            if m not in cogs:
+                out.append(Finding("consistency", "error", f"committee {c['name']}: {m} is not a cog of the organization", key, frame, line))
+        if not 1 <= int(c.get("quorum") or 0) <= len(c.get("members") or []):
+            out.append(Finding("consistency", "error", f"committee {c['name']}: say how many of its {len(c.get('members') or [])} members must agree (Agree: n)",
+                               key, frame, line))
     cog_personas = {p["name"] for p in personas if p.get("of") == "cog"}
     for r in rules:
         if r["kind"] == "cog" and r["name"] in cog_personas and r.get("follows"):
