@@ -484,14 +484,14 @@ def test_start_forms_mark_required_fields_use_pickers_and_refuse_before_any_reco
     assert len(hub.kernel.query(type_="bill")) == before, "no record is created for a refused Start"
     status, url, text = post(shell, "/start", {"as": "alice", "process": "purchase-to-pay", "supplier": "acme-metals", "amount": "-5", "currency": "USD", "date": "06/11/2026"})
     assert status == 400 and ("cannot be negative" in text or "YYYY-MM-DD" in text) and len(hub.kernel.query(type_="bill")) == before
-    assert '<select name="item" required>' in entry(text, "purchase-request")
+    assert '<select name="part" required>' in entry(text, "purchase-request")
     task = entry(text, "task")
     assert '<select name="assignee"' in task and '<option value="">choose…</option>' in task
     assert ">Report a nonconformance</button>" in entry(text, "nonconformance")
     status, text, _ = get(shell, "/", **{"as": "dave"})
     receipt = entry(text, "goods-receipt")
     assert '<select name="po" required>' in receipt and "PO-1001" not in receipt, "a receipt names a purchase-order record, not a finance PO"
-    assert "Lines received" in receipt and "(one per line: item number, quantity)" in receipt
+    assert "Lines received" in receipt and "(one per line: part number, quantity, batch if it has one)" in receipt
 
 
 def test_message_form_needs_a_body_defaults_to_a_person_and_shows_what_was_sent(shell):
@@ -578,7 +578,7 @@ def test_one_name_per_thing_numbers_not_locators_money_and_dates_in_words(shell)
     assert "policy version 1 (" in text and hub.releases.current()["digest"][:16] not in plain(main_of(text))
     status, text, _ = get(shell, "/why", **{"as": "dave", "action": "create", "object": "capa", "folder": "Quality/CAPA"})
     body = plain(main_of(text))
-    assert "Who may:" in body and "you are: buyer, payables reviewer and staff" in body and "ask: bob or carol" in body
+    assert "Who may:" in body and "you are: buyer, payables reviewer, staff and storekeeper" in body and "ask: bob or carol" in body
     assert "['buyer'" not in body and "no rule in the release" not in body
     status, text, _ = get(shell, "/", **{"as": "dave"})
     assert "['buyer'" not in text
@@ -694,9 +694,10 @@ def test_release_page_shows_the_sentence_diff_and_decisions(shell):
 def test_escalated_cards_quote_the_escalation_and_the_original_route(shell):
     """approver-6, first-time-user-12, visual-18. Runs last: the tick escalates every overdue item in this hub."""
     hub = shell["hub"]
-    item = hub.kernel.create("item", "Inventory/Items", {"name": "[ux] 10k resistor", "mpn": "RC0603FR-0710KL", "manufacturer": "Yageo", "stock": 0,
-                                                          "supplier": "acme-metals", "unit_cost": 0.1}, by="alice")
-    status, url, text = post(shell, "/start", {"as": "alice", "process": "purchase-request", "title": "[ux] resistors for line 2", "item": item["locator"],
+    from conftest import make_part
+
+    item = make_part(hub.kernel, "RC0603FR-0710KL", title="[ux] 10k resistor", manufacturer="Yageo", unit_cost=0.1)
+    status, url, text = post(shell, "/start", {"as": "alice", "process": "purchase-request", "title": "[ux] resistors for line 2", "part": item["locator"],
                                                "quantity": "20000", "reason": "line 2 rework", "supplier": "acme-metals"})
     run_id = run_of(url)
     state = hub.runner.load(run_id)

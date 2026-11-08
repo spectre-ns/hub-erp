@@ -172,7 +172,9 @@
    "disposition_rationale": "text",
    "risk": "text",
    "reported_by": "principal",
-   "capa": "ref"
+   "capa": "ref",
+   "stock_items": "list",
+   "quarantined": "list"
   },
   "required_by_state": {
    "awaiting-disposition-the-nonconformance": [
@@ -191,8 +193,10 @@
   },
   "system_fields": [
    "capa",
-   "risk",
    "conditions",
+   "disposition_applied",
+   "quarantined",
+   "risk",
    "severity"
   ],
   "decision_fields": [
@@ -546,7 +550,9 @@
    "lead_time_days",
    "approved_manufacturer",
    "manufacturer"
-  ]
+  ],
+  "archived": true,
+  "description": "Archived: replaced by parts, supplier parts and stock items (lots)."
  },
  "part": {
   "prefix": "PN",
@@ -560,19 +566,56 @@
    "released_by": "principal",
    "material": "text",
    "mass_g": "number",
-   "classification": "text"
+   "classification": "text",
+   "ipn": "text",
+   "description": "text",
+   "category": "ref",
+   "units": "text",
+   "purchaseable": "bool",
+   "assembly": "bool",
+   "component": "bool",
+   "trackable": "enum:none,lot,serial",
+   "active": "bool",
+   "default_location": "ref",
+   "minimum_stock": "number",
+   "parameters": "object",
+   "keywords": "text",
+   "footprint": "text",
+   "notes": "text",
+   "requested_by": "principal"
   },
   "required_by_state": {
+   "awaiting-approve-the-part": [
+    "title",
+    "units"
+   ],
+   "active": [
+    "title"
+   ],
    "released": [
     "title",
     "revision"
    ]
   },
   "defaults": {
-   "revision": "A"
+   "revision": "A",
+   "units": "ea",
+   "purchaseable": true,
+   "trackable": "none",
+   "active": true,
+   "requested_by": "$owner"
   },
   "retention": "quality",
-  "sensitivity": "internal"
+  "sensitivity": "internal",
+  "decision_fields": [
+   "title",
+   "category",
+   "units",
+   "trackable",
+   "purchaseable",
+   "minimum_stock"
+  ],
+  "folder_hint": "Inventory/Parts"
  },
  "design": {
   "prefix": "DSN",
@@ -632,7 +675,7 @@
    "requirements",
    "requirement_trace",
    "requirements_accepted",
-   "items_created",
+   "parts_created",
    "purchase_requests",
    "attachments_filed"
   ],
@@ -648,7 +691,6 @@
   "object": "purchase-request",
   "fields": {
    "title": "text",
-   "item": "ref",
    "mpn": "text",
    "manufacturer": "text",
    "quantity": "number",
@@ -664,11 +706,13 @@
    "requested_by": "principal",
    "risk": "text",
    "conditions": "object",
-   "po": "ref"
+   "po": "ref",
+   "part": "ref",
+   "supplier_part": "ref"
   },
   "required_by_state": {
    "awaiting-approve-the-purchase": [
-    "item",
+    "part",
     "quantity"
    ],
    "ordered": [
@@ -692,6 +736,7 @@
   ],
   "decision_fields": [
    "supplier",
+   "supplier_part",
    "unit_cost",
    "needed_by",
    "reason"
@@ -728,10 +773,11 @@
   "object": "receipt",
   "fields": {
    "po": "ref",
+   "location": "ref",
    "lines": "list",
    "received_by": "principal",
    "received": "date",
-   "location": "text",
+   "packing_slip": "text",
    "notes": "text"
   },
   "required_by_state": {
@@ -741,24 +787,28 @@
    ],
    "received": [
     "po",
-    "lines"
+    "lines",
+    "location"
    ]
   },
   "defaults": {
    "received_by": "$owner",
-   "received": "$today",
-   "location": "MAIN"
+   "received": "$today"
   },
   "retention": "financial-reporting",
   "sensitivity": "internal",
   "system_fields": [
    "po_number",
    "supplier",
-   "booked"
+   "booked",
+   "lots",
+   "outstanding_after",
+   "completes_order"
   ],
   "decision_fields": [
    "notes",
-   "lines"
+   "lines",
+   "location"
   ]
  },
  "requirement": {
@@ -900,5 +950,226 @@
    "description",
    "implements"
   ]
+ },
+ "manufacturer-part": {
+  "prefix": "MP",
+  "digits": 5,
+  "yearly": false,
+  "object": "manufacturer-part",
+  "fields": {
+   "part": "ref",
+   "manufacturer": "text",
+   "mpn": "text",
+   "approved": "bool",
+   "description": "text",
+   "datasheet": "text"
+  },
+  "required_by_state": {},
+  "defaults": {
+   "approved": true
+  },
+  "retention": "quality",
+  "sensitivity": "internal"
+ },
+ "supplier-part": {
+  "prefix": "SP",
+  "digits": 5,
+  "yearly": false,
+  "object": "supplier-part",
+  "fields": {
+   "part": "ref",
+   "manufacturer_part": "ref",
+   "supplier": "ref",
+   "sku": "text",
+   "pack_quantity": "number",
+   "price_breaks": "list",
+   "currency": "text",
+   "lead_time_days": "int",
+   "primary": "bool",
+   "active": "bool",
+   "notes": "text"
+  },
+  "required_by_state": {},
+  "defaults": {
+   "pack_quantity": 1,
+   "currency": "USD",
+   "active": true
+  },
+  "retention": "financial-reporting",
+  "sensitivity": "internal"
+ },
+ "part-category": {
+  "prefix": "CAT",
+  "digits": 4,
+  "yearly": false,
+  "object": "part-category",
+  "fields": {
+   "name": "text",
+   "parent": "ref",
+   "structural": "bool",
+   "default_location": "ref",
+   "description": "text"
+  },
+  "required_by_state": {},
+  "defaults": {
+   "structural": false
+  },
+  "retention": "standard",
+  "sensitivity": "internal"
+ },
+ "stock-location": {
+  "prefix": "LOC",
+  "digits": 4,
+  "yearly": false,
+  "object": "stock-location",
+  "fields": {
+   "name": "text",
+   "parent": "ref",
+   "kind": "enum:store,receiving,inspection,quarantine,mrb,scrap,production,transit",
+   "structural": "bool",
+   "site": "text",
+   "description": "text"
+  },
+  "required_by_state": {},
+  "defaults": {
+   "structural": false,
+   "kind": "store"
+  },
+  "retention": "standard",
+  "sensitivity": "internal"
+ },
+ "stock-item": {
+  "prefix": "LOT",
+  "digits": 6,
+  "yearly": false,
+  "object": "stock-item",
+  "fields": {
+   "part": "ref",
+   "batch": "text",
+   "serial": "text",
+   "quantity": "number",
+   "location": "ref",
+   "status": "enum:OK,ATTENTION,DAMAGED,DESTROYED,REJECTED,LOST,QUARANTINED,RETURNED",
+   "expiry": "date",
+   "unit_cost": "money",
+   "currency": "text",
+   "supplier_part": "ref",
+   "receipt": "ref",
+   "po": "ref",
+   "ncr": "ref",
+   "parent": "ref",
+   "quarantined_from": "ref",
+   "notes": "text"
+  },
+  "required_by_state": {
+   "in-stock": [
+    "part",
+    "location"
+   ]
+  },
+  "system_fields": [
+   "quantity",
+   "location",
+   "status",
+   "parent",
+   "quarantined_from",
+   "ncr",
+   "receipt",
+   "po",
+   "supplier_part",
+   "unit_cost",
+   "currency"
+  ],
+  "retention": "quality",
+  "sensitivity": "internal"
+ },
+ "stock-adjustment": {
+  "prefix": "ADJ",
+  "digits": 5,
+  "yearly": false,
+  "object": "stock-adjustment",
+  "fields": {
+   "lot": "ref",
+   "new_quantity": "number",
+   "reason": "text",
+   "requested_by": "principal",
+   "part": "ref",
+   "quantity_before": "number",
+      "baseline": "number",
+      "cumulative_pct": "number",
+   "variance_pct": "number",
+   "amount": "money",
+   "currency": "text",
+   "ordered_by": "principal",
+   "risk": "text",
+   "conditions": "object",
+   "applied": "bool"
+  },
+  "required_by_state": {
+   "awaiting-approve-the-stock-adjustment": [
+    "lot",
+    "new_quantity",
+    "reason"
+   ]
+  },
+  "defaults": {
+   "requested_by": "$owner",
+   "currency": "USD"
+  },
+  "system_fields": [
+   "part",
+   "quantity_before", "baseline", "cumulative_pct",
+   "variance",
+   "variance_pct",
+   "amount",
+   "ordered_by",
+   "risk",
+   "conditions",
+   "applied"
+  ],
+  "decision_fields": [
+   "reason"
+  ],
+  "retention": "financial-reporting",
+  "sensitivity": "internal"
+ },
+ "stock-release": {
+  "prefix": "REL",
+  "digits": 5,
+  "yearly": false,
+  "object": "stock-release",
+  "fields": {
+   "lot": "ref",
+   "to_location": "ref",
+   "reason": "text",
+   "requested_by": "principal",
+   "part": "ref",
+   "ncr": "ref",
+   "risk": "text",
+   "conditions": "object",
+   "released": "bool"
+  },
+  "required_by_state": {
+   "awaiting-approve-the-stock-release": [
+    "lot",
+    "reason"
+   ]
+  },
+  "defaults": {
+   "requested_by": "$owner"
+  },
+  "system_fields": [
+   "part",
+   "ncr",
+   "risk",
+   "conditions",
+   "released"
+  ],
+  "decision_fields": [
+   "reason",
+   "to_location"
+  ],
+  "retention": "quality",
+  "sensitivity": "internal"
  }
 }

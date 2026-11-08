@@ -38,9 +38,10 @@ def test_a_change_to_the_record_after_the_card_was_rendered_is_refused(released)
 
 def test_a_signer_never_rewrites_what_a_person_declared_but_may_correct_a_cog_draft(released):
     k = released.kernel
-    item = k.create("item", "Inventory/Items", {"name": "fixture", "mpn": "F-1", "manufacturer": "Acme", "stock": 0,
-                                                "supplier": "acme-metals", "unit_cost": 3000.0}, by="alice")
-    run_id = released.runner.submit("purchase-request", {"record": {"title": "fixtures", "item": item["locator"], "quantity": 4,
+    from conftest import make_part
+
+    item = make_part(k, "F-1", title="fixture", unit_cost=3000.0)
+    run_id = released.runner.submit("purchase-request", {"record": {"title": "fixtures", "part": item["locator"], "quantity": 4,
                                                                     "reason": "tooling for line 2"}}, owner="alice")
     state = released.runner.load(run_id)
     assert state["pending"]["assignees"] == ["bob"] and k.get(state["record"])["fields"]["amount"] == 12000.0

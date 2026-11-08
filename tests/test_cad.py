@@ -130,7 +130,10 @@ def _design_input(schematic: str = SCHEMATIC) -> dict:
 def test_design_release_end_to_end(hub, fake_worker):
     release_all(hub)
     k = hub.kernel
-    k.create("item", "Inventory/Items", {"name": "10k 0603", "mpn": "RC0603FR-0710KL", "manufacturer": "Yageo", "stock": 1}, by="alice")
+    from hubproto import inventory
+
+    resistor = inventory.create_part(k, title="10k 0603", mpn="RC0603FR-0710KL", manufacturer="Yageo", by="alice")
+    inventory.receive(k, part=resistor, quantity=1, location=inventory.location_of_kind(k, "MAIN", "store")["locator"], by="alice")
     run_id = hub.runner.submit("design-release", _design_input(), owner="alice")
     state = hub.runner.load(run_id)
     assert state["status"] == "waiting", [e for e in hub.runner.track(run_id) if e["type"] in ("run.failed", "step.result")]
@@ -143,7 +146,7 @@ def test_design_release_end_to_end(hub, fake_worker):
     f = design["fields"]
     assert [l["value"] for l in f["bom_resolved"]] == ["10k"] and f["bom_resolved"][0]["short"] == 1
     unresolved = {l["value"]: l for l in f["bom_unresolved"]}
-    assert set(unresolved) == {"100n", "Bracket"}, "the capacitor and the FreeCAD bracket are unknown items"
+    assert set(unresolved) == {"100n", "Bracket"}, "the capacitor and the FreeCAD bracket are unknown parts"
     assert unresolved["100n"]["proposal"]["fields"]["mpn"] == "CL10B104KB8NNNC" and unresolved["Bracket"]["mpn"] == "PN-BRK-01"
     assert f["checks"]["erc"] == {"ran": True, "errors": 0, "warnings": 0}
     assert f["parts"][0]["part_number"] == "PN-BRK-01"
@@ -162,7 +165,7 @@ def test_design_release_end_to_end(hub, fake_worker):
     assert part["type"] == "part" and part["state"] == "released" and part["fields"]["revision"] == "A"
     labels = {(l["rel"], l["target"]) for l in part["links"]}
     assert ("defined-by", design["locator"]) in labels
-    assert any(rel == "realized-by" and k.get(tgt)["type"] == "item" for rel, tgt in labels)
+    assert ("realized-by", resistor["locator"]) in labels, "the assembly is made of its BOM's parts"
     snapshot = [d for d in hub.dms.documents_of(design["locator"]) if d["fields"]["doc_type"] == "snapshot"]
     assert snapshot and b"design package reviewed" in hub.dms.content(snapshot[-1]["locator"])[0]
 

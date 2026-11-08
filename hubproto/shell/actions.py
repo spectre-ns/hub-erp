@@ -64,7 +64,7 @@ class ActionsMixin:
                 raise ShellError(f"'{k}' must be a single value in the JSON, not a list or an object.", field="json")
             record[k] = v
         for k, v in self.form.items():
-            if k in RESERVED_KEYS or not v.strip():
+            if (k in RESERVED_KEYS and k not in declared) or not v.strip():  # a start input may be named like a form key (reason)
                 continue
             if k in declared:
                 kind, spec = declared[k]

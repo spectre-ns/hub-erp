@@ -13,15 +13,16 @@ from hubproto.runner import RunError
 
 
 def _item(k, mpn, supplier="acme-metals", unit_cost=0.5, stock=0, manufacturer="Acme"):
-    return k.create("item", "Inventory/Items", {"name": mpn, "mpn": mpn, "manufacturer": manufacturer, "stock": stock,
-                                                "supplier": supplier, "unit_cost": unit_cost, "currency": "USD"}, by="alice")
+    from conftest import make_part
+
+    return make_part(k, mpn, supplier=supplier, unit_cost=unit_cost, stock=stock, manufacturer=manufacturer)
 
 
 # ---------------------------------------------------------------- inventory / accounting / code review: zero-cost orders
 def test_cog_never_orders_without_a_price_and_buyer_price_reaches_the_po(released):
     k = released.kernel
     item = _item(k, "R-1", unit_cost=None)
-    run_id = released.runner.submit("purchase-request", {"record": {"title": "resistors", "item": item["locator"], "quantity": 1000000}}, owner="alice")
+    run_id = released.runner.submit("purchase-request", {"record": {"title": "resistors", "part": item["locator"], "quantity": 1000000}}, owner="alice")
     state = released.runner.load(run_id)
     assert state["status"] == "waiting", "no price: the cog must not approve, the buyer decides"
     review = next(e for e in released.runner.track(run_id) if e["type"] == "gate.cog_review")
@@ -38,7 +39,7 @@ def test_cog_never_orders_without_a_price_and_buyer_price_reaches_the_po(release
 def test_buyer_cannot_issue_a_po_to_an_unapproved_supplier(released):
     k = released.kernel
     item = _item(k, "T-9", supplier=None, unit_cost=10.0)
-    run_id = released.runner.submit("purchase-request", {"record": {"title": "tools", "item": item["locator"], "quantity": 2}}, owner="alice")
+    run_id = released.runner.submit("purchase-request", {"record": {"title": "tools", "part": item["locator"], "quantity": 2}}, owner="alice")
     state = released.runner.decide(run_id, "dave", "approve", meaning="use NewCo", fields={"supplier": "newco-tools"}, payload_digest=seen(released.runner, run_id))
     assert state["status"] == "failed"
     failed = next(e for e in released.runner.track(run_id) if e["type"] == "run.failed")
@@ -52,7 +53,7 @@ def test_negative_quantities_are_refused(released):
     k = released.kernel
     item = _item(k, "N-1", unit_cost=1.0)
     with pytest.raises(RunError, match="cannot be negative"):  # refused before any record exists
-        released.runner.submit("purchase-request", {"record": {"title": "neg", "item": item["locator"], "quantity": -5}}, owner="alice")
+        released.runner.submit("purchase-request", {"record": {"title": "neg", "part": item["locator"], "quantity": -5}}, owner="alice")
     assert not [r for r in released.kernel.query(type_="purchase-request") if r["fields"].get("title") == "neg"]
 
 
@@ -106,35 +107,37 @@ def test_journal_reversal_is_a_gated_mirror_posting(released):
 def test_partial_and_over_receipts(released):
     k = released.kernel
     item = _item(k, "P-1", unit_cost=2.0)
-    pr = released.runner.submit("purchase-request", {"record": {"title": "ten", "item": item["locator"], "quantity": 10}}, owner="alice")
+    pr = released.runner.submit("purchase-request", {"record": {"title": "ten", "part": item["locator"], "quantity": 10}}, owner="alice")
     po = k.get(k.get(released.runner.load(pr)["record"])["fields"]["po"])
-    own = released.runner.submit("goods-receipt", {"record": {"po": po["locator"], "lines": [{"item": item["locator"], "quantity": 1}]}}, owner="dave")
+    own = released.runner.submit("goods-receipt", {"record": {"po": po["locator"], "lines": [{"part": item["locator"], "quantity": 1}]}}, owner="dave")
     assert released.runner.load(own)["status"] == "failed", "the only buyer recorded it himself: segregation of duties leaves no approver"
-    gr1 = released.runner.submit("goods-receipt", {"record": {"po": po["locator"], "lines": [{"item": item["locator"], "quantity": 4}]}}, owner="alice")
+    gr1 = released.runner.submit("goods-receipt", {"record": {"po": po["locator"], "lines": [{"part": item["locator"], "quantity": 4}]}}, owner="alice")
     with pytest.raises(RunError, match="not an assignee"):
         released.runner.decide(gr1, "alice", "approve", meaning="ok", payload_digest=seen(released.runner, gr1))
     released.runner.decide(gr1, "dave", "approve", meaning="4 received", payload_digest=seen(released.runner, gr1))
-    assert k.get(item["locator"])["fields"]["stock"] == 4
+    from hubproto import inventory
+
+    assert inventory.available(k, item) == 4
     assert k.get(po["locator"])["state"] == "issued", "a partial receipt leaves the order open"
     assert k.purchase_orders()[f"po:{po['number']}"]["received"] is False
-    gr2 = released.runner.submit("goods-receipt", {"record": {"po": po["locator"], "lines": [{"item": item["locator"], "quantity": 7}]}}, owner="alice")
+    gr2 = released.runner.submit("goods-receipt", {"record": {"po": po["locator"], "lines": [{"part": item["locator"], "quantity": 7}]}}, owner="alice")
     assert released.runner.load(gr2)["status"] == "failed", "7 exceeds the 6 outstanding"
-    gr3 = released.runner.submit("goods-receipt", {"record": {"po": po["locator"], "lines": [{"item": item["locator"], "quantity": -2}]}}, owner="alice")
+    gr3 = released.runner.submit("goods-receipt", {"record": {"po": po["locator"], "lines": [{"part": item["locator"], "quantity": -2}]}}, owner="alice")
     assert released.runner.load(gr3)["status"] == "failed"
-    gr4 = released.runner.submit("goods-receipt", {"record": {"po": po["locator"], "lines": [{"item": item["locator"], "quantity": 6}]}}, owner="alice")
+    gr4 = released.runner.submit("goods-receipt", {"record": {"po": po["locator"], "lines": [{"part": item["locator"], "quantity": 6}]}}, owner="alice")
     released.runner.decide(gr4, "dave", "approve", meaning="rest received", payload_digest=seen(released.runner, gr4))
-    assert k.get(item["locator"])["fields"]["stock"] == 10 and k.get(po["locator"])["state"] == "received"
-    gr5 = released.runner.submit("goods-receipt", {"record": {"po": po["locator"], "lines": [{"item": item["locator"], "quantity": 1}]}}, owner="alice")
+    assert inventory.available(k, item) == 10 and k.get(po["locator"])["state"] == "received"
+    gr5 = released.runner.submit("goods-receipt", {"record": {"po": po["locator"], "lines": [{"part": item["locator"], "quantity": 1}]}}, owner="alice")
     assert released.runner.load(gr5)["status"] == "failed", "nothing outstanding"
 
 
-def test_people_can_create_items_through_a_process(released):
-    run_id = released.runner.submit("item-request", {"record": {"name": "M3 bolt", "mpn": "DIN933-M3"}}, owner="alice")
+def test_people_can_create_parts_through_a_process(released):
+    run_id = released.runner.submit("part-request", {"record": {"title": "M3 bolt", "units": "ea"}}, owner="alice")
     state = released.runner.load(run_id)
     assert state["status"] == "waiting" and state["pending"]["assignees"] == ["dave"]
-    released.runner.decide(run_id, "dave", "approve", meaning="item approved", fields={"supplier": "acme-metals", "unit_cost": 0.1}, payload_digest=seen(released.runner, run_id))
-    item = released.kernel.get(state["record"])
-    assert item["state"] == "active" and item["fields"]["supplier"] == "acme-metals"
+    released.runner.decide(run_id, "dave", "approve", meaning="part approved", fields={"minimum_stock": 100}, payload_digest=seen(released.runner, run_id))
+    part = released.kernel.get(state["record"])
+    assert part["state"] == "active" and part["fields"]["minimum_stock"] == 100 and part["folder"] == "Inventory/Parts"
 
 
 # ---------------------------------------------------------------- workflow controls

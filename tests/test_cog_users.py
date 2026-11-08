@@ -66,9 +66,10 @@ def test_service_mode_leaves_the_item_waiting_for_the_cog_until_it_works(release
 def test_a_cog_may_not_take_an_item_when_the_next_state_needs_a_person(released):
     # The purchasing cog's criteria hold, but the next state needs a human-supplied field: it declines.
     k = released.kernel
-    item = k.create("item", "Inventory/Items", {"name": "washer", "mpn": "W-1", "manufacturer": "Acme", "stock": 0,
-                                                "supplier": "acme-metals", "unit_cost": 0.1}, by="alice")
-    run_id = released.runner.submit("purchase-request", {"record": {"title": "washers", "item": item["locator"], "quantity": 10}}, owner="alice")
+    from conftest import make_part
+
+    item = make_part(k, "W-1", title="washer", unit_cost=0.1)
+    run_id = released.runner.submit("purchase-request", {"record": {"title": "washers", "part": item["locator"], "quantity": 10}}, owner="alice")
     state = released.runner.load(run_id)
     decided = [e for e in released.runner.track(run_id) if e["type"] == "gate.decided"]
     assert decided and decided[0]["by"] == "purchasing-assistant" and decided[0]["by_type"] == "cog"

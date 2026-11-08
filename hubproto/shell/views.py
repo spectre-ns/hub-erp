@@ -68,6 +68,16 @@ def fact_of(rec: dict, supplier_name=None) -> str:
         return f"severity {f['severity']}"
     if t in ("receipt", "purchase-request", "item") and f.get("quantity") is not None:
         return qty(f.get("quantity"), f.get("unit"))
+    if t == "stock-item":
+        return " · ".join(x for x in (qty(f.get("quantity")), str(f.get("status") or ""), f"batch {f['batch']}" if f.get("batch") else "",
+                                      f"SN {f['serial']}" if f.get("serial") else "") if x)
+    if t == "part":
+        return " · ".join(x for x in (f"rev {f['revision']}" if f.get("revision") else "", f.get("ipn") or "", f"min {qty(f['minimum_stock'], f.get('units'))}"
+                                      if f.get("minimum_stock") else "") if x)
+    if t == "stock-location":
+        return str(f.get("kind") or "") + (" · structural" if f.get("structural") else "")
+    if t == "supplier-part" and f.get("sku"):
+        return f"SKU {f['sku']}" + (f" · pack of {qty(f['pack_quantity'])}" if f.get("pack_quantity") not in (None, 1, 1.0) else "")
     if t == "document":
         return f"rev {f.get('revision', '')}.{f.get('minor', 0)}" + (f" · {f['doc_class']}" if f.get("doc_class") else "")
     if t == "design" and f.get("change_class"):

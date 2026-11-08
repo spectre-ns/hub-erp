@@ -18,5 +18,9 @@
  "defined-by": "defines",
  "produces": "produced-by",
  "carries": "carried-by",
- "implements": "implemented-by"
+ "implements": "implemented-by",
+ "split-from": "split-into",
+ "merged-into": "merged-from",
+ "quarantined-by": "quarantines",
+ "received-in": "received-as"
 }

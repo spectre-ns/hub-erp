@@ -481,7 +481,11 @@ def cmd_init(args) -> int:
         (root / "frames").mkdir(parents=True, exist_ok=True)
         hub = Hub(root)
     if hub.kernel.events(prefix="supplier:"):
-        print(f"kernel already seeded at {hub.kernel.path}; nothing to do")
+        # Every start runs this (docker/entrypoint.sh): a hub seeded before inventory existed gets the sample stock
+        # locations and part categories once; anything already there is left alone.
+        had = bool(hub.kernel.query(type_="stock-location"))
+        hub.kernel.seed()
+        print(f"kernel already seeded at {hub.kernel.path}; " + ("nothing to do" if had else "added the sample stock locations and part categories"))
         return 0
     hub.kernel.seed()
     print(f"kernel seeded at {hub.kernel.path}")
@@ -1269,7 +1273,7 @@ def cmd_restore(args) -> int:
 # ------------------------------------------------------------------ parser
 EPILOG = """\
 the policy path, in the order an operator uses it:
-  init           create the hub's state under --root (once)
+  init           create the hub's state under --root; on an existing hub, add what it lacks
   seed           copy a seed profile's Frames in (iso9001)
   compile        read the Frames into a proposal; error findings block release
   proposals      what is waiting for a policy owner; proposal <id> shows one
@@ -1306,7 +1310,8 @@ def build_parser() -> argparse.ArgumentParser:
     AS = dict(dest="as_user", required=True, metavar="PERSON")
 
     # --- policy -----------------------------------------------------------
-    sub.add_parser("init", help="create the hub's state (kernel, suppliers, purchase orders, periods) under --root").set_defaults(fn=cmd_init)
+    sub.add_parser("init", help="create the hub's state (kernel, suppliers, purchase orders, periods, stock locations) under --root; "
+                                "on an existing hub, add only what it lacks (stock locations, part categories)").set_defaults(fn=cmd_init)
     from . import profile
 
     profile.register(sub)  # seed, conformance

@@ -760,6 +760,7 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
         body += self._run_cards(rec, run)
         if rec["type"] == "change-order":
             body += self._eco_panel(rec)
+        body += self._inventory_panel(rec)  # stock, suppliers and the stock actions (inventory_ui)
         tabs = [("details", "Details", "form"), ("documents", "Documents", "paperclip"), ("links", "Links", "link")] + \
                ([("reviews", "Reviews", "eye")] if reviews else []) + [("history", "History", "activity"), ("workflow", "Workflow and decisions", "workflow")]
         body += '<nav class="tabs" role="tablist" aria-label="Sections">' + "".join(

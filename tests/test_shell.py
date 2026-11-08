@@ -429,7 +429,9 @@ def test_list_fields_on_a_decision_take_json(shell):
 
     assert coerce("findings", "list", '[{"clause": "7.5.3", "severity": "major"}]') == [{"clause": "7.5.3", "severity": "major"}]
     assert coerce("actions", "list", "fix the jig, retrain") == ["fix the jig", "retrain"]
-    assert coerce("lines", None, "rec:item:ITEM-00001,4\n", "lines:locator,qty") == [{"item": "rec:item:ITEM-00001", "quantity": 4.0}]
+    assert coerce("lines", None, "rec:part:PN-00001,4\n", "lines:locator,qty") == [{"part": "rec:part:PN-00001", "quantity": 4.0}]
+    assert coerce("lines", None, "PN-00001, 4, B-24", "lines:locator,qty") == [{"part": "PN-00001", "quantity": 4.0, "batch": "B-24"}]
+    assert coerce("stock_items", None, "LOT-000001, 2", "lines:lot,qty") == [{"lot": "LOT-000001", "quantity": 2.0}]
     with pytest.raises(Exception, match="must be one of"):
         coerce("priority", "enum:low,medium,high", "normal")
 

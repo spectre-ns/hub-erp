@@ -3,7 +3,7 @@ type: frame [0.2]
 name: scopes
 description: "The scoping Frames: which SOP and policy Frames each scope compiles, at which level, and what it layers on. Personas layer these."
 visibility: internal
-version: "1.0.0"
+version: "1.1.0"
 scope: company
 maintainer: carol
 inherits: org-model
@@ -39,6 +39,11 @@ Compiles: finance-policy
 Level: department
 Layers on: company
 Compiles: purchasing-policy, supplier-sop
+
+## Scope: inventory
+Level: department
+Layers on: company
+Compiles: inventory-policy
 
 ## Scope: engineering
 Level: department

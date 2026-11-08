@@ -18,21 +18,24 @@ CURRENCIES = ("USD", "EUR", "GBP", "CAD")
 DOC_TYPES = {".kicad_sch": "schematic", ".kicad_pcb": "board", ".fcstd": "model", ".pdf": "drawing"}
 
 # Start-form inputs per record type: (field, widget kind, type spec override). The widget kind is None (from the
-# field's type spec), "textarea", "lines" (one list element per line) or "lines:locator,qty" (one {item, quantity}
+# field's type spec), "textarea", "lines" (one list element per line), "lines:locator,qty" (one {part, quantity[, batch]}
+# per line) or "lines:lot,qty" (one {lot, quantity}
 # per line). Anything else goes in the advanced JSON box.
 START_INPUTS: dict[str, list[tuple]] = {
     "bill": [("supplier",), ("amount",), ("currency",), ("date",), ("po_ref",), ("description", "textarea")],
     "design": [("title",), ("description", "textarea"), ("kind",), ("change_class",), ("user_needs", "lines")],
-    "purchase-request": [("title",), ("item",), ("mpn",), ("quantity",), ("unit_cost",), ("supplier",), ("needed_by",), ("reason", "textarea")],
-    "receipt": [("po",), ("lines", "lines:locator,qty"), ("location",), ("notes", "textarea")],
-    "ncr": [("title",), ("description", "textarea"), ("severity", None, "enum:low,medium,high"), ("source",), ("lot",), ("quantity",),
+    "purchase-request": [("title",), ("part",), ("supplier_part",), ("quantity",), ("unit_cost",), ("supplier",), ("needed_by",), ("reason", "textarea")],
+    "receipt": [("po",), ("location",), ("lines", "lines:locator,qty"), ("packing_slip",), ("notes", "textarea")],
+    "ncr": [("title",), ("description", "textarea"), ("severity", None, "enum:low,medium,high"), ("source",), ("stock_items", "lines:lot,qty"),
             ("containment", "textarea")],
     "calibration": [("asset",), ("result",), ("standard",), ("procedure",)],
     "document": [("title",), ("doc_type",), ("change_type",), ("training_roles",), ("body", "textarea")],
     "task": [("title",), ("description", "textarea"), ("assignee",), ("due",), ("priority",)],
     "requirement": [("statement", "textarea"), ("kind",), ("source",), ("priority",)],
     "journal-reversal": [("journal",), ("reason", "textarea")],
-    "item": [("name",), ("mpn",), ("manufacturer",), ("supplier",), ("unit_cost",), ("currency",), ("stock",), ("lead_time_days",)],
+    "part": [("title",), ("category",), ("units",), ("trackable",), ("purchaseable",), ("minimum_stock",), ("description", "textarea")],
+    "stock-adjustment": [("lot",), ("new_quantity",), ("reason", "textarea")],
+    "stock-release": [("lot",), ("to_location",), ("reason", "textarea")],
     "capa": [("title",), ("ncrs",), ("root_cause_method",)],
     "complaint": [("title",), ("customer",), ("description", "textarea"), ("product",), ("severity",)],
     "change-request": [("title",), ("description", "textarea"), ("impact", "textarea"), ("affected_documents",)],
@@ -47,7 +50,8 @@ REQUIRED_EXTRA = {"bill": ["supplier", "amount", "currency", "date"], "purchase-
                   "ncr": ["title", "description"], "design": ["title", "kind"], "requirement": ["statement"], "document": ["title"],
                   "receipt": ["po", "lines"], "complaint": ["title", "description"], "change-request": ["title", "description"],
                   "audit": ["title"], "management-review": ["title"], "calibration": ["asset", "result"], "capa": ["title"],
-                  "item": ["name"], "journal-reversal": ["journal", "reason"], "supplier-evaluation": ["supplier"]}
+                  "part": ["title"], "stock-adjustment": ["lot", "new_quantity", "reason"], "stock-release": ["lot", "reason"],
+                  "journal-reversal": ["journal", "reason"], "supplier-evaluation": ["supplier"]}
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -70,21 +74,29 @@ def coerce(name: str, spec: str | None, value: str, kind: str | None = None):
         return None
     if kind == "lines":
         return [line.strip() for line in value.splitlines() if line.strip()]
-    if kind == "lines:locator,qty":
+    if kind in ("lines:locator,qty", "lines:lot,qty"):
+        key, example = ("lot", "LOT-000001, 4") if kind == "lines:lot,qty" else ("part", "PN-00001, 4, BATCH-24")
         out = []
         for line in value.splitlines():
             if not line.strip():
                 continue
             parts = [p.strip() for p in line.split(",")]
-            if len(parts) != 2 or not parts[0]:
-                raise ShellError(f"{label}: each line is 'item number, quantity' (for example ITEM-00001, 4), not {line.strip()!r}.", field=name)
+            if key == "lot" and len(parts) == 1 and parts[0]:  # a lot alone: all of it
+                out.append({"lot": parts[0]})
+                continue
+            if len(parts) not in (2, 3) or not parts[0] or (len(parts) == 3 and key == "lot"):
+                raise ShellError(f"{label}: each line is '{key} number, quantity'" + (", batch" if key == "part" else " (or the lot alone for all of it)")
+                                 + f" (for example {example}), not {line.strip()!r}.", field=name)
             try:
                 qty = float(parts[1])
             except ValueError:
                 raise ShellError(f"{label}: the quantity in {line.strip()!r} is not a number.", field=name) from None
             if not math.isfinite(qty) or qty <= 0:
                 raise ShellError(f"{label}: the quantity in {line.strip()!r} must be a positive number.", field=name)
-            out.append({"item": parts[0], "quantity": qty})
+            row = {key: parts[0], "quantity": qty}
+            if len(parts) == 3 and parts[2]:
+                row["batch"] = parts[2]
+            out.append(row)
         return out
     spec = spec or "text"
     if spec.startswith("list") and not value.startswith("[") and ";" in value:
@@ -159,7 +171,9 @@ def format_hint(spec: str | None, kind: str | None, name: str) -> str:
     if kind == "lines":
         return "one per line"
     if kind == "lines:locator,qty":
-        return "one per line: item number, quantity"
+        return "one per line: part number, quantity, batch if it has one"
+    if kind == "lines:lot,qty":
+        return "one per line: lot number, quantity affected (or the lot alone for all of it)"
     spec = spec or "text"
     if spec == "date":
         return "YYYY-MM-DD"
@@ -189,7 +203,7 @@ def widget(name: str, spec: str | None, value="", required: bool = False, kind: 
     aria = f' aria-invalid="true" aria-describedby="{eid}"' if error else ""
     cls = ' class="f bad"' if error else ' class="f"'
     tail = f'<span class="err" id="{eid}">{esc(error)}</span>' if error else ""
-    if isinstance(value, list) and value and all(isinstance(x, dict) for x in value):
+    if kind not in ("lines:locator,qty", "lines:lot,qty") and isinstance(value, list) and value and all(isinstance(x, dict) for x in value):
         # A list of rows (e.g. CAPA actions) as editable lines, not JSON.
         keys = ("action", "owner", "due", "status")
         shown = "\n".join("; ".join(str(x.get(k, "") or "") for k in keys).rstrip("; ") for x in value)
@@ -199,8 +213,11 @@ def widget(name: str, spec: str | None, value="", required: bool = False, kind: 
     if kind == "lines":
         shown = val if isinstance(value, str) else "\n".join(map(str, value or []))
         return f'<label{cls}>{lab}<textarea name="{esc(name)}" rows="3"{req}{aria}>{esc(shown)}</textarea>{tail}</label>'
-    if kind == "lines:locator,qty":
-        shown = "\n".join(f"{l.get('item', '')}, {l.get('quantity', '')}" for l in (value or []) if isinstance(l, dict)) if isinstance(value, list) else val
+    if kind in ("lines:locator,qty", "lines:lot,qty"):
+        key = "lot" if kind == "lines:lot,qty" else "part"
+        number = lambda ref: str(ref or "").rsplit(":", 1)[-1]
+        shown = "\n".join(", ".join(str(x) for x in (number(l.get(key) or l.get("item")), l.get("quantity"), l.get("batch")) if x not in (None, ""))
+                          for l in (value or []) if isinstance(l, dict)) if isinstance(value, list) else val
         return f'<label{cls}>{lab}<textarea name="{esc(name)}" rows="3"{req}{aria}>{esc(shown)}</textarea>{tail}</label>'
     if options is not None:
         opts = list(options)

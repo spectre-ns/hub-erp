@@ -56,8 +56,11 @@ def _member(bundle: dict, name: str) -> dict | None:
 def create_record(t, a: dict) -> dict:
     hub, bundle = t.hub, t.bundle
     type_ = _type_of(hub, str(a.get("type") or ""))
+    live = sorted(k for k, v in hub.kernel.types.items() if k != "$comment" and not (isinstance(v, dict) and v.get("archived")))
     if type_ is None:
-        return {"error": f"there is no record type {a.get('type')!r}; known types: {', '.join(sorted(k for k in hub.kernel.types if k != '$comment'))}"}
+        return {"error": f"there is no record type {a.get('type')!r}; known types: {', '.join(live)}"}
+    if hub.kernel.types[type_].get("archived"):
+        return {"error": f"{type_} records are archived (read-only); file a {'part' if type_ == 'item' else 'record of a current type'} instead"}
     fields = dict(a.get("fields") or {})
     process = _process_for_type(bundle, type_, str(a.get("process") or ""))
     if a.get("process") and process is None:

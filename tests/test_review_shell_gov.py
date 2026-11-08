@@ -115,8 +115,10 @@ def test_why_for_an_item_gives_the_hubs_reasons(shell):
 
 def test_an_organisational_stop_lists_the_runners_reasons_once(shell):
     hub = shell["hub"]
-    item = hub.kernel.create("item", "Inventory/Items", {"name": "[gov] widget", "supplier": "acme-metals", "unit_cost": 1}, by="dave")
-    status, url, text = post(shell, "/start", {"as": "dave", "process": "purchase-request", "title": "[gov] widgets", "item": item["locator"],
+    from conftest import make_part
+
+    item = make_part(hub.kernel, "GOV-1", title="[gov] widget", unit_cost=1)
+    status, url, text = post(shell, "/start", {"as": "dave", "process": "purchase-request", "title": "[gov] widgets", "part": item["locator"],
                                                "quantity": "5000", "supplier": "acme-metals", "reason": "line 3"})
     run_id = url.split("/run/")[1].split("?")[0]
     state = hub.runner.load(run_id)

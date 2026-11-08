@@ -1,12 +1,13 @@
-"""The chain: user needs -> requirements -> design documentation -> review -> part and items ->
-purchase requests -> approved supplier -> purchase order -> goods receipt -> bill -> ledger."""
+"""The chain: user needs -> requirements -> design documentation -> review -> parts (through the approved manufacturer
+list) -> purchase requests -> approved supplier -> purchase order -> goods receipt into a location (lots) -> bill ->
+ledger."""
 
 import base64
 
 import pytest
 
 from conftest import dated, release_all, seen
-from hubproto import worker
+from hubproto import inventory, worker
 from hubproto.runner import RunError
 from test_cad import SCHEMATIC, fcstd_bytes
 
@@ -29,12 +30,23 @@ def design_input():
                         {"name": "bracket.FCStd", "content_b64": base64.b64encode(fcstd_bytes()).decode(), "doc_class": "controlled", "doc_type": "model"}]}}
 
 
+def stores(k):
+    return inventory.location_of_kind(k, "MAIN", "store")
+
+
+def known_part(k, title, mpn, manufacturer, *, supplier="acme-metals", unit_cost=None, stock=0):
+    """A part on the approved manufacturer list with a supplier part (priced when unit_cost is given) and stock in Stores."""
+    part = inventory.create_part(k, title=title, mpn=mpn, manufacturer=manufacturer, supplier=supplier, unit_cost=unit_cost, by="alice")
+    if stock:
+        inventory.receive(k, part=part, quantity=stock, location=stores(k)["locator"], by="alice")
+    return part
+
+
 def test_design_to_order_to_receipt_to_ledger(hub, fake_worker):
     release_all(hub)
     k = hub.kernel
-    # Inventory: one known part from an approved supplier with a unit cost; the other BOM line is unknown.
-    k.create("item", "Inventory/Items", {"name": "10k 0603", "mpn": "RC0603FR-0710KL", "manufacturer": "Yageo", "stock": 1,
-                                         "supplier": "acme-metals", "unit_cost": 0.02, "currency": "USD"}, by="alice")
+    # Inventory: one known part from an approved supplier with a unit cost and one in stock; the other BOM line is unknown.
+    resistor = known_part(k, "10k 0603", "RC0603FR-0710KL", "Yageo", unit_cost=0.02, stock=1)
 
     # 1. The design engineer submits the design with user needs and CAD documents.
     run_id = hub.runner.submit("design-release", design_input(), owner="alice")
@@ -73,14 +85,16 @@ def test_design_to_order_to_receipt_to_ledger(hub, fake_worker):
     snapshot_before = hub.dms.render_snapshot(d2["locator"], by="test")
     assert b"## Requirements" in hub.dms.content(snapshot_before["locator"])[0]
 
-    # 4. The design authority approves the review: the part is released, the unknown item is created,
-    #    and purchase requests are raised for the shortages under the design's grant.
+    # 4. The design authority approves the review: the assembly is released, the unknown parts are created (with their
+    #    manufacturer parts, waiting for the buyer's approval), and purchase requests are raised for the shortages.
     hub.runner.decide(run2, "bob", "approve", meaning="design package reviewed and released", payload_digest=seen(hub.runner, run2))
     d2 = k.get(d2["locator"])
-    assert d2["state"] == "released" and k.get(d2["fields"]["part"])["state"] == "released"
-    created = {k.get(ref)["fields"]["mpn"]: k.get(ref) for ref in d2["fields"]["items_created"]}
-    assert set(created) == {"CL10B104KB8NNNC", "PN-BRK-01"}, "the capacitor and the FreeCAD bracket become items"
-    assert created["CL10B104KB8NNNC"]["fields"]["stock"] == 0
+    assembly = k.get(d2["fields"]["part"])
+    assert d2["state"] == "released" and assembly["state"] == "released" and assembly["fields"]["assembly"] is True
+    assert ("realized-by", resistor["locator"]) in {(l["rel"], l["target"]) for l in assembly["links"]}
+    created = {inventory.manufacturer_parts(k, ref)[0]["fields"]["mpn"]: k.get(ref) for ref in d2["fields"]["parts_created"]}
+    assert set(created) == {"CL10B104KB8NNNC", "PN-BRK-01"}, "the capacitor and the FreeCAD bracket become parts"
+    assert inventory.available(k, created["CL10B104KB8NNNC"]) == 0 and created["CL10B104KB8NNNC"]["state"] == "open"
     prs = [k.get(ref) for ref in d2["fields"]["purchase_requests"]]
     assert len(prs) == 3
     by_mpn = {pr["fields"]["mpn"]: pr for pr in prs}
@@ -109,14 +123,18 @@ def test_design_to_order_to_receipt_to_ledger(hub, fake_worker):
     # The PO aggregate exists for three-way matching, not yet received.
     assert k.purchase_orders()[f"po:{po['number']}"]["received"] is False
 
-    # 5. Goods receipt books stock and marks the order received.
-    gr = hub.runner.submit("goods-receipt", {"record": {"po": po["locator"], "lines": [{"item": k.get(known["fields"]["item"])["locator"],
-                                                                                        "quantity": 1}]}}, owner="alice")
+    # 5. Goods receipt into Stores creates a lot and marks the order received.
+    assert known["fields"]["part"] == resistor["locator"] and known["fields"]["supplier_part"]
+    gr = hub.runner.submit("goods-receipt", {"record": {"po": po["locator"], "location": stores(k)["locator"],
+                                                        "lines": [{"part": resistor["locator"], "quantity": 1, "batch": "Y-2401"}]}}, owner="alice")
     gstate = hub.runner.load(gr)
     assert gstate["status"] == "waiting" and gstate["pending"]["assignees"] == ["dave"]
     hub.runner.decide(gr, "dave", "approve", meaning="goods checked and received", payload_digest=seen(hub.runner, gr))
-    assert k.get(gstate["record"])["state"] == "received"
-    assert k.get(known["fields"]["item"])["fields"]["stock"] == 2
+    receipt = k.get(gstate["record"])
+    assert receipt["state"] == "received" and len(receipt["fields"]["lots"]) == 1
+    lot = k.get(receipt["fields"]["lots"][0])
+    assert lot["fields"]["batch"] == "Y-2401" and lot["fields"]["po"] == po["locator"] and lot["fields"]["unit_cost"] == 0.02
+    assert inventory.available(k, resistor) == 2 and inventory.ledger_consistent(k, lot)
     assert k.purchase_orders()[f"po:{po['number']}"]["received"] is True and k.get(po["locator"])["state"] == "received"
 
     # 6. The supplier's bill against that PO is matched, approved within criteria and posted to the ledger.
@@ -129,17 +147,17 @@ def test_design_to_order_to_receipt_to_ledger(hub, fake_worker):
     assert journal["prepared_by"] == "alice" and journal["approved_by"] == "ap-reviewer"
     assert abs(journal["lines"][0]["debit"] - po["fields"]["amount"]) < 0.005
 
-    # 7. Everything is on one spine: the PO links the request, the item and the design.
+    # 7. Everything is on one spine: the PO links the request, the part and the design; the lot links the receipt.
     po_links = {(l["rel"], l["target"]) for l in k.get(po["locator"])["links"]}
-    assert ("fulfils", known["locator"]) in po_links and ("concerns", d2["locator"]) in po_links
+    assert ("fulfils", known["locator"]) in po_links and ("concerns", d2["locator"]) in po_links and ("concerns", resistor["locator"]) in po_links
+    assert ("received-in", receipt["locator"]) in {(l["rel"], l["target"]) for l in lot["links"]}
 
 
 def test_purchase_above_threshold_goes_to_the_controller(hub):
     release_all(hub)
     k = hub.kernel
-    item = k.create("item", "Inventory/Items", {"name": "CNC fixture", "mpn": "FIX-1", "manufacturer": "Acme", "stock": 0,
-                                                "supplier": "acme-metals", "unit_cost": 3000.0}, by="alice")
-    run_id = hub.runner.submit("purchase-request", {"record": {"title": "fixtures", "item": item["locator"], "quantity": 4}}, owner="alice")
+    part = known_part(k, "CNC fixture", "FIX-1", "Acme", unit_cost=3000.0)
+    run_id = hub.runner.submit("purchase-request", {"record": {"title": "fixtures", "part": part["locator"], "quantity": 4}}, owner="alice")
     state = hub.runner.load(run_id)
     assert state["status"] == "waiting" and state["pending"]["assignees"] == ["bob"]
     assert k.get(state["record"])["fields"]["amount"] == 12000.0
@@ -149,9 +167,8 @@ def test_purchase_above_threshold_goes_to_the_controller(hub):
 def test_unapproved_supplier_never_reaches_the_cog(hub):
     release_all(hub)
     k = hub.kernel
-    item = k.create("item", "Inventory/Items", {"name": "tool", "mpn": "T-1", "manufacturer": "NewCo", "stock": 0,
-                                                "supplier": "newco-tools", "unit_cost": 10.0}, by="alice")
-    run_id = hub.runner.submit("purchase-request", {"record": {"title": "tools", "item": item["locator"], "quantity": 2}}, owner="alice")
+    part = known_part(k, "tool", "T-1", "NewCo", supplier="newco-tools", unit_cost=10.0)
+    run_id = hub.runner.submit("purchase-request", {"record": {"title": "tools", "part": part["locator"], "quantity": 2}}, owner="alice")
     state = hub.runner.load(run_id)
     assert state["status"] == "waiting" and state["pending"]["assignees"] == ["dave"]
     rec = k.get(state["record"])

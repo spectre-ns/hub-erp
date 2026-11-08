@@ -484,7 +484,7 @@ class Hub:
             doc = sopdocs.in_force(self.kernel, name)
             raise ValueError(f"the {name} Frame is compiled from " + (f"{doc['number']}" if doc else "its SOP document")
                              + ": change that document on a change order")
-        doc = self.frame_document(name)
+        doc = self.frame_document(name)  # None for a Frame not yet released
         for d in self.kernel.query(type_="document"):
             f = d["fields"]
             if f.get("doc_type") == "frame-draft" and f.get("frame_name") == name and f.get("owner") == by and d["state"] == "open" and not f.get("withdrawn"):
@@ -1001,7 +1001,8 @@ _STOP = {"find", "the", "a", "an", "please", "provide", "give", "me", "link", "l
          "we", "have", "any", "in", "on", "about", "called", "named", "there", "that", "this", "us", "your", "help", "need", "want"}
 _TYPE_WORDS = {"document": "document", "doc": "document", "file": "document", "sop": "document", "bill": "bill", "invoice": "bill",
                "purchase": "purchase-request", "order": "purchase-order", "ncr": "ncr", "nonconformance": "ncr", "capa": "capa",
-               "design": "design", "requirement": "requirement", "task": "task", "receipt": "receipt", "item": "item", "part": "item"}
+               "design": "design", "requirement": "requirement", "task": "task", "receipt": "receipt", "item": "part", "part": "part",
+               "stock": "part", "lot": "stock-item"}
 
 
 def chat_lookup(call_tool, text: str) -> dict | None:

@@ -10,7 +10,8 @@ Modules: ``text`` (names, formatters, sentences), ``css`` (the visual system), `
 map, launcher and avatars), ``charts`` (server-rendered SVG), ``forms`` (controls and coercion), ``handler`` (request
 plumbing, errors, page frame), ``pages`` (dashboard, files library, boards, runs, records as forms, documents),
 ``views`` (list and kanban views, app pages, people and cog profiles, chatter), ``inbox`` (the queue and the decision
-card), ``policy`` (versions, policies, why, people and roles, conformance), ``actions`` (POSTs), ``editor`` (WOPI).
+card), ``policy`` (versions, policies, why, people and roles, conformance), ``actions`` (POSTs), ``editor`` (WOPI),
+``inventory_ui`` (parts and stock, the location tree, the stock panels and movements).
 """
 
 from __future__ import annotations
@@ -41,6 +42,7 @@ from .eco_ui import EcoMixin
 from .automation_ui import AutomationMixin
 from .scopes_ui import ScopesMixin
 from .forms_ui import FormsMixin
+from .inventory_ui import InventoryMixin
 from .views import ViewsMixin
 from ..workqueue import CogWorker
 from .text import TYPE_NAMES, VERBS, chip, esc, friendly, money, day, when, why_sentence  # noqa: F401
@@ -50,7 +52,7 @@ __all__ = ["Handler", "ShellError", "coerce", "make_server", "serve", "serve_in_
            "when", "why_sentence", "sentence_diff", "widget", "prefill", "chip", "esc", "href", "table"]
 
 
-class Handler(SettingsMixin, TemplatesMixin, EcoMixin, AutomationMixin, ScopesMixin, FormsMixin, QueueMixin, PagesMixin, ViewsMixin, InboxMixin, PolicyMixin, ActionsMixin, EditorMixin, MessengerMixin, PolicyDocsMixin, McpMixin, AgentsMixin, NewMemberMixin, BaseHandler):
+class Handler(SettingsMixin, TemplatesMixin, EcoMixin, AutomationMixin, ScopesMixin, FormsMixin, InventoryMixin, QueueMixin, PagesMixin, ViewsMixin, InboxMixin, PolicyMixin, ActionsMixin, EditorMixin, MessengerMixin, PolicyDocsMixin, McpMixin, AgentsMixin, NewMemberMixin, BaseHandler):
     """The request handler: the plumbing in BaseHandler, the pages and actions in the mixins."""
 
 

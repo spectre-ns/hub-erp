@@ -3,7 +3,7 @@ type: frame [0.2]
 name: ncr-sop
 description: "Control of nonconforming outputs: any member of staff opens a nonconformance, it is classified and risk-scored, the quality manager dispositions it within 5 days, and a corrective action is opened when the risk or the disposition demands one."
 visibility: internal
-version: "0.1.0"
+version: "0.2.0"
 scope: department
 maintainer: carol
 inherits: org-model
@@ -47,7 +47,9 @@ Records are filed in Quality/Nonconformances.
 The record type is ncr.
 1. [staff] Open the nonconformance (ncr-classifier)
 2. [system] File the nonconformance (record-filer)
-3. [system] Score the risk (risk-scorer)
-4. [quality-manager] Disposition the nonconformance
-5. [system] Open corrective action (capa-opener)
-6. [system] Render the record (document-renderer)
+3. [system] Quarantine the stock (stock-quarantiner)
+4. [system] Score the risk (risk-scorer)
+5. [quality-manager] Disposition the nonconformance
+6. [system] Apply the disposition (disposition-applier)
+7. [system] Open corrective action (capa-opener)
+8. [system] Render the record (document-renderer)

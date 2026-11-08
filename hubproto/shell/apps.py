@@ -8,15 +8,17 @@ from .icons import icon
 from .text import esc, type_name, verb_for
 
 # Apps in launcher order: key, name, icon, the record types it lists (first is the app's main type), extra pages.
-# A record type may sit in two apps (items are engineering's catalogue and inventory's stock).
+# A record type may sit in two apps (parts are engineering's part master and inventory's stock); the first one listing
+# it is its home. Archived record types (items) sit in no app: their records stay readable, and nothing offers new ones.
 APP_TABLE: list[tuple[str, str, str, list[str]]] = [
     ("inbox", "Inbox", "inbox", ["task"]),
     ("documents", "Documents", "folder", ["document"]),
     ("quality", "Quality", "shield", ["ncr", "capa", "audit", "calibration", "complaint", "management-review", "training", "change-request", "change-order",
                                        "supplier-evaluation", "asset"]),
-    ("engineering", "Engineering", "tool", ["design", "requirement", "part", "item"]),
-    ("purchasing", "Purchasing", "cart", ["purchase-request", "purchase-order", "receipt"]),
-    ("inventory", "Inventory", "box", ["item", "receipt"]),
+    ("engineering", "Engineering", "tool", ["design", "requirement", "part", "manufacturer-part"]),
+    ("purchasing", "Purchasing", "cart", ["purchase-request", "purchase-order", "receipt", "supplier-part"]),
+    ("inventory", "Inventory", "box", ["stock-item", "part", "stock-location", "receipt", "stock-adjustment", "stock-release", "supplier-part",
+                                       "manufacturer-part", "part-category"]),
     ("finance", "Finance", "coins", ["bill", "journal", "journal-reversal"]),
     ("people", "People", "users", []),
     ("settings", "Settings", "sliders", []),
@@ -31,6 +33,8 @@ APP_PAGES: dict[str, list[tuple[str, str, str]]] = {
     "documents": [("Files by folder", "/files", "folder"), ("Controlled documents", "/items/document?filter=controlled", "file-text"),
                   ("Templates", "/templates", "clipboard")],
     "purchasing": [("Suppliers", "/suppliers", "truck")],
+    "inventory": [("Parts and stock", "/inventory", "box"), ("Locations", "/inventory/locations", "map-pin")],
+    "engineering": [("Archived items", "/items/item", "archive")],
     "quality": [("Change orders", "/change-orders", "layers"), ("Forms", "/forms", "form")],
     "people": [("Members and cogs", "/people", "users")],
     "settings": [("Your changes", "/settings", "edit"), ("People and roles", "/settings/people", "users"), ("Permissions", "/settings/permissions", "lock"),
@@ -41,9 +45,11 @@ APP_PAGES: dict[str, list[tuple[str, str, str]]] = {
 }
 PLURALS = {"ncr": "Nonconformances", "capa": "CAPAs", "audit": "Audits", "calibration": "Calibration", "complaint": "Complaints",
            "management-review": "Management reviews", "training": "Training", "change-request": "Change requests", "change-order": "Change orders", "supplier-evaluation": "Supplier evaluations",
-           "asset": "Assets", "design": "Designs", "requirement": "Requirements", "part": "Parts", "item": "Items", "purchase-request": "Purchase requests",
+           "asset": "Assets", "design": "Designs", "requirement": "Requirements", "part": "Parts", "item": "Items (archived)", "purchase-request": "Purchase requests",
            "purchase-order": "Purchase orders", "receipt": "Receipts", "bill": "Supplier bills", "journal": "Journals", "journal-reversal": "Reversals",
-           "document": "Documents", "task": "Tasks"}
+           "document": "Documents", "task": "Tasks", "stock-item": "Stock lots", "stock-location": "Locations", "part-category": "Part categories",
+           "supplier-part": "Supplier parts", "manufacturer-part": "Manufacturer parts", "stock-adjustment": "Stock adjustments",
+           "stock-release": "Stock releases"}
 
 
 def plural(rt: str) -> str:
@@ -56,7 +62,7 @@ def plural(rt: str) -> str:
 def app_map(bundle: dict | None, types: dict, policy_owner: bool = False) -> list[dict]:
     """The apps with their record types and processes, built from the release and the record-type config."""
     bundle = bundle or {}
-    known = [t for t in types if t != "$comment"]
+    known = [t for t in types if t != "$comment" and not (isinstance(types[t], dict) and types[t].get("archived"))]
     processes: dict[str, str] = {}  # record type -> process that creates it
     for name, op in (bundle.get("ops") or {}).items():
         rt = op.get("record_type") or ""

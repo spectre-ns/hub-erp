@@ -30,12 +30,20 @@ from pathlib import Path
 
 from .release import utcnow
 
-WIDGETS = ("textarea", "lines", "lines:locator,qty")
+WIDGETS = ("textarea", "lines", "lines:locator,qty", "lines:lot,qty")
 OPS = ("==", "!=", "in", "not in", ">", "<", ">=", "<=", "set", "empty")
 CUSTOM_TYPES = ("text", "number", "money", "int", "date", "bool", "list", "principal")
 CUSTOM_NAME = re.compile(r"^x_[a-z][a-z0-9_]{1,40}$")
 PROPS = ("label", "help", "placeholder", "widget", "visible_when", "required_when", "readonly_when")
 LEAD = ["title", "description", "statement", "kind", "severity", "supplier", "amount", "currency", "quantity", "unit_cost", "item", "po", "date", "due"]
+# The inventory types lead with what identifies them (a part's number and units, a lot's part and place).
+TYPE_LEAD = {"part": ["title", "ipn", "revision", "description", "category", "units", "trackable", "purchaseable", "assembly", "component", "active",
+                      "default_location", "minimum_stock"],
+             "stock-item": ["part", "batch", "serial", "expiry", "notes"], "stock-location": ["name", "parent", "kind", "structural", "site"],
+             "part-category": ["name", "parent", "structural", "default_location"],
+             "supplier-part": ["part", "supplier", "sku", "manufacturer_part", "pack_quantity", "price_breaks", "currency", "lead_time_days", "primary"],
+             "manufacturer-part": ["part", "manufacturer", "mpn", "approved"], "stock-adjustment": ["lot", "new_quantity", "reason"],
+             "stock-release": ["lot", "to_location", "reason"], "receipt": ["po", "location", "lines", "packing_slip"]}
 NOT_ON_FORMS = {"text", "office_comments", "checked_out_by", "checked_out_via", "editors", "wopi_lock", "content_sha", "reviews", "attachments"}
 
 
@@ -113,7 +121,8 @@ def base_layout(hub, type_: str) -> dict:
     from .shell.forms import DEFAULT_START_INPUTS, START_INPUTS, TEXTAREA_FIELDS
 
     fields = type_fields(hub, type_)
-    order = [k for k in LEAD if k in fields] + [k for k in sorted(fields) if k not in LEAD]
+    lead = TYPE_LEAD.get(type_, LEAD)
+    order = [k for k in lead if k in fields] + [k for k in sorted(fields) if k not in lead]
     rows = [{"field": k, **({"widget": "textarea"} if k in TEXTAREA_FIELDS else {})} for k in order]
     start = []
     for entry in START_INPUTS.get(type_, DEFAULT_START_INPUTS):

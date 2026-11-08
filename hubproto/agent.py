@@ -588,4 +588,4 @@ def run_duties(hub, cog: str | None = None, today: str | None = None) -> list[di
 
 
 # The further tool groups register themselves on import.
-from . import agent_records, agent_docs, agent_config  # noqa: E402,F401
+from . import agent_records, agent_docs, agent_config, agent_inventory  # noqa: E402,F401

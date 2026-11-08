@@ -136,8 +136,9 @@ def sentence(rule: dict, processes: dict | None = None) -> str:
             s += f", countersigned by a {_words(rule['countersign'])}"
         return s + "."
     if k == "sod":
+        # Written as the grammar reads them: the roles and the object keep their hyphens ("received-by", "stock-adjustment").
         a, b = rule["roles"]
-        return f"The {_words(a)} and the {_words(b)} of a {_words(rule['object'])} must be different people."
+        return f"The {a} and the {b} of a {rule['object']} must be different people."
     if k == "cog":
         lines = [f"## Cog: {rule['name']}", f"Model: {rule.get('model') or ''}"]
         if rule.get("prompt_from"):

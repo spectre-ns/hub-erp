@@ -221,6 +221,15 @@ class Kernel:
                 rec["hold_reason"] = d.get("reason", "")
             elif t == "record.archived":
                 rec["archived"] = True
+            elif t.startswith("stock.") and isinstance(d.get("set"), dict):
+                # A stock movement (hubproto.inventory): one chained event that also carries the lot's resulting
+                # quantity, location, status and state, so the ledger is the only source of those numbers.
+                rec["fields"].update(d["set"])
+                rec.setdefault("setters", {}).update({k: ev["by"] for k in d["set"]})
+                if d.get("state") and d["state"] != rec["state"]:
+                    rec["transitions"].append({"from": rec["state"], "to": d["state"], "at": ev["at"], "by": ev["by"],
+                                               "run_id": ev["run_id"], "reason": d.get("reason", "")})
+                    rec["state"] = d["state"]
         self._cache = recs
         self._cache_version = version
         self._cache_seq = top
@@ -248,6 +257,11 @@ class Kernel:
         if type_ not in self.types:
             raise KernelGuardError("record-type", f"unknown record type {type_!r}")
         return self.types[type_]
+
+    def _writable(self, type_: str) -> None:
+        """An archived record type (``"archived": true``) stays readable; nothing new is filed and nothing changes."""
+        if self.types.get(type_, {}).get("archived"):
+            raise KernelGuardError("archived-type", f"{type_} records are archived: they stay readable, and nothing new is filed or changed")
 
     def query(self, type_: str | None = None, folder: str | None = None, state: str | None = None,
               linked_to: str | None = None, text: str | None = None, assignee: str | None = None,
@@ -340,6 +354,7 @@ class Kernel:
     def create(self, type_: str, folder: str, fields: dict | None = None, *, by: str, run_id: str = "",
                release: str = "", state: str = "open", labels: dict | None = None) -> dict:
         td = self.type_def(type_)
+        self._writable(type_)
         fields = dict(fields or {})
         self._check_fields(type_, fields)
         lab = {"sensitivity": td.get("sensitivity", "internal"), "retention": td.get("retention", "standard")}
@@ -365,6 +380,7 @@ class Kernel:
         rec = self.require(ref)
         if rec["hold"]:
             raise KernelGuardError("hold", f"{rec['number']} is on hold")
+        self._writable(rec["type"])
         self._check_fields(rec["type"], fields)
         self.append("record.fields_set", rec["locator"], {"fields": fields}, run_id=run_id, release=release, by=by)
         return self.get(rec["locator"])
@@ -389,6 +405,7 @@ class Kernel:
         rec = self.require(ref)
         if rec["hold"]:
             raise KernelGuardError("hold", f"{rec['number']} is on hold")
+        self._writable(rec["type"])
         missing = self.required_missing(rec, to_state)
         if missing:
             raise KernelGuardError("required-fields", f"{rec['number']} cannot enter {to_state!r} without {', '.join(missing)}")
@@ -480,8 +497,16 @@ class Kernel:
 
     # --------------------------------------------------------------------- seed
     def seed(self) -> None:
-        if self.events(prefix="supplier:"):
-            return
+        """The sample data: suppliers, the finance system's purchase orders and the periods, once; then the sample
+        site's stock locations and part categories whenever there are none, so a hub seeded before inventory existed
+        gets them on its next start (``hubproto init``). Both parts are idempotent."""
+        from . import inventory
+
+        if not self.events(prefix="supplier:"):
+            self._seed_finance()
+        inventory.seed(self)  # returns at once when any stock location exists
+
+    def _seed_finance(self) -> None:
         self.append("supplier.approved", "supplier:acme-metals", {"name": "Acme Metals", "approved": True}, by="seed")
         self.append("supplier.registered", "supplier:newco-tools", {"name": "NewCo Tools", "approved": False}, by="seed")
         self.append("po.issued", "po:PO-1001", {"supplier": "acme-metals", "amount": 1500.0, "currency": "USD",

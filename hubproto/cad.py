@@ -141,10 +141,10 @@ def kicad_sch_bom(content: bytes) -> list[dict]:
 def bom_csv(lines: list[dict]) -> bytes:
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["references", "quantity", "value", "footprint", "mpn", "manufacturer", "item"])
+    w.writerow(["references", "quantity", "value", "footprint", "mpn", "manufacturer", "part"])
     for l in lines:
         w.writerow([" ".join(l.get("references", [])), l.get("quantity", 1), l.get("value", ""), l.get("footprint", ""),
-                    l.get("mpn", ""), l.get("manufacturer", ""), l.get("item", "")])
+                    l.get("mpn", ""), l.get("manufacturer", ""), l.get("part", "")])
     return buf.getvalue().encode("utf-8")
 
 
@@ -274,38 +274,42 @@ class CADExporter(Cog):
 class BOMReconciler(Cog):
     id = "bom-reconciler"
     reaches = ["kernel:records"]
-    description = ("Matches every BOM line to an inventory item by MPN and manufacturer, proposes items for unknown lines, "
-                   "and flags manufacturers not on the approved list. Creates nothing: proposals wait at the Gate.")
+    description = ("Matches every BOM line to a part through the approved manufacturer list (manufacturer part numbers), proposes parts "
+                   "for unknown lines, and flags manufacturers not approved. Creates nothing: proposals wait at the Gate.")
 
     def task_run(self, input: dict, ctx: RunContext) -> dict:
+        from . import inventory
+
         prior = self._prior(input, ctx)
         lines = list(prior.get("bom_lines") or [])
-        items = {}
-        for it in ctx.kernel.query(type_="item"):
-            key = (str(it["fields"].get("mpn", "")).lower(), str(it["fields"].get("manufacturer", "")).lower())
-            items[key] = it
-            items[(key[0], "")] = items.get((key[0], ""), it)
+        mps: dict = {}
+        for mp in ctx.kernel.query(type_="manufacturer-part"):
+            key = (str(mp["fields"].get("mpn", "")).lower(), str(mp["fields"].get("manufacturer", "")).lower())
+            mps[key] = mp
+            mps.setdefault((key[0], ""), mp)
         resolved, unresolved, unapproved = [], [], []
         for line in lines:
             key = (str(line.get("mpn", "")).lower(), str(line.get("manufacturer", "")).lower())
-            it = items.get(key)
-            if it is None and key[1] == "":
-                it = items.get((key[0], ""))
-            if it is not None and key[1] and str(it["fields"].get("manufacturer", "")).lower() not in ("", key[1]):
-                it = None  # same MPN, different manufacturer: not the same item
-            if it is None or not key[0]:
-                unresolved.append({**line, "proposal": {"type": "item", "fields": {"name": line.get("value"), "mpn": line.get("mpn"),
+            mp = mps.get(key)
+            if mp is None and key[1] == "":
+                mp = mps.get((key[0], ""))
+            if mp is not None and key[1] and str(mp["fields"].get("manufacturer", "")).lower() not in ("", key[1]):
+                mp = None  # same MPN, different manufacturer: not the same part
+            part = ctx.kernel.get(mp["fields"].get("part") or "") if mp else None
+            if part is None or not key[0]:
+                unresolved.append({**line, "proposal": {"type": "part", "fields": {"title": line.get("value"), "mpn": line.get("mpn"),
                                                                                      "manufacturer": line.get("manufacturer"),
                                                                                      "footprint": line.get("footprint")}}})
                 continue
-            entry = {**line, "item": it["number"], "stock": it["fields"].get("stock"), "unit": it["fields"].get("unit", "ea"),
-                     "short": max(0, int(line.get("quantity", 1)) - int(it["fields"].get("stock") or 0))}
+            have = inventory.available(ctx.kernel, part)
+            entry = {**line, "part": part["number"], "manufacturer_part": mp["number"], "available": have, "unit": part["fields"].get("units", "ea"),
+                     "short": max(0, int(line.get("quantity", 1)) - int(have))}
             resolved.append(entry)
-            if not it["fields"].get("approved_manufacturer", True):
+            if not mp["fields"].get("approved", True):
                 unapproved.append(entry)
         problems = []
         if unresolved:
-            problems.append(problem("bom-resolved", f"{len(unresolved)} BOM line(s) match no inventory item; proposals attached", "warning"))
+            problems.append(problem("bom-resolved", f"{len(unresolved)} BOM line(s) match no part on the approved manufacturer list; proposals attached", "warning"))
         if unapproved:
             problems.append(problem("approved-manufacturer", f"{len(unapproved)} line(s) use a manufacturer not on the approved list", "warning"))
         conditions = dict(prior.get("conditions") or {})
@@ -333,7 +337,8 @@ class PartReleaser(Cog):
         part = ctx.kernel.get(part_ref) if part_ref else None
         if part is None:
             part = ctx.kernel.create("part", rec["folder"], {"title": prior.get("title", rec["number"]), "revision": "A",
-                                                             "design": rec["locator"], "released_by": ctx.grant.get("decided_by")},
+                                                             "design": rec["locator"], "released_by": ctx.grant.get("decided_by"),
+                                                             "assembly": True, "purchaseable": False, "units": "ea", "trackable": "serial"},
                                      by=self.id, run_id=ctx.run_id, release=ctx.release, state="released")
         else:
             from .dms import next_revision
@@ -343,9 +348,9 @@ class PartReleaser(Cog):
             part = ctx.kernel.get(part["locator"])
         ctx.kernel.link(part["locator"], "defined-by", rec["locator"], by=self.id, run_id=ctx.run_id, release=ctx.release)
         for line in prior.get("bom_resolved") or []:
-            it = ctx.kernel.get(f"item:{line['item']}")
-            if it:
-                ctx.kernel.link(part["locator"], "realized-by", it["locator"], by=self.id, run_id=ctx.run_id, release=ctx.release)
+            component = ctx.kernel.get(f"rec:part:{line['part']}") if line.get("part") else None
+            if component:  # the assembly is made of its BOM's parts
+                ctx.kernel.link(part["locator"], "realized-by", component["locator"], by=self.id, run_id=ctx.run_id, release=ctx.release)
         ctx.kernel.set_fields(rec["locator"], {"part": part["locator"], "revision": part["fields"].get("revision")},
                               by=self.id, run_id=ctx.run_id, release=ctx.release)
         return self.ok("run", {**prior, "part": part["locator"], "revision": part["fields"].get("revision")})

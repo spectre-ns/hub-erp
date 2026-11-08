@@ -67,3 +67,16 @@ def seen(runner, run_id: str) -> str | None:
     except Exception:
         return None
     return state.get("seen_digest")
+
+
+def make_part(k, mpn: str, *, supplier: str | None = "acme-metals", unit_cost=0.5, stock: float = 0, manufacturer: str = "Acme",
+              title: str | None = None, state: str = "active", **fields) -> dict:
+    """A part on the approved manufacturer list, with a supplier part (priced at unit_cost when given) and, when stock is
+    given, a lot of that quantity in Stores. The test-side counterpart of the old inventory item."""
+    from hubproto import inventory
+
+    part = inventory.create_part(k, title=title or mpn, mpn=mpn, manufacturer=manufacturer, supplier=supplier, unit_cost=unit_cost,
+                                 by="alice", state=state, **fields)
+    if stock:
+        inventory.receive(k, part=part, quantity=stock, location=inventory.location_of_kind(k, "MAIN", "store")["locator"], by="alice")
+    return part

@@ -17,8 +17,10 @@ TYPE_NAMES = {
     "capa": "Corrective action (CAPA)", "design": "Design", "document": "Document", "task": "Task", "requirement": "Requirement",
     "receipt": "Goods receipt", "calibration": "Calibration", "complaint": "Complaint", "change-request": "Change request", "change-order": "Change order",
     "audit": "Internal audit", "management-review": "Management review", "supplier-evaluation": "Supplier evaluation",
-    "item": "Item", "part": "Part", "asset": "Asset", "journal": "Journal", "journal-reversal": "Journal reversal",
-    "training": "Training sign-off",
+    "item": "Item (archived)", "part": "Part", "asset": "Asset", "journal": "Journal", "journal-reversal": "Journal reversal",
+    "training": "Training sign-off", "stock-item": "Stock lot", "stock-location": "Stock location", "part-category": "Part category",
+    "supplier-part": "Supplier part", "manufacturer-part": "Manufacturer part", "stock-adjustment": "Stock adjustment",
+    "stock-release": "Stock release",
 }
 # What a person does when they start the process that creates a record of this type (the button and the entry title).
 VERBS = {
@@ -27,8 +29,9 @@ VERBS = {
     "task": "Create a task", "requirement": "Capture a requirement", "receipt": "Record a goods receipt",
     "calibration": "Record a calibration", "complaint": "Log a complaint", "change-request": "Raise a change request", "change-order": "Prepare a change order",
     "audit": "Plan an internal audit", "management-review": "Prepare a management review",
-    "supplier-evaluation": "Evaluate a supplier", "item": "Request an item", "journal-reversal": "Request a journal reversal",
-    "training": "Assign a training sign-off",
+    "supplier-evaluation": "Evaluate a supplier", "part": "Request a part", "journal-reversal": "Request a journal reversal",
+    "training": "Assign a training sign-off", "stock-adjustment": "Request a stock adjustment",
+    "stock-release": "Request a release from quarantine",
 }
 # Processes whose item is prepared before the process starts (a change order gathers its revisions first): their
 # "new" link opens that page instead of a start form.
@@ -50,6 +53,14 @@ FIELD_LABELS = {
     "location": "Location", "notes": "Notes", "disposition": "Disposition", "actions": "Actions", "findings": "Findings",
     "summary": "Summary", "assessed_by": "Assessed by", "score": "Score", "criteria": "Criteria", "approved": "Approved",
     "verification": "Verification", "plan": "Plan", "effectiveness_check_date": "Effectiveness check date",
+    "part": "Part", "supplier_part": "Supplier part", "manufacturer_part": "Manufacturer part", "ipn": "Internal part number (IPN)",
+    "units": "Units", "trackable": "Tracked by", "purchaseable": "Purchaseable", "assembly": "Assembly", "component": "Component",
+    "active": "Active", "default_location": "Default location", "minimum_stock": "Minimum stock", "parameters": "Parameters",
+    "category": "Category", "batch": "Batch", "serial": "Serial number", "status": "Stock status", "expiry": "Expiry date",
+    "to_location": "To location", "new_quantity": "New quantity", "quantity_before": "Quantity before", "variance_pct": "Variance (%)",
+    "pack_quantity": "Pack quantity", "price_breaks": "Price breaks", "sku": "Supplier SKU", "structural": "Structural (holds no stock)",
+    "site": "Site", "stock_items": "Stock affected", "quarantined": "Quarantined lots", "ordered_by": "Ordered (approved) by",
+    "quarantined_from": "Quarantined from", "packing_slip": "Packing slip", "lots": "Lots booked",
 }
 # Examples of what the meaning of a signature says, per record type (shown once on the open card).
 MEANING_EXAMPLES = {
@@ -65,6 +76,9 @@ MEANING_EXAMPLES = {
     "capa": ("actions verified on the line", "effective: no recurrence in 90 days"),
     "audit": ("findings recorded as observed", "findings accepted; CAPA to follow"),
     "change-request": ("approved; impact on WI-7 understood", "verified on the first batch"),
+    "stock-adjustment": ("recounted twice: 40 are missing, written off", "approved; the shrinkage is booked"),
+    "stock-release": ("certificate of conformance received; release", "re-inspected 20 of 200, all within drawing"),
+    "part": ("approved: datasheet checked, two sources", "approved as a purchased component"),
 }
 NOTIFICATION_KINDS = ("escalation", "failure", "returned", "rejection", "auto-decided", "request", "review", "mention", "agent-run")
 MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
@@ -563,6 +577,17 @@ def prefill_text(v) -> str:
 
 def summary_of_record(rec: dict) -> str:
     f = rec.get("fields", rec)
+    t = rec.get("type")
+    number = lambda ref: str(ref or "").rsplit(":", 1)[-1]
+    if t == "stock-item":  # a lot: how many of which part, its batch or serial, its status
+        return " · ".join(b for b in (f"{qty(f.get('quantity'))} × {number(f.get('part'))}", f"batch {f['batch']}" if f.get("batch") else "",
+                                      f"SN {f['serial']}" if f.get("serial") else "", str(f.get("status") or "")) if b)
+    if t == "manufacturer-part":
+        return f"{f.get('manufacturer') or ''} {f.get('mpn') or ''}".strip() or rec.get("number", "")
+    if t == "supplier-part":
+        return f"{f.get('sku') or number(f.get('part'))} from {f.get('supplier') or 'no supplier'}"
+    if t in ("stock-adjustment", "stock-release") and f.get("lot"):
+        return short(f"{number(f['lot'])}: {f.get('reason') or ''}".rstrip(": "), 120)
     for key in ("title", "statement", "memo", "description", "name"):
         if f.get(key):
             return short(f[key], 120)

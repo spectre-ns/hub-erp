@@ -101,11 +101,12 @@ def test_app_launcher_lists_apps_by_role_and_the_app_bar_follows_the_page(shell)
     bar = text.split('<nav class="appbar"')[1].split("</nav>")[0]
     assert "Finance</a>" in bar and 'aria-current="page" href="/items/bill?as=bob">Supplier bills</a>' in bar and "Journals" in bar and "File a supplier bill" in bar
     assert '<span class="avatar' in text.split('<div class="top">')[1].split("</form>")[0], "the acting person has an avatar in the top bar"
-    # The map is data-driven: every record type of the release lands in exactly one app or more, none is lost.
+    # The map is data-driven: every record type of the release lands in exactly one app or more, none is lost; an
+    # archived type (items, replaced by parts and stock) sits in none, so nothing offers new ones.
     hub = shell["hub"]
     apps = app_map(hub.releases.bundle(hub.releases.current()["digest"]), hub.kernel.types, policy_owner=True)
     placed = {t for a in apps for t in a["types"]}
-    assert placed == {t for t in hub.kernel.types if t != "$comment"}
+    assert placed == {t for t, td in hub.kernel.types.items() if t != "$comment" and not td.get("archived")} and "item" not in placed
     assert [a["key"] for a in apps][-1] == "policy" and ("quality", "Quality") == (apps[2]["key"], apps[2]["name"])
     assert any(p == "nonconformance" for p, _ in next(a for a in apps if a["key"] == "quality")["processes"])
 

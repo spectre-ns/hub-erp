@@ -287,9 +287,10 @@ def test_criteria_refusals_quote_the_policy_words():
 
 def test_retry_with_new_fields_reruns_the_checks_after_the_last_signature(released):
     hub = released
-    item = hub.kernel.create("item", "Inventory/Items", {"name": "resistor", "mpn": "R-1", "manufacturer": "X", "stock": 0,
-                                                        "unit_cost": 0.02}, by="alice")
-    rid = hub.runner.submit("purchase-request", {"record": {"title": "boards", "item": item["locator"], "quantity": 5}}, owner="dave")
+    from conftest import make_part
+
+    item = make_part(hub.kernel, "R-1", title="resistor", manufacturer="X", supplier=None, unit_cost=0.02)
+    rid = hub.runner.submit("purchase-request", {"record": {"title": "boards", "part": item["locator"], "quantity": 5}}, owner="dave")
     st = hub.runner.load(rid)
     if st["status"] != "failed":
         pytest.skip("the request did not stop in this policy")
@@ -333,10 +334,10 @@ def test_an_automatic_capa_credits_what_opened_it(released):
     assert run["opened_from"] == hub.runner.load(rid)["record"]
 
 
-def test_an_item_request_is_not_approved_by_its_requester(released):
-    """ux-6: the default segregation (the filer never approves on a role route) covers item requests."""
+def test_a_part_request_is_not_approved_by_its_requester(released):
+    """ux-6: the default segregation (the filer never approves on a role route) covers part requests."""
     hub = released
-    rid = hub.runner.submit("item-request", {"record": {"name": "10k resistor", "mpn": "R-10K", "manufacturer": "Yageo"}}, owner="dave")
+    rid = hub.runner.submit("part-request", {"record": {"title": "10k resistor", "units": "ea"}}, owner="dave")
     st = hub.runner.load(rid)
     assert "dave" not in ((st.get("pending") or {}).get("assignees") or [])
 
@@ -353,7 +354,10 @@ def test_a_retry_that_changes_an_approved_record_sends_it_back_to_its_approval(t
     hub = Hub(tmp_path)
     hub.kernel.seed()
     release_all(hub)
-    run = hub.runner.submit("purchase-request", {"record": {"title": "Washers", "item": "ITEM-00001", "quantity": 10,
+    from conftest import make_part
+
+    washers = make_part(hub.kernel, "W-10", title="Washers", unit_cost=None)  # a supplier part with no price yet
+    run = hub.runner.submit("purchase-request", {"record": {"title": "Washers", "part": washers["locator"], "quantity": 10,
                                                             "supplier": "acme-metals", "reason": "stock"}}, owner="alice")
     state = hub.runner.load(run)
     assert state["status"] == "waiting", hub.runner.track(run)[-2:]

@@ -42,7 +42,7 @@ RAIL_POLICY = [("Runs", "/runs", "activity"), ("Policy versions", "/releases", "
                ("Conformance", "/conformance", "check-circle"), ("People and roles", "/admin", "users")]
 # Routes the identity switcher may stay on (anything else goes home).
 STAY_ROUTES = ("/", "/inbox", "/files", "/documents", "/templates", "/change-orders", "/boards", "/runs", "/releases", "/frames", "/why", "/admin", "/conformance", "/people", "/suppliers",
-               "/settings")
+               "/settings", "/inventory", "/inventory/locations")
 STAY_PREFIXES = ("/record/", "/document/", "/run/", "/frame/", "/release/", "/items/", "/app/", "/user/", "/settings/")
 # The small script: tabs show one panel at a time (every panel is visible without it) and the print button prints.
 SCRIPT = """document.documentElement.classList.add('js');
@@ -240,7 +240,7 @@ class BaseHandler(BaseHTTPRequestHandler):
                 if r.startswith(prefix) and len(r) > len(prefix):
                     self.arg = r[len(prefix):]
                     return fn
-            return None
+            return self.inventory_route(method, r)
         posts = {"/sops-convert": self.post_sops_convert, "/folder-new": self.post_folder_new, "/folder-remove": self.post_folder_remove, "/forms-check": self.post_forms_check, "/forms-save": self.post_forms_save, "/forms-discard": self.post_forms_discard,
                  "/forms-carry": self.post_forms_carry, "/forms-uncarry": self.post_forms_uncarry,
                  "/withdraw-record": self.post_withdraw_record, "/automation-retry": self.post_automation_retry, "/automation-start": self.post_automation_start, "/start": self.post_start, "/decide": self.post_decide, "/msg": self.post_msg, "/attach": self.post_attach,
@@ -253,7 +253,7 @@ class BaseHandler(BaseHTTPRequestHandler):
                  "/upload": self.post_upload, "/checkout": self.post_checkout, "/checkin": self.post_checkin, "/link": self.post_link,
                  "/snapshot": self.post_snapshot, "/hold": self.post_hold, "/resubmit": self.post_resubmit, "/retry": self.post_retry,
                  "/cancel": self.post_cancel, "/undo-checkout": self.post_undo_checkout, "/bulk-hold": self.post_bulk_hold}
-        return posts.get(r)
+        return posts.get(r) or self.inventory_route(method, r)
 
     def _read_raw(self) -> bytes:
         """A raw request body (the editor's saves), bounded like an upload."""
@@ -813,8 +813,16 @@ class BaseHandler(BaseHTTPRequestHandler):
             return self._po_options()
         if name == "po":  # a receipt is checked against a purchase-order record
             return self._record_options("purchase-order")
-        if name == "item":
-            return self._record_options("item")
+        if name == "part":
+            return self._record_options("part")
+        if name == "supplier_part":
+            return self._record_options("supplier-part")
+        if name in ("location", "to_location", "default_location") and "stock-location" in self.hub.kernel.types:
+            return self._record_options("stock-location")
+        if name == "lot":
+            return self._record_options("stock-item")
+        if name == "category" and "part-category" in self.hub.kernel.types:
+            return self._record_options("part-category")
         if name == "design":
             return self._record_options("design")
         if name == "journal":

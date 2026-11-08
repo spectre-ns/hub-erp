@@ -438,7 +438,7 @@ class Runner:
             if verdict == "fail":
                 detail = (env["error"] or {}).get("detail") or "; ".join(p["detail"] for p in env["problems"] if p["severity"] == "error") \
                     or "step result has error-severity problems"
-                self._fail(state, track, sid, detail)
+                self._fail(state, track, sid, detail, recheck=str((env["error"] or {}).get("recheck") or ""))
                 return state
             if step.get("gate", {}).get("type") == "human":
                 outcome = self._human_gate(state, bundle, step, env, track)
@@ -455,11 +455,13 @@ class Runner:
         self._complete(state, track)
         return state
 
-    def _fail(self, state: dict, track: Track, sid: str, reason: str, kind: str = "data", gate: str = "") -> None:
+    def _fail(self, state: dict, track: Track, sid: str, reason: str, kind: str = "data", gate: str = "", recheck: str = "") -> None:
         """A failed run goes back to its owner: the record waits in state ``failed`` assigned to them, with a
         message. ``kind`` says what fixes it: 'data' (correct the item and retry) or 'organisation' (nobody may take
-        the step; a policy owner changes who may, the item's fields cannot fix it)."""
-        track.append({"type": "run.failed", "run_id": state["id"], "step": sid, "reason": reason, "kind": kind, "gate": gate})
+        the step; a policy owner changes who may, the item's fields cannot fix it). ``recheck`` names the cog of an
+        earlier step whose check no longer holds (a step's error says so): a retry starts again from that step."""
+        track.append({"type": "run.failed", "run_id": state["id"], "step": sid, "reason": reason, "kind": kind, "gate": gate,
+                      **({"recheck": recheck} if recheck else {})})
         state["pending"] = None
         if state.get("record"):
             try:
@@ -1332,6 +1334,7 @@ class Runner:
         sid = failed.get("step") if failed else None
         ids = [s["id"] for s in state["manifest"]["steps"]]
         start = ids.index(sid) if sid in ids else 0
+        voided: set[str] = set()
         if fields or attachments:
             # Changed inputs: a signature covers the record as it was when it was given. If the record changed after
             # an approval, that approval no longer matches it: the run goes back to the first signed Gate and the
@@ -1343,12 +1346,26 @@ class Runner:
                 start = min(start, decided[0])
                 for i in decided:
                     d = (state["steps"].get(ids[i]) or {}).get("decision") or {}
+                    voided.add(ids[i])
                     track.append({"type": "gate.voided", "run_id": state["id"], "step": ids[i], "by": by,
                                   "was_decided_by": d.get("by"), "fields": sorted(fields),
                                   "reason": "the record changed after it was approved; it is approved again on what it says now"})
             else:
                 start = min(start, (decided[-1] + 1) if decided else 0)
             sid = ids[start] if start < len(ids) else sid
+        recheck = (failed or {}).get("recheck")
+        back = next((i for i, s in enumerate(state["manifest"]["steps"]) if (s.get("cog") or {}).get("id") == recheck), None) if recheck else None
+        if back is not None and back < start:
+            # The failed step found that what an earlier step checked has changed since (a lot's quantity since its
+            # adjustment was checked): the run starts again from that check, and an approval given after it is void,
+            # because it was given on what the check said then.
+            for i in range(back, len(ids)):
+                d = (state["steps"].get(ids[i]) or {}).get("decision")
+                if d and ids[i] not in voided:
+                    track.append({"type": "gate.voided", "run_id": state["id"], "step": ids[i], "by": by, "was_decided_by": d.get("by"),
+                                  "fields": [], "reason": f"what it was approved on changed since {recheck} checked it; it is checked and approved again"})
+            start, sid = back, ids[back]
+            state["grant"] = None
         for s in ids[start:]:
             state["steps"].pop(s, None)
         state["pending"] = None

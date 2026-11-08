@@ -295,16 +295,30 @@ class RiskScorer(Cog):
         if rtype == "purchase-request":
             c = rec.get("conditions") or {}
             conditions["supplier_approved"] = bool(c.get("supplier_approved"))
-            conditions["item_known"] = bool(c.get("item_known"))
+            conditions["part_active"] = bool(c.get("part_active"))
             amount = float(rec.get("amount") or 0)
             if amount <= 0:
                 reasons.append("no price on the request")
             if not conditions["supplier_approved"]:
                 reasons.append("supplier not approved")
-            if not conditions["item_known"]:
-                reasons.append("item not in inventory")
+            if not conditions["part_active"]:
+                reasons.append("the part is not known and active")
             tier = "high" if amount >= big or not conditions["supplier_approved"] or amount <= 0 else (
-                "medium" if amount >= small or not conditions["item_known"] else "low")
+                "medium" if amount >= small or not conditions["part_active"] else "low")
+        elif rtype == "stock-adjustment":
+            c = rec.get("conditions") or {}
+            conditions["variance_within_tolerance"] = bool(c.get("variance_within_tolerance"))
+            value = float(rec.get("amount") or 0)
+            limit = float(threshold(ctx.bundle, "adjustment-approval-threshold", 500) or 500)
+            if not conditions["variance_within_tolerance"]:
+                reasons.append(f"variance {rec.get('variance_pct')}% outside the count tolerance")
+            if value > limit:
+                reasons.append(f"value {value:g} over the adjustment approval threshold {limit:g}")
+            tier = "high" if value > limit else ("medium" if not conditions["variance_within_tolerance"] else "low")
+        elif rtype == "stock-release":
+            tier = "medium" if rec.get("ncr") else "low"
+            if rec.get("ncr"):
+                reasons.append("held by a nonconformance")
         elif rtype == "bill":
             match = rec.get("match", {}) or {}
             conditions["match_within_tolerance"] = bool(match.get("within_tolerance") and match.get("received"))
@@ -1489,10 +1503,11 @@ class CogRegistry:
                     NCRClassifier, CAPAOpener, NCROpener, CAPADrafter, EffectivenessScheduler, AuditChecklistDrafter,
                     DocumentClassifier, APReviewer, DocReviewer, QualityAssistant, QAManager, Swarm, FrameStager):
             self.register(cls())
-        from . import cad, procurement  # CAD/ECAD and procurement cogs live in their own modules
+        from . import cad, inventory_cogs, procurement  # CAD/ECAD, procurement and inventory cogs live in their own modules
 
         cad.register(self)
         procurement.register(self)
+        inventory_cogs.register(self)
         self.register(Noop())
 
     def register(self, cog: Cog) -> None:

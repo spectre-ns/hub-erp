@@ -74,6 +74,12 @@ ICONS: dict[str, str] = {
     "send": '<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>',
     "grid": '<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/>',
     "lock": '<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+    "map-pin": '<path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/>',
+    "move": '<polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/>',
+    "scissors": '<circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/>',
+    "archive": '<polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/>',
+    "git-merge": '<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/>',
+    "package": '<line x1="16.5" y1="9.4" x2="7.5" y2="4.21"/><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/>',
 }
 
 # File-type badges: the file outline with a short label; the label text is part of the icon, not colour alone.
@@ -84,7 +90,9 @@ FILE_TYPES = {"docx": "W", "doc": "W", "odt": "T", "xlsx": "X", "xls": "X", "ods
 # Which icon stands for a record type (anything missing gets "file").
 TYPE_ICONS = {"bill": "coins", "purchase-request": "cart", "purchase-order": "clipboard", "receipt": "truck", "ncr": "alert", "capa": "retry",
               "audit": "clipboard", "calibration": "sliders", "complaint": "message", "management-review": "users", "training": "award",
-              "change-request": "workflow", "supplier-evaluation": "star", "design": "tool", "requirement": "flag", "part": "box", "item": "box",
+              "change-request": "workflow", "supplier-evaluation": "star", "design": "tool", "requirement": "flag", "part": "box", "item": "archive",
+              "stock-item": "package", "stock-location": "map-pin", "part-category": "folder", "supplier-part": "truck", "manufacturer-part": "cpu",
+              "stock-adjustment": "hash", "stock-release": "shield",
               "document": "file-text", "task": "check-circle", "journal": "book", "journal-reversal": "retry", "asset": "cpu"}
 
 

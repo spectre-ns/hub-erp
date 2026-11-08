@@ -328,7 +328,7 @@ def test_events_carry_the_run_and_release_and_come_back_in_order(k):
     assert rec["created_by"] == "erin" and rec["run_id"] == "run-b" and rec["release"] == "digest-b"
     assert rec["events"] == [e["seq"] for e in evs]
     assert k.events(aggregate="rec:task:TASK-0099") == []
-    assert [e["aggregate"] for e in k.events(prefix="rec:")] == [t["locator"]] * 3
+    assert [e["aggregate"] for e in k.events(prefix="rec:") if e["by"] != "seed"] == [t["locator"]] * 3  # the seed's sample locations aside
 
 
 def test_record_cache_is_invalidated_by_every_append(k):

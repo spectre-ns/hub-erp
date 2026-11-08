@@ -73,6 +73,8 @@ class InboxMixin:
         if rec["type"] == "receipt":
             lines = f.get("lines") or []
             return f"{len(lines)} line{'s' if len(lines) != 1 else ''}"
+        if rec["type"] == "stock-release" and f.get("lot"):
+            return "release " + str(f["lot"]).rsplit(":", 1)[-1]
         if rec["type"] == "design":
             return f"change class {f.get('change_class')}" if f.get("change_class") else ""
         if rec["type"] == "document":
@@ -363,8 +365,11 @@ class InboxMixin:
             risk()
         elif t == "purchase-request":
             add("Title", "title")
-            add("Item", "item", link=True)
+            add("Part", "part", link=True)
+            add("Supplier part", "supplier_part", link=True)
+            add("Item (archived)", "item", link=True)
             add("Manufacturer part number", "mpn")
+            add("Manufacturer", "manufacturer")
             add("Quantity", value=qty(f.get("quantity"), f.get("unit")) if f.get("quantity") is not None else None)
             add("Unit cost", value=money(f.get("unit_cost"), f.get("currency")) if f.get("unit_cost") is not None else None)
             add("Amount", value=money(f.get("amount"), f.get("currency")) if f.get("amount") is not None else None)
@@ -420,14 +425,26 @@ class InboxMixin:
             add("Quantity", "quantity")
             add("Part", "part", link=True)
             risk()
+            extra += self._ncr_stock_html(f)
         elif t == "receipt":
             add("Purchase order", "po", link=True)
-            add("Supplier", "supplier")
+            add("Supplier", value=self._supplier_name(f.get("supplier")) if f.get("supplier") else None)
             lines = f.get("lines") or []
             if lines:
-                extra += "<h4>Lines</h4>" + table(["Item", "Quantity received"], [[self._record_link(l.get("item")), esc(qty(l.get("quantity")))] for l in lines if isinstance(l, dict)])
-            add("Location", "location")
+                extra += "<h4>Lines</h4>" + table(["Part", "Quantity received", "Batch or serials", "Expiry"],
+                                                  [[self._record_link(l.get("part") or l.get("item")), esc(qty(l.get("quantity"))),
+                                                    esc(l.get("batch") or ", ".join(map(str, l.get("serials") or []))), esc(day(l.get("expiry")))]
+                                                   for l in lines if isinstance(l, dict)])
+            add("Into", "location", link=True)
+            add("Packing slip", "packing_slip")
             add("Notes", "notes")
+            if f.get("outstanding_after"):
+                left = {k: v for k, v in f["outstanding_after"].items() if v}
+                rows.append(("Still outstanding after this", ", ".join(f"{self._record_link(k, with_summary=False)} {esc(qty(v))}" for k, v in left.items())
+                             or "nothing: it completes the order"))
+        elif t in ("stock-adjustment", "stock-release", "part"):
+            rows += self._inventory_brief_rows(rec, f)
+            risk()
         elif t == "document":
             add("Title", "title")
             add("Type", "doc_type")

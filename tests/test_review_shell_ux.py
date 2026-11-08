@@ -73,8 +73,10 @@ def test_capa_actions_are_lines_not_json():
 def test_a_stop_nobody_may_fix_with_a_field_says_who_can(shell):
     hub = shell["hub"]
     # A purchase request filed by the only buyer: segregation of duties leaves nobody to approve it.
-    item = hub.kernel.create("item", "Inventory/Items", {"name": "[review] widget", "supplier": "acme-metals", "unit_cost": 1}, by="dave")
-    status, url, text = post(shell, "/start", {"as": "dave", "process": "purchase-request", "title": "[review] widgets", "item": item["locator"],
+    from conftest import make_part
+
+    item = make_part(hub.kernel, "WID-1", title="[review] widget", unit_cost=1)
+    status, url, text = post(shell, "/start", {"as": "dave", "process": "purchase-request", "title": "[review] widgets", "part": item["locator"],
                                                "quantity": "5000", "supplier": "acme-metals", "reason": "line 3"})
     run_id = url.split("/run/")[1].split("?")[0]
     state = hub.runner.load(run_id)

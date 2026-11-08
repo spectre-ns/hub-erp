@@ -4,8 +4,9 @@
 # shell opens on a working hub. A failure is printed once, noted in
 # state/.bootstrap-failed, and the shell still starts (with no release in
 # effect) so the operator can fix the Frame and run one command.
-# Later starts keep the existing state and say when the Frames in the image
-# differ from the Frames in the release in force.
+# Later starts keep the existing state, seed only what a newer version needs
+# and the state lacks, and say when the Frames in the image differ from the
+# Frames in the release in force.
 set -e
 cd /hub
 if [ ! -f state/.bootstrapped ]; then
@@ -23,6 +24,8 @@ if [ ! -f state/.bootstrapped ]; then
     echo "the shell starts anyway; it answers every page with 'no policy release is in effect' until then"
   fi
 else
+  # Seed what a newer version needs and the state lacks (stock locations, part categories); idempotent.
+  hubproto init || echo "hubproto init failed (see above); the shell starts anyway"
   # Exit 1 means the Frames on disk differ from the release in force (or no release is in effect);
   # the output carries the exact commands to compile, review and release them.
   if ! hubproto status --check; then
