@@ -246,3 +246,11 @@ def test_the_cog_is_told_about_these_tools(hub):
     prep = Agent(hub, "quality-assistant").prepare("look around", by="carol")
     names = [s["name"] for s in prep["specs"]]
     assert set(TOOLS) <= set(names) and names[-1] == "finish"
+
+
+def test_a_cog_starts_only_processes_the_person_it_works_for_may_start(hub):
+    from hubproto.agent import AgentStore, AgentTools
+
+    t = AgentTools(hub, "quality-assistant", "t-start", "act", 5, AgentStore(hub.root / "state" / "agents"), requester="dave")
+    out = t.execute("start_process", {"process": "capa", "fields": {"title": "from dave's chat"}})
+    assert "error" in out and "dave" in out["error"], out

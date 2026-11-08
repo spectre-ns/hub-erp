@@ -286,6 +286,10 @@ class AgentTools(RecordTools):
                 rec = self._find(a["number"]) if a.get("number") else None
                 if a.get("number") and rec is None:
                     return {"error": f"no record {a.get('number')!r} that {self.cog} may read"}
+                if self.for_whom:  # the cog is their hands: it starts only what they may start
+                    why = hub.runner.may_start(process, self.for_whom, record=rec["locator"] if rec else None)
+                    if why:
+                        return {"error": f"{self.for_whom}, for whom you work, may not: {why}"}
                 run_id = hub.runner.submit(process, {"record": dict(a.get("fields") or {})}, owner=self.cog, record=rec["locator"] if rec else None)
                 state = hub.runner.load(run_id)
                 item = hub.kernel.get(state["record"]) if state.get("record") else None

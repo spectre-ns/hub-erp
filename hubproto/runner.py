@@ -175,6 +175,28 @@ class Runner:
         return [s for s in self.list() if s.get("pending") and s["status"] == "waiting" and principal in s["pending"]["assignees"]]
 
     # ------------------------------------------------------------- submission
+    def may_start(self, process: str, who: str, record: str | None = None) -> str:
+        """Empty when ``who`` may start this process (on this record): the same checks as submit, without starting it."""
+        release = self.releases.current()
+        if release is None:
+            return "no policy release is in effect"
+        bundle = self.releases.bundle(release["digest"])
+        manifest = bundle["ops"].get(process)
+        if manifest is None:
+            return f"there is no process {process!r}"
+        d = authz.check(bundle, who, "create", manifest["object"], manifest["folder"])
+        if not d["allowed"]:
+            return f"{who} may not start {process}: {d['why']}"
+        first_role = manifest["steps"][0]["role"]
+        if first_role not in ("system", *FIELD_ROLES) and first_role not in authz.roles_of(bundle, who):
+            return f"{who} does not hold the role {first_role!r} that starts {process}"
+        if record:
+            rec = self.kernel.get(record)
+            if rec is None:
+                return "no such record"
+            return self._may_submit_existing(bundle, rec, bundle["workflows"][process], who)
+        return ""
+
     def submit(self, process: str, inputs: dict, owner: str, at: str | None = None, record: str | None = None,
                parent_run: str | None = None) -> str:
         release = self.releases.current(at)
@@ -1294,6 +1316,7 @@ class Runner:
         if by != state["owner"] and not authz.check(bundle, by, "approve", state["manifest"]["object"], state["manifest"]["folder"])["allowed"]:
             raise RunError(f"{by} may not retry this run: only its owner or an approver of {state['manifest']['object']} may")
         track = Track(self._dir(state["id"]))
+        rec_before = self.kernel.get(state["record"]) if state.get("record") else None
         if fields and state.get("record"):
             try:
                 self.kernel.set_fields(state["record"], fields, by=by, run_id=state["id"], release=state["release"])
@@ -1310,10 +1333,21 @@ class Runner:
         ids = [s["id"] for s in state["manifest"]["steps"]]
         start = ids.index(sid) if sid in ids else 0
         if fields or attachments:
-            # Changed inputs: every automatic step after the last signed Gate runs again on them (a supplier named now
-            # is checked now), but no signature already given is thrown away.
+            # Changed inputs: a signature covers the record as it was when it was given. If the record changed after
+            # an approval, that approval no longer matches it: the run goes back to the first signed Gate and the
+            # item is approved again on what it says now (a quantity raised after approval is never issued on it).
             decided = [i for i, x in enumerate(ids) if (state["steps"].get(x) or {}).get("decision")]
-            start = min(start, (decided[-1] + 1) if decided else 0)
+            changed_signed = bool(decided) and bool(fields) and rec_before is not None and any(
+                rec_before["fields"].get(k) != v for k, v in fields.items())
+            if changed_signed:
+                start = min(start, decided[0])
+                for i in decided:
+                    d = (state["steps"].get(ids[i]) or {}).get("decision") or {}
+                    track.append({"type": "gate.voided", "run_id": state["id"], "step": ids[i], "by": by,
+                                  "was_decided_by": d.get("by"), "fields": sorted(fields),
+                                  "reason": "the record changed after it was approved; it is approved again on what it says now"})
+            else:
+                start = min(start, (decided[-1] + 1) if decided else 0)
             sid = ids[start] if start < len(ids) else sid
         for s in ids[start:]:
             state["steps"].pop(s, None)

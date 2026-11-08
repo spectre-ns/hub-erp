@@ -339,3 +339,31 @@ def test_an_item_request_is_not_approved_by_its_requester(released):
     rid = hub.runner.submit("item-request", {"record": {"name": "10k resistor", "mpn": "R-10K", "manufacturer": "Yageo"}}, owner="dave")
     st = hub.runner.load(rid)
     assert "dave" not in ((st.get("pending") or {}).get("assignees") or [])
+
+
+def test_a_retry_that_changes_an_approved_record_sends_it_back_to_its_approval(tmp_path):
+    """Review note G1: dave approved a request for 10 units with no price; issuing the order stopped; a retry at 100
+    units of 1,000 USD must not be issued on dave's signature: the approval is voided and given again."""
+    import shutil
+
+    from conftest import ROOT, release_all
+    from hubproto.app import Hub
+
+    shutil.copytree(ROOT / "frames", tmp_path / "frames")
+    hub = Hub(tmp_path)
+    hub.kernel.seed()
+    release_all(hub)
+    run = hub.runner.submit("purchase-request", {"record": {"title": "Washers", "item": "ITEM-00001", "quantity": 10,
+                                                            "supplier": "acme-metals", "reason": "stock"}}, owner="alice")
+    state = hub.runner.load(run)
+    assert state["status"] == "waiting", hub.runner.track(run)[-2:]
+    who = state["pending"]["assignees"][0]
+    hub.runner.decide(run, who, "approve", meaning="ok", payload_digest=hub.runner.seen_digest(state))
+    stopped = hub.runner.load(run)
+    if stopped["status"] != "failed":
+        pytest.skip(f"this release issues the order without a price ({stopped['status']}); the scenario needs a stop after the approval")
+    after = hub.runner.retry(run, "alice", note="priced", fields={"unit_cost": 1000.0, "quantity": 100})
+    assert after["status"] == "waiting", "back at the approval"
+    voided = [e for e in hub.runner.track(run) if e["type"] == "gate.voided"]
+    assert voided and voided[0]["was_decided_by"] == who
+    assert not any(e["type"] == "run.completed" for e in hub.runner.track(run))

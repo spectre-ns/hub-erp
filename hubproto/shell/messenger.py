@@ -37,7 +37,7 @@ function bubble(m){var x=li(m.mine?'mine':'theirs');if(!m.mine){var a=document.c
 var b=document.createElement('div');b.className='mx-bubble';linkify(b,m.body);x.appendChild(b);
 if(m.looked){var lk=document.createElement('span');lk.className='mx-looked';lk.textContent=m.looked;b.appendChild(lk)}
 if(m.when){var t=document.createElement('span');t.className='mx-when';t.textContent=m.when+(m.stand_in?' · no model':'');b.appendChild(t)}return x}
-function empty(){var x=li('mx-empty');x.textContent='Say hello to '+cog+'. It can see what you are looking at, the procedures it follows and its queue. It will not change anything from here.';return x}
+function empty(){var x=li('mx-empty');x.textContent='Say hello to '+cog+'. It can see what you are looking at, the procedures it follows and its queue, and it can act on your behalf: only what both it and you may do, and you confirm what it proposes.';return x}
 function typingLi(ahead){var t=li('theirs mx-typing');t.innerHTML='<span class="mx-av">'+(avatars[cog]||'')+'</span><div class="mx-bubble"><span class="mx-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="mx-wait"></span></div>';
 var w=t.querySelector('.mx-wait');w.textContent=ahead>0?(' '+(ahead===1?'1 task':ahead+' tasks')+' ahead of you in '+cog+'\'s queue'):' '+cog+' is on it';return t}
 var poll=null;function busy(on){send.disabled=on;sel.disabled=on}

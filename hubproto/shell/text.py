@@ -481,6 +481,9 @@ def track_sentence(ev: dict, link_number=None) -> str:
         return f"waiting for {esc(', '.join(ev.get('assignees') or []))} at {step}" + (f", due {esc(day(ev.get('due')))}" if ev.get("due") else "")
     if t == "gate.cog_review":
         return f"the {esc(ev.get('cog'))} cog reviewed it: {esc(ev.get('verdict'))}" + (f" ({esc('; '.join(ev.get('reasons') or []))})" if ev.get("reasons") else "")
+    if t == "gate.voided":
+        return (f"{esc(ev.get('was_decided_by') or 'the')}'s approval at {step} no longer matches: {by} changed "
+                f"{esc(', '.join(ev.get('fields') or []))} after it, so it is approved again")
     if t == "gate.reviewing":
         return (f"the {esc(ev.get('cog'))} cog started its adversarial reviews: " + esc(", ".join(ev.get("lenses") or []))
                 + "; it signs only when all of them pass")
