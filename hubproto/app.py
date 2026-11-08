@@ -417,7 +417,7 @@ class Hub:
         if self.sop_source():  # the SOP document in force is the Frame's document
             return sopdocs.in_force(self.kernel, name)
         released = self.released_frames()
-        if name not in released.frames:
+        if name not in self.released_frame_names():
             return None  # a Frame that is not in the release in force (a draft on disk) has no document: it is not policy
         frame = released.get(name)
         doc_type, folder = sopdocs.kind_of(frame)
@@ -453,13 +453,17 @@ class Hub:
         """The document of every Frame in the release in force; a document of a Frame no longer (or never) released is retired."""
         from . import sopdocs
 
-        released = self.released_frames()
+        names = self.released_frame_names()
         if not self.sop_source():
             for d in self.kernel.query(type_="document"):
                 f = d["fields"]
-                if sopdocs.is_frame_doc(f) and f.get("frame_name") not in released.frames and d["state"] == "effective":
+                if sopdocs.is_frame_doc(f) and f.get("frame_name") not in names and d["state"] == "effective":
                     self.kernel.transition(d["locator"], "obsolete", by="hub", reason="its Frame is not in the release in force")
-        return [d for d in (self.frame_document(n, create=create) for n in sorted(released.frames)) if d]
+        return [d for d in (self.frame_document(n, create=create) for n in sorted(names)) if d]
+
+    def released_frame_names(self) -> set[str]:
+        """The Frames the release in force was compiled from (its bill of materials)."""
+        return {f["name"] for f in (self.releases.current() or {}).get("frames") or []}
 
     def frame_draft(self, name: str, by: str) -> dict:
         """A working draft of a Frame: the current text, edited in the hub and proposed for release. One per person.

@@ -117,3 +117,13 @@ def test_a_frame_draft_can_be_withdrawn_and_is_no_longer_compiled(released):
     assert not hub.compile()["overrides"]  # the files again
     assert hub.kernel.get(draft["locator"])["fields"]["withdrawn"] is True
     assert hub.frame_draft("cog-profiles", by="carol")["locator"] != draft["locator"]  # a new edit starts a new draft
+
+
+def test_a_frame_that_is_not_released_has_no_document(released):
+    hub = released
+    path = hub.frames.get("finance-policy").path.parent / "draft-only.frame.md"
+    path.write_text('---\ntype: frame [0.2]\nname: draft-only\ndescription: "a draft"\nvisibility: internal\nversion: "0.1.0"\nscope: department\n'
+                    'maintainer: carol\ninherits: org-model\n---\n# Draft only\n')
+    hub._frames = None
+    assert hub.frame_document("draft-only") is None, "an unreleased Frame is not a document in force"
+    assert all(d["fields"].get("frame_name") != "draft-only" for d in hub.frame_documents())
