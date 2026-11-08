@@ -3,6 +3,7 @@ oracle, people and roles, and the conformance checklist."""
 
 from __future__ import annotations
 
+from .. import authz
 from ..compile import CompileError
 from ..frames import FrameError
 from ..rules import rule_key
@@ -10,7 +11,7 @@ from .forms import ShellError
 from urllib.parse import quote
 
 from .icons import icon
-from .handler import details, hidden_as, href, table
+from .handler import details, hidden_as, href, log_line, table
 from .text import chip, esc, friendly, join_words, money, role_words, tag, type_name, version_label, when
 
 RULE_WORDS = {"permission": "permission", "routing": "routing", "threshold": "threshold", "sla": "deadline", "approval_criteria": "automatic approval",
@@ -177,8 +178,52 @@ proposal <code>{esc(meta.get('proposal_id') or '-')}</code>{(' reviewed by ' + e
             raise ShellError(f"The policies on disk could not be read: {e}. Fix that file; the release in effect still applies.", 503) from None
         rows = [[f"<a href='{href('/frame/' + f.name, user)}'>{esc(f.name)}</a>", esc(f.version), esc(f.scope), _filled(f.maintainer), esc(", ".join(f.inherits) or "-"), _filled(f.description)]
                 for f in frames]
-        self._page("Policies", "<h1>Policies</h1><p class='why'>The policy and procedure documents (Frames) the release is compiled from, as they are on disk now.</p>"
+        self._page("Policies", "<h1>Policies</h1>" + self._sop_conversion_card()
+                   + "<p class='why'>The policy and procedure documents (Frames) the release is compiled from, as they are on disk now.</p>"
                    + table(["Policy", "Version", "Scope", "Maintainer", "Inherits", "Description"], rows), crumbs=[("Policies", None)])
+
+    def _sop_conversion_card(self) -> str:
+        """Where the rules come from, and for a policy owner the button that makes the SOPs the documents they are compiled from."""
+        from .. import sopdocs
+
+        user = self.user
+        if self.hub.sop_source():
+            docs = [d for d in self.hub.kernel.query(type_="document") if str(d["fields"].get("lineage", "")).startswith(sopdocs.LINEAGE) and d["state"] == "effective"]
+            return (f"<div class='card ok' role='status'>{icon('check-circle')} <b>The rules are compiled from {len(docs)} SOP and policy documents.</b> "
+                    f"Change a rule by revising its SOP on a <a href='{href('/change-orders', user)}'>change order</a>. "
+                    f"<a href='{href('/scopes', user)}'>Which Frames depend on which SOPs</a>.</div>")
+        owner = "policy-owner" in authz.roles_of(self.bundle or {}, user)
+        out = (f"<div class='card' id='convert'><h2 style='margin-top:0'>{icon('layers')}Make the SOPs the source</h2>"
+               "<p>The rules are compiled from the Frame files today. Converting makes each Frame a document in the library: policies in "
+               "Policy, SOPs and work instructions in Quality/Controlled Documents, personas in Policy. From then on the hub compiles its "
+               "rules from those documents, and a rule changes through a change order that carries the SOP's revision.</p>")
+        if not owner:
+            return out + "<p class='why'>A policy owner converts them.</p></div>"
+        blockers = sopdocs.conversion_blockers(self.hub)
+        if blockers:
+            return out + ("<p><b>Not yet:</b></p><ul>" + "".join(f"<li>{esc(b)}</li>" for b in blockers) + "</ul></div>")
+        n = len(self.hub.released_frames().frames)
+        return out + (f"<p class='why'>Checked: all {n} Frames read back exactly from their documents, so no rule and no wording changes.</p>"
+                      f"<form method='post' action='/sops-convert'>{hidden_as(user)}{self._once()}"
+                      f"<label class='check'><input type='checkbox' name='confirm' value='yes' required> I understand that rules will then change only "
+                      f"through SOP revisions on change orders</label><div class='actions'><button>{icon('layers')}Convert the SOPs to documents</button></div></form></div>")
+
+    def post_sops_convert(self):
+        from .. import sopdocs
+
+        self._need_release()
+        done = self._once_done()
+        if done:
+            return self._redirect(done)
+        if self._f("confirm") != "yes":
+            raise ShellError("Tick the box to confirm.", field="confirm")
+        try:
+            out = sopdocs.convert_from_ui(self.hub, by=self.user)
+        except ValueError as e:
+            raise ShellError(str(e)[:1].upper() + str(e)[1:] + ".", 403 if "only a policy owner" in str(e) else 400) from None
+        log_line(f"sops converted by={self.user} documents={len(out['made'])} changes={out['changes']}")
+        self._redirect(self._once_finish(href("/frames", self.user, done=f"{len(out['made'])} SOP and policy documents are in the library; "
+                                                                         f"compiling from them changes {out['changes']} rule(s).")))
 
     def page_frame(self):
         if not self._is_member():

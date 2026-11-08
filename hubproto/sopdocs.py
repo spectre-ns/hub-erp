@@ -189,3 +189,57 @@ def source_texts(hub, drafts: dict[str, str] | None = None) -> dict[str, str]:
         if rec is not None:
             out[name] = frame_text(hub, rec)
     return out
+
+
+def roundtrip_problems(hub, frames=None) -> list[str]:
+    """Frames whose text would not read back exactly from the document they become (nothing is written). Empty means
+    converting changes no rule and no wording."""
+    store = frames or hub.released_frames()
+    problems = []
+    for name in sorted(store.frames):
+        frame = store.get(name)
+        lines = docx_lines(to_docx(frame.body))
+        while lines and not lines[-1].strip():
+            lines.pop()
+        head = "\n".join((frame.text or "").splitlines()[: max(0, frame.body_start - 1)])
+        if head + "\n" + "\n".join(lines) + "\n" != frame.text:
+            problems.append(name)
+    return problems
+
+
+def conversion_blockers(hub) -> list[str]:
+    """Why the SOPs cannot be converted now (empty when they can)."""
+    meta = hub.releases.current()
+    if not meta:
+        return ["no policy release is in force"]
+    bundle = hub.releases.bundle(meta["digest"])
+    out = []
+    if converted(hub.kernel):
+        out.append("the SOPs are documents already")
+    if "change-order" not in (bundle.get("ops") or {}):
+        out.append("the release in force has no change-order process: without it no SOP could change after converting. "
+                   "Release the policy that adds it first (change-control-sop with the change-order process)")
+    bad = roundtrip_problems(hub)
+    if bad:
+        out.append("these Frames would not read back exactly from their documents: " + ", ".join(bad))
+    return out
+
+
+def convert_from_ui(hub, *, by: str) -> dict:
+    """Convert, for a policy owner, after the checks; the other policy owners are told. Returns {"made", "changes"}."""
+    from . import authz
+
+    bundle = hub.releases.bundle(hub.releases.current()["digest"])
+    if "policy-owner" not in authz.roles_of(bundle, by):
+        raise ValueError("only a policy owner converts the SOPs to documents")
+    blockers = conversion_blockers(hub)
+    if blockers:
+        raise ValueError("; ".join(blockers))
+    made = convert(hub, by=by)
+    changes = hub.compile(save=False)["changes"]
+    for owner in sorted(p for p in bundle.get("members") or {} if "policy-owner" in authz.roles_of(bundle, p) and p != by):
+        hub.inbox.notify(owner, kind="policy", subject="The SOPs are documents now",
+                         body=f"{by} converted {len(made)} Frames into policy, SOP and work-instruction documents; the Frame is compiled from them. "
+                              "Rules now change through change orders that carry SOP revisions.")
+    return {"made": made, "changes": len(changes)}
+

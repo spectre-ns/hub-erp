@@ -241,7 +241,7 @@ class BaseHandler(BaseHTTPRequestHandler):
                     self.arg = r[len(prefix):]
                     return fn
             return None
-        posts = {"/folder-new": self.post_folder_new, "/folder-remove": self.post_folder_remove, "/forms-check": self.post_forms_check, "/forms-save": self.post_forms_save, "/forms-discard": self.post_forms_discard,
+        posts = {"/sops-convert": self.post_sops_convert, "/folder-new": self.post_folder_new, "/folder-remove": self.post_folder_remove, "/forms-check": self.post_forms_check, "/forms-save": self.post_forms_save, "/forms-discard": self.post_forms_discard,
                  "/forms-carry": self.post_forms_carry, "/forms-uncarry": self.post_forms_uncarry,
                  "/withdraw-record": self.post_withdraw_record, "/automation-retry": self.post_automation_retry, "/automation-start": self.post_automation_start, "/start": self.post_start, "/decide": self.post_decide, "/msg": self.post_msg, "/attach": self.post_attach,
                  "/finish-edit": self.post_finish_edit, "/new-document": self.post_new_document, "/working-copy": self.post_working_copy, "/apply-replies": self.post_apply_replies, "/start-on": self.post_start_on, "/chat": self.post_chat, "/chat-clear": self.post_chat_clear, "/frame-draft": self.post_frame_draft, "/text-save": self.post_text_save,

@@ -143,3 +143,64 @@ def test_frame_pages_say_the_frame_is_derived_from_its_document(shell):
     status, text = get(shell, "/frame/document-control-sop", **{"as": "carol"})
     body = main_of(text)
     assert status == 200 and "This Frame is compiled from" in body and doc["number"] in body and "Open as a document" not in body
+
+
+def test_a_policy_owner_converts_the_sops_from_the_policies_page(tmp_path):
+    """No command line: the Policies page checks that every Frame reads back exactly and that change orders exist,
+    then a policy owner converts; the other policy owner is told; the rules are then compiled from the documents."""
+    import shutil
+
+    from conftest import ROOT, release_all
+    from hubproto.app import Hub
+    from hubproto.shell import free_port, serve_in_thread
+
+    shutil.copytree(ROOT / "frames", tmp_path / "frames")
+    hub = Hub(tmp_path)
+    hub.kernel.seed()
+    release_all(hub)
+    port = free_port()
+    server = serve_in_thread(hub, "127.0.0.1", port)
+    shell = {"hub": hub, "base": f"http://127.0.0.1:{port}"}
+    try:
+        status, text = get(shell, "/frames", **{"as": "dave"})
+        assert "A policy owner converts them" in main_of(text)
+        status, text = get(shell, "/frames", **{"as": "bob"})
+        body = main_of(text)
+        assert "read back exactly from their documents" in body and "Convert the SOPs to documents" in body
+        status, url, body = post(shell, "/sops-convert", {"as": "dave", "confirm": "yes"})
+        assert status == 403
+        status, url, body = post(shell, "/sops-convert", {"as": "bob", "confirm": "yes"})
+        assert status == 200 and hub.sop_source()
+        assert hub.compile(save=False)["changes"] == []
+        assert any(m["to"] == "carol" and "SOPs are documents" in m["subject"] for m in hub.inbox.all())
+        status, text = get(shell, "/frames", **{"as": "bob"})
+        assert "The rules are compiled from" in main_of(text)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_converting_waits_for_the_change_order_process(tmp_path, monkeypatch):
+    import shutil
+
+    from conftest import ROOT, release_all
+    from hubproto import sopdocs
+    from hubproto.app import Hub
+
+    shutil.copytree(ROOT / "frames", tmp_path / "frames")
+    hub = Hub(tmp_path)
+    hub.kernel.seed()
+    release_all(hub)
+    real = hub.releases.bundle
+
+    def without_change_orders(d):
+        b = real(d)
+        b["ops"].pop("change-order", None)
+        return b
+
+    monkeypatch.setattr(hub.releases, "bundle", without_change_orders)
+    blockers = sopdocs.conversion_blockers(hub)
+    assert any("no change-order process" in b for b in blockers)
+    with pytest.raises(ValueError):
+        sopdocs.convert_from_ui(hub, by="bob")
+    assert not hub.sop_source()
