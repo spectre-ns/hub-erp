@@ -130,3 +130,21 @@ def test_a_model_change_ignores_frames_on_disk_no_release_has(hub):
     assert {c["rule"].get("kind") for c in p["changes"] if c.get("rule")} <= {"cog", "text"}, [c["reason"] for c in p["changes"]]
     assert "extra-policy" not in {f["name"] for f in p["frames"]}
     assert not any(c.get("frame") == "extra-policy" for c in p["changes"])
+
+
+def test_proposals_a_release_leaves_behind_are_marked_stale(hub):
+    """After a release, an open compile of the files on the replaced release, and any proposal on a release replaced
+    even earlier, can never be released: each is marked stale, with why."""
+    edit_frame(hub, "finance-policy", NARRATIVE, REVIEWED)
+    files = hub.compile()
+    older = hub.compile(save=False)
+    older.update({"id": "0ld0ld0ld0ld", "number": 99, "base": "0" * 64, "status": "open"})
+    hub.proposals.save(older)
+    model = hub.propose_cog_model("quality-assistant", "ollama/granite4.2:3b", by="bob")
+    approve(hub, model)
+    hub.release(model["id"], "bob")
+    for p, why in ((files, "Compile again"), (older, "earlier release")):
+        p = hub.proposals.load(p["id"])
+        assert p["status"] == "stale" and why in p["stale_reason"], (p["number"], p["status"], p.get("stale_reason"))
+    with pytest.raises(CompileError, match="stale"):
+        hub.release(files["id"], "bob")

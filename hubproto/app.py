@@ -768,26 +768,36 @@ class Hub:
         redoes it on the new text."""
         changed = set((released.get("overrides") or {}).keys())
         for p in self.proposals.list():
-            if p.get("status") != "open" or p.get("base") != old_base or p["id"] == released["id"]:
+            if p.get("status") != "open" or p["id"] == released["id"] or p.get("base") == released.get("release"):
+                continue
+            if p.get("base") != old_base:
+                # Compiled against a release that was already replaced before this one: it can never be released.
+                self._mark_stale(p, f"it was compiled against an earlier release; #{released.get('number')} is now in force. Compile again")
                 continue
             if p.get("source") == "settings":
                 self._rebase_settings(p)
                 continue
             overrides = p.get("overrides") or {}
             if not overrides:
-                continue  # a compile of the files: compile again when ready
+                # A compile of the files: the release in force changed under it, so it can never be released.
+                self._mark_stale(p, f"#{released.get('number')} was released after it was compiled. Compile again")
+                continue
             clash = sorted(set(overrides) & changed)
             if clash:
-                p["status"] = "stale"
-                p["stale_reason"] = (f"{', '.join(clash)} changed in the release of #{released.get('number')}; redo the draft on the new text")
-                self.proposals.save(p)
-                for o in overrides.values():
-                    d = self.kernel.get(o["draft"]) if o.get("draft") else None
-                    if d:
-                        self.inbox.notify(d["fields"].get("owner") or "", kind="proposal", subject=f"Your draft {d['number']} needs redoing",
-                                          body=p["stale_reason"], record=d["locator"])
+                self._mark_stale(p, f"{', '.join(clash)} changed in the release of #{released.get('number')}; redo the draft on the new text")
                 continue
             self._recompile_drafts(p, overrides, note=f"rebased after the release of #{released.get('number')}")
+
+    def _mark_stale(self, p: dict, reason: str) -> None:
+        """An open proposal that can no longer be released: stale, with why; the author of each draft in it is told."""
+        p["status"] = "stale"
+        p["stale_reason"] = reason
+        self.proposals.save(p)
+        for o in (p.get("overrides") or {}).values():
+            d = self.kernel.get(o["draft"]) if o.get("draft") else None
+            if d:
+                self.inbox.notify(d["fields"].get("owner") or "", kind="proposal", subject=f"Your draft {d['number']} needs redoing",
+                                  body=reason, record=d["locator"])
 
     def _rebase_settings(self, p: dict) -> dict | None:
         from .rules import rule_key
