@@ -11,6 +11,7 @@ rendered rule produces no new release.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -339,13 +340,42 @@ class ReleaseStore:
         self.index_path.write_text(json.dumps(index, indent=1))
         return meta
 
+    # The hub's content store (hubproto.dms.BlobStore): every Frame text a proposal was compiled from is kept there
+    # under its hash, so a release records exactly the texts that were reviewed.
+    blobs = None
+
+    def keep_texts(self, texts) -> None:
+        """Keep these Frame texts under their hashes (a compile keeps every text it compiled)."""
+        if self.blobs is not None:
+            for t in texts:
+                self.blobs.put(t.encode("utf-8"))
+
+    def text_by_sha(self, sha: str | None) -> str | None:
+        """The kept Frame text with this hash, or None."""
+        if self.blobs is None or not sha:
+            return None
+        try:
+            return self.blobs.get(sha).decode("utf-8")
+        except Exception:
+            return None
+
     def frame_texts(self, d: str) -> dict[str, str]:
-        """The Frame texts a release was compiled from (empty for releases made before texts were kept)."""
+        """The Frame texts a release was compiled from (empty for releases made before texts were kept). Each must be
+        the text its bill of materials names by hash: a stored text that is not (an earlier release read the file on
+        disk when it was released, not the text that was compiled) is replaced by the kept text with that hash."""
         meta = self.get(d)
         fdir = self.root / meta["digest"] / "frames"
         if not fdir.exists():
             return {}
-        return {p.name[: -len(".frame.md")]: p.read_text(encoding="utf-8") for p in sorted(fdir.glob("*.frame.md"))}
+        bom = {f.get("name"): f.get("sha256") for f in meta.get("frames") or []}
+        out = {}
+        for p in sorted(fdir.glob("*.frame.md")):
+            name, text = p.name[: -len(".frame.md")], p.read_text(encoding="utf-8")
+            want = bom.get(name)
+            if want and hashlib.sha256(text.encode("utf-8")).hexdigest() != want:
+                text = self.text_by_sha(want) or text
+            out[name] = text
+        return out
 
     def list(self) -> list[dict]:
         """Releases in the order they were made (timestamps are second-resolution, so the index order breaks ties)."""

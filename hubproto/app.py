@@ -61,6 +61,7 @@ class Hub:
 
         self.settings_drafts = SettingsDrafts(state / "settings" / "drafts")
         self.dms = DMS(self.kernel, BlobStore(state / "blobs"))
+        self.releases.blobs = self.dms.blobs  # the Frame texts each proposal was compiled from, kept by hash
         self.runner = Runner(state / "runs", self.kernel, self.releases, self.registry, self.inbox, self.dms)
         # Cogs are users who work from a queue: a Gate that pends for a cog, a mention, a message or a task lands in the
         # cog's queue (see hubproto.workqueue); HUBPROTO_COG_QUEUE says who works it (inline, a worker thread, a service).
@@ -359,6 +360,8 @@ class Hub:
                                                            "the cog will be unavailable until it can"})
         if not save:
             return proposal
+        # Every text compiled is kept by its hash: the release records exactly these, whatever the files say by then.
+        self.releases.keep_texts(store.get(e["name"]).text for e in proposal["frames"])
         proposal["number"] = 1 + max(len(existing), max((int(x.get("number") or 0) for x in existing), default=0))
         # The earlier proposal of the same draft (or the earlier compile of the files) is superseded by this one;
         # decisions already given on the same change carry forward, so a recompile keeps a policy owner's approval.
@@ -649,25 +652,40 @@ class Hub:
         base = proposal.get("base")
         rejected_text = {c["frame"] for c in proposal.get("changes") or [] if c.get("op") == "text" and change_state(c) == "rejected"}
         overrides = {n: o for n, o in (proposal.get("overrides") or {}).items() if n not in rejected_text}
-        texts = {}
-        src = self.released_frames() if self.sop_source() else self.frames
-        for f in proposal.get("frames") or []:
-            try:
-                texts[f["name"]] = overrides[f["name"]]["text"] if f["name"] in overrides else src.get(f["name"]).text
-            except Exception:
-                continue
+        current = self.releases.current(now)
+        if proposal.get("status") == "open" and (current["digest"] if current else None) == base:
+            texts = self._texts_for_release(proposal, overrides, rejected_text)
+        else:
+            texts = {}  # finalize refuses it and says why (released already, or based on another release)
+        was_in_force = self.released_frames()
         meta = finalize(proposal, self.releases, by=by, effective_from=effective_from, now=now, frame_texts=texts)
         self.proposals.save(proposal)
         self.registry.install_profiles(self.releases.bundle(meta["digest"]))
         self._released_cache = {}
         if overrides:
             # The drafts become the Frames: written in place, then every Frame document follows its file.
+            replaced = []
             for name, o in overrides.items():
-                # The Frame is derived output: the released text overwrites the file.
+                # The Frame is derived output: the released text overwrites the file. Edits on disk that were in neither
+                # the text in force nor the draft (a draft written on an older text) are kept by hash, and the policy
+                # owners are told, so an overwrite never loses work silently.
                 path = self.frames.get(name).path
+                old = path.read_text(encoding="utf-8") if path.exists() else ""
+                before = was_in_force.get(name).text if name in was_in_force.frames else ""
+                if old and old not in (o["text"], before):
+                    replaced.append({"frame": name, "path": self.frames.get(name).relpath,
+                                     "sha256": self.dms.blobs.put(old.encode("utf-8"))})
                 tmp = path.with_suffix(path.suffix + ".tmp")
                 tmp.write_text(o["text"], encoding="utf-8")
                 tmp.replace(path)
+            if replaced:
+                proposal["replaced_on_disk"] = replaced
+                self.proposals.save(proposal)
+                for owner in proposal.get("reviewers") or []:
+                    self.inbox.notify(owner, kind="proposal", subject=f"Releasing #{proposal.get('number')} replaced unreleased edits",
+                                      body="The released draft was written on an older text, so it replaced edits on disk that no "
+                                           "release carries: " + ", ".join(f"{r['path']} (kept as {r['sha256'][:12]})" for r in replaced)
+                                           + ". Edit the Frame again and propose them if they are still wanted.")
             self._frames = None
             for name, o in overrides.items():
                 if self.sop_source():
@@ -681,6 +699,38 @@ class Hub:
             self.frame_documents(create=False)
         self._rebase_open_proposals(base, proposal, now=now)
         return meta
+
+    def _texts_for_release(self, proposal: dict, overrides: dict, rejected_text: set) -> dict[str, str]:
+        """The Frame texts a release records: for each Frame in the proposal, exactly the text it was compiled from (the
+        one its bill of materials names by hash; the text in force for a rejected wording change). Never a file as it
+        is when the release is made: an edit on disk since the compile was not reviewed. When a compiled text cannot be
+        found the release is refused, so the policy owners compile again and review what will be released."""
+        import hashlib
+
+        from .compile import CompileError
+
+        in_force = self.released_frames()
+        old_bom = {f["name"]: f for f in (self.releases.current() or {}).get("frames") or []}
+        texts, missing = {}, []
+        for f in proposal.get("frames") or []:
+            name = f["name"]
+            if name in overrides:
+                texts[name] = overrides[name]["text"]
+                continue
+            want = (old_bom.get(name) or {}).get("sha256") if name in rejected_text else f.get("sha256")
+            candidates = [self.releases.text_by_sha(want)]
+            for store in (in_force, self.frames):
+                if name in store.frames:
+                    candidates.append(store.get(name).text)
+            text = next((t for t in candidates if t is not None and (not want or hashlib.sha256(t.encode("utf-8")).hexdigest() == want)), None)
+            if text is None:
+                missing.append(f.get("path") or name)
+            else:
+                texts[name] = text
+        if missing:
+            raise CompileError(f"proposal #{proposal.get('number') or proposal.get('id')} was compiled from Frame texts this hub no longer has: "
+                               f"{', '.join(missing)} changed since. Compile again, so the policy owners review the text that will be released.")
+        return texts
 
     # --- keeping the other open proposals releasable ---------------------------
     def _recompile_drafts(self, old: dict, overrides: dict, note: str = "") -> dict | None:
