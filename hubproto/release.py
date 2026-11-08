@@ -353,18 +353,23 @@ class ReleaseStore:
             raise KeyError(f"release {d!r}: {len(matches)} matches")
         return matches[0]
 
-    extra_folders = None  # a callable giving the library's subfolders (hubproto.library), set by the Hub
+    extra_folders = None  # a callable giving the library's folders (hubproto.library), set by the Hub
+    extra_rights = None  # a callable giving {top-level library folder: the folder whose rights it takes}
 
     def bundle(self, d: str) -> dict:
         meta = self.get(d)
         b = json.loads((self.root / meta["digest"] / "bundle.json").read_text())
         if self.extra_folders is not None:
-            # Subfolders people added to the library: each under a policy folder, with that folder's rights (prefix).
+            # Folders people added to the library: subfolders take their parent's rights (rights match by prefix); a
+            # top-level one takes the rights of the folder it names (library_rights).
             policy = list(b.get("folders") or [])
-            extra = [f for f in self.extra_folders() if any(f.startswith(p + "/") for p in policy)]
+            rights = {k: v for k, v in (self.extra_rights() if self.extra_rights else {}).items() if v in policy}
+            roots = policy + list(rights)
+            extra = [f for f in self.extra_folders() if f in rights or any(f.startswith(p + "/") for p in roots)]
             if extra:
                 b["folders"] = sorted(set(policy) | set(extra))
                 b["library_folders"] = sorted(extra)
+                b["library_rights"] = rights
         return b
 
     def rules(self, d: str) -> list[dict]:

@@ -481,7 +481,7 @@ def test_people_who_file_in_a_folder_may_add_subfolders_with_the_same_rights(she
     assert 'id="new-folder"' in main_of(text) and "Add to Quality/Controlled Documents" in main_of(text), "the New folder button is in the toolbar"
     status, text = get(shell, "/files", **{"as": "carol"})
     assert 'id="new-folder"' in main_of(text) and 'name="parent"' in main_of(text), "at the top of the library: choose where"
-    status, text = get(shell, "/files", **{"as": "bob", "folder": "Quality/Controlled Documents"})
+    status, text = get(shell, "/files", **{"as": "dave", "folder": "Quality/Controlled Documents"})
     assert 'id="new-folder"' in main_of(text) and "you cannot add folders to it" in main_of(text), "where you may not, it says why"
     status, url, text = post(shell, "/folder-new", {"as": "dave", "parent": "Quality/Controlled Documents", "name": "Mine"})
     assert status == 403, "only people who may file there"
@@ -489,3 +489,22 @@ def test_people_who_file_in_a_folder_may_add_subfolders_with_the_same_rights(she
     assert status == 400
     status, url, text = post(shell, "/folder-remove", {"as": "carol", "path": path})
     assert status == 200 and path not in hub.releases.bundle(hub.releases.current()["digest"])["folders"]
+
+
+def test_a_policy_owner_adds_top_level_folders_and_subfolders_anywhere(shell):
+    from hubproto import authz
+
+    hub = shell["hub"]
+    status, url, text = post(shell, "/folder-new", {"as": "bob", "parent": "", "name": "Projects", "rights_from": "Policy"})
+    assert status == 200, text[:300]
+    b = hub.releases.bundle(hub.releases.current()["digest"])
+    assert "Projects" in b["folders"] and b["library_rights"]["Projects"] == "Policy"
+    for who in ("alice", "dave"):
+        assert authz.check(b, who, "create", "document", "Projects")["allowed"] == authz.check(b, who, "create", "document", "Policy")["allowed"]
+    assert any(m["to"] == "carol" and "New top-level folder Projects" in m["subject"] for m in hub.inbox.all()), "the other policy owner is told"
+    status, url, text = post(shell, "/folder-new", {"as": "alice", "parent": "", "name": "Mine", "rights_from": "Policy"})
+    assert status in (400, 403), "only a policy owner adds at the top"
+    status, url, text = post(shell, "/folder-new", {"as": "bob", "parent": "Quality/Controlled Documents", "name": "Bob notes"})
+    assert status == 200, "a policy owner adds subfolders where he does not file"
+    status, text = get(shell, "/files", **{"as": "bob"})
+    assert "the top of the library" in main_of(text) and 'name="rights_from"' in main_of(text)

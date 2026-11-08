@@ -39,24 +39,44 @@ class LibraryFolders:
         tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
         tmp.replace(self.path)
 
-    def add(self, hub, parent: str, name: str, *, by: str) -> str:
-        """A subfolder ``name`` of ``parent``; returns its path. Refused unless ``by`` may create documents in ``parent``."""
+    def add(self, hub, parent: str, name: str, *, by: str, rights_from: str = "") -> str:
+        """A folder ``name`` in ``parent`` (or at the top of the library when ``parent`` is empty); returns its path.
+        A subfolder: whoever may file documents in ``parent``, or a policy owner or document controller. A top-level
+        folder: a policy owner, who names the folder whose rights it takes (``rights_from``)."""
         bundle = hub.releases.bundle(hub.releases.current()["digest"])
         name = (name or "").strip()
         if not NAME.match(name):
             raise ValueError("a folder name is up to 60 letters, digits, spaces and . _ ( ) & -, and starts with a letter or digit")
-        if parent not in (bundle.get("folders") or []):
-            raise ValueError(f"there is no folder {parent!r}")
-        allowed = authz.check(bundle, by, "create", "document", parent)
-        if not allowed["allowed"]:
-            raise ValueError(f"only people who may file documents in {parent} add folders there: {allowed['why']}")
-        path = f"{parent}/{name}"
-        if path in (bundle.get("folders") or []):
+        roles = set(authz.roles_of(bundle, by))
+        folders = bundle.get("folders") or []
+        if not parent:
+            if "policy-owner" not in roles:
+                raise ValueError("only a policy owner adds a folder at the top of the library (its rights are policy)")
+            if rights_from not in folders:
+                raise ValueError("choose the folder whose rights the new one takes")
+            path = name
+        else:
+            if parent not in folders:
+                raise ValueError(f"there is no folder {parent!r}")
+            allowed = authz.check(bundle, by, "create", "document", parent)
+            if not allowed["allowed"] and not ({"policy-owner", "document-controller"} & roles):
+                raise ValueError(f"only people who may file documents in {parent}, a document controller or a policy owner add folders there: {allowed['why']}")
+            path = f"{parent}/{name}"
+            rights_from = ""
+        if path in folders:
             raise ValueError(f"{path} is already there")
         data = self.all()
-        data[path] = {"by": by, "at": utcnow(), "parent": parent}
+        data[path] = {"by": by, "at": utcnow(), "parent": parent, **({"rights_from": rights_from} if rights_from else {})}
         self._save(data)
+        if not parent:  # the other policy owners see every new top-level folder
+            for owner in sorted(p for p in bundle.get("members") or {} if "policy-owner" in authz.roles_of(bundle, p) and p != by):
+                hub.inbox.notify(owner, kind="policy", subject=f"New top-level folder {path}",
+                                 body=f"{by} added {path} to the library, with the rights of {rights_from}.")
         return path
+
+    def rights(self) -> dict[str, str]:
+        """{top-level library folder: the folder whose rights it takes}."""
+        return {p: d["rights_from"] for p, d in self.all().items() if d.get("rights_from")}
 
     def remove(self, hub, path: str, *, by: str) -> None:
         data = self.all()
@@ -67,7 +87,7 @@ class LibraryFolders:
         if hub.kernel.query(folder=path):
             raise ValueError(f"{path} is not empty: move what is in it first")
         bundle = hub.releases.bundle(hub.releases.current()["digest"])
-        if by != data[path].get("by") and "document-controller" not in authz.roles_of(bundle, by):
-            raise ValueError(f"only {data[path].get('by')}, who added it, or a document controller removes {path}")
+        if by != data[path].get("by") and not ({"document-controller", "policy-owner"} & set(authz.roles_of(bundle, by))):
+            raise ValueError(f"only {data[path].get('by')}, who added it, a document controller or a policy owner removes {path}")
         data.pop(path)
         self._save(data)

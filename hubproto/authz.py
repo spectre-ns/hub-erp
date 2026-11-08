@@ -27,10 +27,19 @@ def _folder_matches(rule_folder: str, folder: str) -> bool:
     return folder == rule_folder or folder.startswith(rule_folder + "/")
 
 
+def rights_folder(bundle: dict, folder: str) -> str:
+    """The folder whose rules apply: a top-level library folder (and anything in it) takes those of the folder it names."""
+    for root, src in (bundle.get("library_rights") or {}).items():
+        if folder == root or folder.startswith(root + "/"):
+            return src + folder[len(root):]
+    return folder
+
+
 def check(bundle: dict, principal: str, action: str, obj: str, folder: str) -> dict:
     from .extract import singular_role  # the sentences say "bills"; the object is "bill"
 
     obj = singular_role(obj) if obj and obj != "*" else obj
+    folder = rights_folder(bundle, folder)  # a top-level library folder has the rights of the folder it names
     roles = roles_of(bundle, principal)
     if not roles:
         return {"allowed": False, "rule": None, "why": f"{principal} is not a member of the organization"}

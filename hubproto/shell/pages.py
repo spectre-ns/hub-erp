@@ -244,20 +244,28 @@ class PagesMixin:
         name_input = '<label class="f"><span>Name</span><input name="name" required maxlength="60" placeholder="for example Work instructions"></label>'
         note = ('<p class="why">A new folder has the same rights as the folder it is in: whoever may read or file there may read or file in it. '
                 'A folder with rights of its own is a policy folder: a policy owner adds it in Settings.</p>')
+        roles = set(authz.roles_of(bundle, user))
+        steward = bool({"policy-owner", "document-controller"} & roles)  # they keep the library's structure
         if folder:
             d = may_file(bundle, user, folder)
-            if d["allowed"]:
+            if d["allowed"] or steward:
                 inner = (f'<form method="post" action="/folder-new">{hidden_as(user)}<input type="hidden" name="parent" value="{esc(folder)}">'
                          f'{name_input}<div class="actions"><button>{icon("plus")}Add to {esc(folder)}</button></div></form>{note}')
             else:
                 inner = (f'<p>You may not file documents in {esc(folder)}, so you cannot add folders to it.</p>'
                          f'<p class="why">{esc(d.get("why") or "")}. People who may file here, or a document controller, add folders in it.</p>')
         else:
-            mine = [x for x in bundle.get("folders") or [] if may_file(bundle, user, x)["allowed"]]
-            if mine:
-                opts = "".join(f'<option value="{esc(x)}">{esc(x)}</option>' for x in mine)
+            mine = [x for x in bundle.get("folders") or [] if steward or may_file(bundle, user, x)["allowed"]]
+            top = "policy-owner" in roles
+            if mine or top:
+                opts = (('<option value="">the top of the library</option>' if top else "")
+                        + "".join(f'<option value="{esc(x)}">{esc(x)}</option>' for x in mine))
+                like = "".join(f'<option value="{esc(x)}">{esc(x)}</option>' for x in bundle.get("folders") or [] if "/" not in x)
+                rights = (f'<label class="f"><span>A top-level folder has the rights of</span><select name="rights_from">{like}</select></label>'
+                          '<p class="why">Only for a folder at the top: whoever may read or file in the folder you choose may read or file in the new one. '
+                          'The other policy owners are told.</p>') if top else ""
                 inner = (f'<form method="post" action="/folder-new">{hidden_as(user)}<label class="f"><span>In</span><select name="parent">{opts}</select></label>'
-                         f'{name_input}<div class="actions"><button>{icon("plus")}Add the folder</button></div></form>{note}')
+                         f'{name_input}{rights}<div class="actions"><button>{icon("plus")}Add the folder</button></div></form>{note}')
             else:
                 inner = '<p>You may not file documents in any folder, so you cannot add folders.</p>' + note
         return (f'<details class="tb-menu" id="new-folder"><summary class="button secondary">{icon("folder")}New folder</summary>'

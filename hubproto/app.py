@@ -66,6 +66,7 @@ class Hub:
 
         self.library = LibraryFolders(Path(self.root) / "state" / "library")
         self.releases.extra_folders = self.library.paths
+        self.releases.extra_rights = self.library.rights
         _formlayout.apply_custom_fields(self)  # released custom fields are fields of their record types
         self.runner.on_completed = [lambda state, rec: _automation.on_run_completed(self, state, rec)]
         self.runner.frames_store = lambda: self.released_frames()  # cogs read the SOPs as released, not the files on disk

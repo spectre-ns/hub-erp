@@ -567,11 +567,11 @@ class ActionsMixin:
         self._need_release()
         parent, name = self._f("parent"), self._f("name")
         try:
-            path = self.hub.library.add(self.hub, parent, name, by=self.user)
+            path = self.hub.library.add(self.hub, parent, name, by=self.user, rights_from=self._f("rights_from"))
         except ValueError as e:
             raise ShellError(str(e)[:1].upper() + str(e)[1:] + ".", 403 if "only people" in str(e) else 400, field="name") from None
         log_line(f"library folder added path={path!r} by={self.user}")
-        self._redirect(href("/files", self.user, folder=path, done=f"{path} is added, with the rights of {parent}."))
+        self._redirect(href("/files", self.user, folder=path, done=f"{path} is added, with the rights of {parent or self._f('rights_from')}."))
 
     def post_folder_remove(self):
         self._need_release()
