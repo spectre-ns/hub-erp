@@ -425,7 +425,9 @@ class Hub:
         found = [d for d in self.kernel.query(type_="document")
                  if sopdocs.is_frame_doc(d["fields"]) and d["fields"].get("frame_name") == name]
         if found:
-            rec = found[0]
+            rec = next((d for d in found if d["state"] == "effective"), found[0])
+            if rec["state"] == "obsolete":  # its Frame is in the release in force again
+                rec = self.kernel.transition(rec["locator"], "effective", by=by, reason="its Frame is in the release in force")
             if rec["folder"] != folder:  # filed as a quality document (it was in Policy/Frames)
                 self.kernel.move(rec["locator"], folder, by=by, reason="an SOP is a quality document; policies stay in Policy")
             if rec["fields"].get("doc_type") != doc_type or rec["fields"].get("title") != title:

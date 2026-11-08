@@ -127,3 +127,11 @@ def test_a_frame_that_is_not_released_has_no_document(released):
     hub._frames = None
     assert hub.frame_document("draft-only") is None, "an unreleased Frame is not a document in force"
     assert all(d["fields"].get("frame_name") != "draft-only" for d in hub.frame_documents())
+
+
+def test_a_retired_frame_document_comes_back_when_its_frame_is_released(released):
+    hub = released
+    doc = hub.frame_document("finance-policy")
+    hub.kernel.transition(doc["locator"], "obsolete", by="test", reason="as if its Frame had been dropped")
+    again = hub.frame_document("finance-policy")
+    assert again["locator"] == doc["locator"] and again["state"] == "effective"
