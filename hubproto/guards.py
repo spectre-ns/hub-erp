@@ -103,6 +103,8 @@ def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict |
         return bool(proc and checkpoint_for(proc, step))
 
     roles_with_members = {role for m in members.values() for role in m["roles"]}
+    # A cog with a persona follows the Frames its persona layers (hubproto.release.render), not a Follows line.
+    cog_personas = {r["name"] for r in rules if r["kind"] == "persona" and r.get("of") == "cog" and (r.get("layers") or r.get("reads"))}
 
     def ref_ok(ref: str) -> bool:
         kind, _, name = ref.partition(":")
@@ -131,8 +133,9 @@ def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict |
                 out.append(Finding("consistency", "error", f"cog profile {rule['name']!r} names a cog that is not in the Cog catalog", key, frame, line))
             elif rule["name"] not in members or members[rule["name"]]["principal_type"] != "cog":
                 out.append(Finding("consistency", "error", f"cog profile {rule['name']!r} has no matching cog member in the org model", key, frame, line))
-            if not rule.get("follows"):
-                out.append(Finding("consistency", "warning", f"cog {rule['name']} follows no SOP; it will be routed nothing", key, frame, line))
+            if not rule.get("follows") and rule["name"] not in cog_personas:
+                out.append(Finding("consistency", "warning", f"cog {rule['name']} follows no SOP and has no persona; it will be routed nothing",
+                                   key, frame, line))
             if rule.get("autonomy") and rule["autonomy"] not in ("read", "propose", "act"):
                 out.append(Finding("consistency", "error", f"cog {rule['name']}: Autonomy must be read, propose or act, not {rule['autonomy']!r}", key, frame, line))
         elif kind == "permission":

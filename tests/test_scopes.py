@@ -79,3 +79,16 @@ def test_a_persona_may_only_layer_what_exists(shell):
     found = [f.detail for f in scope_guard(rules, {"x"})]
     assert any("compiles 'nope'" in d for d in found) and any("layers on 'missing'" in d for d in found)
     assert any("for a cog the organization does not have" in d for d in found) and any("'zzz'" in d for d in found)
+
+
+def test_a_cog_with_a_persona_is_not_warned_that_it_follows_nothing(shell):
+    """The cog profiles carry no Follows lines: each cog follows its persona's Frames. Only a cog with neither is warned
+    that it will be routed nothing."""
+    hub = shell["hub"]
+    p = hub.compile(save=False)
+    assert not [f for f in p["findings"] if "follows no SOP" in f["detail"]], [f["detail"] for f in p["findings"] if "follows no SOP" in f["detail"]]
+    from hubproto.guards import consistency_guard
+
+    rules = [r for r in p["rules"] if not (r["kind"] == "persona" and r["name"] == "qa-manager")]
+    found = [f.detail for f in consistency_guard(rules, set(hub.registry.ids()))]
+    assert any("cog qa-manager follows no SOP and has no persona" in d for d in found)
