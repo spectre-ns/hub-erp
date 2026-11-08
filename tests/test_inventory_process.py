@@ -153,3 +153,19 @@ def test_a_stock_release_is_approved_by_the_quality_manager(inv):
         inv.runner.decide(run_id, "dave", "approve", meaning="mine", payload_digest=seen(inv.runner, run_id))
     inv.runner.decide(run_id, "carol", "approve", meaning="released", payload_digest=seen(inv.runner, run_id))
     assert k.get(lot["locator"])["fields"]["status"] == "OK" and k.get(st["record"])["state"] == "released"
+
+
+def test_a_receipt_missing_serial_numbers_stops_at_its_check_not_at_booking(inv):
+    """A receipt that would be refused at booking (a serial-tracked part with no serial numbers) stops at the receipt's
+    check, before the buyer is asked to confirm it, rather than failing after the confirmation."""
+    hub, k = inv, inv.kernel
+    part = make_part(k, "SER-7", title="serial widget", trackable="serial")
+    po = k.create("purchase-order", "Purchasing/Orders", {"supplier": "acme-metals", "currency": "USD", "amount": 10.0,
+                                                          "lines": [{"line": 1, "part": part["locator"], "quantity": 2, "unit_cost": 5.0}]},
+                  by="purchasing-assistant", state="issued")
+    run_id = hub.runner.submit("goods-receipt", {"record": {"po": po["locator"], "lines": [{"part": part["locator"], "quantity": 2}]}}, owner="alice")
+    st = hub.runner.load(run_id)
+    failed = [e for e in hub.runner.track(run_id) if e["type"] == "run.failed"]
+    assert st["status"] == "failed" and failed and "serial-tracked" in failed[-1]["reason"], (st["status"], failed)
+    assert failed[-1]["step"] == "check-the-order" and not st.get("pending"), "stopped at the check, nobody asked to confirm"
+    assert not inventory.lots(k, part=part) and k.get(po["locator"])["state"] == "issued"

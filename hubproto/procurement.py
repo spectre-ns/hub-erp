@@ -270,6 +270,13 @@ class ReceiptChecker(Cog):
             if l["part"] not in ordered:
                 problems.append(problem("receipt-line", f"line {name} is not on {po['number']}"))
                 continue
+            try:
+                tp = inventory.tracking_problem(ctx.kernel, l["part"], qty, batch=l.get("batch") or "", serials=l.get("serials"))
+            except inventory.StockError as e:
+                tp = str(e)
+            if tp:  # refused here, before the buyer confirms, not at booking after
+                problems.append(problem("tracking", tp))
+                continue
             outstanding = ordered[l["part"]] - received_before.get(l["part"], 0.0)
             if qty > outstanding * (1 + tol / 100.0) + 1e-9:
                 problems.append(problem("over-receipt", f"received {qty:g} of {name}, outstanding {outstanding:g} on {po['number']}"

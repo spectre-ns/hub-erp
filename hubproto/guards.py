@@ -224,8 +224,9 @@ def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict |
         for tname, td in record_types.items():
             if tname not in reachable:
                 continue
+            # ``system_states``: states the hub sets directly, not through a process (a part released with its design).
             for st in td.get("required_by_state", {}):
-                if st not in reachable[tname] | {"failed", "cancelled", "open"}:
+                if st not in reachable[tname] | {"failed", "cancelled", "open"} | set(td.get("system_states") or []):
                     out.append(Finding("consistency", "warning", f"record type {tname}: required_by_state key {st!r} is not a state any process reaches"))
     # Segregation of duties across permissions: a role allowed both to create and
     # to approve the same object in the same folder is flagged, because the SoD

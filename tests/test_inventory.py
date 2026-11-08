@@ -89,7 +89,7 @@ def test_a_count_within_tolerance_is_booked_and_outside_it_needs_an_approval(inv
 
 def test_counts_share_one_tolerance_until_the_lot_is_set_otherwise(inv):
     """No salami: counts of 1% each do not add up to a write-off nobody approved. Free counts are measured from the
-    baseline (the quantity last set by anything but a count: a receipt, a split, a merge, an approved adjustment)."""
+    baseline (the quantity the receipt or an approved adjustment set, carried through splits and merges)."""
     k = inv.kernel
     bundle = inv.releases.bundle(inv.releases.current()["digest"])
     part = make_part(k, "SALAMI-1", title="salami", stock=1000)
@@ -105,7 +105,26 @@ def test_counts_share_one_tolerance_until_the_lot_is_set_otherwise(inv):
     assert inventory.count_baseline(k, lot) == 979
     assert inventory.count(k, k.get(lot["locator"]), 970, bundle=bundle, by="dave")["fields"]["quantity"] == 970, "0.9% from the new baseline"
     child = inventory.split(k, k.get(lot["locator"]), 470, by="dave")
-    assert inventory.count_baseline(k, lot) == 500 and inventory.count_baseline(k, child) == 470, "a split sets both lots"
+    share = round(470 * 979 / 970, 6)
+    assert inventory.count_baseline(k, child) == share and inventory.count_baseline(k, lot) == round(979 - share, 6), \
+        "a split shares the baseline in proportion: the drift counted so far goes with the stock"
+
+
+def test_splitting_counting_down_and_merging_back_never_escapes_the_tolerance(inv):
+    """Splitting stock off, counting it down by the tolerance and merging it back would start a fresh tolerance each
+    time if a split or a merge set the baseline; they carry it instead, so the drift adds up and is caught."""
+    k = inv.kernel
+    bundle = inv.releases.bundle(inv.releases.current()["digest"])
+    part = make_part(k, "SALAMI-2", title="salami")
+    [lot] = inventory.receive(k, part=part, quantity=1000, location=loc(k, "store"), batch="B1", by="dave")
+    lot = inventory.count(k, lot, 981, bundle=bundle, by="dave")  # 1.9% down, free
+    child = inventory.split(k, lot, 500, by="dave")
+    with pytest.raises(NeedsApproval, match="outside the count variance tolerance"):
+        inventory.count(k, child, 491, bundle=bundle, by="dave")  # 1.8% from 500, but 3.6% from its share of the baseline
+    merged = inventory.merge(k, [child], k.get(lot["locator"]), by="dave")
+    assert merged["fields"]["quantity"] == 981 and inventory.count_baseline(k, merged) == 1000, "the baselines add back up"
+    with pytest.raises(NeedsApproval, match=r"from 1000"):
+        inventory.count(k, merged, 975, bundle=bundle, by="dave")
 
 
 def test_merges_only_within_one_batch_and_never_serials(inv):
@@ -192,3 +211,10 @@ def test_items_are_archived_and_never_offered(inv):
     b = inv.releases.bundle(inv.releases.current()["digest"])
     assert "item-request" not in b["ops"] and "part-request" in b["ops"]
     assert {"stock-adjustment", "stock-release"} <= set(b["ops"])
+
+
+def test_a_part_released_with_its_design_is_a_state_the_policy_knows(inv):
+    """A part reaches "released" with its design (the CAD release step creates it so), not through a process: the
+    record type says the hub sets that state itself, so the policy is not warned that nothing reaches it."""
+    found = [f["detail"] for f in inv.compile(save=False)["findings"]]
+    assert not [d for d in found if "record type part" in d], [d for d in found if "record type part" in d]

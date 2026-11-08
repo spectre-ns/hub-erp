@@ -244,6 +244,49 @@ def _qty(value, what: str = "quantity") -> float:
     return q
 
 
+def tracking_problem(kernel, part, quantity, *, batch: str = "", serials: list[str] | None = None) -> str | None:
+    """Why receiving this quantity of the part as given would be refused (a serial number for each one received, none
+    repeated or already in stock; a batch for a lot-tracked part), or None. The receipt's check and the receive form
+    ask this before anything is filed, so a receipt never fails at booking, after the buyer confirmed it."""
+    p = part_of(kernel, part)
+    q = float(quantity)
+    track = p["fields"].get("trackable") or "none"
+    serials = [str(s).strip() for s in (serials or []) if str(s).strip()]
+    if track == "serial":
+        if q != int(q) or len(serials) != int(q):
+            return f"{p['number']} is serial-tracked: give one serial number for each of the {q:g} received ({len(serials)} given)"
+        if len(set(serials)) != len(serials):
+            return "the serial numbers repeat"
+        taken = {r["fields"].get("serial") for r in kernel.query(type_="stock-item") if r["fields"].get("part") == p["locator"]}
+        clash = sorted(set(serials) & taken)
+        if clash:
+            return f"serial number(s) {', '.join(clash)} of {p['number']} already exist"
+    elif serials:
+        return f"{p['number']} is not serial-tracked: give a batch, not serial numbers"
+    if track == "lot" and not batch:
+        return f"{p['number']} is lot-tracked: give the batch"
+    return None
+
+
+def over_receipt_problem(kernel, po, part, quantity, *, bundle: dict | None, receipt: str | None = None) -> str | None:
+    """Why receiving this quantity of the part against the order would be refused: it is not on the order, or it is
+    more than is outstanding beyond the over-receipt tolerance. None when it may be received."""
+    po = po if isinstance(po, dict) else kernel.get(str(po))
+    p = part_of(kernel, part)
+    ordered = sum(float(l.get("quantity") or 0) for l in po["fields"].get("lines") or [] if isinstance(l, dict) and l.get("part") == p["locator"])
+    if not ordered:
+        return f"{p['number']} is not on {po['number']}"
+    got = sum(float(l.get("quantity") or 0) for r in kernel.query(type_="receipt", state="received")
+              if r["fields"].get("po") == po["locator"] and r["locator"] != receipt
+              for l in r["fields"].get("lines") or [] if isinstance(l, dict) and l.get("part") == p["locator"])
+    outstanding = max(ordered - got, 0.0)
+    tol = thresholds(bundle)["over_receipt_pct"]
+    if float(quantity) > outstanding * (1 + tol / 100.0) + 1e-9:
+        return (f"{float(quantity):g} of {p['number']} is more than the {outstanding:g} outstanding on {po['number']}"
+                + (f" (the over-receipt tolerance is {tol:g}%)" if tol else ""))
+    return None
+
+
 def receive(kernel, *, part, quantity, location, by: str, batch: str = "", serials: list[str] | None = None, expiry: str | None = None,
             unit_cost=None, currency: str = "USD", supplier_part=None, po=None, receipt=None, status: str = "OK",
             folder: str = STOCK_FOLDER, run_id: str = "", release: str = "") -> list[dict]:
@@ -254,19 +297,9 @@ def receive(kernel, *, part, quantity, location, by: str, batch: str = "", seria
     q = _qty(quantity)
     track = p["fields"].get("trackable") or "none"
     serials = [str(s).strip() for s in (serials or []) if str(s).strip()]
-    if track == "serial":
-        if q != int(q) or len(serials) != int(q):
-            raise StockError(f"{p['number']} is serial-tracked: give one serial number for each of the {q:g} received ({len(serials)} given)")
-        if len(set(serials)) != len(serials):
-            raise StockError("the serial numbers repeat")
-        taken = {r["fields"].get("serial") for r in kernel.query(type_="stock-item") if r["fields"].get("part") == p["locator"]}
-        clash = sorted(set(serials) & taken)
-        if clash:
-            raise StockError(f"serial number(s) {', '.join(clash)} of {p['number']} already exist")
-    elif serials:
-        raise StockError(f"{p['number']} is not serial-tracked: give a batch, not serial numbers")
-    if track == "lot" and not batch:
-        raise StockError(f"{p['number']} is lot-tracked: give the batch")
+    problem = tracking_problem(kernel, p, q, batch=batch, serials=serials)
+    if problem:
+        raise StockError(problem)
     if status not in STATUSES:
         raise StockError(f"unknown status {status!r}")
     base = {"part": p["locator"], "batch": batch or None, "location": loc["locator"], "status": status, "quantity": 0,
@@ -279,7 +312,7 @@ def receive(kernel, *, part, quantity, location, by: str, batch: str = "", seria
         lot = kernel.create("stock-item", folder, {**{k: v for k, v in base.items() if v is not None}, **({"serial": serial} if serial else {})},
                             by=by, run_id=run_id, release=release, state=LIVE)
         each = 1.0 if serial else q
-        lot = _event(kernel, lot, "stock.received", set_={"quantity": each}, by=by, run_id=run_id, release=release,
+        lot = _event(kernel, lot, "stock.received", set_={"quantity": each, "count_baseline": each}, by=by, run_id=run_id, release=release,
                      reason=f"received{(' with ' + kernel.get(base['receipt'])['number']) if base.get('receipt') and kernel.get(base['receipt']) else ''}",
                      quantity=each, to=loc["locator"], receipt=base.get("receipt"), po=base.get("po"))
         if base.get("receipt"):
@@ -326,10 +359,15 @@ def variance_of(lot: dict, counted) -> dict:
 
 
 def count_baseline(kernel, lot) -> float:
-    """What a free count is measured against: the quantity the lot's latest ledger event other than a count set (its
-    receipt, an approved adjustment, a split or a merge). A run of counts shares one tolerance from there, so counts of
-    2% each never add up to a write-off nobody approved."""
+    """What a free count is measured against: the quantity the lot's receipt or its latest approved adjustment set,
+    carried through splits and merges (``count_baseline`` on the lot, written by those ledger events). A run of counts
+    shares one tolerance from there, so counts of 2% each never add up to a write-off nobody approved; nor does
+    splitting stock off, counting it down and merging it back: a split takes its share of the baseline in proportion,
+    so the lot split off keeps the drift already counted, and a merge adds the baselines, not the quantities.
+    Lots booked before the baseline was kept: the quantity the latest event other than a count set."""
     lot = lot_of(kernel, lot)
+    if lot["fields"].get("count_baseline") is not None:
+        return float(lot["fields"]["count_baseline"])
     for ev in reversed(history(kernel, lot)):
         q = (ev["data"].get("set") or {}).get("quantity")
         if q is not None and ev["type"] != "stock.counted":
@@ -369,7 +407,7 @@ def adjust(kernel, lot, new_quantity, *, by: str, reason: str, adjustment: str |
     lot = lot_of(kernel, lot)
     _live(lot, "adjusted")
     v = variance_of(lot, new_quantity)
-    return _event(kernel, lot, "stock.adjusted", set_={"quantity": v["after"]}, state=("depleted" if v["after"] == 0 else None), by=by,
+    return _event(kernel, lot, "stock.adjusted", set_={"quantity": v["after"], "count_baseline": v["after"]}, state=("depleted" if v["after"] == 0 else None), by=by,
                   run_id=run_id, release=release, reason=reason, quantity=v["variance"], before=v["before"], after=v["after"], adjustment=adjustment)
 
 
@@ -386,12 +424,14 @@ def split(kernel, lot, quantity, *, by: str, reason: str = "", run_id: str = "",
         raise StockError(f"{lot['number']} is held for {held_by['number']}, which is open: its disposition decides what happens to it")
     if q >= have:
         raise StockError(f"cannot split {q:g} off {lot['number']}, which holds {have:g}")
-    keep = {k: v for k, v in lot["fields"].items() if k not in ("quantity", "parent") and v not in (None, "")}
+    base = count_baseline(kernel, lot)
+    child_base = round(q * base / have, 6)  # its share of the baseline: the drift counted so far splits with the stock
+    keep = {k: v for k, v in lot["fields"].items() if k not in ("quantity", "parent", "count_baseline") and v not in (None, "")}
     child = kernel.create("stock-item", lot["folder"], {**keep, "quantity": 0, "parent": lot["locator"]}, by=by, run_id=run_id,
                           release=release, state=LIVE)
-    _event(kernel, lot, "stock.split", set_={"quantity": round(have - q, 6)}, by=by, run_id=run_id, release=release,
-           reason=reason or "split", quantity=-q, into=child["locator"])
-    child = _event(kernel, child, "stock.split", set_={"quantity": q}, by=by, run_id=run_id, release=release,
+    _event(kernel, lot, "stock.split", set_={"quantity": round(have - q, 6), "count_baseline": round(base - child_base, 6)}, by=by,
+           run_id=run_id, release=release, reason=reason or "split", quantity=-q, into=child["locator"])
+    child = _event(kernel, child, "stock.split", set_={"quantity": q, "count_baseline": child_base}, by=by, run_id=run_id, release=release,
                    reason=reason or "split", quantity=q, from_lot=lot["locator"])
     kernel.link(child["locator"], "split-from", lot["locator"], by=by, run_id=run_id, release=release)
     return child
@@ -418,13 +458,16 @@ def merge(kernel, sources: list, into, *, by: str, reason: str = "", run_id: str
         held_by = held_for(kernel, x)
         if held_by:
             raise StockError(f"{x['number']} is held for {held_by['number']}, which is open: its disposition decides what happens to it")
+    base = count_baseline(kernel, target)
     for s in srcs:
         q = float(s["fields"].get("quantity") or 0)
         total += q
-        _event(kernel, s, "stock.merged", set_={"quantity": 0}, state="depleted", by=by, run_id=run_id, release=release,
-               reason=reason or "merged", quantity=-q, into=target["locator"])
+        base += count_baseline(kernel, s)  # the baselines add, so drift counted on either lot stays counted
+        _event(kernel, s, "stock.merged", set_={"quantity": 0, "count_baseline": 0}, state="depleted", by=by, run_id=run_id,
+               release=release, reason=reason or "merged", quantity=-q, into=target["locator"])
         kernel.link(s["locator"], "merged-into", target["locator"], by=by, run_id=run_id, release=release)
-    return _event(kernel, target, "stock.merged", set_={"quantity": round(total, 6)}, by=by, run_id=run_id, release=release,
+    return _event(kernel, target, "stock.merged", set_={"quantity": round(total, 6), "count_baseline": round(base, 6)}, by=by,
+                  run_id=run_id, release=release,
                   reason=reason or "merged", quantity=round(total - float(target["fields"].get("quantity") or 0), 6),
                   from_lots=[s["locator"] for s in srcs])
 
@@ -494,7 +537,7 @@ def scrap(kernel, lot, *, by: str, reason: str, run_id: str = "", release: str =
     site = site_of(kernel, frm) if frm else ""
     to = location_of_kind(kernel, site, "scrap") if site else None
     q = float(lot["fields"].get("quantity") or 0)
-    return _event(kernel, lot, "stock.scrapped", set_={"status": "DESTROYED", "quantity": 0, **({"location": to["locator"]} if to else {})},
+    return _event(kernel, lot, "stock.scrapped", set_={"status": "DESTROYED", "quantity": 0, "count_baseline": 0, **({"location": to["locator"]} if to else {})},
                   state="scrapped", by=by, run_id=run_id, release=release, reason=reason, quantity=-q, **{"from": frm}, to=to["locator"] if to else None)
 
 
@@ -502,7 +545,7 @@ def return_to_supplier(kernel, lot, *, by: str, reason: str, run_id: str = "", r
     lot = lot_of(kernel, lot)
     _live(lot, "returned")
     q = float(lot["fields"].get("quantity") or 0)
-    return _event(kernel, lot, "stock.returned", set_={"status": "RETURNED", "quantity": 0}, state="returned", by=by, run_id=run_id,
+    return _event(kernel, lot, "stock.returned", set_={"status": "RETURNED", "quantity": 0, "count_baseline": 0}, state="returned", by=by, run_id=run_id,
                   release=release, reason=reason, quantity=-q)
 
 

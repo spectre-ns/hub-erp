@@ -743,11 +743,12 @@ class InventoryMixin:
                 raise ShellError("Choose where the goods go.", field="location")
             loc = inventory.location_of(k, self._f("location"))
             inventory.holds_stock(loc)
-            lines = []
+            lines, now = [], {}
             for i, l in enumerate(x for x in po["fields"].get("lines") or [] if isinstance(x, dict)):
                 q = self._number_in(f"qty-{i}", required=False)
                 if not q or not l.get("part"):  # an item line (archived) is never received into stock
                     continue
+                now[l["part"]] = now.get(l["part"], 0.0) + q
                 row = {"part": l.get("part"), "quantity": q}
                 if self._f(f"batch-{i}"):
                     row["batch"] = self._f(f"batch-{i}")
@@ -761,6 +762,12 @@ class InventoryMixin:
                     except ValueError:
                         raise ShellError(f"The expiry on line {i + 1} must be a date written YYYY-MM-DD.", field=f"expiry-{i}") from None
                     row["expiry"] = expiry
+                # Asked now, before anything is filed: a receipt that would be refused at its check or at booking
+                # (after the buyer confirmed it) is refused here, on the line that needs changing.
+                problem = (inventory.tracking_problem(k, l["part"], q, batch=row.get("batch", ""), serials=row.get("serials"))
+                           or inventory.over_receipt_problem(k, po, l["part"], now[l["part"]], bundle=self.bundle))
+                if problem:
+                    raise ShellError(f"Line {i + 1}: {problem[:1].upper()}{problem[1:]}.", field=f"qty-{i}")
                 lines.append(row)
             if not lines:
                 raise ShellError("Say how many were received on at least one line.", field="qty-0")

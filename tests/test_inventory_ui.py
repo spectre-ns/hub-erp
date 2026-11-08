@@ -161,6 +161,12 @@ def test_a_purchase_order_is_received_into_a_location_through_goods_receipt(shel
     assert status == 400 and "at least one line" in text
     status, url, text = post(shell, "/po-receive", {"as": "alice", "po": po["locator"], "location": inventory.locations(k)[0]["locator"], "qty-0": "1"})
     assert status == 400 and "structural" in text, "a structural location holds nothing"
+    filed = len(k.query(type_="receipt"))
+    status, url, text = post(shell, "/po-receive", {"as": "alice", "po": po["locator"], "location": recv, "qty-0": "500"})
+    assert status == 400 and "Line 1: 500 of" in text and "more than the 400 outstanding" in text and "tolerance is 5%" in text, text[:300]
+    assert len(k.query(type_="receipt")) == filed, "refused before anything is filed, not at the receipt's check"
+    status, url, text = post(shell, "/po-receive", {"as": "alice", "po": po["locator"], "location": recv, "qty-0": "420"})
+    assert status == 200 and len(k.query(type_="receipt")) == filed + 1, "within the over-receipt tolerance"
 
 
 def test_an_order_placed_before_inventory_is_refused_cleanly_not_received(shell):

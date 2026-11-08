@@ -615,7 +615,10 @@
    "purchaseable",
    "minimum_stock"
   ],
-  "folder_hint": "Inventory/Parts"
+  "folder_hint": "Inventory/Parts",
+  "system_states": [
+   "released"
+  ]
  },
  "design": {
   "prefix": "DSN",
@@ -1059,6 +1062,7 @@
    "ncr": "ref",
    "parent": "ref",
    "quarantined_from": "ref",
+   "count_baseline": "number",
    "notes": "text"
   },
   "required_by_state": {
@@ -1078,7 +1082,8 @@
    "po",
    "supplier_part",
    "unit_cost",
-   "currency"
+   "currency",
+   "count_baseline"
   ],
   "retention": "quality",
   "sensitivity": "internal"
