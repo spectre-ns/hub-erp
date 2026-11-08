@@ -99,3 +99,34 @@ def test_a_draft_written_on_an_older_text_keeps_the_edits_it_replaces(hub):
     assert "(an unreleased edit)" in hub.dms.blobs.get(kept["sha256"]).decode("utf-8")
     for owner in ("bob", "carol"):
         assert any("replaced unreleased edits" in (n.get("subject") or "") for n in hub.inbox.for_principal(owner))
+
+
+NEW_FRAME = """---
+type: frame [0.2]
+name: extra-policy
+description: "A policy written on disk and never released."
+visibility: internal
+version: "1.0.0"
+scope: department
+maintainer: bob
+inherits: org-model
+---
+# Extra policy
+
+Never released.
+
+## Permissions
+Staff may approve bills in Finance/Payables.
+"""
+
+
+def test_a_model_change_ignores_frames_on_disk_no_release_has(hub):
+    """A model change is compiled from the release in force: a Frame file written on disk and never released (a new
+    policy, a persona) is not swept into it."""
+    (hub.frames.root / "finance" / "extra-policy.frame.md").write_text(NEW_FRAME, encoding="utf-8")
+    hub._frames = None
+    assert "extra-policy" in hub.frames.frames
+    p = hub.propose_cog_model("quality-assistant", "ollama/granite4.2:3b", by="bob")
+    assert {c["rule"].get("kind") for c in p["changes"] if c.get("rule")} <= {"cog", "text"}, [c["reason"] for c in p["changes"]]
+    assert "extra-policy" not in {f["name"] for f in p["frames"]}
+    assert not any(c.get("frame") == "extra-policy" for c in p["changes"])

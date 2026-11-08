@@ -199,6 +199,15 @@ class FrameStore:
             clone.frames[name] = new
         return clone
 
+    def only(self, names) -> "FrameStore":
+        """A copy of this store holding only the named Frames (those a release was compiled from, say)."""
+        import copy
+
+        keep = set(names)
+        clone = copy.copy(self)
+        clone.frames = {n: f for n, f in self.frames.items() if n in keep}
+        return clone
+
     def get(self, name: str) -> Frame:
         try:
             return self.frames[name]

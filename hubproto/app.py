@@ -281,7 +281,12 @@ class Hub:
         if self.settings_source():
             raise CompileError("the rules are edited in Settings since the release in force came from there; the Frames are the SOPs "
                                "people and cogs read. Change a rule in Settings (or with a cog's propose tools), not by compiling the Frames.")
-        frames = self.released_frames() if from_release else self.frames  # from_release: only the overrides change
+        frames = self.frames
+        if from_release:  # only the overrides change: the Frames of the release in force as released, and no other file on disk
+            frames = self.released_frames()
+            names = self.released_frame_names()
+            if names:
+                frames = frames.only(names)
         if self.sop_source():
             # The Frame is derived from the SOP documents: the documents in force (or the drafts an ECO carries, in
             # ``sop_drafts``: {frame name: draft locator}) on top of the release in force; the files on disk are not read.
