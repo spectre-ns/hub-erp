@@ -1855,16 +1855,18 @@ def reject_suggestion(hub, co_ref, sid: str, by: str, reason: str = "") -> dict:
     return _find_suggestion(_co(hub, co["locator"]), sid)[2]
 
 
-def answer_question(hub, co_ref, qid: str, answer: str, by: str, line: int | None = None) -> dict:
+def answer_question(hub, co_ref, qid: str, answer: str, by: str, line: int | None = None, record_divergence: bool = False) -> dict:
     """Mark a question answered, with the answer (and, best, the line of the prose that answers it). The next compile
-    also closes a compiler question that no longer arises. The requester, a document controller or a contributor
+    also closes a compiler question that no longer arises. ``record_divergence`` (a committee question answered by its
+    chair or a system administrator): the line stays unenforced and the release records it as a divergence, with the
+    answer as its meaning. The requester, a document controller or a contributor
     answers."""
     co = sync(hub, co_ref)
     if not (answer or "").strip():
         raise ValueError("say what the answer is (and, best, which line of the prose says it)")
     now = utcnow()
     upd = {"status": "answered", "answer": answer.strip(), "by": by, "at": now, "answer_line": line}
-    if "divergence" in answer.lower():  # "record as a divergence": the release records it (QMS A4)
+    if record_divergence:  # the chair says "record it as a divergence": the release records one (QMS A4); the answer is its meaning
         upd["record_divergence"] = True
     p = _proposal(hub, co)
     q = next((x for x in (p or {}).get("questions") or [] if x["id"] == qid), None)
@@ -1877,6 +1879,8 @@ def answer_question(hub, co_ref, qid: str, answer: str, by: str, line: int | Non
             raise ValueError(f"only the committee's chair ({chair or 'none'}) or a system administrator answers a {q.get('code')} question")
         if by in contributors(hub, co):
             raise ValueError(f"segregation of duties: {by} contributed to {co['number']}; someone who did not answers for the committee")
+    elif record_divergence:
+        raise ValueError("only a committee question (answered by its chair or a system administrator) is recorded as a divergence")
     elif _may_edit(hub, co, by) and by not in contributors(hub, co):
         raise ValueError(f"only {requester(co)}, a document controller or a contributor answers questions on {co['number']}")
     if q is not None:
