@@ -344,5 +344,8 @@ final report every place you needed another workstream's code and what you assum
   compile-frame committee (whose members' readings must agree; a disagreement becomes a question).
 - Created and edited in Settings > People and roles > Groups and committees; each edit is a direct
   change on a change order.
-- Open: whether a member may stand aside (abstain with a reason); how a cog outside its approval
-  criteria takes part; what happens when a member does not respond by the due date.
+- **No standing aside**: every member must agree; there is no abstention.
+- **Human intervention** when a cog member's approval criteria do not hold, and when a member has not
+  responded by the due date: the committee decision pauses and goes to a person who intervenes
+  (proposed: each committee names a person as its chair; the chair may decide in that member's place
+  with a recorded meaning, extend the due date, or return the item). Nothing passes by default.
