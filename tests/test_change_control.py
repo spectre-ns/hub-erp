@@ -153,7 +153,7 @@ def test_compiling_moves_from_document_control_to_the_review_round(hub):
     assert "not compiled again" in job(hub, co, "compile-frame")[0]["steps"][1]["detail"]
 
 
-def test_the_panel_is_suggested_from_the_change_control_sop(hub):
+def test_the_panel_is_suggested_from_the_change_control_sop(hub, monkeypatch):
     section = cc.review_section(hub)
     assert "A change that touches permissions, record types or forms is reviewed by the it-admin cog." in section
     p = hub.compile(save=False)
@@ -170,7 +170,14 @@ def test_the_panel_is_suggested_from_the_change_control_sop(hub):
     rule = next(r for r in hub.settings_rules() if r["kind"] == "permission" and (r.get("source") or {}).get("text") == "Finance clerks may read Finance.")
     cc.add_direct_change(hub, perms["number"], {"op": "remove", "rule": rule}, "bob")
     [e] = cc.suggest_panel(hub, perms["number"])
-    assert e["who"] == "it-admin" and not e["member"] and "permissions" in e["reason"]
+    assert e["who"] == "it-admin" and e["member"] and e["kind"] == "cog" and "permissions" in e["reason"]
+    # A name the section gives that is not a member is suggested (shown) but cannot be asked.
+    monkeypatch.setattr(cc, "review_section", lambda hub_: "A change that touches permissions is reviewed by the auditor-bot cog.")
+    [e] = cc.suggest_panel(hub, perms["number"])
+    assert e["who"] == "auditor-bot" and not e["member"] and e["kind"] == "cog"
+    cc.request_review(hub, perms["number"], "bob")
+    rnd = cc.current_round(hub.kernel.get(perms["locator"]))
+    assert [x["who"] for x in rnd["panel"]] == ["auditor-bot"] and rnd["results"] == {} and rnd["status"] == "reviewed"
 
 
 def test_cog_reviews_land_in_the_round_and_round_two_sees_only_the_delta_of_the_delta(hub):
@@ -207,7 +214,7 @@ def test_people_review_ask_and_suggest_and_the_author_answers(hub):
     assert [e["who"] for e in cc.current_round(co)["panel"]] == ["qa-manager"], "the requester's panel replaces the suggestion"
     assert {e["who"] for e in cc.current_round(co)["suggested"]} == {"qa-manager", "quality-assistant"}, "the suggestion is still recorded"
     with pytest.raises(ValueError, match="not a member"):
-        cc.add_reviewer(hub, co["number"], "it-admin", "alice")
+        cc.add_reviewer(hub, co["number"], "auditor-bot", "alice")
     cc.add_reviewer(hub, co["number"], "bob", "alice", reason="he signs the widenings")
     co = hub.kernel.get(co["locator"])
     assert cc.stage_of(co) == "in-review" and cc.current_round(co)["results"]["bob"]["status"] == "queued"
@@ -528,7 +535,7 @@ def test_the_change_order_page_requests_review_and_sends_for_approval(hub):
         status, url, body = post(shell, "/co-review", {"as": "alice", "co": co["locator"]})
         assert status == 200, body[:300]
         page = main_of(get(shell, "/record/" + co["locator"], **{"as": "alice"})[1])
-        assert "Review round 1" in page and "management (not a member)" in page and "Send for approval" in page
+        assert "Review round 1" in page and "panel: management" in page and "Send for approval" in page
         status, url, body = post(shell, "/co-send", {"as": "alice", "co": co["locator"]})
         assert status == 200, body[:300]
         page = main_of(get(shell, "/record/" + co["locator"], **{"as": "alice"})[1])
