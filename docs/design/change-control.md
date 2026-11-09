@@ -391,3 +391,15 @@ final report every place you needed another workstream's code and what you assum
 - **Committees exist to bring differing perspectives with different contexts**: each member works
   from its own persona and responsibilities; the shared material (diff, rules in force, output
   format) is the same, so differences surface as disagreements for a person to resolve.
+
+## 13. What a cog knows (agreed 2026-11-09)
+
+- **Cogs have no private memories.** What a cog should remember becomes documentation released into
+  the system (a work instruction, a lessons-learned note) on a change order; once released and named
+  in a Roles and responsibilities table, it is in the context of everyone it is meant for.
+- A cog works from: its **training** (the released documents whose tables name it or its roles, put in
+  its context when it works); the **knowledge base through its tools** (any document or record it may
+  read under its roles' read permissions; effective revisions by default, a draft only when its task
+  is about that draft); the item it is working on and that item's records; and the conversation it is
+  in. No private store: the per-cog judgments file becomes review records on the item.
+- Open: whether a chat keeps the current conversation (proposed) or every chat message stands alone.
