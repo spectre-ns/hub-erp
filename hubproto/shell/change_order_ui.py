@@ -1301,9 +1301,19 @@ class ChangeOrderMixin:
             elif pv is None:
                 return out + ("<p class='muted'>Nothing compiled yet: the delta is compiled in the change order's review rounds.</p>" if not f.get("staged_errors") else "") + "</section>"
             if pv is not None and not ctx["groups"]:
-                if pv.get("errors"):
-                    out += ("<div class='card warn' role='status'><p><b>The drafts do not compile as they stand.</b> Fix these first:</p><ul>"
-                            + "".join(f"<li>{esc(e)}</li>" for e in pv["errors"]) + "</ul></div>")
+                unread = pv.get("unread") or []
+                if unread:
+                    out += ("<div class='card info' role='status'><p><b>Not read yet.</b> The sentence grammar does not know these changed "
+                            "sentences, so this preview leaves them out. The compile-frame committee (the senior cogs) reads the diff when "
+                            "you request review: it says what each sentence changes, and asks where the prose is unclear.</p><ul>"
+                            + "".join(f"<li><q>{esc(u['text'])}</q> <span class='why'>({esc(u['frame'])} line {esc(u['line'])})</span></li>"
+                                      for u in unread) + "</ul></div>")
+                rest = [e for e in pv.get("errors") or [] if "looks like a rule but does not parse" not in e]
+                if rest:
+                    out += ("<div class='card warn' role='status'><p><b>" + ("As the grammar alone reads the drafts, these would not hold"
+                            if unread else "The drafts do not compile as they stand") + ".</b> "
+                            + ("Some may follow from the sentences not read yet; the review round compiles what counts:" if unread else "Fix these first:")
+                            + "</p><ul>" + "".join(f"<li>{esc(e)}</li>" for e in rest) + "</ul></div>")
                 rows = [f"<li><b>{esc(r['verb'])}:</b> {esc(r['text'])}" + (f" <span class='why'>was: {esc(r['was'])}</span>" if r.get("was") else "") + "</li>"
                         for r in self._change_rows(pv)]
                 return out + ("<p class='why'>Preview from the drafts as they stand. The delta that counts is compiled in each review round "
