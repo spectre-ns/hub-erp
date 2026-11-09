@@ -143,7 +143,8 @@ def test_start_decide_upload_attach_flow(shell):
     assert status == 200
     for s in ("open", "awaiting-approve-the-bill", "posted", "rejected"):
         assert f'data-state="{s}"' in text
-    assert "stateDiagram-v2" in text and "pending" in text
+    assert "<svg class=\"wf wf-view\"" in text and 'id="wfr-s-awaiting-approve-the-bill"' in text and "pending" in text
+    assert "wf-cur" in text and "mermaid" not in text.lower(), "the drawing is server-side SVG with the current status marked"
     status, text = get(shell, "/record/" + rec["number"], **{"as": "bob"})
     assert status == 200 and "You may approve here" in text and 'action="/decide"' in text
 

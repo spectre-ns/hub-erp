@@ -393,12 +393,18 @@ class SettingsMixin:
 
     # ------------------------------------------------------------ workflows (read-only here)
     def _settings_workflows(self, rules, draft, released, check) -> str:
+        """Each process drawn as it is in force (hubproto.shell.workflow_ui), with its sentences and routes; the workflow
+        editor changes it through a change order."""
         procs = self._processes()
-        out = ("<div class='card quiet'>Workflows and their routing are shown here as they read; they are edited in the workflow builder "
-               "(coming next), as a proposal like every other setting.</div>")
+        out = self._workflows_settings_html()
         for p in sorted((r for r in rules if r["kind"] == "process"), key=lambda r: r["name"]):
             routes = [r for r in rules if r["kind"] in ("routing", "sla") and r["process"] == p["name"]]
+            try:
+                drawing = self._workflow_thumb(p["name"])
+            except KeyError:  # a process in a draft that is not in the release yet
+                drawing = "<p class='muted'>Not in the release in force yet.</p>"
             out += (f"<details><summary><b>{esc(p['name'])}</b> <span class='muted'>{len(p.get('steps') or [])} steps, {len(routes)} routes</span></summary>"
+                    f"{drawing}<p><a href='{href('/workflows/' + p['name'], self.user)}'>{icon('workflow')}Open in the workflow editor</a></p>"
                     f"<pre class='pre'>{esc(sentence(p, procs))}</pre><ul>" + "".join(f"<li>{esc(sentence(r, procs))}</li>" for r in routes) + "</ul></details>")
         return out
 

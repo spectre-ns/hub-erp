@@ -196,6 +196,7 @@ class EcoMixin:
                         f"<button class='secondary'>{icon('plus')}Add</button></form>")
         # Forms
         out += self._forms_co_section(co, mine, preparing)
+        out += self._workflows_co_section(co, mine, preparing)
         # Staged Frame
         out += self._staged_html(co, st)
         # What blocks it, and Send for approval

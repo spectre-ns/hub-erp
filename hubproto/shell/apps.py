@@ -105,7 +105,7 @@ def app_for_route(apps: list[dict], route: str, rt: str = "") -> dict | None:
     """Which app the current page belongs to."""
     if rt:
         return app_for_type(apps, rt)
-    if route == "/forms" or route.startswith("/forms/"):  # listed in Quality too; it belongs to Settings
+    if route in ("/forms", "/workflows") or route.startswith(("/forms/", "/workflows/")):  # Forms is listed in Quality too; both are Settings
         return next((a for a in apps if a["key"] == "settings"), None)
     for app in apps:
         for _, path, _ in app["pages"]:

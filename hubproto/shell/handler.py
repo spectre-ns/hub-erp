@@ -42,8 +42,8 @@ RAIL_POLICY = [("Runs", "/runs", "activity"), ("Policy versions", "/releases", "
                ("Conformance", "/conformance", "check-circle"), ("People and roles", "/admin", "users")]
 # Routes the identity switcher may stay on (anything else goes home).
 STAY_ROUTES = ("/", "/inbox", "/files", "/documents", "/templates", "/change-orders", "/boards", "/runs", "/releases", "/frames", "/why", "/admin", "/conformance", "/people", "/suppliers",
-               "/settings", "/inventory", "/inventory/locations")
-STAY_PREFIXES = ("/record/", "/document/", "/run/", "/frame/", "/release/", "/items/", "/app/", "/user/", "/settings/")
+               "/settings", "/inventory", "/inventory/locations", "/workflows")
+STAY_PREFIXES = ("/record/", "/document/", "/run/", "/frame/", "/release/", "/items/", "/app/", "/user/", "/settings/", "/workflows/")
 # The small script: tabs show one panel at a time (every panel is visible without it) and the print button prints.
 SCRIPT = """document.documentElement.classList.add('js');
 addEventListener('click',function(e){var b=e.target.closest&&e.target.closest('[data-theme-toggle]');if(!b)return;var r=document.documentElement;var t=r.getAttribute('data-theme')==='dark'?'light':'dark';r.setAttribute('data-theme',t);try{localStorage.setItem('hub-theme',t)}catch(_){}});
@@ -227,7 +227,8 @@ class BaseHandler(BaseHTTPRequestHandler):
                      "/admin": self.page_admin, "/conformance": self.page_conformance, "/download": self.page_download,
                      "/start": self.page_start, "/people": self.page_people, "/suppliers": self.page_suppliers, "/settings": self.page_settings, "/templates": self.page_templates,
                      "/change-orders": self.page_change_orders, "/automation": self.page_automation,
-                     "/automation-status": self.page_automation_status, "/scopes": self.page_scopes, "/forms": self.page_forms}
+                     "/automation-status": self.page_automation_status, "/scopes": self.page_scopes, "/forms": self.page_forms,
+                     "/workflows": self.page_workflows}
             if r in fixed:
                 return fixed[r]
             for prefix, fn in (("/record/", self.page_record), ("/document/", self.page_document), ("/doc/", self.page_document),
@@ -236,13 +237,16 @@ class BaseHandler(BaseHTTPRequestHandler):
                                ("/text-edit/", self.page_text_edit), ("/frame-check/", self.page_frame_check), ("/proposal/", self.page_proposal),
                                ("/agent-run/", self.page_agent_run), ("/items/", self.page_items), ("/app/", self.page_app), ("/user/", self.page_user),
                                ("/settings/", self.page_settings), ("/automation/", self.page_automation), ("/board/", self.page_cog_board),
-                               ("/forms/", self.page_forms), ("/forms-preview/", self.page_forms_preview)):
+                               ("/forms/", self.page_forms), ("/forms-preview/", self.page_forms_preview),
+                               ("/workflows/", self.page_workflows), ("/workflow-panel/", self.page_workflow_panel)):
                 if r.startswith(prefix) and len(r) > len(prefix):
                     self.arg = r[len(prefix):]
                     return fn
             return self.inventory_route(method, r)
         posts = {"/sops-convert": self.post_sops_convert, "/folder-new": self.post_folder_new, "/folder-remove": self.post_folder_remove, "/forms-check": self.post_forms_check, "/forms-save": self.post_forms_save, "/forms-discard": self.post_forms_discard,
                  "/forms-carry": self.post_forms_carry, "/forms-uncarry": self.post_forms_uncarry,
+                 "/workflow-op": self.post_workflow_op, "/workflow-discard": self.post_workflow_discard, "/workflow-carry": self.post_workflow_carry,
+                 "/workflow-uncarry": self.post_workflow_uncarry,
                  "/withdraw-record": self.post_withdraw_record, "/automation-retry": self.post_automation_retry, "/automation-start": self.post_automation_start, "/start": self.post_start, "/decide": self.post_decide, "/msg": self.post_msg, "/attach": self.post_attach,
                  "/finish-edit": self.post_finish_edit, "/new-document": self.post_new_document, "/working-copy": self.post_working_copy, "/apply-replies": self.post_apply_replies, "/start-on": self.post_start_on, "/chat": self.post_chat, "/chat-clear": self.post_chat_clear, "/frame-draft": self.post_frame_draft, "/text-save": self.post_text_save,
                  "/frame-propose": self.post_frame_propose, "/frame-withdraw": self.post_frame_withdraw, "/proposal-review": self.post_proposal_review, "/proposal-release": self.post_proposal_release,
