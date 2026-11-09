@@ -866,6 +866,8 @@ class ChangeOrderMixin:
                 for reason, es in by_reason.items()) + "</ul>")
         elif st != "compiling":
             out += "<p class='why'>No reviewer suggested: the change-control SOP's section on reviewing changes names none for this delta.</p>"
+        for x in rnd.get("left_off") or []:
+            out += f"<p class='why'>Left off the panel: <b>{esc(x['who'])}</b>, {esc(x['reason'])}.</p>"
         results = rnd.get("results") or {}
         rows = self._co_committee_rows(rnd)
         for e in rnd.get("panel") or []:
@@ -1368,6 +1370,10 @@ class ChangeOrderMixin:
         f = co["fields"]
         out = f"<section class='co-sec' id='delta'><h2>{icon('layers')}The delta</h2>"
         out += self._impact_html([c["name"] for c in eco.carried(self.hub, co) if c.get("name")])
+        if f.get("released_release"):
+            return out + (f"<div class='card info' role='status'>{icon('layers')} Released as {self._version_html(f['released_release'])}. What it "
+                          f"changed is listed there: each SOP line before and after, the configuration it sets, and its decisions "
+                          f"(<a href='{href('/release/' + str(f['released_release'])[:12], self.user)}'>what changed</a>).</div></section>")
         if f.get("staged_errors"):
             out += ("<div class='card crit' role='alert'><p><b>The delta does not compile.</b> Fix these in the revisions:</p><ul>"
                     + "".join(f"<li>{esc(e)}</li>" for e in f["staged_errors"]) + "</ul></div>")

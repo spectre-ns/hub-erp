@@ -1488,7 +1488,7 @@ class ReviewerCog(Cog):
                 checks = [c for c in checks if "adversarial" not in c]
                 if judged:
                     checks.insert(0, "its review passed" + (f" (evidence {self._number(ctx, judged['evidence'])})" if judged.get("evidence") else "")
-                                  + (f": {judged['summary'][:240]}" if judged.get("summary") else ""))
+                                  + (f": {judged['summary'][:240].rstrip(' .;')}" if judged.get("summary") else ""))
                 if adv:
                     checks.insert(0, adv["summary"] + (f" (evidence {self._number(ctx, adv['evidence'])})" if adv.get("evidence") else ""))
                 return self.ok("review", {"verdict": "approve", "reasons": [self._in_words(x) for x in checks], "delegating_rule": crit["source"],
