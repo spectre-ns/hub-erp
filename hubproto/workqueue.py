@@ -332,7 +332,11 @@ class CogQueue:
         return out
 
 
-LEASE = float(os.environ.get("HUBPROTO_COG_LEASE") or 900)  # seconds; renewed every LEASE/3 while a task runs
+# Seconds a worker holds a task without renewing it; renewed every LEASE/3 by a thread of its own while the task runs
+# (also while the model thinks). It is short because it is also how a task held by a worker that is gone comes back:
+# a redeploy replaces the container, so the new hub (another hostname) cannot tell the old worker is dead and waits
+# for its lease to run out (then for the next recovery check, every LEASE/3): about 3 minutes, not 20.
+LEASE = float(os.environ.get("HUBPROTO_COG_LEASE") or 120)
 _CURRENT = threading.local()
 
 
