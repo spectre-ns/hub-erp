@@ -77,8 +77,10 @@ def from_linear(process: dict, slas: dict, record_type: str) -> dict:
         statuses.append(dict(SYSTEM_FAILED))
     if "cancelled" not in ids:
         statuses.append({"id": "cancelled", "name": "Cancelled", "category": "done", "outcome": "cancelled"})
-    lines = {"create": steps[0]["line"]} if steps and steps[0].get("line") else {}
-    transitions = [{"id": "create", "type": "initial", "to": "open", "name": steps[0]["title"] if steps else "Create",
+    lines = {slug(steps[0]["title"]): steps[0]["line"]} if steps and steps[0].get("line") else {}
+    # Ids are the ones the graph sentences derive from the names, so the prose needs none written in it.
+    first = steps[0]["title"] if steps else "Create"
+    transitions = [{"id": slug(first), "type": "initial", "to": "open", "name": first,
                     "gate": {"kind": "person", "role": steps[0]["role"] if steps else "system"},
                     "validators": [], "actions": [], "fields": []}]
     # Walk the steps: cog steps gather as actions; a checkpoint closes the transition into its waiting status.
@@ -95,13 +97,14 @@ def from_linear(process: dict, slas: dict, record_type: str) -> dict:
     groups.append((current, terminal, actions, gate_cp))
     for src, dst, acts, cp in groups:
         if cp is None:
-            transitions.append({"id": f"auto-{dst}", "type": "directed", "from": [src], "to": dst, "name": "Automatically",
+            transitions.append({"id": f"{src}-to-{dst}", "type": "directed", "from": [src], "to": dst, "name": "Automatically",
                                 "gate": {"kind": "auto", "when": "actions-succeed"}, "validators": [], "actions": list(acts), "fields": []})
             continue
         gate = {"kind": "person", "role": cp["role"]}
         transitions.append({"id": cp["id"], "type": "directed", "from": [src], "to": dst, "name": cp["title"], "gate": gate,
                             "validators": [], "actions": list(acts), "fields": []})
-        transitions.append({"id": f"reject-{cp['id']}", "type": "directed", "from": [src], "to": on_reject, "name": "Reject",
+        transitions.append({"id": f"reject-{cp['id']}", "type": "directed", "from": [src], "to": on_reject,
+                            "name": f"Reject {cp['title'][:1].lower()}{cp['title'][1:]}",
                             "gate": dict(gate), "validators": [], "actions": [], "fields": []})
         if cp.get("line"):
             lines[cp["id"]] = lines[f"reject-{cp['id']}"] = cp["line"]
@@ -408,7 +411,30 @@ def action_words(a, cogs: dict | None = None) -> str:
     return "the " + cog.replace("-", " ")
 
 
-def to_sentences(wf: dict, cogs: dict | None = None) -> list[str]:
+def derived_id(element: dict, kind: str) -> str:
+    """The id the graph sentences give an element from its name (a status, or a transition) when none is written."""
+    if kind == "status":
+        return slug(element.get("name") or element["id"])
+    auto = (element.get("gate") or {}).get("kind") == "auto"
+    if element.get("name") and not (auto and element["name"] == "Automatically"):
+        return slug(element["name"])
+    return default_id(element)
+
+
+def id_map(wf: dict) -> dict[str, str]:
+    """{derived id: id} for the statuses and transitions whose ids the names do not give (a renamed element keeps its
+    id): recorded beside the prose (the frame's ``workflow_ids``), never in it."""
+    out = {}
+    for s in wf.get("statuses") or []:
+        if not s.get("system") and derived_id(s, "status") != s["id"]:
+            out[derived_id(s, "status")] = s["id"]
+    for t in wf.get("transitions") or []:
+        if not t.get("system") and derived_id(t, "transition") != t["id"]:
+            out[derived_id(t, "transition")] = t["id"]
+    return out
+
+
+def to_sentences(wf: dict, cogs: dict | None = None, ids: bool = True) -> list[str]:
     """The graph written as the sentences ``hubproto.extract`` reads back to the same graph (statuses, transitions and
     their ids): what a direct change of a workflow says in the SOP. ``cogs`` maps a step id to its cog id."""
     sts = [s for s in wf.get("statuses") or [] if not s.get("system")]
@@ -420,7 +446,7 @@ def to_sentences(wf: dict, cogs: dict | None = None) -> list[str]:
             attrs.append(s["outcome"])
         if s.get("sla_days"):
             attrs.append(f"due within {s['sla_days']} days")
-        ident = "" if slug(s["name"]) == s["id"] else f" [{s['id']}]"
+        ident = "" if not ids or slug(s["name"]) == s["id"] else f" [{s['id']}]"
         return f"{s['name']}{ident} ({', '.join(attrs)})"
     lines = ["Statuses: " + ", ".join(st_item(s) for s in sts) + "."]
 
@@ -443,7 +469,7 @@ def to_sentences(wf: dict, cogs: dict | None = None) -> list[str]:
     def label(t):
         if (t.get("gate") or {}).get("kind") == "auto" and t.get("name") in (None, "", "Automatically") and t["id"] == default_id(t):
             return ""
-        ident = "" if slug(t.get("name") or "") == t["id"] else f" [{t['id']}]"
+        ident = "" if not ids or slug(t.get("name") or "") == t["id"] else f" [{t['id']}]"
         return f' ("{t.get("name") or t["id"]}"{ident})'
     for t in wf.get("transitions") or []:
         if t.get("system"):

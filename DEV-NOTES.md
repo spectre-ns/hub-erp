@@ -246,6 +246,10 @@ From any status except done to Cancelled ("Cancel"): the quality manager.
   A failed action moves the item to the system status `failed` with a Retry loop. `From Returned to <status>
   ("Resubmit"): the owner; then <actions> run.` is a rework loop: a rejection to Returned waits for the owner to rework the
   item, and resubmitting runs those actions again.
+* Ids: a status or transition is named, and its id is the one its name gives (numbered steps compile to such ids too),
+  so prose carries no `[id]`. A rename keeps its id through a map beside the prose, in the frame's front matter:
+  `workflow_ids: {<process>: {<id the new name gives>: <id kept>}}` (`process_graph.id_map(graph)` gives it;
+  `to_sentences(graph, ids=False)` writes the sentences without ids). `[id]` in prose still reads, for hand-written text.
 * Every graph the compiler produces, numbered steps included, writes back as these sentences and reads back to the same
   graph (`tests/test_workflow_graph.py::test_every_repository_process_round_trips_through_its_graph_sentences`).
 * A change order's approval (any gate kind: a person, a committee, a cog, automatic) is always a person's, and only when

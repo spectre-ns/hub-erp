@@ -286,14 +286,42 @@ def test_a_process_of_numbered_steps_converts_to_graph_sentences(tmp_path, hub):
     b = render(rules, hub.kernel.types)
     wf, op = b["workflows"]["widget-request"], b["ops"]["widget-request"]
     lines = pg.to_sentences(wf, cogs={s["id"]: s["cog"]["id"] for s in op["steps"]})
-    # Ids are kept (a rename keeps the id): the compiled ones are written out where they are not the name's slug.
-    assert 'From Open to Awaiting check the widget ("Automatically" [auto-awaiting-check-the-widget]): automatically, after the record filer.' in lines
+    # The compiled ids are the ones the names give, so the prose carries none.
+    assert 'From Open to Awaiting check the widget: automatically, after the record filer.' in lines
+    assert not [x for x in lines if "[" in x], lines
     text = GIZMO.split("## Process: gizmo-review")[0] + "## Process: widget-request\nRecords are filed in Gizmos.\nThe record type is task.\n" + "\n".join(lines) + "\n"
     ex = rules_of(text, tmp_path)
     assert ex.notes == [], ex.notes
     p = proc(ex.rules, "widget-request")
     assert [t["id"] for t in p["transitions"]] == [t["id"] for t in wf["transitions"] if not t.get("system")]
     assert [s["id"] for s in p["statuses"]] == [s["id"] for s in wf["statuses"] if not s.get("system")]
+
+
+def test_no_repository_process_writes_an_id_into_its_prose():
+    from hubproto import workflows
+    from hubproto.release import render_workflow
+
+    for where, r in repository_processes():
+        wf = render_workflow(r, {}, r.get("record_type") or "x")
+        rule = workflows.process_rule({"processes": {r["name"]: r}}, r["name"], pg.graph_only(wf))
+        assert pg.id_map(rule) == {}, (where, r["name"])
+        assert not [x for x in pg.to_sentences(rule) if "[" in x], (where, r["name"])
+
+
+def test_a_rename_keeps_its_id_through_a_map_beside_the_prose(tmp_path):
+    p = proc(rules_of(GIZMO, tmp_path).rules)
+    renamed = {**p, "statuses": [{**s, "name": "In review"} if s["id"] == "review" else s for s in p["statuses"]]}
+    lines = pg.to_sentences(renamed, ids=False)
+    assert "In review (in progress)" in lines[0] and "[" not in "".join(lines)
+    ids = pg.id_map(renamed)
+    assert ids == {"in-review": "review"}
+    head, rest = GIZMO.split("---\n# Gizmo policy", 1)
+    text = head + f"workflow_ids: {{{G}: {{in-review: review}}}}\n---\n# Gizmo policy" + rest
+    text = text.split("## Process: gizmo-review")[0] + "## Process: gizmo-review\nRecords are filed in Gizmos.\nThe record type is task.\n" + \
+        "\n".join(lines) + "\n\n## Process: gizmo-triage" + text.split("## Process: gizmo-triage")[1]
+    again = proc(rules_of(text, tmp_path).rules)
+    assert [s["id"] for s in again["statuses"]] == [s["id"] for s in p["statuses"]]
+    assert {t["id"]: (t.get("from"), t["to"]) for t in again["transitions"]} == {t["id"]: (t.get("from"), t["to"]) for t in p["transitions"]}
 
 
 def test_the_owner_or_an_approver_and_a_swarm_read_and_write_back(tmp_path):

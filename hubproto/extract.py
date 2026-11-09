@@ -530,6 +530,28 @@ def _graph_statement(process: dict, line: str, n: int, src) -> str | None:
     return ""
 
 
+def _apply_ids(process: dict, ids: dict) -> None:
+    """Ids kept across a rename (``workflow_ids`` in the frame's front matter: {process: {id the name gives: id kept}}),
+    so the prose names its statuses and transitions without ids."""
+    if not ids or not process.get("statuses"):
+        return
+    ren = lambda x: ids.get(x, x)
+    for st in process["statuses"]:
+        st["id"] = ren(st["id"])
+    for t in process.get("transitions") or []:
+        t["id"] = ren(t["id"])
+        t["to"] = ren(t["to"])
+        for k in ("from", "except"):
+            if t.get(k) is not None:
+                t[k] = [ren(x) for x in t[k]]
+        for v in t.get("validators") or []:
+            if "status_visited" in v:
+                v["status_visited"] = ren(v["status_visited"])
+        g = t.get("gate") or {}
+        if g.get("not"):
+            g["not"] = [x if x.startswith("@") else ren(x) for x in g["not"]]
+
+
 def _close_graph(process: dict) -> list[str]:
     """Finish a process written as a graph: its start, its object and its closing status. Returns errors."""
     if not process.get("statuses"):
@@ -589,6 +611,8 @@ class ConventionExtractor:
         def close_process():
             nonlocal process
             if process is not None:
+                _apply_ids(process, ((frame.frontmatter.get("workflow_ids") or {}) if isinstance(frame.frontmatter.get("workflow_ids"), dict) else {})
+                           .get(process["name"]) or {})
                 for note in _close_graph(process):
                     out.notes.append({"frame": frame.name, "line": process["source"]["line"], "text": process["source"]["text"],
                                       "severity": "error", "note": note})
