@@ -74,8 +74,10 @@ def _next_revision(rev: str) -> str:
     return rev + "-1"
 
 
-def add_sop(hub, co_ref: str, name: str, *, by: str) -> dict:
-    """Start a draft revision of an SOP or policy on this change order (or return the one it already carries)."""
+def add_sop(hub, co_ref: str, name: str, *, by: str, author: str | None = None) -> dict:
+    """Start a draft revision of an SOP or policy on this change order (or return the one it already carries). ``by``
+    asks for it (and must be allowed to); ``author`` is whose draft it is when someone else writes it (the qa-manager cog
+    drafting the prose for a direct change): its first version and its author field are theirs."""
     co = _co(hub, co_ref)
     if finished(co) or (co.get("state") or "").startswith("awaiting-approve"):
         raise ValueError(f"{co['number']} is {co['state']}: add SOPs while it is being prepared, or send it back to the start")
@@ -99,11 +101,12 @@ def add_sop(hub, co_ref: str, name: str, *, by: str) -> dict:
     content, v = hub.dms.content(current["locator"])
     f = current["fields"]
     keep = {k: f.get(k) for k in ("lineage", "sop_name", "frame_meta", "frame_header", "description", "owner", "review_date") if f.get(k) is not None}
-    draft = hub.dms.create(title=f.get("title") or name, doc_class="controlled", folder=current["folder"], by=by, content=content,
+    writer = author or by
+    draft = hub.dms.create(title=f.get("title") or name, doc_class="controlled", folder=current["folder"], by=writer, content=content,
                            filename=v.get("filename") or f"{name}.docx", mime=v.get("mime") or "application/octet-stream",
                            doc_type=f.get("doc_type") or "sop",
-                           fields={**keep, "revision": _next_revision(f.get("revision")), "revises": current["number"], "author": by,
-                                   "change_order": co["number"]})
+                           fields={**keep, "revision": _next_revision(f.get("revision")), "revises": current["number"], "author": writer,
+                                   "change_order": co["number"], **({"started_by": by} if writer != by else {})})
     hub.kernel.link(co["locator"], CARRIES, draft["locator"], by=by)
     return hub.kernel.get(draft["locator"])
 

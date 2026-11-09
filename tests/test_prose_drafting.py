@@ -158,7 +158,7 @@ def test_prose_that_states_more_than_the_change_is_a_question_and_the_drafter_is
     assert not item["round_trip"]["ok"] and item["round_trip"]["extra"] and item["origin"]["drafted_by"] == "qa-manager"
     assert item["origin"]["by"] == "bob", "the direct change is still bob's; the words are the qa-manager's"
     draft = draft_of(hub, co)
-    [v] = [v for v in hub.dms.versions(draft["locator"]) if v["by"] == "qa-manager"]
+    v = [v for v in hub.dms.versions(draft["locator"]) if v["by"] == "qa-manager"][-1]  # the revision is the drafter's from its first version
     assert "drafted by the qa-manager cog (not by bob)" in v["note"] and extra in v["note"]
     assert {x["text"] for x in draft["fields"]["drafted_lines"]} == {NEW, extra}
     p = hub.compile(sop_drafts=eco.drafts_of(hub, hub.kernel.get(co["locator"])), save=False)
