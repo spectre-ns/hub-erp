@@ -100,6 +100,8 @@ class ActionsMixin:
         if process not in bundle["ops"]:
             raise ShellError(f"There is no process '{process}' in the release.", 404)
         rt = bundle["ops"][process].get("record_type", "")
+        if rt == "change-order":  # a change order is prepared first, then goes round the review loop
+            return self._co_prepare_from_start()
         record = self._collect_fields(rt)
         self._check_required(process, rt, record)
         attachments = list(record.get("attachments") or []) + self._attachments()
@@ -128,6 +130,20 @@ class ActionsMixin:
         else:
             msg = f"Filed {number}; the run is {state['status']}."
         self._redirect(self._once_finish(href("/run/" + run_id, user, done=msg)))
+
+    def _co_prepare_from_start(self):
+        """A start of the change-order process from a form: the change order is created in preparing, on its page."""
+        from .eco_ui import CHANGES
+
+        user = self.user
+        d = authz.check(self.bundle, user, "create", "change-order", CHANGES)
+        if not d["allowed"]:
+            raise ShellError(f"You cannot prepare a change order: {d['why']}", 403)
+        title = self._f("title") or "New change order"
+        rec = self.hub.kernel.create("change-order", CHANGES, {"title": title, "description": self._f("description"), "implements": [],
+                                                              "requested_by": user, "stage": "preparing"}, by=user)
+        log_line(f"change order prepared {rec['number']} by={user} (from a start form)")
+        return self._redirect(self._once_finish(self._co_href(rec) + "&done=" + quote(f"{rec['number']} is being prepared: carry what it changes, then request review.")))
 
     # ----------------------------------------------------------------- decide
     def post_decide(self):
@@ -445,6 +461,12 @@ class ActionsMixin:
             raise ShellError(f"There is no process '{process}' in the release.", 404)
         rec = self.hub.kernel.require(self._f("record"))
         self._require_read(rec["folder"])
+        if rec["type"] == "change-order" or (bundle["ops"][process].get("record_type") == "change-order"):
+            co = rec if rec["type"] == "change-order" else None
+            msg = ("A change order goes for approval through its own page: request review, then send it for approval."
+                   if co else "A change order is prepared first: start one under Quality > Change orders.")
+            return self._redirect(self._once_finish((self._co_href(co) + "&done=" + quote(msg) + "#co-stage") if co else
+                                                    href("/change-orders", self.user, done=msg) + "#new"))
         op = bundle["ops"][process]
         wanted = op.get("record_type") or op.get("object")
         if wanted and rec["type"] != wanted:

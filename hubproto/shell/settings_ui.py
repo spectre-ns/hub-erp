@@ -196,7 +196,7 @@ class SettingsMixin:
             if not self._can_read(co["folder"])["allowed"]:
                 continue
             for it in co["fields"].get("direct_changes") or []:
-                old, new = cc._old_new(it)
+                old, new = cc_api_("old_new")(it)
                 kind = (new or old or {}).get("kind")
                 if kinds is not None and kind not in kinds:
                     continue
@@ -624,3 +624,9 @@ class SettingsMixin:
             return self._redirect(done)
         self.hub.settings_discard(self.user)
         self._redirect(self._once_finish(href("/settings", self.user, done="Your draft is discarded; the settings show the policy in force.")))
+
+
+def cc_api_(name: str):
+    from .change_order_ui import cc_api
+
+    return cc_api(name)

@@ -331,6 +331,12 @@ class InboxMixin:
         if cm:  # a committee decides here by consensus: the tally; a member votes, whoever intervenes intervenes
             tally = self._committee_tally_html(r)
             outstanding = self.hub.runner.committee_outstanding(p)
+            paused_me = next((x for x in cm.get("paused") or [] if x.get("member") == user), None)
+            if user in outstanding and paused_me:  # paused (kept out, late...): no vote form, the reason and who decides
+                note = (f"<div class='card warn' role='status'><b>Your vote is paused:</b> {esc(paused_me.get('reason') or '')}. "
+                        f"{esc(', '.join(paused_me.get('interveners') or cm.get('interveners') or []) or 'The chair')} decides in your place; you do not vote on it.</div>")
+                return (f"<article class='card decide' aria-labelledby='h-{esc(r['id'])}'>{head}<div class='facts'>{' '.join(facts)}</div>{meta}{blocked_html}{checks}"
+                        f"{tally}{note}{self._intervention_html(r)}<h4>The item</h4>{brief}</article>")
             if user in outstanding:
                 return (f"<article class='card decide' aria-labelledby='h-{esc(r['id'])}'>{head}<div class='facts'>{' '.join(facts)}</div>{meta}{policy}{blocked_html}{checks}"
                         f"{tally}{self._intervention_html(r)}{self._committee_vote_note(r)}{approve_form}<h4>The item</h4>{brief}{reject_form}</article>")
@@ -599,7 +605,9 @@ class InboxMixin:
             page = max(1, int(self.q.get("page", ["1"])[0] or 1))
         except ValueError:
             page = 1
-        waiting = self._pending(user, "decision")
+        waiting = [r for r in self._pending(user, "decision")  # a paused committee member is not asked: the chair decides for them
+                   if not (any(x.get("member") == user for x in (r["pending"].get("committee") or {}).get("paused") or [])
+                           and user not in ((r["pending"].get("committee") or {}).get("interveners") or []))]
         waiting.sort(key=lambda r: (0 if (r["pending"].get("due") and r["pending"]["due"] < today) else 1, r["pending"].get("due") or "9999", r["created_at"]))
         types = sorted({self._record_type_of(r) for r in waiting})
         if type_filter:
@@ -741,7 +749,7 @@ class InboxMixin:
                 if bc and not bc.get("dismissed"):
                     out.append(("baseline", "git-merge", f"<b>{esc(co['number'])}: the baseline changed</b> ({esc(bc.get('by'))} was released, related "
                                 f"{'by definition' if bc.get('kind') == 'definition' else 'by meaning'}): run another review round", link("co-related")))
-            if stage == "awaiting-approval" and not eco.finished(co) and not cc._may_decide(self.hub, co, user):
+            if stage == "awaiting-approval" and not eco.finished(co) and not cc_api_("may_decide")(self.hub, co, user):
                 from .change_order_ui import group_state, groups
 
                 todo = [g for g in groups(cc.delta(self.hub, co)) if group_state(g) == "pending"
@@ -838,3 +846,9 @@ class InboxMixin:
 {text_input("subject", "Subject", self._val("subject") if mine else "", required=True, error=self._field_error("subject") if mine else None)}
 {text_input("body", "Message", self._val("body") if mine else "", required=True, textarea=True, error=self._field_error("body") if mine else None)}</div>
 <div class="actions"><button>{icon('send')}Send</button></div></form>"""
+
+
+def cc_api_(name: str):
+    from .change_order_ui import cc_api
+
+    return cc_api(name)

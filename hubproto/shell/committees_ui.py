@@ -70,6 +70,9 @@ class CommitteesMixin:
                + (f"; still to vote: {esc(', '.join(outstanding))}" if outstanding else "") + ".</p>")
         for x in general:
             out += f"<p class='co-marker'><b>Paused:</b> {esc(x.get('reason') or PAUSE_WORDS.get(x.get('kind'), ''))}</p>"
+        if outstanding and all(m in paused for m in outstanding):
+            out += (f"<p class='co-marker'><b>Every member still to vote is paused:</b> {esc(', '.join(cm.get('interveners') or [cm.get('chair') or 'the chair']))} "
+                    "decides for the committee.</p>")
         return out + "</div>"
 
     def _committee_vote_note(self, run: dict) -> str:
