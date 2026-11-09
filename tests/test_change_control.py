@@ -438,11 +438,9 @@ def test_the_approver_may_not_be_a_contributor_unless_an_independent_approver_de
     excluded = hub.kernel.get(co["locator"])["fields"]["contributor"]
     assert "carol" not in excluded and "alice" in excluded, "now carol may sign; alice (and the qa-manager) wrote the revision"
     assert cc.approval_reasons(hub, co["number"]) == [] and "carol" not in cc.may_not_sign(hub, co["number"])
-    # The runner keeps every contributor off the Gate (it reads changecontrol.contributors): carol is still refused there.
-    with pytest.raises(RunError, match="segregation of duties"):
-        gate(hub, co)
-    hub.kernel.set_fields(co["locator"], {"direct_changes": [{**d, "origin": {**d["origin"], "by": "alice"}}
-                                                             for d in hub.kernel.get(co["locator"])["fields"]["direct_changes"]]}, by="test")
+    # The Gate follows the same rule (changecontrol.may_not_sign): carol, a contributor alongside bob's independent
+    # approval of every item, signs it.
+    assert "carol" not in hub.runner.excluded(hub.current_bundle(), hub.runner.load(hub.runner.run_for_record(co["locator"])["id"]))
     assert gate(hub, co)["status"] == "completed"
     original = cc.may_not_sign
     try:  # the release re-checks it (the backstop when a release lacks the sentence)

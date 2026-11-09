@@ -803,7 +803,7 @@ class Runner:
     def _sod_applies(self, bundle: dict, state: dict) -> bool:
         return any(s["object"] == state["manifest"]["object"] and not s.get("rule") for s in bundle["sod"])
 
-    def excluded(self, bundle: dict, state: dict, route: str = "role:", gate_not: list | None = None) -> dict[str, str]:
+    def excluded(self, bundle: dict, state: dict, route: str = "role:", gate_not: list | None = None, signing: bool = True) -> dict[str, str]:
         """Who may not decide this item, and why. Every process keeps its preparer (who filed it, the run's owner)
         from approving it on a route to a role or a cog; a segregation sentence also keeps out everyone it names on
         the record (the reporter, the author, the requester...). A step the SOP routes to a named field (the
@@ -837,9 +837,8 @@ class Runner:
                     if v and isinstance(v, str):
                         out.setdefault(authz.principal_name(v), f"segregation of duties: they are the {role.replace('-', ' ')} of this item "
                                                                 f"({r.get('source', {}).get('text', 'policy')})")
-        for who in self.contributors(state):  # change control 3.6: no contributor approves the change order
-            out.setdefault(who, "segregation of duties: they contributed to this change order (a revision it carries, a direct "
-                                "change on it, or its request)")
+        if self.is_change_order(state):
+            self._change_order_signers(state, out, owner, rec, signing=signing)
         # The gate's own exclusions ("the quality manager decides, not the author"; not whoever decided another step).
         nots = gate_not if gate_not is not None else (((state.get("pending") or {}).get("gate") or {}).get("not") or [])
         for n in nots:
@@ -889,6 +888,38 @@ class Runner:
             except Exception:  # a change order the change-control module cannot read: the recorded field stands
                 pass
         return sorted({authz.principal_name(x) for x in out if x})
+
+    def _change_order_signers(self, state: dict, out: dict, owner: str, rec: dict | None, signing: bool = True) -> None:
+        """Who may sign a change order (change control 3.6, as agreed): the author of a revision it carries never; any other
+        contributor (its requester and preparer included) only alongside an independent approver, a person who
+        contributed nothing and approved every item of its delta (``changecontrol.may_not_sign``)."""
+        contribs = set(self.contributors(state)) | {owner} | ({rec.get("created_by")} if rec and rec.get("created_by") else set())
+        blocked: set[str] | None = None
+        authors: set[str] = set()
+        if getattr(self, "hub", None) is not None:
+            try:
+                from . import changecontrol
+
+                blocked = set(changecontrol.may_not_sign(self.hub, state["record"]))
+                authors = set(changecontrol.revision_authors(self.hub, state["record"]))
+            except Exception:  # the change-control module cannot read it: every contributor stays off the Gate
+                blocked = None
+        if blocked is None:
+            blocked = contribs
+        said = dict(out)
+        for p in list(out):
+            if p in contribs and p not in blocked:
+                del out[p]  # a contributor alongside an independent approver: they may sign
+        for p in sorted(blocked):
+            if not signing and p not in authors:
+                out.pop(p, None)  # routed the Gate all the same: they sign once an independent approver has approved every item
+                continue
+            if p in authors:
+                out[p] = "segregation of duties: they wrote a revision this change order carries, and never approve it"
+            else:
+                why = said.get(p) or "segregation of duties: they are a contributor of this change order"
+                out[p] = (f"{why}; a contributor signs only alongside an independent approver (a person who contributed nothing "
+                          "and approved every item of its delta)")
 
     @staticmethod
     def cog_work_needs_person(bundle: dict, obj: str) -> dict | None:
@@ -1048,7 +1079,7 @@ class Runner:
         """Who may take this route: a cog with the permission, or the people holding the role or named in the field."""
         assignee = rule["assignee"]
         kind, _, name = assignee.partition(":")
-        excluded = self.excluded(bundle, state, assignee, gate_not=(step.get("gate") or {}).get("not") or [])
+        excluded = self.excluded(bundle, state, assignee, gate_not=(step.get("gate") or {}).get("not") or [], signing=False)
         obj, folder = state["manifest"]["object"], state["manifest"]["folder"]
 
         def skip(reason):
@@ -2198,6 +2229,22 @@ class Runner:
         self._save(state)
         return self.advance(run_id)
 
+    def _change_request_waits(self, state: dict, option: dict) -> str:
+        """A change request a change order implements is verified (closed) only once that change order is released: the
+        change it asks for is then in force. Empty when it may be."""
+        if (state.get("workflow") or {}).get("record_type") != "change-request" or not state.get("record"):
+            return ""
+        if not self._approves(self._graph(state), option):
+            return ""
+        rec = self.kernel.get(state["record"]) or {}
+        cos = [c for c in self.kernel.query(type_="change-order") if rec.get("number") in (c["fields"].get("implements") or [])]
+        if not cos:
+            return ""  # no change order implements it (a change that needs none): nothing to wait for
+        if any(c["state"] == "released" or c["fields"].get("stage") == "released" or c["fields"].get("released_release") for c in cos):
+            return ""
+        where = ", ".join(f"{c['number']} is {c['fields'].get('stage') or c['state']}" for c in cos)
+        return f"{option.get('name') or 'Verify'} waits until the change order implementing {rec.get('number')} is released ({where})"
+
     @staticmethod
     def _approves(wf: dict, t: dict) -> bool:
         """The transition ends the item as completed (for a change order: approves it)."""
@@ -2362,7 +2409,7 @@ class Runner:
             state["decision_fields"] = {**(state.get("decision_fields") or {}), **fields}
             track.append({"type": "record.fields_set", "run_id": state["id"], "step": step["id"], "by": by, "fields": sorted(fields)})
             rec = self.kernel.get(state["record"])
-        why = self._validators_block(state, self._graph(state), option)
+        why = self._validators_block(state, self._graph(state), option) or self._change_request_waits(state, option)
         if why:
             raise RunError(why)
         if verdict == "approve" and rec is not None:

@@ -146,7 +146,7 @@ def test_a_chair_who_contributed_to_the_change_order_does_not_intervene(tmp_path
     state = hub.runner.load(run_id)
     cm = state["pending"]["committee"]
     pause = next(p for p in cm["paused"] if p.get("member") == "carol")
-    assert pause["kind"] == "excluded" and "contributor" in pause["reason"]
+    assert pause["kind"] == "excluded" and ("contributor" in pause["reason"] or "wrote a revision" in pause["reason"])
     assert "carol" not in cm["interveners"] and "escalated under the overdue rule" in pause["who"]
     with pytest.raises(RunError, match="only the chair|may not decide this item"):
         hub.runner.intervene(run_id, "carol", "decide", member="carol", verdict="approve", meaning="I wrote it, it is fine",
@@ -178,3 +178,50 @@ def test_due_dates_and_escalation_follow_the_clock_across_midnight(tmp_path, mon
     state = h.runner.decide(run_id, "erin", "approve", meaning="ok", payload_digest=seen(h.runner, run_id))
     assert state["pending"]["due"] == (date(2026, 11, 10) + timedelta(days=5)).isoformat()
     assert [e["run"] for e in h.runner.tick(today="2026-11-16")] == [run_id]
+
+
+# --------------------------------------------------------------------------------------------- contributors and verification
+def test_a_contributor_signs_a_change_order_only_alongside_an_independent_approver(tmp_path, monkeypatch):
+    """carol makes a direct change on her own change order (as from Settings): she is refused while she alone approved its
+    items, and signs once bob, who contributed nothing, approved every item. A revision's author never signs."""
+    from test_change_control import accept_co_warnings, gate
+
+    hub = converted_hub(tmp_path)
+    # The Gate applies changecontrol.may_not_sign; who wrote the drafted revision is changecontrol's to say (here: the cog).
+    monkeypatch.setattr(cc, "revision_authors", lambda hub_, co_ref: ["qa-manager"])
+    co = new_co(hub, by="carol")
+    read = next(r for r in hub.settings_rules() if r["kind"] == "permission" and (r.get("source") or {}).get("text") == "Controllers may read Finance.")
+    cc.add_direct_change(hub, co["number"], {"op": "remove", "rule": read}, "carol")
+    cc.request_review(hub, co["number"], "carol", panel=[])
+    cc.send_for_approval(hub, co["number"], "carol")
+    run_id = hub.runner.run_for_record(co["locator"])["id"]
+    excluded = hub.runner.excluded(hub.current_bundle(), hub.runner.load(run_id))
+    assert "independent approver" in excluded["carol"] and "carol" in hub.runner.load(run_id)["pending"]["assignees"]
+    assert [p for p, why in excluded.items() if "wrote a revision" in why] == sorted(cc.revision_authors(hub, co["number"]))
+    decide_all(hub, co, who=("bob",))
+    accept_co_warnings(hub, co, "bob")
+    assert "carol" not in hub.runner.excluded(hub.current_bundle(), hub.runner.load(run_id))
+    assert gate(hub, co, who="carol")["status"] == "completed"
+
+
+FIX = {"verification": "the limit in force is 1,500 USD"}
+
+
+def test_a_change_request_is_verified_only_once_its_change_order_is_released(tmp_path):
+    from test_change_control import released
+
+    hub = converted_hub(tmp_path)
+    run_id = hub.runner.submit("change-control", {"record": {"title": "Lower the AP limit", "description": "too high", "impact": "finance policy"}}, owner="alice")
+    hub.runner.decide(run_id, "carol", "approve", meaning="agreed", payload_digest=seen(hub.runner, run_id))
+    state = hub.runner.load(run_id)
+    cr = hub.kernel.get(state["record"])
+    assert state["status"] == "waiting" and state["pending"]["checkpoint"] == "verify-the-change"
+    verifier = state["pending"]["assignees"][0]
+    hub.kernel.set_fields(cr["locator"], FIX, by="alice")  # what the verifier records (closed needs it)
+    co = new_co(hub, implements=[cr["number"]])
+    revise(hub, co, "finance-policy", OLD, NEW)
+    with pytest.raises(RunError, match=f"{co['number']} is "):
+        hub.runner.decide(run_id, verifier, "approve", meaning="done", payload_digest=seen(hub.runner, run_id))
+    released(hub, co, who=("bob",))
+    assert hub.kernel.get(co["locator"])["state"] == "released" or hub.kernel.get(co["locator"])["fields"].get("stage") == "released"
+    assert hub.runner.decide(run_id, verifier, "approve", meaning="done", payload_digest=seen(hub.runner, run_id))["status"] == "completed"
