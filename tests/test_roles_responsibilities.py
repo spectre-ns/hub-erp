@@ -177,15 +177,15 @@ def test_the_system_prompt_puts_binding_procedures_first_and_the_knowledge_base_
 
 # ---------------------------------------------------------------- the pages
 def test_a_person_sees_where_they_stand_and_a_cog_what_is_in_its_context(cc_hub):
-    from hubproto.shell import free_port, serve_in_thread
+    from hubproto.shell import serve_in_thread
     from test_shell_views import get, main_of
 
     hub = cc_hub
     co = new_co(hub)
     revise(hub, co, "finance-policy", OLD, NEW)
     released(hub, co)
-    port = free_port()
-    server = serve_in_thread(hub, "127.0.0.1", port)
+    server = serve_in_thread(hub, "127.0.0.1", 0)  # port 0: bound at once, no race with other test workers
+    port = server.server_address[1]
     shell = {"hub": hub, "base": f"http://127.0.0.1:{port}"}
     try:
         page = main_of(get(shell, "/user/dave", **{"as": "dave"})[1])

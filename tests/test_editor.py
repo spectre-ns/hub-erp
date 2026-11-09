@@ -103,7 +103,9 @@ def test_new_document_is_created_blank_and_opens(shell, monkeypatch):
     monkeypatch.setenv("HUBPROTO_COLLABORA_URLSRC", "http://editor.test:9980/browser/dist/cool.html?")
     status, url, text = post(shell, "/new-document", {"as": "alice", "folder": "Finance/Payables", "title": "Inspection plan", "kind": "xlsx"})
     assert status == 200 and "/edit/" in url, text[:300]
-    doc = next(d for d in hub.kernel.query(type_="document") if d["fields"].get("title") == "Inspection plan")
+    number = url.split("/edit/")[1].split("?")[0].split("/")[0]  # the one just made (another test may make a namesake)
+    doc = next(d for d in hub.kernel.query(type_="document") if number in (d["number"], d["locator"]))
+    assert doc["fields"]["title"] == "Inspection plan"
     assert doc["fields"]["doc_class"] == "working" and doc["fields"]["filename"] == "Inspection plan.xlsx"
     assert hub.dms.content(doc["locator"])[0][:2] == b"PK"
     assert '<iframe class="editor"' in text and "WOPISrc=http%3A%2F%2Fhub.test%3A8080%2Fwopi%2Ffiles%2F" + doc["number"] in text

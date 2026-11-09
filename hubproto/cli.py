@@ -45,7 +45,7 @@ POLICY_OWNER_ROLE = "policy-owner"
 BACKUP_PARTS = ("runs", "releases", "proposals", "blobs", "inbox", "agents", "settings", "forms", "record-types")
 SQLITE_PARTS = ("queue.db",)  # copied with the SQLite backup API (a consistent snapshot while the hub runs)
 NEEDS_FRAMES = {"seed", "compile", "frames", "bootstrap-release", "conformance", "status"}
-NO_HUB_NEEDED = {"init", "restore"}
+NO_HUB_NEEDED = {"init", "restore", "dev"}  # dev makes its own hubs (hubproto.cli_dev)
 
 
 # ------------------------------------------------------------------ errors and output hygiene
@@ -1396,6 +1396,7 @@ the policy path, in the order an operator uses it:
   release        put an approved proposal in force
   releases, release-diff, status, why, frames, conformance    then look at what is in force
   shell          serve the workspace; records verbs read and change the kernel
+  dev            development hubs: dev serve --detach --name NAME, dev list, dev stop, dev clean
 ids: records by number (BILL-0001, any case) or locator; runs by id prefix; proposals by
   number (#3) or id prefix; releases by version (v2) or digest prefix; digests show 12 characters.
 exit codes: 0 done; 1 refused by the hub or a failed outcome (error findings, DENIED, a failed run);
@@ -1536,6 +1537,9 @@ def build_parser() -> argparse.ArgumentParser:
     cli_recordtypes.register(sub)  # record-types status, record-types carry
 
     cli_records.register(sub)  # inbox-pending, retry, resubmit, cancel, records, record, link, snapshot, documents
+    from . import cli_dev
+
+    cli_dev.register(sub)  # dev serve, dev list, dev stop, dev clean (development hubs on localhost)
 
     # --- messages ----------------------------------------------------------
     s = sub.add_parser("inbox", help="a person's messages and notifications")

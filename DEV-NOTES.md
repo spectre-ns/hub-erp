@@ -2,7 +2,8 @@
 
 This is the from-scratch prototype of the Intelligence Hub ERP plan. Standard
 library Python 3.11+, SQLite, files. No new runtime dependencies without a
-reason written in the PR. Tests: `python -m pytest -q` (all must pass).
+reason written in the PR. Tests: `python -m pytest -q -n auto` (all must pass; `pip install -r requirements-dev.txt`
+for pytest-xdist, a development-only dependency; without `-n auto` the suite runs serially and must pass that way too).
 
 ## Module map and ownership
 
@@ -31,6 +32,7 @@ reason written in the PR. Tests: `python -m pytest -q` (all must pass).
 | `hubproto/changecontrol.py` | the change-order loop (change control v2): stages and review rounds, panel suggestion and reviews, the delta (origins, warnings, item decisions, overrides), send/approval readiness, revision approval with the CO, release steps (divergences, related changes); the API the CO pages use | core |
 | `hubproto/closure.py` | no configuration change without a change order once the SOPs are documents: the guards `Hub.compile`, `review`, `release` and `frame_draft` call; the sentence (`CO_ROUTE`) | core |
 | `hubproto/recordtypes.py` | record types under change control: the record types in force (`state/record-types`), changes carried on change orders (`carry`, `carried_reasons`, `delta_items`, `activate`), the file's drift | core |
+| `hubproto/cli_dev.py`, `hubproto/dev_demo.py` | CLI verbs `dev serve`, `dev list`, `dev stop`, `dev clean` (`register(sub)`): development hubs on localhost, the registry, ports; the demo data a served hub gets | dev tooling |
 | `hubproto/cli_recordtypes.py` | CLI verbs `record-types status`, `show`, `carry` (`register(sub)`) | cli agent |
 | `hubproto/cli.py` | command line: policy, run, message and operations verbs; `main` returns the exit code; shared helpers (`fail`, `clean`, `require_member`, `resolve_*`) | cli agent |
 | `hubproto/shell/` | the workspace shell package (handler, pages, inbox, forms, actions, policy, css, text; stdlib http.server) | shell agent |
@@ -44,6 +46,7 @@ reason written in the PR. Tests: `python -m pytest -q` (all must pass).
 | `tests/test_records.py`, `tests/test_workflow.py`, `tests/test_dms.py` | new suites | test agent |
 | `tests/test_profile.py` | seed profile suite | profile agent |
 | `tests/test_shell.py`, `tests/test_shell_ux.py` | shell smoke suite; UX-panel regression suite over HTTP | shell agent |
+| `tests/test_cli_dev.py`, `requirements-dev.txt` | the `hubproto dev` suite; the development-only dependencies | dev tooling |
 
 Do not edit files you do not own. If you need a core change, say exactly
 what in your final report and work around it meanwhile.
@@ -92,6 +95,52 @@ what in your final report and work around it meanwhile.
   the Frame-file workflow (edit a Frame, compile, review, release), and so does every fixture built on it (`released`,
   and the suites that call `sopdocs.convert` themselves afterwards). Pass `keep_frame_files=False`, or bootstrap with the
   CLI, for the converted default (`tests/test_config_closure.py`).
+
+## Running hubs for development and for agents
+
+Never use the hub at http://localhost:8080 (Docker) for development, and never bind 8080, 9980 or 11434. Give each
+workstream its own worktree and its own hub:
+
+```bash
+git worktree add ../hub-erp-proto-wt/ws12-foo -b cc/ws12-foo change-control-v2
+cd ../hub-erp-proto-wt/ws12-foo
+hubproto dev serve --detach --name ws12-foo   # prints the URL, e.g. http://127.0.0.1:8103/
+hubproto dev list                             # name, port, pid, branch, commit, started, url, worktree, state dir
+hubproto dev stop ws12-foo                    # state kept; `hubproto dev clean ws12-foo` removes it
+```
+
+* `dev serve` builds a **fresh** hub from that worktree's code (child processes with `PYTHONPATH=<worktree>`, its
+  `.venv` interpreter when it has one) and Frames, as the container's first start does: `init`, `seed iso9001`, the
+  first release by bob and carol (the SOPs become documents), then with `--seed demo` (the default) an open NCR waiting
+  for carol, a bill under the ap-reviewer limit (the cog approves it, the ledger posts it) and an open change order
+  alice prepared carrying one revision of the finance policy (`hubproto/dev_demo.py`). `--seed empty` skips the demo
+  data, `--keep` reuses the hub already in the state directory, `--port N` picks the port (default: the first free one
+  from 8100), `--state-dir DIR` puts the hub elsewhere. It takes about 3 seconds.
+* Cogs answer with the deterministic stand-in (`HUBPROTO_ALLOW_STAND_IN=1`); `--models ollama` uses the local Ollama
+  instead (slow; only when the work is about model behaviour).
+* State: `~/.cache/hubproto-dev/<name>/` is the hub root (`frames/`, `state/`, `hub.log`, `hub.pid`); the CLI verbs
+  work on it with `hubproto --root ~/.cache/hubproto-dev/<name> <verb>`. `HUBPROTO_DEV_HOME` moves the whole tree (the
+  tests use it). The registry (`registry.json`) is written under a lock, so agents starting hubs at the same time never
+  get the same name or port; `dev list --json` is the machine-readable form.
+* In a browser or a headless one (Playwright MCP, `curl`): open `<url>?as=carol`; every link carries `?as=`, so the
+  session stays that person. `<url>healthz` answers `ok` once the shell is up. The Playwright Chromium under
+  `~/.cache/ms-playwright` lacks `libnspr4` on the shared dev machine, so use a browser tool, not its CLI.
+* Foreground (no `--detach`): Ctrl-C stops it. `dev stop --all` stops every instance you started; stop yours when the
+  workstream is done, then `dev clean`.
+
+### Tests in parallel
+
+`python -m pytest -q -n auto` runs the suite on every core (pytest-xdist; `-n 8` on a shared machine). Each worker is
+its own process, and a test may run on any worker in any order, so:
+
+* a test never depends on another having run first: a module-scoped hub (the `shell` fixtures) is set up with what its
+  tests read, not filled in by an earlier test;
+* a server binds port 0 and reads the port back (`serve_in_thread(hub, "127.0.0.1", 0)`, then
+  `server.server_address[1]`), never `free_port()` then bind, which races with the other workers;
+* files go under `tmp_path`, environment changes through `monkeypatch`, the date through the `today` fixture.
+
+To check a suite for order dependence, run it reversed per file (a plugin with `items.reverse()` and
+`--dist loadfile`) and each test on its own.
 
 ## The model in one paragraph
 
