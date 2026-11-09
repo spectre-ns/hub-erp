@@ -14,10 +14,10 @@ from hubproto.kernel import KernelGuardError
 from hubproto.runner import RunError
 from hubproto.track import verify_signature
 from test_change_control import (NEW, OLD, ROUTE_NEW, ROUTE_OLD, accept_co_warnings, ap_limit, decide_all, gate, hub,  # noqa: F401
-                                 items, job, new_co, revise, write)
+                                 items, job, new_co, revise, validated, write)
 
 
-def ready(hub, co, who=("carol",), panel=None, by=None):
+def ready(hub, co, who=("carol",), panel=None, by=None):  # noqa: D401
     """Reviewed, sent, every item decided and every warning accepted: ready to sign."""
     by = by or cc.requester(co)
     cc.request_review(hub, co["number"], by, panel=panel)
@@ -111,6 +111,7 @@ def test_every_decision_is_a_signed_event_the_signature_covers_and_tampering_is_
     rest = next(i for i in items(hub, co) if i["id"] != add["id"])
     cc.decide_item(hub, co["number"], rest["id"], "approve", "bob", "ok")
     accept_co_warnings(hub, co)
+    validated(hub, co)
     with pytest.raises(RunError, match="changed since you opened it"):
         hub.runner.decide(run["id"], "carol", "approve", meaning="signed", payload_digest=seen)
     # Editing the proposal file (the projection) is found: the decision has no signed record.
@@ -218,9 +219,9 @@ def test_changing_the_configuration_back_resolves_a_divergence_and_later_compile
     cc.request_review(hub, co1["number"], "alice")
     cc.send_for_approval(hub, co1["number"], "alice")
     add = next(i for i in items(hub, co1) if i["op"] == "add")
-    cc.decide_item(hub, co1["number"], add["id"], "approve", "carol", "1,200 agreed", override={"max_amount": 1200.0})
-    decide_all(hub, co1, who=("bob",))
-    accept_co_warnings(hub, co1, "bob")
+    cc.decide_item(hub, co1["number"], add["id"], "approve", "bob", "1,200 agreed", override={"max_amount": 1200.0})
+    decide_all(hub, co1)
+    accept_co_warnings(hub, co1)
     assert gate(hub, co1)["status"] == "completed" and ap_limit(hub) == 1200.0
     [d1] = hub.releases.current()["divergences"]
     cr = next(r for r in hub.kernel.query(type_="change-request") if r["number"] == d1["change_request"])
@@ -271,10 +272,10 @@ def test_an_override_that_narrows_a_widening_is_released_with_one_approver(hub):
     cc.send_for_approval(hub, co["number"], "alice")
     add = next(i for i in items(hub, co) if i["op"] == "add")
     assert add["widening"]
-    out = cc.decide_item(hub, co["number"], add["id"], "approve", "carol", "1,800 at most", override={"max_amount": 1800.0})
+    out = cc.decide_item(hub, co["number"], add["id"], "approve", "bob", "1,800 at most", override={"max_amount": 1800.0})
     assert out["override"]["widening"] is False
-    decide_all(hub, co, who=("bob",))
-    accept_co_warnings(hub, co, "bob")
+    decide_all(hub, co)
+    accept_co_warnings(hub, co)
     assert cc.approval_reasons(hub, co["number"]) == []
     assert gate(hub, co)["status"] == "completed"
     assert job(hub, co, "release-change-order")[0]["status"] == "success" and ap_limit(hub) == 1800.0

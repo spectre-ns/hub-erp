@@ -548,7 +548,7 @@ def contributors(hub, co_ref) -> list[str]:
         out += _version_authors(hub, c["draft"])
     for it in _items(co):
         o = it.get("origin") or {}
-        out += [o.get("by"), o.get("accepted_by")] if o.get("kind") == "suggested" else [o.get("by")]
+        out += [o.get("accepted_by")] if o.get("kind") == "suggested" else [o.get("by")]
     for kind in ("form_changes", "record_type_changes", "workflow_changes"):
         carried = co["fields"].get(kind) or {}
         out += [(v or {}).get("by") for v in (carried.values() if isinstance(carried, dict) else carried)]
@@ -840,7 +840,7 @@ def _warnings(hub, co: dict, p: dict) -> tuple[dict[str, list[dict]], list[dict]
         attach({"item": q.get("item"), "frame": q.get("frame"), "line": q.get("line")}, {"code": "question", "ref": q["id"], "text": q["text"]})
     for f in findings(hub, co):
         if f.get("severity") in ("blocking", "advisory"):  # every unresolved finding is a warning the approver accepts
-            attach(f.get("about"), {"code": "finding", "ref": f["id"], "text": f"{f['who']} ({f.get('severity')}): {f['text']}"})
+            attach(f.get("about"), {"code": "finding", "ref": f["id"], "text": f"{f['who']}: {f['text']}", "severity": f.get("severity")})
     rnd = current_round(co)
     for o in (rnd or {}).get("omitted") or []:
         general.append({"code": "panel", "ref": f"panel:{o['who']}", "text": f"the change-control SOP names {o['who']} to review this change "
@@ -856,7 +856,9 @@ def _makers(c: dict, authors: dict[str, list[str]]) -> list[str]:
     """Who made a delta item: whoever wrote it in the prose (the revision's authors) or made it directly, who accepted it
     (a suggestion), who overrode its value, who set a state-map entry. None of them decides it."""
     o = c.get("origin") or {}
-    out = [x.strip() for x in str(o.get("by") or "").split(",")] + [o.get("accepted_by"), (c.get("override") or {}).get("by")]
+    # A suggestion's maker is who accepted it onto the change order (the reviewer who suggested it reviewed, not authored).
+    by = [] if o.get("kind") == "suggested" else [x.strip() for x in str(o.get("by") or "").split(",")]
+    out = by + [o.get("accepted_by"), (c.get("override") or {}).get("by")]
     if o.get("kind") == "prose" or c.get("op") == "text":
         out += authors.get(o.get("frame") or c.get("frame") or "") or []
     return sorted({w for w in out if w and w not in MACHINES})
@@ -2085,6 +2087,8 @@ def verify_delta(hub, co_ref) -> list[str]:
         elif e["type"] == "co.override":
             overridden.add((d.get("item"), d.get("by"), d.get("at"), d.get("payload_digest")))
     for c in list(p.get("changes") or []) + list(p.get("applied_items") or []):
+        if c.get("op") == "text":
+            continue  # a wording change is not decided: the CO's signature covers it (apply_delta keeps only that)
         for d in list(c.get("decisions") or []) + list(c.get("stale_decisions") or []):
             if str(d.get("by") or "").startswith(("change-order:", "document-control:")):
                 continue  # the release's own entry for a wording change, covered by the CO signature
@@ -2336,7 +2340,7 @@ def approval_reasons(hub, co_ref) -> list[str]:
     if eco.finished(co) and co["state"] != "approved":
         return []
     reasons = send_reasons(hub, co)
-    if stage_of(co) in ("awaiting-approval", "approved"):
+    if stage_of(co) in ("awaiting-approval", "approved") or co["state"].startswith("awaiting"):
         if not co["fields"].get("frozen"):
             reasons.append("it is not frozen for approval: send it for approval again")
         changed = changed_since_sent(hub, co)
@@ -2673,7 +2677,9 @@ def apply_delta(hub, co_ref) -> dict:
             touched.add(_slot_key(new))
 
     for c in p.get("changes") or []:
-        if c.get("op") == "text":
+        if c.get("op") == "text":  # only the CO's signature decides a wording change (a decision made elsewhere does not)
+            c["set_aside"] = [d for d in c.get("decisions") or [] if not str(d.get("by") or "").startswith("change-order:")]
+            c["decisions"] = [d for d in c.get("decisions") or [] if str(d.get("by") or "").startswith("change-order:")]
             keep.append(c)
             continue
         c["stale_decisions"] = [d for d in c.get("decisions") or [] if d.get("stale")]
