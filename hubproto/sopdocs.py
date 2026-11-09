@@ -306,9 +306,15 @@ def _relpath(hub, name: str, rec: dict | None, bom: dict) -> str:
     """Where a Frame lives under frames/: as the release in force has it, as its document says, or a new place."""
     if name in bom and bom[name].get("path"):
         return bom[name]["path"]
-    f = (rec or {}).get("fields") or {}
-    rel = f.get("frame_relpath") or f.get("frame_path") or ((f.get("converted_from") or {}).get("frame") if isinstance(f.get("converted_from"), dict) else None)
-    return rel or f"documents/{name}.frame.md"
+    seen = set()
+    while rec is not None and rec["locator"] not in seen:  # a revision's place is its own, or the one it revises has
+        seen.add(rec["locator"])
+        f = rec.get("fields") or {}
+        rel = f.get("frame_relpath") or f.get("frame_path") or ((f.get("converted_from") or {}).get("frame") if isinstance(f.get("converted_from"), dict) else None)
+        if rel:
+            return rel
+        rec = hub.kernel.get(f["revises"]) if f.get("revises") else None
+    return f"documents/{name}.frame.md"
 
 
 def released_store(hub, digest: str | None = None):
