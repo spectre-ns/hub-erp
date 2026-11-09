@@ -623,6 +623,7 @@ def markdown_html(text: str, link=None) -> str:
         out = esc(t)
         out = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", out)
         out = re.sub(r"`([^`]+)`", r"<code>\1</code>", out)
+        out = re.sub(r"(?<![\w/:-])([A-Za-z0-9]+(?:-[A-Za-z0-9]+)+)(?![\w/:-])", r"<span class='nw'>\1</span>", out)  # names break at spaces
         if link:
             out = _MD_LINK.sub(lambda m: f"<a href='{esc(link(m.group(1)))}'>{esc(m.group(1).rsplit(':', 1)[-1].rsplit('/', 1)[-1])}</a>", out)
         return out
@@ -655,7 +656,8 @@ def markdown_html(text: str, link=None) -> str:
                 rows.append(cells(lines[i]))
                 i += 1
             out.append("<div class='tbl'><table><thead><tr>" + "".join(f"<th scope='col'>{inline(h)}</th>" for h in head) + "</tr></thead><tbody>"
-                       + "".join("<tr>" + "".join(f"<td>{inline(c)}</td>" for c in r) + "</tr>" for r in rows) + "</tbody></table></div>")
+                       + "".join("<tr>" + "".join(f"<td{'' if ' ' in c.strip() else ' class=nw'}>{inline(c)}</td>" for c in r) + "</tr>" for r in rows)
+                       + "</tbody></table></div>")
             continue
         elif st.startswith(("- ", "* ")):
             flush()

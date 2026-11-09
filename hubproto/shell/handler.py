@@ -47,7 +47,7 @@ STAY_PREFIXES = ("/record/", "/document/", "/run/", "/frame/", "/release/", "/it
 # The small script: tabs show one panel at a time (every panel is visible without it) and the print button prints.
 SCRIPT = """document.documentElement.classList.add('js');
 addEventListener('click',function(e){var b=e.target.closest&&e.target.closest('[data-theme-toggle]');if(!b)return;var r=document.documentElement;var cur=r.getAttribute('data-theme');if(cur==='auto')cur=getComputedStyle(r).colorScheme==='dark'?'dark':'light';var t=cur==='dark'?'light':'dark';r.setAttribute('data-theme',t);try{localStorage.setItem('hub-theme',t)}catch(_){}});
-addEventListener('DOMContentLoaded',function(){var al=document.querySelector('main [role=alert]');if(al&&!location.hash){al.scrollIntoView({block:'center'})}
+addEventListener('DOMContentLoaded',function(){var al=document.querySelector('main [role=alert], main .err');if(al&&!location.hash){al.scrollIntoView({block:'center'})}
 var mx=function(){var t=document.querySelector('.mx-toggle');if(t)t.classList.toggle('mini',scrollY>40)};addEventListener('scroll',mx,{passive:true});mx()});
 addEventListener('DOMContentLoaded',function(){var tabs=document.querySelectorAll('.tabs a[data-tab]');
 function show(id){tabs.forEach(function(a){var on=a.getAttribute('data-tab')===id;a.setAttribute('aria-selected',on?'true':'false');

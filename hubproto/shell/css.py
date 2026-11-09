@@ -77,7 +77,7 @@ h3{{font-size:var(--fs-m);font-weight:600;margin:var(--sp-3) 0 var(--sp-1)}}h4{{
 /* --- tables, chips, cards, controls --- */
 .tbl{{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:var(--sp-2) 0 var(--sp-4);background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg)}}
 table{{border-collapse:collapse;width:100%;background:var(--panel);font-size:var(--fs-m)}}
-th,td{{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:normal;word-break:normal}}td .chip,th .chip{{white-space:nowrap}}th{{background:var(--th);font-size:var(--fs-s);font-weight:500;color:var(--muted);white-space:nowrap}}
+th,td{{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:normal;word-break:normal}}td .chip,th .chip,td.nw,td .nw,td .named,td code{{white-space:nowrap}}th{{background:var(--th);font-size:var(--fs-s);font-weight:500;color:var(--muted);white-space:nowrap}}
 th a{{color:var(--muted);text-decoration:none}}th a[aria-sort]{{color:var(--fg)}}tr:hover td{{background:var(--hover)}}tbody tr:last-child td{{border-bottom:0}}
 th[scope=row]{{font-weight:500;background:transparent;text-transform:none;letter-spacing:0;color:var(--fg);white-space:nowrap}}td.num{{white-space:nowrap}}td.sel,th:first-child:has(input[data-select-all]){{width:2em}}
 .chip{{display:inline-block;padding:1px 9px;border-radius:999px;font-size:var(--fs-s);font-weight:500;background:var(--chip);color:var(--fg);max-width:100%;overflow-wrap:anywhere;line-height:1.55}}
