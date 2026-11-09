@@ -50,12 +50,12 @@ def test_a_cog_works_from_its_process_not_whole_sops(hub):
     rec = hub.kernel.get(doc["locator"])
     assert governing_sop(ctx, rec) == "document-control-sop"
     prompt = cog_context(ctx, rec, task="review")
-    assert "THE PROCESS THAT GOVERNS THIS ITEM: document-control" in prompt and "Its steps:" in prompt
-    mine = prompt.split("YOUR PART IN IT")[1].split("SOPS YOU FOLLOW")[0]
+    assert "THE PROCESS THAT GOVERNS THIS WORK: document-control" in prompt and "Its steps:" in prompt
+    mine = prompt.split("YOUR PART IN IT")[1].split("THE PROCEDURES YOU ARE TRAINED ON")[0]
     assert "The qa-manager cog may approve document-control documents when 3 adversarial reviews pass, countersigned by a quality manager." in mine
     assert "(document-control-sop line " in mine, "each sentence with where it is, to cite"
-    index = prompt.split("SOPS YOU FOLLOW")[1].split("YOUR TOOLS")[0]
-    assert all(f"- {n}: " in index for n in follows) and "read_sop_section" in index
+    index = prompt.split("THE PROCEDURES YOU ARE TRAINED ON")[1].split("== YOUR AUTHORITY ==")[0]
+    assert all(f"- {n}: " in index for n in follows if n != "document-control-sop") and "read_sop_section" in index
     # Not whole SOPs: the prose of an SOP it follows, outside the governing process, is not in front of it.
     capa = texts["capa-sop"].split("## ")[0].strip().splitlines()[-1]
     assert capa and capa not in prompt
@@ -81,7 +81,7 @@ def test_the_prompt_discloses_tools_criteria_and_how_to_reach_the_cog(hub):
     now = capabilities_text(ctx, tools_now=TOOLS)
     assert "Tools you can call now" in now and "Not available in this conversation:" in now and "draft_document" in now.split("Not available")[1]
     reader = capabilities_text(ctx_for(hub, "doc-reviewer"))
-    assert "Where a person confirms first" in reader and "The doc-reviewer cog may comment on anything in Quality when a person confirms." in reader
+    assert "Only when someone confirms" in reader and "The doc-reviewer cog may comment on anything in Quality when a person confirms." in reader
     it = capabilities_text(ctx_for(hub, "it-admin"))
     assert "What the SOPs forbid you" in it and "The it-admin cog may not approve documents in Policy." in it
 

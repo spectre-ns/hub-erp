@@ -98,6 +98,21 @@ class ScopesMixin:
                 + ".</p><div class='tbl'><table><thead><tr><th scope=\"col\">Document</th><th scope=\"col\">Compiled from</th>"
                 f"<th scope=\"col\">Because of the role</th><th scope=\"col\">Acknowledged</th></tr></thead><tbody>{items}</tbody></table></div>")
 
+    def _cog_training_html(self, cog: str) -> str:
+        """On a cog's profile: what it is trained on (in its context), with the revision and the release that brought it."""
+        from .. import training
+
+        rows = training.cog_training(self.hub, cog)
+        if not rows:
+            return ""
+        items = "".join(f"<tr><td>{self._frame_link(r['frame'])}</td><td>{esc(r['revision'] or '-')}</td>"
+                        f"<td><span class='chip ok' data-status='in-context'>in context</span> since release v{r['release_n']} "
+                        f"<code>{esc(r['release'][:12])}</code></td></tr>" for r in rows)
+        return (f"<h2 id='training'>{icon('book')}Training</h2><p class='why'>A cog is trained on a document when it is in its context as it "
+                "works: the company scope and every document whose Roles and responsibilities table names it or its roles. The release that "
+                "put a revision there is its training record; it acknowledges nothing.</p><div class='tbl'><table><thead><tr><th scope=\"col\">"
+                "Document</th><th scope=\"col\">Revision</th><th scope=\"col\">Trained</th></tr></thead><tbody>" + items + "</tbody></table></div>")
+
     def page_scopes(self):
         self._need_release()
         b = self._scope_bundle()

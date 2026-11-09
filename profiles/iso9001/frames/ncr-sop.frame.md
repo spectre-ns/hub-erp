@@ -28,6 +28,7 @@ to an evidence document when it closes.
 Staff may create nonconformances in Quality/Nonconformances.
 Quality managers may approve nonconformances in Quality/Nonconformances.
 Management representatives may approve nonconformances in Quality/Nonconformances.
+The quality-assistant cog may approve nonconformances in Quality/Nonconformances.
 
 ## Routing
 At Disposition the nonconformance in nonconformance with low risk go to the quality-assistant cog.

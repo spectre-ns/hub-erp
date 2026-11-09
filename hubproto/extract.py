@@ -189,6 +189,43 @@ def responsibility_rule(line: str, frame, n: int) -> dict | None:
             "source": {"frame": frame.name, "version": frame.version, "line": n, "text": line, "path": frame.relpath}}
 
 
+def who_words(who: str) -> str:
+    """'role:quality-manager' -> 'Quality manager'; 'cog:stores' -> 'the stores cog' (as a table row names them)."""
+    kind, _, name = (who or "").partition(":")
+    if kind == "cog":
+        return f"the {name} cog"
+    if kind == "group":
+        return f"the {name.replace('-', ' ')} group"
+    return name.replace("-", " ").capitalize()
+
+
+def add_responsibility_row(text: str, who: str, responsibility: str) -> str:
+    """The Frame or SOP text with a row for ``who`` ('role:x', 'cog:x') in its Roles and responsibilities table (the
+    section and the table are added at the end when missing); unchanged when the table already lists them. For writers
+    of prose (the qa-manager's drafting of a direct change): a new step, route, criterion, duty or create/approve/update
+    permission for a role or cog needs its row, or the compile warns."""
+    lines = text.splitlines()
+    head = next((i for i, ln in enumerate(lines) if ln.strip().lower() == "## " + RESPONSIBILITIES), None)
+    row = f"| {who_words(who)} | {' '.join(responsibility.split()).replace('|', '/')} |"
+    if head is None:
+        body = text.rstrip("\n")
+        return body + "\n\n## Roles and responsibilities\n| Role | Responsibilities |\n|---|---|\n" + row + "\n"
+    end = next((i for i in range(head + 1, len(lines)) if lines[i].startswith("#")), len(lines))
+    last = head
+    for i in range(head + 1, end):
+        ln = lines[i].strip()
+        if ln.startswith("|"):
+            last = i
+            cells = [c.strip() for c in ln.strip("|").split("|")]
+            if cells and not _TABLE_RULE.match(ln) and responsibility_who(cells[0]) == who:
+                return text  # listed already
+    if last == head:  # a section with no table yet
+        lines[head + 1:head + 1] = ["| Role | Responsibilities |", "|---|---|", row]
+    else:
+        lines.insert(last + 1, row)
+    return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+
+
 def responsibilities_of(frame) -> tuple[list[dict], list[dict]]:
     """The rows of a Frame's Roles and responsibilities table, read whatever the Frame's compile mode (a work
     instruction is not compiled, but its table still says who must read it). Returns (rules, notes)."""
@@ -198,7 +235,7 @@ def responsibilities_of(frame) -> tuple[list[dict], list[dict]]:
         if line.startswith("#"):
             inside = line.startswith("## ") and line[3:].strip().lower() == RESPONSIBILITIES
             continue
-        if not inside or not line:
+        if not inside or not line.startswith("|"):
             continue
         r = responsibility_rule(line, frame, n)
         if r is None:
@@ -468,6 +505,8 @@ class ConventionExtractor:
                 continue
 
             if section == RESPONSIBILITIES:
+                if not line.startswith("|"):
+                    continue  # prose around the table
                 r = responsibility_rule(line, frame, n)
                 if r is not None and r["kind"] == "unparsed":
                     out.notes.append({"frame": frame.name, "line": n, "text": line, "severity": "error",

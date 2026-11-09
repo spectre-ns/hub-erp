@@ -11,7 +11,10 @@ document whose table lists one of their roles (``release.follows_for``). From th
   that follow each. It is generated, never edited by hand: the release automation publishes a new revision whenever a
   release changes a table or a listed document's revision (``publish_matrix``);
 * **where each person stands** on each document they must read: acknowledged, due, overdue or not assigned
-  (``reading_status``).
+  (``reading_status``);
+* **what each cog is trained on**: for a cog, training is the document in its context when it works. It is trained on
+  a revision from the release that put that revision in its context; the release is its training record
+  (``cog_training``). Cogs get no acknowledgement task.
 """
 
 from __future__ import annotations
@@ -69,6 +72,45 @@ def reading_status(hub, person: str, frame: str, today: str | None = None) -> di
     return {**out, "status": "not assigned"}
 
 
+def _revision(hub, frame: str, meta: dict) -> str:
+    doc = document_in_force(hub, frame)
+    if doc is not None:
+        return str(doc["fields"].get("revision") or "")
+    return str(next((f.get("version") for f in meta.get("frames") or [] if f.get("name") == frame), "") or "")
+
+
+def cog_training(hub, cog: str, digest: str | None = None) -> list[dict]:
+    """What a cog is trained on: each document in its context (the company scope and the documents whose Roles and
+    responsibilities tables name it or its roles), with the revision in force and the release that put that revision
+    in its context (the earliest release since which the text is unchanged and the cog has followed it)."""
+    releases = hub.releases.list()
+    if not releases:
+        return []
+    idx = next((i for i, m in enumerate(releases) if m["digest"] == digest), None) if digest else None
+    if idx is None:
+        cur = hub.releases.current()
+        idx = next((i for i, m in enumerate(releases) if cur and m["digest"] == cur["digest"]), len(releases) - 1)
+    meta = releases[idx]
+    bundles: dict[str, dict] = {}
+
+    def follows(m: dict) -> list[str]:
+        if m["digest"] not in bundles:
+            bundles[m["digest"]] = hub.releases.bundle(m["digest"])
+        return list(((bundles[m["digest"]].get("cogs") or {}).get(cog) or {}).get("follows") or [])
+
+    def sha(m: dict, frame: str):
+        return next((f.get("sha256") for f in m.get("frames") or [] if f.get("name") == frame), None)
+
+    out = []
+    for frame in follows(meta):
+        since, want = idx, sha(meta, frame)
+        while since > 0 and sha(releases[since - 1], frame) == want and frame in follows(releases[since - 1]):
+            since -= 1
+        out.append({"frame": frame, "status": "in context", "revision": _revision(hub, frame, meta), "release": releases[since]["digest"],
+                    "release_n": since + 1})
+    return out
+
+
 # ---------------------------------------------------------------- the training matrix
 def _cell(text) -> str:
     return " ".join(str(text or "").replace("|", "/").split())
@@ -100,6 +142,16 @@ def matrix_text(hub, bundle: dict) -> str:
             lines.append(f"| {_cell(number)} | {_cell(title)} | {_cell(rev) or '-'} | {link} | {_cell('; '.join(mine))} | "
                          f"{_cell(', '.join(cogs[f])) or '-'} |")
         lines.append("")
+    cogs_ = sorted(n for n, m in (bundle.get("members") or {}).items() if m.get("type") == "cog" and n in (bundle.get("cogs") or {}))
+    if cogs_:
+        lines += ["## Cogs", "", "A cog is trained on a document when it is in its context as it works: from the release that put the revision "
+                  "there. It acknowledges nothing; the release is its training record.", "",
+                  "| Cog | Document | Revision | In context since |", "|---|---|---|---|"]
+        for c in cogs_:
+            for t in cog_training(hub, c):
+                number = where[t["frame"]][0] if t["frame"] in where else t["frame"]
+                lines.append(f"| {c} | {_cell(number)} | {_cell(t['revision']) or '-'} | release v{t['release_n']} ({t['release'][:12]}) |")
+        lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -116,12 +168,17 @@ def publish_matrix(hub, digest: str, *, by: str = "hub") -> dict | None:
     bundle = hub.releases.bundle(digest)
     text = matrix_text(hub, bundle)
     doc = matrix_document(hub)
-    stamp = {"released_in": digest, "effective_from": date.today().isoformat(), "approved_by": "the release"}
+    from datetime import timedelta
+
+    # In force from the release (an effective document needs a review date: a year on, like any controlled document).
+    stamp = {"released_in": digest, "effective_from": date.today().isoformat(), "approved_by": "the release",
+             "review_date": (date.today() + timedelta(days=365)).isoformat()}
     if doc is None:
-        return hub.dms.create(title=MATRIX_TITLE, doc_class="controlled", folder=MATRIX_FOLDER, by=by, content=text.encode("utf-8"),
-                              filename="required-training.md", mime="text/markdown", doc_type=MATRIX_TYPE, state="effective", release=digest,
-                              fields={"generated": True, "description": "Who must read which document, from the Roles and responsibilities "
-                                                                        "tables in force.", **stamp})
+        doc = hub.dms.create(title=MATRIX_TITLE, doc_class="controlled", folder=MATRIX_FOLDER, by=by, content=text.encode("utf-8"),
+                             filename="required-training.md", mime="text/markdown", doc_type=MATRIX_TYPE, release=digest,
+                             fields={"generated": True, "description": "Who must read which document, from the Roles and responsibilities "
+                                                                       "tables in force.", **stamp})
+        return hub.kernel.transition(doc["locator"], "effective", by=by, release=digest, reason="generated from the tables in force")
     content, _v = hub.dms.content(doc["locator"])
     if content.decode("utf-8", "replace") == text:
         return None

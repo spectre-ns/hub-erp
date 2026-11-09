@@ -299,6 +299,29 @@ def table_needs(rules: list[dict]) -> dict[str, list[tuple[str, str, int]]]:
     return out
 
 
+def table_rows_needed(rules: list[dict]) -> dict[str, list[tuple[str, str]]]:
+    """{Frame: [(who, what part)]} for each role or cog a document gives a part that its Roles and responsibilities
+    table does not list (a cog counts as listed when one of its roles is): the rows a writer should add
+    (``extract.add_responsibility_row``)."""
+    tables: dict[str, set[str]] = {}
+    roles_of: dict[str, set[str]] = {}
+    for r in rules:
+        if r.get("kind") == "responsibility":
+            tables.setdefault(r["frame"], set()).add(r["who"])
+        elif r.get("kind") == "member":
+            roles_of.setdefault(r["principal"], set()).update(r.get("roles") or [])
+    out: dict[str, list[tuple[str, str]]] = {}
+    for frame, needs in table_needs(rules).items():
+        table = tables.get(frame, set())
+        for who, what, _line in needs:
+            kind, _, name = who.partition(":")
+            if who in table or (kind == "cog" and any("role:" + x in table for x in roles_of.get(name, set()))):
+                continue
+            if (who, what) not in out.setdefault(frame, []):
+                out[frame].append((who, what))
+    return {f: v for f, v in out.items() if v}
+
+
 def responsibilities_guard(rules: list[dict], roles: set[str], roles_with_members: set[str], members: dict) -> list[Finding]:
     """Each document's Roles and responsibilities table against its rules, so the table (who must read the document,
     what a cog follows) cannot drift from what the document gives people and cogs: a warning for each role or cog the

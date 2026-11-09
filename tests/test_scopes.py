@@ -62,9 +62,10 @@ def test_required_reading_is_derived_from_the_roles(shell):
     reading = {r["frame"]: r["roles"] for r in sc.required_reading(b, "carol")}
     assert "document-control-sop" in reading and "quality-manager" in reading["ncr-sop"]
     assert reading["org-model"] and list(reading)[:3] == ["org-model", "quality-manual", "tasks-sop"]
-    assert "wi-review-a-document" in reading and "reviewer" in reading["wi-review-a-document"], "a work instruction's For: line"
-    assert "it-sop" not in reading, "carol is no system administrator"
-    assert "it-sop" in {r["frame"] for r in sc.required_reading(b, "bob")}, "bob is"
+    assert "wi-review-a-document" in reading and "reviewer" in reading["wi-review-a-document"], "a work instruction's table"
+    assert reading["it-sop"] == ["quality-manager"], "she approves the change orders that carry configuration"
+    assert "system-administrator" in {r["frame"]: r["roles"] for r in sc.required_reading(b, "bob")}["it-sop"], "bob administers the hub"
+    assert "it-sop" not in {r["frame"] for r in sc.required_reading(b, "dave")}
     status, text = get(shell, "/user/carol", **{"as": "carol"})
     assert "Required reading" in main_of(text) and "document-control-sop" in main_of(text)
 
@@ -90,13 +91,12 @@ def test_personas_must_be_used_and_scopes_refer_to_what_exists(shell):
     assert any("persona ghost is used by no cog" in d for d in found)
 
 
-def test_a_cog_named_by_no_sop_is_warned_that_it_will_be_routed_nothing(shell):
+def test_a_cog_listed_in_no_table_is_warned_that_it_will_be_routed_nothing(shell):
     hub = shell["hub"]
     p = hub.compile(save=False)
-    assert not [f for f in p["findings"] if "named by no SOP" in f["detail"]], [f["detail"] for f in p["findings"] if "named by no SOP" in f["detail"]]
+    assert not [f for f in p["findings"] if "listed in no Roles" in f["detail"]], [f["detail"] for f in p["findings"] if "listed in no Roles" in f["detail"]]
     from hubproto.guards import consistency_guard
 
-    rules = [r for r in p["rules"] if not (r["kind"] == "permission" and r["subject"] == "role:policy-reader")
-             and not (r["kind"] == "committee")]
+    rules = [r for r in p["rules"] if not (r["kind"] == "responsibility" and r["who"] == "cog:organization")]
     found = [f.detail for f in consistency_guard(rules, set(hub.registry.ids()))]
-    assert any("cog organization is named by no SOP" in d for d in found)
+    assert any("cog organization is listed in no Roles and responsibilities table" in d for d in found)

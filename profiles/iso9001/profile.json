@@ -53,7 +53,7 @@
  ],
  "required_cogs": {
   "doc-reviewer": ["reviewer", "author"],
-  "quality-assistant": ["quality-manager", "staff"]
+  "quality-assistant": ["staff"]
  },
  "required_folders": [
   "Quality",

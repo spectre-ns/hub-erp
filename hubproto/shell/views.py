@@ -514,7 +514,7 @@ class ViewsMixin:
 
     def _user_reading(self, person: str) -> str:
         m = ((self.bundle or {}).get("members") or {}).get(person) or {}
-        return self._required_reading_html(person) if m.get("type") == "person" else ""
+        return self._required_reading_html(person) if m.get("type") == "person" else self._cog_training_html(person)
 
     def page_user(self):
         user = self.user

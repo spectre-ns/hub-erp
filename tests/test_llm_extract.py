@@ -570,7 +570,7 @@ def test_each_member_reads_from_its_own_perspective_and_the_same_material(prose_
     assert set(views) == {"qa-manager", "organization"}
     assert b["cogs"]["qa-manager"]["about"] in views["qa-manager"] and "ISO 9001" in views["qa-manager"]
     assert "who decides what" in views["organization"] and "(policy-reader)" in views["organization"]
-    assert "quality-manager, reviewer" in views["qa-manager"] and all(len(v) < 2000 for v in views.values()), "short: the budget is for the change"
+    assert "author, reviewer, staff" in views["qa-manager"] and all(len(v) < 2000 for v in views.values()), "short: the budget is for the change"
     rewrite(hub, PROSE, PROSE.replace("5,000", "7,500"))
     call, calls = reader(lambda user, system: {"changes": []})
     ex = CommitteeExtractor([("qa-manager", MODEL), ("organization", MODEL)], 2, cache_dir=tmp_path / "p", context=context_for(hub),

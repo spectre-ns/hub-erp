@@ -374,8 +374,10 @@ def follows_for(bundle: dict, principal: str) -> dict[str, set[str]]:
     "cog:stores"; "company" for the company scope)}: the company Frames first, then the others alphabetically."""
     named = frames_naming(bundle, principal_names(bundle, principal))
     out: dict[str, set[str]] = {}
-    if ((bundle.get("members") or {}).get(principal) or {}).get("type") == "cog":
-        out = {f: {"company"} | named.get(f, set()) for f in company_frames(bundle)}
+    is_cog = ((bundle.get("members") or {}).get(principal) or {}).get("type") == "cog"
+    for f in company_frames(bundle):
+        if is_cog or f in named:
+            out[f] = ({"company"} if is_cog else set()) | named.get(f, set())
     for f in sorted(named):
         if f not in out:
             out[f] = set(named[f])

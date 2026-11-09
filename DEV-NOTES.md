@@ -101,8 +101,9 @@ Only inside these sections: `## Roles`, `## Members`, `## Folders`,
 `## Permissions`, `## Thresholds`, `## Routing`, `## Approval criteria`,
 `## Segregation of duties`, `## Duties`, `## Process: <name>`, and the keyed sections
 `## Scope:`, `## Committee:`, `## Cog:`, `## Persona:`. Frontmatter may carry
-`compile: convention|guided|none` (default convention) and `clauses: [...]`. A `For: <roles>.` line under the
-title (a work instruction's audience) is read even with `compile: none`.
+`compile: convention|guided|none` (default convention) and `clauses: [...]`. Every document ends with
+`## Roles and responsibilities`, a table `| Role | Responsibilities |` (a row names a role, `the <name> cog` or
+`the <name> group`); it is read even with `compile: none` and says who must read the document.
 
 ```
 ## Roles            - quality-manager
@@ -158,10 +159,14 @@ unless `The record type is X.` says otherwise.
 
 **Cogs** (change control v2, section 7). A cog's profile is its identity; its persona (shared) says how it behaves;
 the bundle's `cogs[name]` is the merged view (`about`, `model`, `persona`, the persona's fields, the composed `prompt`).
-What it **follows** (`follows`, `follows_why`) is derived (`release.follows_for`): the company scope plus every Frame whose
-rules name it or one of its roles (permission subject, routing assignee, criteria approver or countersigning role, process
-step role or cog, duty, committee, member line). A person's required reading is the same plus the work instructions whose
-`For:` names their roles (`scopes.required_reading`). **Autonomy** is derived per write (`authz.autonomy`, used by
+What it **follows** (`follows`, `follows_why`; its training) is derived from the Roles and responsibilities tables
+(`release.follows_for`): the company scope plus every document whose table lists it or one of its roles. A person's
+required reading is every document whose table lists one of their roles (`scopes.required_reading`). The compile warns
+when a document gives a role or cog a step, route, criteria, duty or create/approve/update permission its table does not
+list, and when a table names a role nobody holds (`guards.responsibilities_guard`). Training (`hubproto.training`): a
+release that makes a revision effective assigns acknowledgements to the people its table names (`training_roles`
+overrides); the release automation republishes the generated training matrix; a cog acknowledges nothing (the release that
+put a revision in its context is its training record). **Autonomy** is derived per write (`authz.autonomy`, used by
 `AgentTools.decide` with each tool's `intent`): a deny refuses, a "when ... confirms" sentence proposes (it narrows a broader
 allow), an allow acts, its own step (its turn at a Gate, a step assigned to it) acts; with none, a tool that applies its own
 rule decides, anything else is refused ("describe what should be done instead"). A cog's context is its process

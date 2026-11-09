@@ -98,34 +98,40 @@ def test_a_new_cog_is_proposed_with_its_identity_and_a_persona_that_exists(relea
 
 
 # ---------------------------------------------------------------- derived follows and required reading
-def test_what_a_cog_follows_is_derived_from_the_sops_that_name_it(released):
+def test_what_a_cog_follows_is_derived_from_the_roles_and_responsibilities_tables(released):
     b = bundle(released)
     company = ["org-model", "quality-manual", "tasks-sop"]
     assert b["cogs"]["ap-reviewer"]["follows"] == company + ["finance-policy"]
-    assert b["cogs"]["doc-reviewer"]["follows"] == company + ["document-control-sop"]
-    assert b["cogs"]["it-admin"]["follows"] == company + ["it-sop"]
-    assert b["cogs"]["management"]["follows"] == company + ["it-sop", "management-review-sop"]
+    assert b["cogs"]["doc-reviewer"]["follows"] == company + ["document-control-sop", "wi-review-a-document"]
+    assert b["cogs"]["it-admin"]["follows"] == company + ["change-control-sop", "it-sop"]
+    assert b["cogs"]["management"]["follows"] == company + ["change-control-sop", "it-sop", "management-review-sop"]
     why = b["cogs"]["purchasing-assistant"]["follows_why"]
     assert "cog:purchasing-assistant" in why["design-control-sop"], "the swarm step names it"
-    assert "role:stock-reviewer" in why["inventory-policy"] and why["org-model"][0] == "company" and why["quality-manual"] == ["company"]
+    assert "role:stock-reviewer" in why["inventory-policy"] and why["org-model"][0] == "company" and why["quality-manual"] == ["company", "role:staff"]
     assert {f["frame"]: f["because"] for f in sc.following(b, "doc-reviewer")}["document-control-sop"] == ["cog:doc-reviewer", "role:author", "role:reviewer"]
-    # A sentence naming one of its roles in another SOP makes it follow that SOP too.
+    # The table decides, not any mention: a sentence naming its role elsewhere does not make it follow that SOP...
     edit_frame(released, "audit-sop", "## Permissions\n", "## Permissions\nPayables reviewers may read Quality/Audits.\n", bump="0.9.0")
+    release_all(released)
+    assert "audit-sop" not in bundle(released)["cogs"]["ap-reviewer"]["follows"]
+    # ...a row in the table does.
+    edit_frame(released, "audit-sop", "| Internal auditor |", "| Payables reviewer | Reads the audit findings on payables. |\n| Internal auditor |", bump="0.9.1")
     release_all(released)
     assert "audit-sop" in bundle(released)["cogs"]["ap-reviewer"]["follows"]
 
 
 def test_a_persons_required_reading_is_derived_the_same_way(released):
     b = bundle(released)
-    dave = {r["frame"]: r["roles"] for r in sc.required_reading(b, "dave")}
-    assert dave["quality-manual"] == ["everyone"] and "staff" in dave["org-model"] and "named" in dave["org-model"]
-    assert "payables-reviewer" in dave["finance-policy"] and "storekeeper" in dave["inventory-policy"]
-    assert "wi-file-a-nonconformance" in dave and dave["wi-respond-to-a-cog-escalation"] == ["staff"], "the For: line of a work instruction"
-    assert "it-sop" not in dave and "audit-sop" not in dave
+    reading = sc.required_reading(b, "dave")
+    dave = {r["frame"]: r["roles"] for r in reading}
+    assert list(dave)[:3] == ["org-model", "quality-manual", "tasks-sop"], "the company basics: their tables list staff"
+    assert dave["quality-manual"] == ["staff"] and "payables-reviewer" in dave["finance-policy"] and "storekeeper" in dave["inventory-policy"]
+    assert dave["wi-respond-to-a-cog-escalation"] == ["staff"], "a work instruction's table"
+    assert "it-sop" not in dave and "audit-sop" not in dave and "document-control-sop" not in dave
+    assert next(r for r in reading if r["frame"] == "finance-policy")["responsibilities"] == ["Reviews and approves bills within their limits."]
     bob = {r["frame"]: r["roles"] for r in sc.required_reading(b, "bob")}
-    assert bob["it-sop"] == ["system-administrator"] and "wi-run-an-audit" in bob
-    assert next(a for a in b["audiences"] if a["frame"] == "it-sop")["roles"] == ["management-reviewer", "system-administrator"]
-    assert next(a for a in b["audiences"] if a["frame"] == "wi-record-management-review")["roles"] == ["management-representative"], "the chair is no role"
+    assert bob["it-sop"] == ["internal-auditor", "system-administrator"] and "wi-run-an-audit" in bob
+    assert sorted({r["who"] for r in b["responsibilities"] if r["frame"] == "it-sop"}) == [
+        "cog:it-admin", "cog:management", "role:internal-auditor", "role:management-reviewer", "role:quality-manager", "role:system-administrator"]
 
 
 # ---------------------------------------------------------------- derived autonomy
@@ -209,23 +215,30 @@ def test_a_cogs_context_is_its_process_with_the_sentences_and_any_divergence(rel
                                  "co": "CO-2026-0007", "accepted_by": "bob", "meaning": "medium too", "at": "2026-11-09"}]
     hub.releases.index_path.write_text(json.dumps(index))
     prompt = cog_context(ctx_for(hub, "quality-assistant"), hub.kernel.get(ncr["locator"]))
-    assert prompt.startswith("You are the quality-assistant cog") and "You review items against the procedures you follow" in prompt
-    assert "THE PROCESS THAT GOVERNS THIS ITEM: nonconformance (in ncr-sop" in prompt and "5. [quality-manager] Disposition the nonconformance" in prompt
-    part = prompt.split("YOUR PART IN IT")[1].split("SOPS YOU FOLLOW")[0]
+    assert prompt.startswith("== WHO YOU ARE ==\nYou are the quality-assistant cog") and "You review items against the procedures you follow" in prompt
+    assert "THE PROCESS THAT GOVERNS THIS WORK: nonconformance (in ncr-sop" in prompt and "5. [quality-manager] Disposition the nonconformance" in prompt
+    part = prompt.split("YOUR PART IN IT")[1].split("THE PROCEDURES YOU ARE TRAINED ON")[0]
     assert route["source"]["text"] in part and "The quality-assistant cog may approve nonconformance nonconformances when the risk is low." in part
     assert "Every day the quality-assistant cog finds nonconformances" in part, "its duty in this SOP"
-    assert "IN FORCE DIFFERS FROM THIS LINE: At Disposition the nonconformance in nonconformance with medium risk go to the quality-assistant cog." in part
+    assert ("The rule in force differs from this line: At Disposition the nonconformance in nonconformance with medium risk go to the "
+            "quality-assistant cog.: follow the rule in force") in part
     assert "accepted by bob on CO-2026-0007" in part
     # Not whole SOPs: the purchasing policy's prose is not in front of it, only its sections.
     assert "A purchase request names a part" not in prompt and "- purchasing-policy: " in prompt
+    # A process whose SOP it is not trained on: it is told so, and to escalate.
+    ap = cog_context(ctx_for(hub, "ap-reviewer"), hub.kernel.get(ncr["locator"]))
+    assert "You are NOT trained on ncr-sop" in ap and "escalate" in ap
 
 
-def test_a_cog_reads_any_section_of_an_sop_it_follows(released):
+def test_a_cog_reads_its_procedures_and_looks_up_what_its_roles_may_read(released):
     t = tools(released, "quality-assistant")
     routing = t.execute("read_sop_section", {"name": "ncr-sop", "heading": "routing"})
     assert routing["section"] == "Routing" and "At Disposition the nonconformance" in routing["text"] and "## Process" not in routing["text"]
-    assert "Duties" in t.execute("read_sop_section", {"name": "ncr-sop"})["sections"]
-    assert "you do not follow 'it-sop'" in t.execute("read_sop_section", {"name": "it-sop", "heading": "Permissions"})["error"]
+    assert routing["standing"].startswith("trained") and "Duties" in t.execute("read_sop_section", {"name": "ncr-sop"})["sections"]
+    looked = t.execute("read_sop_section", {"name": "audit-sop", "heading": "Permissions"})
+    assert looked["standing"].startswith("reference") and "Internal auditors may create audits" in looked["text"], "the knowledge base"
+    ap = tools(released, "ap-reviewer", requester="dave")
+    assert "you may not read 'ncr-sop'" in ap.execute("read_sop_section", {"name": "ncr-sop"})["error"], "only what its roles may read"
     assert "has no section" in t.execute("read_sop_section", {"name": "ncr-sop", "heading": "Nowhere"})["error"]
     assert t.actions == 0, "a look tool"
 

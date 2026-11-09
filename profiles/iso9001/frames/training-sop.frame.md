@@ -14,8 +14,12 @@ compile: convention
 
 Competence (7.2) and awareness (7.3) are evidenced by training records. When
 a controlled document becomes effective, the document publisher opens one
-training-acknowledgement run per person holding a role listed in the
-document's training roles; the record waits for that person. The
+training-acknowledgement run per person holding a role its Roles and
+responsibilities table lists (the document's training roles, when set,
+override the table); the record waits for that person. A cog acknowledges
+nothing: it is trained on a revision from the release that puts it in its
+context. The training matrix (Required training, in Quality/Training) lists
+who must read what; it is generated with each release. The
 acknowledgement is the person's electronic signature that they have read and
 understood the revision. The quality manager and the document controller may
 also file training records for courses, inductions and assessments. An
