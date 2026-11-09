@@ -698,6 +698,7 @@ def _warnings(hub, co: dict, p: dict) -> tuple[dict[str, list[dict]], list[dict]
     for c in p.get("changes") or []:
         if c.get("op") == "text":
             continue
+        items[c["id"]] += [dict(w) for w in c.get("read_warnings") or []]  # the compiler's (a reading that drops a "not")
         rt = (direct.get(c.get("direct") or "") or {}).get("round_trip") or {}
         if c.get("unstated") or rt.get("ok") is False:
             q = qtext.get(rt.get("question") or "") or {}

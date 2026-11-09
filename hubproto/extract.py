@@ -642,11 +642,11 @@ def get_extractor(cache_dir=None, context: dict | None = None, gateway=None, cal
     """How SOPs are read: "convention" (the sentence shapes only) or "hybrid" (those, then a local model for the prose,
     behind the guards and approvals; hubproto.llm_extract). Hybrid by default when the hub has an Ollama. ("claude",
     a hosted model for everything, only when hosted models are switched on.)"""
-    from .llm_extract import compile_hosted
     from .model import hosted_allowed, ollama_url
 
-    # HUBPROTO_COMPILE_HOSTED: Claude Opus reads the prose for compilation only (hubproto.llm_extract.compile_hosted).
-    mode = os.environ.get("HUBPROTO_EXTRACTOR") or ("hybrid" if ollama_url() or compile_hosted() else "convention")
+    # Hybrid when the committee's cogs can have a model here: an Ollama, or hosted models switched on with a key.
+    mode = os.environ.get("HUBPROTO_EXTRACTOR") or ("hybrid" if ollama_url() or (hosted_allowed() and os.environ.get("ANTHROPIC_API_KEY"))
+                                                    else "convention")
     if mode == "claude" and hosted_allowed():
         return ClaudeExtractor()
     if mode in ("hybrid", "claude"):

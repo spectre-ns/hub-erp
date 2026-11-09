@@ -18,10 +18,12 @@ new line); one on a line that changed and that no reader restated or removed is 
 diff is read in parts, section by section, so each call fits the model's window (``prompt_budget_chars``). An SOP with
 no version in force (a new SOP) is read whole, as before.
 
-The model is a local one (the largest Ollama serves here, or HUBPROTO_EXTRACTOR_MODEL); the hub talks to hosted
-models only when they are switched on (HUBPROTO_COMPILE_HOSTED for compilation alone: Claude Opus reads the prose,
-cogs keep their models). Reading runs in background jobs (the compile-frame automation, the command line), never
-inside a page: a page or preview uses what was read before. What the model read is cached by the exact text it was
+The readers are cogs: each member of the compile-frame committee reads with the model its profile bundles it with
+(a local one through Ollama, or a Claude model where the administrator has switched hosted models on), and the committee
+works by consensus; a member whose model is not available here is a question for a person, never skipped. (With no
+committee, the organization cog's model, HUBPROTO_EXTRACTOR_MODEL or the largest local model reads.) Reading runs in
+background jobs (the compile-frame automation, the command line), never inside a page: a page or preview uses what was
+read before. What the model read is cached by the exact text it was
 given and the model: compiling the same text again gives the same rules, so a release never changes because the model
 answered differently. A sentence that looks like a rule and that neither the compiler nor the model could read still
 stops the release.
@@ -40,13 +42,11 @@ from pathlib import Path
 from .frames import Frame, load_frame_text
 from .rules import CONDITION_VOCABULARY, KINDS, rule_key, validate_rule
 
-PROMPT_VERSION = "1"
-DIFF_PROMPT_VERSION = "d1"
+PROMPT_VERSION = "2"
+DIFF_PROMPT_VERSION = "d2"
 MODEL_KINDS = ("permission", "threshold", "routing", "sla", "approval_criteria", "sod")
 MAX_TOKENS = 4000  # what one reading may answer with
 CONTEXT_LINES = 2  # unchanged lines shown around each change in the diff
-COMPILE_HOSTED_MODEL = "claude-opus-5-5"
-HOSTED_BUDGET = int((200000 - MAX_TOKENS - 1024) * 3.2)  # Claude's window, in characters, with room to answer
 
 
 def local_model() -> str:
@@ -62,25 +62,6 @@ def local_model() -> str:
     return f"ollama/{models[0]['name']}" if models else ""
 
 
-def compile_hosted() -> bool:
-    """An administrator's switch for compilation only: HUBPROTO_COMPILE_HOSTED=1, with ANTHROPIC_API_KEY, has Claude Opus
-    (``COMPILE_HOSTED_MODEL``) read the SOPs' prose for the compile-frame committee. Cogs keep their bundled models, and
-    hosted models stay off everywhere else (HUBPROTO_HOSTED_MODELS is neither needed nor changed). Off by default."""
-    on = (os.environ.get("HUBPROTO_COMPILE_HOSTED") or "").strip().lower() in ("1", "on", "yes", "true")
-    return on and bool(os.environ.get("ANTHROPIC_API_KEY"))
-
-
-def hosted_reader() -> dict | None:
-    """How the readers reach Claude Opus when compilation is switched to it: {"model", "call", "budget"}; else None."""
-    if not compile_hosted():
-        return None
-    from .model import ModelGateway
-
-    def call(model: str, system: str, user: str) -> str:
-        return ModelGateway._anthropic(model, system, user, MAX_TOKENS)  # the Anthropic Messages API, over the stdlib
-    return {"model": COMPILE_HOSTED_MODEL, "call": call, "budget": HOSTED_BUDGET}
-
-
 SYSTEM = """You read a company's standard operating procedure (SOP) and list the rules it states, as data, so a hub can
 enforce them. You return JSON only. You never invent a rule the text does not state, and you quote the exact words."""
 
@@ -93,6 +74,11 @@ _KINDS = """- permission: {{"subject": "role:<role>", "action": "<read|create|up
 - approval_criteria: {{"approver": "cog:<cog>", "process": "<process>", "max_amount": <number or null>, "currency": "<code or null>",
   "conditions": [<keys from: {vocab}>], "countersign": "<role or null>"}}
 - sod: {{"object": "<record type>", "roles": ["<role a>", "<role b>"]}}
+Approval criteria are only for cogs (approver "cog:<cog>"): what a person or role approves is a routing rule (or a
+permission). The conditions are a closed list: when the prose says something they cannot express (for instance "the
+supplier is NOT approved", the opposite of a listed condition), do not pick the nearest condition; return no rule for it
+and ask a question instead. Keep every "not", "never", "no", "unless", "except" and "without": a rule that drops one
+says the opposite of the prose.
 """
 
 _NAMES = """Use only these names (a rule that needs another name is not a rule you can return):
@@ -113,7 +99,8 @@ Rules the hub has ALREADY read from it (do not return these again):
 Return every OTHER rule this SOP states, of these kinds only (fields exactly as shown):
 """ + _KINDS + "\n" + _NAMES + """
 Answer with a JSON object: {{"rules": [{{"kind": "...", "fields": {{...}}, "line": <line number>, "quote": "<the exact words of that line
-the rule comes from>"}}]}}. An empty list is a fine answer when the SOP states no other rule."""
+the rule comes from>"}}], "questions": [{{"line": <line number>, "quote": "<the words>", "text": "<what the prose leaves open, asked
+as a question>"}}]}}. Empty lists are a fine answer when the SOP states no other rule and nothing is ambiguous."""
 
 DIFF_SYSTEM = """You read the changes made to a company's standard operating procedure (SOP) and say what they do to the rules a
 hub enforces, as data. You return JSON only. You never invent a rule the text does not state, you quote the exact words,
@@ -147,8 +134,9 @@ says the same). Say nothing about rules on unchanged lines: they stay as they ar
 ambiguous ("larger bills go to the controller": over what amount?) rather than guess. Empty lists are a fine answer."""
 
 
-def _key(frame: Frame, context: dict, model: str, member: str = "") -> str:
-    blob = json.dumps({"text": frame.text, "context": context, "model": model, "member": member, "v": PROMPT_VERSION}, sort_keys=True)
+def _key(frame: Frame, context: dict, model: str, member: str = "", perspective: str = "") -> str:
+    blob = json.dumps({"text": frame.text, "context": context, "model": model, "member": member, "v": PROMPT_VERSION,
+                       **({"perspective": perspective} if perspective else {})}, sort_keys=True)
     return hashlib.sha256(blob.encode()).hexdigest()[:32]
 
 
@@ -186,8 +174,10 @@ def _names(context: dict) -> dict:
             "cogs": ", ".join(c.get("cogs") or []), "types": ", ".join(c.get("types") or [])}
 
 
-def _build_rule(frame: Frame, item: dict, read_by: str) -> tuple[dict | None, dict | None]:
-    """A rule the model returned, in the hub's shape and cited at its line; or (None, a note) when it may not return it."""
+def _build_rule(frame: Frame, item: dict, read_by: str, cogs=None) -> tuple[dict | None, dict | None]:
+    """A rule the model returned, in the hub's shape and cited at its line; or (None, a note) when it may not return it.
+    A note with ``ask`` is a reading that cannot stand but says the prose means something: it becomes a question.
+    ``cogs``: the cogs that exist (approval criteria are only for them)."""
     kind = item.get("kind")
     fields = item.get("fields") or {}
     line = item.get("line")
@@ -195,6 +185,14 @@ def _build_rule(frame: Frame, item: dict, read_by: str) -> tuple[dict | None, di
     if kind not in MODEL_KINDS or not isinstance(fields, dict) or kind not in KINDS:
         return None, {"frame": frame.name, "line": line or 0, "text": quote, "severity": "warning",
                       "note": f"the model returned a {kind!r} rule, which it may not (only {', '.join(MODEL_KINDS)})"}
+    approver = str(fields.get("approver") or "")
+    if kind == "approval_criteria" and (not approver.startswith("cog:") or (cogs and approver[4:] not in cogs)):
+        return None, {"frame": frame.name, "line": line or 0, "text": quote, "severity": "warning",
+                      "note": f"the model read approval criteria for {approver!r}; only a cog has approval criteria "
+                              "(what a person or role approves is a routing rule): left out",
+                      "ask": f"“{quote}” was read as approval criteria for {approver.partition(':')[2] or approver}, which is not a cog "
+                             "(only a cog has approval criteria). What does it mean: who these approvals go to (a routing rule), "
+                             "or who may approve them (a permission)?"}
     rule = {"kind": kind, **{k: v for k, v in fields.items() if k not in ("kind", "source")},
             "source": {"frame": frame.name, "version": frame.version, "line": line, "text": quote, "read_by": read_by}}
     if kind == "routing":
@@ -214,13 +212,6 @@ def _malformed(frame: Frame, rule: dict) -> dict | None:
     src = rule.get("source") or {}
     return {"frame": frame.name, "line": src.get("line") or 0, "text": src.get("text") or "", "severity": "error",
             "note": "the model read a rule that is not well formed: " + "; ".join(problems[:3])}
-
-
-def _copy(conv):
-    """A copy of the compiler's reading for one committee member (each member's notes are its own)."""
-    from .extract import Extraction
-
-    return Extraction(rules=list(conv.rules), notes=list(conv.notes))
 
 
 # ---------------------------------------------------------------- the diff against the version in force
@@ -314,11 +305,12 @@ class Reading:
 
 
 def _assemble(frame: Frame, conv, plan: DiffPlan, adds: list[dict], removes: set[str], questions: list[dict],
-              notes: list[dict], read: bool, processes: dict | None = None):
+              notes: list[dict], read: bool, processes: dict | None = None, asked_about: set[str] | None = None):
     """The SOP's rules after a diff reading: its sentences as the compiler reads them, the in-force readings on unchanged
     lines (unless removed), what the readers added or changed. A reading in force on a changed line that nobody restated
-    or removed is left out, and asked about."""
-    from .compile import question
+    or removed is left out, and asked about (unless a question already asks about it: ``asked_about``, rule keys).
+    Questions several members asked about the same line are merged (``compile.merge_questions``)."""
+    from .compile import merge_questions, question
     from .extract import Extraction
 
     out = Extraction(rules=list(conv.rules), notes=[], questions=[])
@@ -346,7 +338,7 @@ def _assemble(frame: Frame, conv, plan: DiffPlan, adds: list[dict], removes: set
         if k in removes or k in have:
             continue
         said = _sentence(r, processes or {})
-        if read:
+        if read and k not in (asked_about or set()):
             asked.append(question(frame.name, at, f"The line the rule “{said}” was read from (line {r['source'].get('line')} of the "
                                   "version in force) changed, and the readers neither restated nor removed it, so it is left "
                                   "out. Does it still apply?", raised_by="hub", code="unread", quote=r["source"].get("text") or ""))
@@ -362,15 +354,7 @@ def _assemble(frame: Frame, conv, plan: DiffPlan, adds: list[dict], removes: set
         if key not in seen:
             seen.add(key)
             out.notes.append(n)
-    by_id: dict[str, dict] = {}
-    for q in asked:
-        if q["id"] in by_id:  # two members asked the same: one question, raised by both
-            prior = by_id[q["id"]]
-            names = [x for x in (prior["raised_by"] + ", " + q["raised_by"]).split(", ") if x]
-            prior["raised_by"] = ", ".join(dict.fromkeys(names))
-        else:
-            by_id[q["id"]] = dict(q)
-    out.questions = list(by_id.values())
+    out.questions = merge_questions(asked)
     return out
 
 
@@ -413,8 +397,10 @@ class ModelExtractor:
     name = "hybrid"
 
     def __init__(self, cache_dir: Path | None = None, context: dict | None = None, model: str | None = None, call=None,
-                 gateway=None, calls: bool = True, member: str = "", baseline=None, budget: int | None = None):
+                 gateway=None, calls: bool = True, member: str = "", baseline=None, budget: int | None = None,
+                 perspective: str = ""):
         self.member = member  # a committee member reads on its own: its reading is its own (cached apart)
+        self.perspective = perspective  # who this member is and what it answers for (``perspective_of``): its own view
         self.model = model or local_model()
         self.cache_dir = Path(cache_dir) if cache_dir else None
         self.context = context or {}
@@ -444,7 +430,13 @@ class ModelExtractor:
             return 24000
 
     def _system(self, base: str) -> str:
-        return base + (f"\nYou are the {self.member} cog, one member of a committee that reads this SOP; read it on your own." if self.member else "")
+        """The instructions every reader shares, then this member's own perspective: committees exist to bring different
+        views to the same material, so only this part differs between members (the diff, the rules in force and the
+        answer format are the same for all, and their readings stay comparable)."""
+        if not self.member:
+            return base
+        own = f"\n\nYour perspective (yours alone on the committee):\n{self.perspective}" if self.perspective else ""
+        return base + own + f"\nYou are the {self.member} cog, one member of a committee that reads this SOP; read it on your own."
 
     def _ask(self, path: Path | None, system: str, user: str) -> dict:
         """One call, cached at ``path`` (keyed by exactly what it is about)."""
@@ -468,7 +460,7 @@ class ModelExtractor:
 
     # -- a new SOP: read whole, as before
     def _read(self, frame: Frame, already: list[dict]) -> dict:
-        path = self._path(_key(frame, self.context, self.model, self.member))
+        path = self._path(_key(frame, self.context, self.model, self.member, self.perspective))
         if path is not None and path.exists():
             try:
                 return json.loads(path.read_text(encoding="utf-8"))
@@ -482,25 +474,41 @@ class ModelExtractor:
                                **_names(self.context))
         return self._ask(path, self._system(SYSTEM), prompt)
 
-    def _extract_whole(self, frame: Frame, conv):
-        from .extract import Extraction
+    def _questions(self, frame: Frame, data: dict) -> list[dict]:
+        from .compile import question
 
-        try:
-            data = self._read(frame, conv.rules)
-        except LookupError as e:  # not read yet (a page, a preview): the compiler's reading stands meanwhile
-            conv.notes.append({"frame": frame.name, "line": 0, "text": "", "severity": "info", "note": str(e)})
-            return conv
-        except Exception as e:  # no model: the compiler's reading stands, and unread rule-like sentences still stop a release
-            conv.notes.append({"frame": frame.name, "line": 0, "text": "", "severity": "warning",
-                               "note": f"the model could not read the prose of {frame.name} ({type(e).__name__}: {str(e)[:160]})"})
-            return conv
+        out = []
+        for q in data.get("questions") or []:
+            if not isinstance(q, dict) or not str(q.get("text") or "").strip():
+                continue
+            line = q.get("line") if isinstance(q.get("line"), int) else 0
+            out.append(question(frame.name, line, str(q["text"]).strip(), raised_by=self.member or self.model or "the model",
+                                code="ambiguous", quote=str(q.get("quote") or "")))
+        return out
+
+    def _refused(self, frame: Frame, note: dict, out: "Reading") -> None:
+        """A reading that may not stand: a note, and (when the prose evidently means something) a question, so it is not
+        lost silently."""
+        from .compile import question
+
+        ask = note.pop("ask", None)
+        out.notes.append(note)
+        if ask:
+            out.questions.append(question(frame.name, note.get("line") if isinstance(note.get("line"), int) else 0, ask,
+                                          raised_by=self.member or self.model or "the model", code="ambiguous", quote=note.get("text") or ""))
+
+    def whole_reading(self, frame: Frame, conv) -> Reading:
+        """This reader's reading of a whole SOP (a new one): rules beyond the compiler's, and questions. Raises LookupError
+        when it is not read yet and calls are off, and whatever the model's failure is."""
+        data = self._read(frame, conv.rules)
+        out = Reading()
         have = {rule_key(r) for r in conv.rules}
-        out = Extraction(rules=list(conv.rules), notes=[])
-        covered = set()
         for item in data.get("rules") or []:
-            rule, note = _build_rule(frame, item, self.model)
+            if not isinstance(item, dict):
+                continue
+            rule, note = _build_rule(frame, item, self.model, self.context.get("cogs"))
             if rule is None:
-                out.notes.append(note)
+                self._refused(frame, note, out)
                 continue
             if rule_key(rule) in have:
                 continue
@@ -509,14 +517,21 @@ class ModelExtractor:
                 out.notes.append(bad)
                 continue
             have.add(rule_key(rule))
-            out.rules.append(rule)
-            if isinstance(rule["source"].get("line"), int):
-                covered.add(rule["source"]["line"])
-        for n in conv.notes:
-            if n.get("severity") == "error" and n.get("line") in covered:
-                continue  # the compiler could not read this sentence; the model did, and the reviewers see what it read
-            out.notes.append(n)
+            out.adds.append(rule)
+        out.questions = self._questions(frame, data)
         return out
+
+    def _extract_whole(self, frame: Frame, conv):
+        try:
+            rd = self.whole_reading(frame, conv)
+        except LookupError as e:  # not read yet (a page, a preview): the compiler's reading stands meanwhile
+            conv.notes.append({"frame": frame.name, "line": 0, "text": "", "severity": "info", "note": str(e)})
+            return conv
+        except Exception as e:  # no model: the compiler's reading stands, and unread rule-like sentences still stop a release
+            conv.notes.append({"frame": frame.name, "line": 0, "text": "", "severity": "warning",
+                               "note": f"the model could not read the prose of {frame.name} ({type(e).__name__}: {str(e)[:160]})"})
+            return conv
+        return _whole_result(frame, conv, rd.adds, rd.questions, rd.notes)
 
     # -- an SOP that differs from its version in force: read the change
     def _prompt_parts(self, frame: Frame, plan: DiffPlan, conv, hunks: list[dict], whole: bool) -> tuple[str, str]:
@@ -533,7 +548,8 @@ class ModelExtractor:
         # Cached by what the reading is about (the change, the readings in force, the sentences read exactly), not by the
         # names: a later release that leaves this SOP alone does not have the model read the same change again.
         key = hashlib.sha256(json.dumps({"frame": frame.name, "diff": diff, "in_force": in_force, "exact": exact, "model": self.model,
-                                         "member": self.member, "v": DIFF_PROMPT_VERSION}, sort_keys=True).encode()).hexdigest()[:32]
+                                         "member": self.member, "v": DIFF_PROMPT_VERSION,
+                                         **({"perspective": self.perspective} if self.perspective else {})}, sort_keys=True).encode()).hexdigest()[:32]
         return user, key
 
     def chunks(self, frame: Frame, plan: DiffPlan, conv) -> list[tuple[str, str]]:
@@ -574,13 +590,10 @@ class ModelExtractor:
 
     def read_changes(self, frame: Frame, plan: DiffPlan, conv) -> Reading:
         """This reader's reading of the diff (raises LookupError when it is not read yet and calls are off)."""
-        from .compile import question
-
         system = self._system(DIFF_SYSTEM)
         answers = [self._ask(self._path(key), system, user) for user, key in self.chunks(frame, plan, conv)]
         refs = dict(plan.in_force)
         out = Reading()
-        raised_by = self.member or self.model or "the model"
         have = {rule_key(r) for r in conv.rules}
         for data in answers:
             items = list(data.get("changes") or []) + [dict(x, op="add") for x in data.get("rules") or [] if isinstance(x, dict)]
@@ -598,9 +611,9 @@ class ModelExtractor:
                         out.removes.add(rule_key(r))
                     if op == "remove":
                         continue
-                rule, note = _build_rule(frame, item, self.model)
+                rule, note = _build_rule(frame, item, self.model, self.context.get("cogs"))
                 if rule is None:
-                    out.notes.append(note)
+                    self._refused(frame, note, out)
                     continue
                 if rule_key(rule) in have:
                     continue
@@ -608,13 +621,9 @@ class ModelExtractor:
                 if bad:
                     out.notes.append(bad)
                     continue
+                have.add(rule_key(rule))  # once per reader: a sentence over two lines, read at each, is one reading
                 out.adds.append(rule)
-            for q in data.get("questions") or []:
-                if not isinstance(q, dict) or not str(q.get("text") or "").strip():
-                    continue
-                line = q.get("line") if isinstance(q.get("line"), int) else 0
-                out.questions.append(question(frame.name, line, str(q["text"]).strip(), raised_by=raised_by, code="ambiguous",
-                                              quote=str(q.get("quote") or "")))
+            out.questions += self._questions(frame, data)
         return out
 
     def plan(self, frame: Frame) -> DiffPlan | None:
@@ -644,6 +653,23 @@ class ModelExtractor:
         return _assemble(frame, conv, plan, rd.adds, rd.removes, rd.questions, rd.notes, read=True, processes=procs)
 
 
+PERSPECTIVE_CHARS = 1600  # a member's perspective stays short: the budget is for the SOP's change
+
+
+def perspective_of(bundle: dict, cog: str) -> str:
+    """A committee member's own perspective, from the release: who it is and how it works (its profile's About and its
+    persona's behaviour, composed as the cog's ``prompt``) and what it answers for (the roles it holds)."""
+    prof = (bundle.get("cogs") or {}).get(cog) or {}
+    text = (prof.get("prompt") or prof.get("about") or "").strip()
+    if len(text) > PERSPECTIVE_CHARS:
+        text = text[:PERSPECTIVE_CHARS].rsplit(" ", 1)[0] + " ..."
+    roles = ((bundle.get("members") or {}).get(cog) or {}).get("roles") or []
+    if roles:
+        text += (f"\nWhat you answer for: the work of your roles ({', '.join(roles)}). Read the change from that point of view; "
+                 "the rules you return are still only what the prose states.")
+    return text.strip()
+
+
 def context_for(hub) -> dict:
     """The names the model may use: from the release in force and the record types."""
     meta = hub.releases.current()
@@ -657,21 +683,27 @@ def context_for(hub) -> dict:
 
 
 class CommitteeExtractor:
-    """The compile-frame committee: each member cog reads the prose on its own (its own model, its own cached reading);
-    a rule goes in when at least ``quorum`` members read it the same way. Rules fewer members read are shown to the
-    reviewers as disputed, with who read them, and left out. Reading a change, a rule in force is removed only when
-    ``quorum`` members remove it; any member may ask a question."""
+    """The compile-frame committee: each member cog reads the prose on its own (its own model, its own cached reading).
+    The committee works by **consensus**: a rule goes in (or a rule in force goes out) only when every member reads it
+    the same way, each member counting once however often it read it. Where members read a line differently, the hub
+    asks a person which reading is meant (a question with code ``disagreement`` quoting the line and each member's
+    reading) instead of choosing. The release's ``Agree: n of m`` is still parsed, but agreement means all members."""
 
     name = "committee"
 
     def __init__(self, members: list[tuple[str, str]], quorum: int, cache_dir: Path | None = None, context: dict | None = None,
-                 gateway=None, calls: bool = True, call=None, baseline=None, budget: int | None = None):
+                 gateway=None, calls: bool = True, call=None, baseline=None, budget: int | None = None,
+                 unavailable: dict[str, str] | None = None, perspectives: dict[str, str] | None = None):
+        self.size = len(members)  # every member, with a model here or not: consensus needs each one's reading
         self.members = [(n, m) for n, m in members if m]
-        self.quorum = max(1, int(quorum or 1))
+        # A member with no model here, and why (hub.compile_committee): the committee cannot agree without it.
+        self.unavailable = {n: (unavailable or {}).get(n) or "no model is available for it here" for n, m in members if not m}
+        self.configured_quorum = int(quorum or 1)  # parsed from the release; agreement is unanimity
+        self.quorum = max(1, self.size)
         self.context = context or {}
         self.baseline = baseline if baseline is None or isinstance(baseline, _Baseline) else _Baseline(baseline)
         self.readers = [ModelExtractor(cache_dir=cache_dir, context=context, model=m, gateway=gateway, calls=calls, call=call, member=n,
-                                       baseline=self.baseline, budget=budget)
+                                       baseline=self.baseline, budget=budget, perspective=(perspectives or {}).get(n) or "")
                         for n, m in self.members]
         self.model = ", ".join(f"{n} ({m})" for n, m in self.members)
 
@@ -679,10 +711,112 @@ class CommitteeExtractor:
     def calls(self) -> int:
         return sum(r.calls for r in self.readers)
 
-    def _short(self, frame: Frame) -> dict:
-        return {"frame": frame.name, "line": 0, "text": "", "severity": "warning",
-                "note": f"the compile-frame committee has {len(self.readers)} member(s) with a model here, fewer than the "
-                        f"{self.quorum} that must agree: the prose of {frame.name} is not read"}
+    def _unavailable(self, frame: Frame, who: dict[str, str]) -> tuple[list[dict], list[dict]]:
+        """A question per member that cannot read (code ``member-unavailable``), and the matching notes: without its
+        reading the committee cannot reach consensus, so a person intervenes (makes its model available, or changes the
+        committee or the cog's model through a change order)."""
+        from .compile import question
+
+        questions, notes = [], []
+        for name, why in who.items():
+            text = (f"The compile-frame committee cannot read the prose of {frame.name}: the {name} cog is not available ({why}), and "
+                    "the committee reads by consensus. Make its model available here, or change the committee or the cog's model "
+                    "through a change order.")
+            questions.append(question(frame.name, 0, text, raised_by="hub", code="member-unavailable", member=name))
+            notes.append({"frame": frame.name, "line": 0, "text": "", "severity": "warning",
+                          "note": f"the prose of {frame.name} is not read: the {name} cog of the compile-frame committee is not available ({why})"})
+        return questions, notes
+
+    def _readings(self, frame: Frame, read) -> tuple[list[tuple[str, Reading]], list[dict], list[dict]]:
+        """Every available member's reading, the notes, and a member-unavailable question for each member that could not
+        read (its model failed). A reading not done yet (calls off: a page) is a note, not a question."""
+        readings, notes, failed = [], [], {}
+        for (name, _model), reader in zip(self.members, self.readers):
+            try:
+                rd = read(reader)
+            except LookupError as e:
+                notes.append({"frame": frame.name, "line": 0, "text": "", "severity": "info", "note": str(e)})
+                continue
+            except Exception as e:
+                failed[name] = f"its model did not answer: {type(e).__name__}: {str(e)[:160]}"
+                continue
+            readings.append((name, rd))
+            notes += [x for x in rd.notes if x.get("severity") in ("warning", "info")]
+        questions, more = self._unavailable(frame, failed)
+        return readings, notes + more, questions
+
+    def vote(self, frame: Frame, readings: list[tuple[str, Reading]], plan: DiffPlan | None = None
+             ) -> tuple[list[dict], set[str], list[dict], set[str]]:
+        """Consensus over the members' readings: (rules every member read, keys of rules in force every member removed,
+        the questions: the members' own and one ``disagreement`` per line read differently and per removal not agreed,
+        keys of the rules in force those questions ask about)."""
+        from .compile import question
+
+        procs = self.context.get("process_defs") or {}
+        names = [n for n, _ in readings]
+        everyone = len(readings)
+        votes: dict[str, list[str]] = {}
+        first: dict[str, dict] = {}
+        for name, rd in readings:
+            for r in rd.adds:
+                k = rule_key(r)
+                who = votes.setdefault(k, [])
+                if name not in who:  # one vote per member, however often it read the rule
+                    who.append(name)
+                first.setdefault(k, r)
+        agreed = [{**first[k], "source": {**first[k]["source"], "read_by": f"the compile-frame committee ({', '.join(who)}: "
+                                                                            f"{len(who)} of {everyone} agree)"}}
+                  for k, who in votes.items() if len(who) == everyone]
+        questions = [q for _, rd in readings for q in rd.questions]
+
+        from .compile import negated
+
+        def plain(r: dict) -> str:
+            said = _sentence(r, procs).rstrip(".")
+            quote = (r.get("source") or {}).get("text") or ""
+            if negated(quote) != negated(said):
+                said += " (this reading drops the prose's “not”)" if negated(quote) else " (this reading adds a “not”)"
+            return said
+        # One question per sentence read differently: disputed lines that continue one sentence (the line before does
+        # not end it) are asked about together, whichever of them each member cited.
+        groups: list[list[int]] = []
+        for ln in sorted({int(first[k]["source"].get("line") or 0) for k, who in votes.items() if len(who) < everyone}):
+            prev = (frame.line(ln - 1) or "").rstrip() if ln > 1 else ""
+            if groups and groups[-1][-1] == ln - 1 and ln and not prev.endswith((".", "!", "?", ":", ";")):
+                groups[-1].append(ln)
+            else:
+                groups.append([ln])
+        for group in groups:
+            said = []
+            for name, rd in readings:
+                at = list(dict.fromkeys(plain(r) for r in rd.adds if int(r["source"].get("line") or 0) in group))
+                said.append(f"{name} read: {' and '.join(at) if at else 'no rule'}")
+            quote = " ".join((frame.line(ln) or "").strip() for ln in group if ln)
+            where = f"Line {group[0]}" if len(group) == 1 else f"Lines {group[0]}-{group[-1]}"
+            questions.append(question(frame.name, group[0], f"{where}, “{quote}”: " + "; ".join(said) + ": which is meant?",
+                                      raised_by=", ".join(names), code="disagreement", quote=quote))
+        removing: dict[str, list[str]] = {}
+        for name, rd in readings:
+            for k in rd.removes:
+                who = removing.setdefault(k, [])
+                if name not in who:
+                    who.append(name)
+        removed = {k for k, who in removing.items() if len(who) == everyone}
+        asked_about: set[str] = set()
+        if plan is not None:
+            in_force = {rule_key(r): r for _ref, r in plan.in_force}
+            now = {rule_key(r): r["source"]["line"] for r in plan.kept} | {rule_key(r): at for _ref, r, at in plan.orphans}
+            for k, who in removing.items():
+                if len(who) == everyone or k not in in_force:
+                    continue
+                r = in_force[k]
+                keep = [n for n in names if n not in who]
+                questions.append(question(frame.name, now.get(k, 0),
+                                          f"Line {r['source'].get('line')} of the version in force, “{r['source'].get('text')}”, reads as "
+                                          f"“{plain(r)}”: {', '.join(who)} would remove that rule; {', '.join(keep)} would keep it: "
+                                          "which is meant?", raised_by=", ".join(names), code="disagreement", quote=r["source"].get("text") or ""))
+                asked_about.add(k)
+        return agreed, removed, questions, asked_about
 
     def extract(self, frame: Frame):
         from .extract import ConventionExtractor
@@ -696,93 +830,50 @@ class CommitteeExtractor:
         procs = self.context.get("process_defs") or {}
         if not plan.changed:
             return _assemble(frame, conv, plan, [], set(), [], [], read=True, processes=procs)
-        if len(self.readers) < self.quorum:
-            return _assemble(frame, conv, plan, [], set(), [], [self._short(frame)], read=False, processes=procs)
-        adds: dict[str, list[str]] = {}
-        removes: dict[str, list[str]] = {}
-        first: dict[str, dict] = {}
-        questions: list[dict] = []
-        notes: list[dict] = []
-        read = 0
-        for (name, _model), reader in zip(self.members, self.readers):
-            try:
-                rd = reader.read_changes(frame, plan, conv)
-            except LookupError as e:
-                notes.append({"frame": frame.name, "line": 0, "text": "", "severity": "info", "note": str(e)})
-                continue
-            except Exception as e:
-                notes.append({"frame": frame.name, "line": 0, "text": "", "severity": "warning",
-                              "note": f"the model could not read the changes to the prose of {frame.name} ({type(e).__name__}: {str(e)[:160]})"})
-                continue
-            read += 1
-            for r in rd.adds:
-                k = rule_key(r)
-                adds.setdefault(k, []).append(name)
-                first.setdefault(k, r)
-            for k in rd.removes:
-                removes.setdefault(k, []).append(name)
-            questions += rd.questions
-            notes += [x for x in rd.notes if x.get("severity") in ("warning", "info")]
-        n = len(self.readers)
-        agreed = []
-        for k, who in adds.items():
-            r = first[k]
-            if len(who) >= self.quorum:
-                agreed.append({**r, "source": {**r["source"], "read_by": f"the compile-frame committee ({', '.join(who)}: {len(who)} of {n} agree)"}})
-            else:
-                notes.append({"frame": frame.name, "line": r["source"].get("line") or 0, "text": r["source"].get("text") or "", "severity": "warning",
-                              "note": f"disputed, left out: only {', '.join(who)} ({len(who)} of {n}; {self.quorum} must agree) read a {r['kind']} rule"})
-        removed = set()
-        in_force = {rule_key(r): r for _ref, r in plan.in_force}
-        for k, who in removes.items():
-            if len(who) >= self.quorum:
-                removed.add(k)
-                continue
-            src = (in_force.get(k) or {}).get("source") or {}
-            notes.append({"frame": frame.name, "line": src.get("line") or 0, "text": src.get("text") or "", "severity": "warning",
-                          "note": f"disputed, kept: only {', '.join(who)} ({len(who)} of {n}; {self.quorum} must agree) removed the "
-                                  f"{(in_force.get(k) or {}).get('kind')} rule in force"})
-        return _assemble(frame, conv, plan, agreed, removed, questions, notes, read=read >= self.quorum, processes=procs)
+        if self.unavailable or not self.readers:  # no consensus without every member: no call, a person intervenes
+            questions, notes = self._unavailable(frame, self.unavailable)
+            return _assemble(frame, conv, plan, [], set(), questions, notes, read=False, processes=procs)
+        readings, notes, failed = self._readings(frame, lambda reader: reader.read_changes(frame, plan, conv))
+        if len(readings) < self.size:
+            return _assemble(frame, conv, plan, [], set(), failed, notes, read=False, processes=procs)
+        agreed, removed, questions, asked_about = self.vote(frame, readings, plan)
+        return _assemble(frame, conv, plan, agreed, removed, questions, notes, read=True, processes=procs, asked_about=asked_about)
 
     def _extract_whole(self, frame: Frame, conv):
-        from .extract import Extraction
+        if self.unavailable or not self.readers:
+            questions, notes = self._unavailable(frame, self.unavailable)
+            return _whole_result(frame, conv, [], questions, notes)
+        readings, notes, failed = self._readings(frame, lambda reader: reader.whole_reading(frame, conv))
+        if len(readings) < self.size:
+            return _whole_result(frame, conv, [], failed, notes)
+        agreed, _removed, questions, _ = self.vote(frame, readings)
+        return _whole_result(frame, conv, agreed, questions, notes)
 
-        if len(self.readers) < self.quorum:
-            conv.notes.append(self._short(frame))
-            return conv
-        votes: dict[str, list[str]] = {}
-        first: dict[str, dict] = {}
-        notes: list[dict] = []
-        for (name, _model), reader in zip(self.members, self.readers):
-            out = reader._extract_whole(frame, _copy(conv))
-            for r in out.rules:
-                if not (r.get("source") or {}).get("read_by"):
-                    continue
-                k = rule_key(r)
-                votes.setdefault(k, []).append(name)
-                first.setdefault(k, r)
-            notes += [n for n in out.notes if n.get("severity") in ("warning", "info") and "the model" in n.get("note", "") or n.get("severity") == "info"]
-        out = Extraction(rules=list(conv.rules), notes=[])
-        covered = set()
-        n = len(self.readers)
-        for k, who in votes.items():
-            r = first[k]
-            if len(who) >= self.quorum:
-                rule = {**r, "source": {**r["source"], "read_by": f"the compile-frame committee ({', '.join(who)}: {len(who)} of {n} agree)"}}
-                out.rules.append(rule)
-                if isinstance(r["source"].get("line"), int):
-                    covered.add(r["source"]["line"])
-            else:
-                out.notes.append({"frame": frame.name, "line": r["source"].get("line") or 0, "text": r["source"].get("text") or "", "severity": "warning",
-                                  "note": f"disputed, left out: only {', '.join(who)} ({len(who)} of {n}; {self.quorum} must agree) read a {r['kind']} rule"})
-        for note in conv.notes:
-            if note.get("severity") == "error" and note.get("line") in covered:
-                continue
-            out.notes.append(note)
-        seen = set()
-        for note in notes:  # each member's own problems (no model, not read yet), once
-            key = note.get("note")
-            if key not in seen:
-                seen.add(key)
-                out.notes.append(note)
-        return out
+
+def _whole_result(frame: Frame, conv, adds: list[dict], questions: list[dict], notes: list[dict]):
+    """A whole SOP's rules: the compiler's, then what was read from the prose (a sentence the compiler could not read and
+    the model did is no longer an error: the reviewers see what it read)."""
+    from .compile import merge_questions
+    from .extract import Extraction
+
+    out = Extraction(rules=list(conv.rules), notes=[])
+    have = {rule_key(r) for r in conv.rules}
+    covered = set()
+    for r in adds:
+        if rule_key(r) in have:
+            continue
+        have.add(rule_key(r))
+        out.rules.append(r)
+        if isinstance(r["source"].get("line"), int):
+            covered.add(r["source"]["line"])
+    seen = set()
+    for n in notes:
+        if (n.get("line"), n.get("note")) not in seen:
+            seen.add((n.get("line"), n.get("note")))
+            out.notes.append(n)
+    for n in conv.notes:
+        if n.get("severity") == "error" and n.get("line") in covered:
+            continue
+        out.notes.append(n)
+    out.questions = merge_questions(questions)
+    return out

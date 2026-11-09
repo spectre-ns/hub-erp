@@ -125,7 +125,11 @@ def test_the_compile_op_is_read_by_the_quality_manager_and_the_organization_cog(
 
     assert AUTOMATIONS["compile-frame"]["committee"] == "compile-frame"
 
-def test_a_committee_of_cogs_compiles_the_rules_two_of_three_agreeing(hub, tmp_path, monkeypatch):
+def test_a_committee_agrees_by_consensus_and_asks_a_person_where_members_differ(hub, tmp_path, monkeypatch):
+    """A rule goes in only when every member reads it the same way, each member counting once however often it read it;
+    where members read a line differently, a person is asked which reading is meant (the release's Agree: 2 of 3 is
+    parsed but agreement is unanimity)."""
+    from hubproto.compile import question
     from hubproto.llm_extract import CommitteeExtractor
 
     frame = frame_with(hub, PROSE + "\nThe controller approves journal reversals.")
@@ -137,17 +141,23 @@ def test_a_committee_of_cogs_compiles_the_rules_two_of_three_agreeing(hub, tmp_p
 
     def call(model, system, user):
         who = system.split("You are the ")[1].split(" cog")[0]
-        rules = [agreed] if who != "doc-reviewer" else []
-        if who == "qa-manager":
-            rules.append(lone)
-        return json.dumps({"rules": rules})
+        if who == "doc-reviewer":
+            return json.dumps({"rules": [agreed, agreed, lone, lone]})  # one member reading the same twice is one vote
+        return json.dumps({"rules": [agreed] + ([lone] if who == "qa-manager" else [])})
 
     ex = CommitteeExtractor([("frame-compiler", "ollama/qwen3:14b"), ("qa-manager", "ollama/qwen3:14b"), ("doc-reviewer", "ollama/qwen3:14b")], 2,
                             cache_dir=tmp_path / "c", context=context_for(hub), call=call)
+    assert ex.quorum == 3 and ex.configured_quorum == 2, "agreement is unanimity"
     out = ex.extract(frame)
     read = [r for r in out.rules if (r.get("source") or {}).get("read_by")]
-    assert len(read) == 1 and read[0]["kind"] == "routing" and "2 of 3 agree" in read[0]["source"]["read_by"]
-    assert any("disputed, left out" in n["note"] and "qa-manager" in n["note"] for n in out.notes), "a rule only one member read is shown, not used"
+    assert len(read) == 1 and read[0]["kind"] == "routing"
+    assert read[0]["source"]["read_by"] == "the compile-frame committee (frame-compiler, qa-manager, doc-reviewer: 3 of 3 agree)"
+    [q] = out.questions
+    assert q["code"] == "disagreement" and q["line"] == line and q["status"] == "open" and PROSE in q["text"]
+    assert "frame-compiler read: Approvals in purchase-to-pay over 5,000 USD go to the controller;" in q["text"]
+    assert "qa-manager read: Approvals in purchase-to-pay over 5,000 USD go to the controller and Approvals in purchase-to-pay are due within 2 days" in q["text"]
+    assert q["text"].endswith(": which is meant?") and q["id"] == question("finance-policy", line, q["text"], raised_by="x")["id"]
+    assert not any("disputed" in n["note"] for n in out.notes), "not left out silently: asked"
     b = hub.releases.bundle(hub.releases.current()["digest"])
     assert b["committees"]["compile-frame"]["quorum"] == 2 and len(b["committees"]["compile-frame"]["members"]) == 2
 
@@ -242,7 +252,8 @@ def test_a_changed_sop_is_read_as_its_diff_with_the_rules_in_force(prose_hub, tm
     assert gone["rule"]["condition"]["value"] == 5000 and add["rule"]["condition"]["value"] == 7500
     assert gone["origin"]["line"] == old_line and gone["origin"]["read_by"] == MODEL, "a removal cites the line in force"
     assert add["origin"] == {"kind": "prose", "by": None, "frame": "finance-policy", "line": new_line, "quote": new_prose,
-                             "read_by": MODEL, "at": p["created_at"]}
+                             "read_by": MODEL, "at": p["created_at"],
+                             "explained": "Approvals in purchase-to-pay over 7,500 USD go to the controller."}
     assert add["warnings"] == [] and add["stale"] is False and add["read_by"] == MODEL
     assert not add["widening"], "widenings are detected as before"
     assert not [f for f in p["findings"] if f["severity"] == "error"], "the quote is grounded at its new line"
@@ -296,7 +307,7 @@ def test_carrying_questions_keeps_a_person_s_answer_and_reopens_what_arises_agai
     assert carry_questions(carry_questions([q, trip], []), []) == carry_questions([q, trip], []), "idempotent"
 
 
-def test_the_committee_reads_the_diff_each_member_on_its_own(prose_hub, tmp_path):
+def test_the_committee_reads_the_diff_by_consensus_each_member_counting_once(prose_hub, tmp_path):
     hub = prose_hub
     new_prose = PROSE.replace("5,000", "7,500")
     extra = "Credit notes go to the controller first."
@@ -309,7 +320,8 @@ def test_the_committee_reads_the_diff_each_member_on_its_own(prose_hub, tmp_path
         if who == "qa-manager":
             out["changes"].append({"op": "add", "kind": "sla", "fields": {"process": "purchase-to-pay", "step": "approve", "days": 3},
                                    "line": xline, "quote": extra})
-        else:
+        else:  # the organization cog reads the routing change twice (as a sentence over two lines is) and asks
+            out["changes"].append(dict(route(7500, xline, extra), op="add"))
             out["questions"].append({"line": xline, "quote": extra, "text": "Which credit notes, and first before whom?"})
         return out
 
@@ -319,11 +331,90 @@ def test_the_committee_reads_the_diff_each_member_on_its_own(prose_hub, tmp_path
     out = ex.extract(hub.frames.get("finance-policy"))
     assert len(calls) == 2 and all("is being revised" in c["user"] for c in calls)
     read = [r for r in out.rules if (r.get("source") or {}).get("read_by")]
-    assert [r["condition"]["value"] for r in read if r["kind"] == "routing"] == [7500]
-    assert "2 of 2 agree" in read[0]["source"]["read_by"] and not any(r["kind"] == "sla" and r["source"].get("read_by") for r in read)
-    assert any("disputed, left out" in n["note"] and "qa-manager" in n["note"] for n in out.notes)
-    [q] = out.questions
-    assert q["raised_by"] == "organization" and q["line"] == xline and q["status"] == "open"
+    assert [r["condition"]["value"] for r in read] == [7500], "the sla only qa-manager read is not in"
+    assert read[0]["source"]["read_by"] == "the compile-frame committee (qa-manager, organization: 2 of 2 agree)", "each member counts once"
+    qs = {q["code"]: q for q in out.questions}
+    assert set(qs) == {"disagreement", "ambiguous"}
+    assert qs["disagreement"]["line"] == xline and "qa-manager read: Approvals in purchase-to-pay are due within 3 days" in qs["disagreement"]["text"]
+    assert "organization read: no rule" in qs["disagreement"]["text"], "organization's reading of that line was the routing it read already"
+    assert qs["ambiguous"]["raised_by"] == "organization" and qs["ambiguous"]["line"] == xline
+
+
+def test_members_asking_the_same_thing_in_their_own_words_make_one_question(prose_hub, tmp_path):
+    from hubproto.compile import merge_questions, question
+
+    hub = prose_hub
+    vague = "Larger bills also need the controller's approval."
+    rewrite(hub, PROSE, PROSE + "\n" + vague)
+    vline = line_of(hub, vague)
+    asks = {"qa-manager": ["What amount makes a bill larger?", "Does also mean in addition to the payables reviewer?"],
+            "organization": ["Does 'also' mean the controller approves in addition to the usual approver?",
+                             "Above what amount is a bill one of the larger bills?"]}
+
+    def answer(user, system):
+        who = system.split("You are the ")[1].split(" cog")[0]
+        return {"changes": [], "questions": [{"line": vline, "quote": vague, "text": t} for t in asks[who]]}
+
+    call, _ = reader(answer)
+    ex = CommitteeExtractor([("qa-manager", MODEL), ("organization", MODEL)], 2, cache_dir=tmp_path / "m", context=context_for(hub),
+                            call=call, baseline=lambda: baseline_for(hub))
+    out = ex.extract(hub.frames.get("finance-policy"))
+    assert len(out.questions) == 2, "two ambiguities, not four questions"
+    amount, also = out.questions
+    assert amount["text"] == asks["qa-manager"][0] and also["text"] == asks["qa-manager"][1], "the first phrasing leads"
+    assert amount["raised_by"] == also["raised_by"] == "qa-manager, organization"
+    assert amount["also_asked"] == [{"by": "organization", "text": asks["organization"][1]}], "each joins the one it shares most words with"
+    assert also["also_asked"] == [{"by": "organization", "text": asks["organization"][0]}]
+    assert amount["id"] == question("finance-policy", vline, "what amount makes a bill LARGER", raised_by="x")["id"], \
+        "the id is the frame, line and normalised first phrasing"
+    assert merge_questions(out.questions) == out.questions, "merging again changes nothing"
+
+
+def test_a_reading_that_drops_a_not_is_flagged_and_explained_back(prose_hub, tmp_path):
+    hub = prose_hub
+    neg = "Bills from a supplier that is not approved are always approved by the controller, whatever their amount."
+    rewrite(hub, PROSE, PROSE + "\n" + neg)
+    nline = line_of(hub, neg)
+    inverted = {"op": "add", "kind": "approval_criteria", "line": nline, "quote": neg,
+                "fields": {"approver": "cog:ap-reviewer", "process": "purchase-to-pay", "max_amount": None, "currency": None,
+                           "conditions": ["supplier_approved"], "countersign": None}}
+    for_a_role = dict(inverted, fields={**inverted["fields"], "approver": "role:controller"})
+    dressed_as_a_cog = dict(inverted, fields={**inverted["fields"], "approver": "cog:controller"})  # as qwen3:14b read it
+    call, calls = reader(lambda user, system: {"changes": [inverted, for_a_role, dressed_as_a_cog]})
+    p = hub.compile(save=False, extractor=model_reader(hub, tmp_path / "n", call))
+    sent = calls[0]["user"]
+    assert "Approval criteria are only for cogs" in sent and "ask a question instead" in sent and "Keep every \"not\"" in sent
+    [c] = [c for c in p["changes"] if c["op"] == "add" and c["rule"]["kind"] == "approval_criteria"]
+    assert c["origin"]["quote"] == neg
+    assert c["origin"]["explained"] == "The ap-reviewer cog may approve purchase-to-pay bills when the supplier is approved."
+    [w] = c["warnings"]
+    assert w["code"] == "negation" and w["ref"] == c["id"] and w["accepted"] is None and "invert" in w["text"] and neg in w["text"]
+    assert not any(r.get("approver") in ("role:controller", "cog:controller") for r in p["rules"]), "approval criteria are only for cogs"
+    assert any("only a cog has approval criteria" in f["detail"] for f in p["findings"])
+    asked = [q for q in p["questions"] if "which is not a cog" in q["text"]]
+    assert asked and all(q["line"] == nline and q["code"] == "ambiguous" for q in asked), "a refused reading is asked about, not lost"
+    plain = [x for x in p["changes"] if x["op"] == "remove"]
+    assert all(x["warnings"] == [] for x in plain), "a removal is not a new reading"
+
+
+def test_rules_that_only_moved_down_are_not_changes_to_decide(released):
+    from conftest import edit_frame
+
+    edit_frame(released, "finance-policy", "Everything else is approved by a person.\n",
+               "Everything else is approved by a person.\nA second line.\nA third line.\n")
+    p = released.compile(save=False)
+    assert [c["op"] for c in p["changes"]] == ["text"], "only the wording changed"
+    assert sorted(m["name"] for m in p["moved"]) == ["journal-reversal", "purchase-to-pay"]
+    moved = next(m for m in p["moved"] if m["name"] == "purchase-to-pay")
+    assert moved["to_line"] == moved["from_line"] + 2 and moved["reason"] == "moved in the file, no semantic change"
+    proc = next(r for r in p["rules"] if r["kind"] == "process" and r["name"] == "purchase-to-pay")
+    assert proc["source"]["line"] == moved["to_line"], "the release takes the rule where it is now"
+    q = released.compile()
+    for who in ("bob", "carol"):
+        released.review(q["id"], who, approve_all=True)
+    meta = released.release(q["id"], "bob")
+    proc = next(r for r in released.releases.rules(meta["digest"]) if r["kind"] == "process" and r["name"] == "purchase-to-pay")
+    assert proc["source"]["line"] == moved["to_line"], "released with its new place, and no decision was needed for it"
 
 
 def test_a_large_diff_is_read_in_parts_that_fit_the_window(prose_hub, tmp_path):
@@ -369,20 +460,138 @@ def test_every_change_says_where_it_came_from(released):
     assert text["origin"]["line"] is None
 
 
-def test_hosted_compilation_is_an_administrator_s_switch_for_compiling_only(hub, monkeypatch):
-    from hubproto import model as model_mod
-    from hubproto.llm_extract import COMPILE_HOSTED_MODEL, compile_hosted
+def test_each_committee_cog_reads_with_its_own_model_a_local_one_or_claude(hub, tmp_path):
+    """Compilation is done by cogs: an Ollama member and a Claude member each read with their own bundled model."""
+    new_prose = "Bills over 7,500 USD go to the controller."
+    frame = frame_with(hub, new_prose)
+    line = next(i for i, ln in enumerate(frame.lines, start=frame.body_start) if ln.strip() == new_prose)
+    seen = []
 
-    for var in ("HUBPROTO_COMPILE_HOSTED", "HUBPROTO_HOSTED_MODELS", "HUBPROTO_OLLAMA_URL", "HUBPROTO_EXTRACTOR"):
-        monkeypatch.delenv(var, raising=False)
+    def call(model, system, user):
+        seen.append(model)
+        return json.dumps({"rules": [route(7500, line, new_prose)]})
+
+    ex = CommitteeExtractor([("qa-manager", "ollama/qwen3:14b"), ("organization", "claude-opus-5-5")], 2, cache_dir=tmp_path / "k",
+                            context=context_for(hub), call=call)
+    out = ex.extract(frame)
+    assert seen == ["ollama/qwen3:14b", "claude-opus-5-5"]
+    [r] = [r for r in out.rules if (r.get("source") or {}).get("read_by")]
+    assert r["source"]["read_by"] == "the compile-frame committee (qa-manager, organization: 2 of 2 agree)"
+
+
+def _organization_on(hub, monkeypatch, model):
+    from hubproto import model as model_mod
+
+    served = [{"name": "qwen3:14b", "params": "14.8B", "family": "qwen3", "quant": "Q4", "size_gb": 9.3}]
+    monkeypatch.setattr(model_mod, "ollama_models", lambda refresh=False: (served, ""))
+    monkeypatch.setattr(model_mod, "ollama_url", lambda: "http://ollama.test")
+    real = hub.releases.bundle
+
+    def bundle(digest):
+        b = json.loads(json.dumps(real(digest)))
+        b["cogs"]["organization"]["model"] = model
+        return b
+    monkeypatch.setattr(hub.releases, "bundle", bundle)
+
+
+def test_a_claude_member_reads_only_where_hosted_models_are_on(hub, monkeypatch):
+    monkeypatch.delenv("HUBPROTO_HOSTED_MODELS", raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    assert not compile_hosted() and not isinstance(hub.extractor(calls=True), CommitteeExtractor), "off by default"
-    monkeypatch.setenv("HUBPROTO_COMPILE_HOSTED", "1")
-    monkeypatch.delenv("ANTHROPIC_API_KEY")
-    assert not compile_hosted(), "it needs an API key"
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    assert compile_hosted() and COMPILE_HOSTED_MODEL == "claude-opus-5-5"
+    _organization_on(hub, monkeypatch, "claude-opus-5-5")
+    c = hub.compile_committee()
+    assert c["members"] == [("qa-manager", "ollama/qwen3:14b"), ("organization", "")] and c["quorum"] == 2
+    assert "hosted models are switched off" in c["unavailable"]["organization"]
+    monkeypatch.setenv("HUBPROTO_HOSTED_MODELS", "on")
+    c = hub.compile_committee()
+    assert c["members"] == [("qa-manager", "ollama/qwen3:14b"), ("organization", "claude-opus-5-5")] and c["unavailable"] == {}
     ex = hub.extractor(calls=True)
-    assert isinstance(ex, CommitteeExtractor) and ex.members == [("qa-manager", COMPILE_HOSTED_MODEL), ("organization", COMPILE_HOSTED_MODEL)]
-    assert ex.readers[0].budget > 200000 and ex.readers[0].baseline is not None
-    assert model_mod.backend_for("claude-opus-5-5") == "none", "cogs keep their models: hosted models stay off for them"
+    assert isinstance(ex, CommitteeExtractor) and [r.model for r in ex.readers] == ["ollama/qwen3:14b", "claude-opus-5-5"]
+    assert ex.readers[1].call is not None and ex.unavailable == {}, "through the gateway (the Anthropic Messages API for claude-*)"
+
+
+def test_a_member_that_cannot_read_is_a_question_not_skipped(prose_hub, tmp_path, monkeypatch):
+    hub = prose_hub
+    rewrite(hub, PROSE, PROSE.replace("5,000", "7,500"))
+    monkeypatch.delenv("HUBPROTO_HOSTED_MODELS", raising=False)
+    _organization_on(hub, monkeypatch, "claude-opus-5-5")
+    monkeypatch.setenv("HUBPROTO_EXTRACTOR", "hybrid")
+    ex = hub.extractor(calls=True)
+    assert ex.unavailable == {"organization": hub.compile_committee()["unavailable"]["organization"]}
+    out = ex.extract(hub.frames.get("finance-policy"))
+    assert ex.calls == 0, "no consensus without every member: nobody is asked"
+    [q] = out.questions
+    assert q["code"] == "member-unavailable" and q["member"] == "organization" and "the organization cog is not available" in q["text"]
+    assert "hosted models are switched off" in q["text"] and "change order" in q["text"]
+    assert [r["condition"]["value"] for r in out.rules if (r.get("source") or {}).get("read_by")] == [], "the changed line is not read"
+
+    def down(model, system, user):  # a member whose model fails at the time of reading: the same question
+        if "organization" in system:
+            raise ConnectionError("Ollama did not answer")
+        return json.dumps({"changes": []})
+
+    ex = CommitteeExtractor([("qa-manager", MODEL), ("organization", MODEL)], 2, cache_dir=tmp_path / "u", context=context_for(hub),
+                            call=down, baseline=lambda: baseline_for(hub), budget=100000)  # no window lookup at the patched Ollama
+    [q] = ex.extract(hub.frames.get("finance-policy")).questions
+    assert q["code"] == "member-unavailable" and "Ollama did not answer" in q["text"]
+
+
+def test_members_citing_different_lines_of_one_wrapped_sentence_get_one_question(hub, tmp_path):
+    first_half = "Bills from a supplier that is not approved are always approved by the controller,"
+    second_half = "whatever their amount."
+    frame = frame_with(hub, first_half + "\n" + second_half)
+    line = next(i for i, ln in enumerate(frame.lines, start=frame.body_start) if ln.strip() == first_half)
+
+    def call(model, system, user):
+        if "qa-manager" in system:
+            return json.dumps({"rules": [{"kind": "sla", "fields": {"process": "purchase-to-pay", "step": "approve", "days": 1},
+                                          "line": line, "quote": first_half}]})
+        return json.dumps({"rules": [route(0, line + 1, second_half)]})
+
+    ex = CommitteeExtractor([("qa-manager", MODEL), ("organization", MODEL)], 2, cache_dir=tmp_path / "w", context=context_for(hub), call=call)
+    [q] = ex.extract(frame).questions
+    assert q["code"] == "disagreement" and q["line"] == line and q["text"].startswith(f"Lines {line}-{line + 1}, “{first_half} {second_half}”")
+    assert "qa-manager read: Approvals in purchase-to-pay are due within 1 days (this reading drops the prose's “not”)" in q["text"]
+    assert "organization read: Approvals in purchase-to-pay over 0 USD go to the controller;" not in q["text"]
+    assert "organization read: Approvals in purchase-to-pay over 0 USD go to the controller: which is meant?" in q["text"]
+
+
+def test_each_member_reads_from_its_own_perspective_and_the_same_material(prose_hub, tmp_path, monkeypatch):
+    """Committees bring differing perspectives: each member's instructions carry its own identity, persona and roles;
+    the diff, the rules in force and the answer format are the same for all, so the readings stay comparable."""
+    from hubproto import model as model_mod
+    from hubproto.llm_extract import DIFF_SYSTEM
+
+    hub = prose_hub
+    served = [{"name": "qwen3:14b", "params": "14.8B", "family": "qwen3", "quant": "Q4", "size_gb": 9.3}]
+    monkeypatch.setattr(model_mod, "ollama_models", lambda refresh=False: (served, ""))
+    monkeypatch.setattr(model_mod, "ollama_url", lambda: "http://ollama.test")
+    views = hub.compile_committee()["perspectives"]
+    b = hub.releases.bundle(hub.releases.current()["digest"])
+    assert set(views) == {"qa-manager", "organization"}
+    assert b["cogs"]["qa-manager"]["about"] in views["qa-manager"] and "ISO 9001" in views["qa-manager"]
+    assert "who decides what" in views["organization"] and "(policy-reader)" in views["organization"]
+    assert "quality-manager, reviewer" in views["qa-manager"] and all(len(v) < 2000 for v in views.values()), "short: the budget is for the change"
+    rewrite(hub, PROSE, PROSE.replace("5,000", "7,500"))
+    call, calls = reader(lambda user, system: {"changes": []})
+    ex = CommitteeExtractor([("qa-manager", MODEL), ("organization", MODEL)], 2, cache_dir=tmp_path / "p", context=context_for(hub),
+                            call=call, baseline=lambda: baseline_for(hub), perspectives=views, budget=100000)
+    ex.extract(hub.frames.get("finance-policy"))
+    qa, org = calls
+    assert qa["user"] == org["user"], "the same diff, rules in force and answer format"
+    assert qa["system"].startswith(DIFF_SYSTEM) and org["system"].startswith(DIFF_SYSTEM)
+    assert views["qa-manager"] in qa["system"] and views["organization"] not in qa["system"]
+    assert views["organization"] in org["system"] and views["qa-manager"] not in org["system"]
+    strip = {"qa-manager": qa["system"].replace(views["qa-manager"], "<view>").replace("qa-manager cog", "<who> cog"),
+             "organization": org["system"].replace(views["organization"], "<view>").replace("organization cog", "<who> cog")}
+    assert strip["qa-manager"] == strip["organization"], "only the perspective (and the name) differs"
+
+
+def test_a_negation_warning_survives_the_change_order_rebuilding_warnings(hub):
+    from hubproto import changecontrol as cc
+
+    co = hub.kernel.create("change-order", "Quality/Changes", {"title": "x", "description": "y", "requested_by": "bob"}, by="bob")
+    w = {"code": "negation", "ref": "add:k", "accepted": None, "text": "the prose says “not” and the rule as read does not"}
+    p = {"changes": [{"id": "add:k", "op": "add", "rule": {"kind": "threshold", "name": "x", "value": 1, "unit": "USD"},
+                      "warnings": [dict(w)], "read_warnings": [dict(w)], "decisions": []}], "questions": [], "findings": []}
+    cc._refresh(hub, hub.kernel.get(co["locator"]), p)
+    assert [x["code"] for x in p["changes"][0]["warnings"]] == ["negation"]
