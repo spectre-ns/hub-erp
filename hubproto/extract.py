@@ -23,7 +23,7 @@ from .frames import Frame
 from .rules import CONDITION_VOCABULARY, NUMBER_WORDS
 
 RULE_SECTIONS = (
-    "roles", "members", "folders", "permissions", "thresholds", "routing",
+    "roles", "members", "groups", "folders", "permissions", "thresholds", "routing",
     "approval criteria", "segregation of duties", "duties",
 )
 
@@ -54,11 +54,14 @@ _MEMBER_ITEM = re.compile(
     r"^- (?P<principal>[a-z][a-z0-9-]*) \((?P<ptype>person|cog)\): (?P<roles>[a-z0-9-]+(?:, [a-z0-9-]+)*)$"
 )
 _FOLDER_ITEM = re.compile(r"^- (?P<path>[A-Z][\w /-]*)$")
+# "- quality-board: carol, bob and qa-manager" or "- quality-managers: everyone holding quality-manager" (hubproto.groups)
+_GROUP_ITEM = re.compile(r"^- (?P<name>[a-z][a-z0-9-]*): (?P<rest>.+)$")
 _PERMISSION = re.compile(
     r"^(?P<subject>[A-Z][\w -]+?) may (?P<neg>not )?(?P<action>[a-z]+)(?: on)? (?P<object>[a-z][a-z -]*?) in (?P<folder>[A-Z][\w /-]+?)"
     r"(?: when (?:an? |the )?(?P<confirmer>[a-z][a-z -]*?) confirms)?\.$"
 )
 _COG_SUBJECT = re.compile(r"^The (?P<cog>[a-z][\w-]*) cog$")
+_GROUP_SUBJECT = re.compile(r"^(?:The|Members of the) (?P<group>[a-z][\w -]*?) group$")
 _PERMISSION_READ = re.compile(
     r"^(?P<subject>[A-Z][\w -]+?) may (?P<neg>not )?read (?P<folder>[A-Z][\w /-]+?)\.$"
 )
@@ -103,7 +106,7 @@ _COG_HEAD = re.compile(r"^## Cog: (?P<name>[a-z0-9][\w-]*)$")
 _SCOPE_HEAD = re.compile(r"^## Scope: (?P<name>[a-z0-9][\w-]*)$")
 _PERSONA_HEAD = re.compile(r"^## Persona: (?P<name>[a-z0-9][\w-]*)(?: \((?P<of>cog|role)\))?$")
 _COMMITTEE_HEAD = re.compile(r"^## Committee: (?P<name>[a-z0-9][\w-]*)$")
-_SECTION_KEY = re.compile(r"^(?P<key>Level|Layers on|Compiles|Members|Agree): ?(?P<rest>.*)$")
+_SECTION_KEY = re.compile(r"^(?P<key>Level|Layers on|Compiles|Members|Agree|Group|Chair|Purpose): ?(?P<rest>.*)$")
 _LEVELS = ("company", "site", "department", "process")
 # A cog profile is the cog's identity: what it does (About), the model it is bundled with and its persona. What it may do,
 # what it follows and its duties are derived from the SOPs; its behaviour (prompt, lenses) is in its persona.
@@ -154,9 +157,16 @@ def object_of(title: str) -> str:
 
 
 def permission_subject(text: str) -> str:
-    """'Finance clerks' -> 'role:finance-clerk'; 'The stores cog' -> 'cog:stores' (a permission that names one cog)."""
+    """'Finance clerks' -> 'role:finance-clerk'; 'The stores cog' -> 'cog:stores' (a permission that names one cog); 'The
+    quality-board group' -> 'group:quality-board'. A plural that names a group rather than a role ("Administrators", the
+    administrators group) is made a group reference once every Frame is read (``hubproto.groups.resolve_group_refs``)."""
     m = _COG_SUBJECT.match(text.strip())
-    return "cog:" + m.group("cog") if m else "role:" + singular_role(text)
+    if m:
+        return "cog:" + m.group("cog")
+    m = _GROUP_SUBJECT.match(text.strip())
+    if m:
+        return "group:" + slug(m.group("group"))
+    return "role:" + singular_role(text)
 
 
 def responsibility_who(cell: str) -> str:
@@ -277,6 +287,8 @@ _GRAPH_STARTS = re.compile(r'^Starts in (?P<head>[^:"]+?(?: \("[^"]+"(?: \[[a-z0
 _GRAPH_LABEL = re.compile(r'^(?P<head>.+?)(?: \("(?P<name>[^"]+)"(?: \[(?P<id>[a-z0-9][a-z0-9-]*)\])?\))?$')
 _GRAPH_AUTO = re.compile(r"^automatically(?: when (?P<cond>.+?))?(?:,? after (?P<acts>.+))?$")
 _GRAPH_COG = re.compile(r"^the (?P<cog>[a-z][\w -]*?) cog decides(?: within its approval criteria)?, else (?P<fallback>the [\w -]+)$")
+# "the design-review committee decides": every member of the committee agrees (consensus), or the item goes back (groups)
+_GRAPH_COMMITTEE = re.compile(r"^the (?P<committee>[a-z][\w -]*?) committee decides(?: by consensus)?$")
 _GRAPH_PERSON = re.compile(r"^(?P<who>the [\w -]+?|anyone)(?: decides)?(?:, not (?P<not>.+))?$")
 _GRAPH_CATEGORY = {"to do": "todo", "in progress": "in_progress", "done": "done"}
 _GRAPH_OUTCOMES = ("completed", "rejected", "cancelled", "superseded")
@@ -338,6 +350,9 @@ def _graph_gate(text: str) -> tuple[dict, list, str]:
     m = _GRAPH_COG.match(text)
     if m:
         return {"kind": "cog", "cog": slug(m.group("cog")), "fallback": _role_of(m.group("fallback"))}, [], ""
+    m = _GRAPH_COMMITTEE.match(text)
+    if m:
+        return {"kind": "committee", "committee": slug(m.group("committee"))}, [], ""
     m = _GRAPH_PERSON.match(text)
     if m:
         gate = {"kind": "person", "role": _role_of(m.group("who"))}
@@ -348,7 +363,7 @@ def _graph_gate(text: str) -> tuple[dict, list, str]:
                 nots.append("@" + w.group("name") if w else _role_of(part))
             gate["not"] = nots
         return gate, [], ""
-    return {}, [], f"“{text}” does not say who decides (the <role>, the <cog> cog decides, else the <role>, or automatically)"
+    return {}, [], f"“{text}” does not say who decides (the <role>, the <cog> cog decides, else the <role>, the <name> committee decides, or automatically)"
 
 
 def _graph_actions(text: str) -> tuple[list, str]:
@@ -457,7 +472,7 @@ def _graph_statement(process: dict, line: str, n: int, src) -> str | None:
     if err:
         return err
     if starts and gate.get("kind") != "person":
-        return "a process is started by a person (the <role>), not automatically or by a cog"
+        return "a process is started by a person (the <role>), not automatically, by a cog or by a committee"
     fields, validators = [], []
     for c in clauses[1:]:
         if c.startswith("needs "):
@@ -610,7 +625,8 @@ class ConventionExtractor:
                 section = "layered"
                 skipping = False
                 if m.re is _COMMITTEE_HEAD:
-                    layered = {"kind": "committee", "name": m.group("name"), "members": [], "quorum": 0, "source": src(n, line)}
+                    layered = {"kind": "committee", "name": m.group("name"), "group": "", "chair": "", "purpose": "", "members": [],
+                               "quorum": 0, "source": src(n, line)}
                 elif m.re is _PERSONA_HEAD and m.group("of"):
                     out.notes.append({"frame": frame.name, "line": n, "text": line, "severity": "error",
                                       "note": "a persona is a behaviour document for cogs now ('## Persona: <name>' with Tone:, Stance:, Lenses:, "
@@ -671,12 +687,24 @@ class ConventionExtractor:
                         layered["compiles"] = name_list(rest)
                     elif key == "members":
                         layered["members"] = name_list(rest)
-                    elif key == "agree":
+                    elif key == "agree":  # kept for earlier texts: a committee decides by consensus, every member agreeing
                         agree = re.match(r"^(\d+)(?: of \d+)?", rest.strip())
                         layered["quorum"] = int(agree.group(1)) if agree else 0
+                    elif key == "group" and layered["kind"] == "committee":
+                        layered["group"] = slug(re.sub(r"^the |\s+group$", "", rest.rstrip(".").strip().lower()))
+                    elif key == "chair" and layered["kind"] == "committee":
+                        layered["chair"] = slug(rest.rstrip(".").strip())
+                    elif key == "purpose" and layered["kind"] == "committee":
+                        layered["purpose"] = rest.strip()
+                    else:
+                        out.notes.append({"frame": frame.name, "line": n, "text": line,
+                                          "note": f"{km.group('key')}: is not a line of a {layered['kind']} section"})
+                elif layered["kind"] == "committee" and layered.get("purpose") and not line.startswith("#"):
+                    layered["purpose"] += " " + line  # the purpose runs on
                 else:
                     out.notes.append({"frame": frame.name, "line": n, "text": line,
-                                      "note": "unparsed line in a scope or committee section (Level:, Layers on:, Compiles:, Members:, Agree:)"})
+                                      "note": "unparsed line in a scope or committee section (Level:, Layers on:, Compiles:; Group:, Chair:, "
+                                              "Purpose:, Members:)"})
                 continue
             if layered is not None:
                 close_layered()
@@ -811,6 +839,13 @@ class ConventionExtractor:
                 if section == "duties":
                     note["severity"] = "error"
                     note["note"] = "a duty reads 'Every day|week|month the <cog> cog <does the task>.'; this one would be silently dropped"
+                elif section == "groups":
+                    from .groups import parse_group
+
+                    gm = _GROUP_ITEM.match(line)
+                    note["severity"] = "error"
+                    note["note"] = ((parse_group(gm.group("rest"))[2] if gm else "")
+                                    or "a group reads '- <name>: <member>, <member> and <member>' or '- <name>: everyone holding <role>'")
                 elif _MODAL.search(line):
                     note["severity"] = "error"
                     note["note"] = (f"this sentence in the {section!r} section looks like a rule but does not parse "
@@ -826,6 +861,15 @@ class ConventionExtractor:
         if m and section == "members":
             add("member", n, line, principal=m.group("principal"), principal_type=m.group("ptype"),
                 roles=[r.strip() for r in m.group("roles").split(",")])
+            return True
+        m = _GROUP_ITEM.match(line)
+        if m and section == "groups":
+            from .groups import parse_group
+
+            listed, roles, err = parse_group(m.group("rest"))
+            if err:
+                return False
+            add("group", n, line, name=m.group("name"), members=listed, roles=roles)
             return True
         m = _ROLE_ITEM.match(line)
         if m and section == "roles":

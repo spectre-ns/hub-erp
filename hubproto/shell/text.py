@@ -80,7 +80,7 @@ MEANING_EXAMPLES = {
     "stock-release": ("certificate of conformance received; release", "re-inspected 20 of 200, all within drawing"),
     "part": ("approved: datasheet checked, two sources", "approved as a purchased component"),
 }
-NOTIFICATION_KINDS = ("escalation", "failure", "returned", "rejection", "auto-decided", "request", "review", "mention", "agent-run")
+NOTIFICATION_KINDS = ("escalation", "failure", "returned", "rejection", "auto-decided", "request", "review", "mention", "agent-run", "withdrawn", "moved", "intervention")
 MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 _LOCATOR = re.compile(r"rec:[a-z-]+:([A-Z]+-[0-9A-Z-]+)")
 _TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:\+00:00|Z)?")

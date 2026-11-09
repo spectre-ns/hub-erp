@@ -21,6 +21,8 @@ reason written in the PR. Tests: `python -m pytest -q` (all must pass).
 | `hubproto/runner.py` | Op runner = workflow engine walking process graphs; derived Gates and options, grants, Track, tick (SLA escalation), following the release in force, state maps | core |
 | `hubproto/process_graph.py` | processes as graphs (change control 10.1): compile numbered steps and graph sentences into one shape, read it (options, verdicts, globals), write it back as sentences, the earlier shape's view | core |
 | `hubproto/cogs.py` | Cog catalog (code cogs, context stand-ins, reviewer cogs) | core |
+| `hubproto/groups.py` | groups (listed, by role) and committees (on a group, a chair, consensus): who is in each, resolving a role-like name to a group | core |
+| `hubproto/org_cog.py` | the organization cog (junior) and the senior cogs of the compile-frame committee | core |
 | `hubproto/inbox.py` | DMs and email to people and cogs | core |
 | `hubproto/cad.py` | CAD/ECAD: FreeCAD and KiCad stdlib extraction, worker client, cad-exporter, bom-reconciler, part-releaser cogs | core |
 | `hubproto/worker.py` | the CAD worker (its own image, docker/cad-worker): /invoke envelope seam over FreeCADCmd and kicad-cli, fake mode | core |
@@ -102,7 +104,7 @@ run's Track (`state/runs/<id>/track.jsonl`) and on the record's events.
 
 ## Sentence grammar (convention mode)
 
-Only inside these sections: `## Roles`, `## Members`, `## Folders`,
+Only inside these sections: `## Roles`, `## Members`, `## Groups`, `## Folders`,
 `## Permissions`, `## Thresholds`, `## Routing`, `## Approval criteria`,
 `## Segregation of duties`, `## Duties`, `## Process: <name>`, and the keyed sections
 `## Scope:`, `## Committee:`, `## Cog:`, `## Persona:`. Frontmatter may carry
@@ -113,12 +115,17 @@ Only inside these sections: `## Roles`, `## Members`, `## Folders`,
 ```
 ## Roles            - quality-manager
 ## Members          - alice (person): finance-clerk, staff      - ap-reviewer (cog): payables-reviewer
+## Groups           - quality-board: carol, bob and qa-manager                  (listed members, people and cogs)
+                    - quality-managers: everyone holding quality-manager       (by role: follows role changes; "or" for several roles)
+                    - reviewers: dave and everyone holding reviewer            (both)
 ## Folders          - Quality/Nonconformances
 ## Permissions      Quality managers may approve nonconformances in Quality/Nonconformances.
                     Finance clerks may not approve bills in Finance/Payables.
                     Controllers may read Finance.
                     Staff may comment on anything in Quality.                 (anything = every object)
                     The it-admin cog may not approve documents in Policy.     (a permission naming one cog: subject cog:it-admin)
+                    The quality-board group may read Quality.                 (a permission for a group: subject group:quality-board)
+                    Administrators may read Policy.                           (a plural that names a group, not a role, is the group's)
                     The stores cog may move stock items in Inventory/Stock when a storekeeper confirms.
                                                                 (effect propose, confirmer storekeeper; "when a person confirms": whoever gave the task)
 ## Thresholds       The match tolerance is 2 percent.      The effectiveness check interval is 90 days.
@@ -140,6 +147,8 @@ Only inside these sections: `## Roles`, `## Members`, `## Folders`,
                                                               item another cog prepared or wrote; a cog never signs its own work is a guard)
                     Whoever made a direct configuration change on a change-order is not its only approver.   (only: true)
 ## Duties           Every day|week|month the quality-assistant cog finds nonconformances that ... .   (a cog's standing goal)
+## Committee: design-review   Group: design-reviewers   Chair: bob (a person, required)   Purpose: <what it decides>
+                    (decides by consensus; "Members:" and "Agree: n of m" of earlier texts are still read: Agree is not used)
 ## Cog: ap-reviewer About: <one paragraph: what it does>   Model: ollama/qwen3:14b   Persona: reviewer
                     [Prompt from: DOC-n (its job from a pinned document)   References: DOC-n, ...]
 ## Persona: reviewer  Tone: formal|informal   Stance: reviewer|executor|author|advisor   Lenses: compliance, consistency, impact
@@ -224,7 +233,49 @@ From any status except done to Cancelled ("Cancel"): the quality manager.
   owner>`, `set <field> to <value>`. A failed action moves the item to the system status `failed` with a Retry loop.
 * Routing and SLA sentences name a decision by its transition name ("At Disposition in nonconformance with low risk go
   to the quality-assistant cog."; "Approvals in ..." is the first transition whose id starts approv/accept/confirm/authori).
+* `the <name> committee decides` is a committee gate (`{"kind": "committee", "committee": "<name>"}`): every member of
+  the committee votes (consensus). A status decided by a committee needs a way back for an objection, also decided by the
+  committee (`From Review to Draft ("Return"): the design-review committee decides.`); the compile says so otherwise.
+  ("the design review committee" without "decides" is still a person gate of the role `design-review-committee`.)
 * `hubproto.process_graph.to_sentences(graph)` writes a graph back as these sentences (what a direct change says).
+
+### Groups and committees (change control 11; `hubproto.groups`)
+
+* **Groups** (`## Groups` in the org model): `bundle["groups"][name] = {members (listed), roles (everyone holding),
+  resolved, source}`; `groups.group_members(bundle, g)` resolves it now (listed first, then role holders by name), so a
+  group by role follows role changes. A permission or a route naming a group is the group's (`group:<name>`; a plural
+  that is not a role but names a group is resolved at compile, `groups.resolve_group_refs`). `authz.check` and
+  `authz.autonomy` consider roles and groups and say "(through the x group)"; `authz.permissions_of(bundle, member)` lists
+  every permission that reaches a member with `via` (role, group or name): the per-cog listing. A table row
+  `| the <name> group | ... |` makes its members read the document (`release.principal_names` includes groups;
+  training assigns acknowledgements to the people in it; the matrix has a section per group). A group may not share a
+  name with a role; a group change is a widening (two policy owners).
+* **Committees** (`## Committee:`): `bundle["committees"][name] = {group, chair, purpose, members (resolved now), quorum
+  (= every member), listed, agree (earlier texts)}`; `groups.committee(bundle, name)` resolves it. Guards: the group
+  exists, the chair is a person of the organization, someone is in it; the compile-frame committee's members are cogs.
+* **At a gate** (`hubproto.runner`): `pending["committee"] = {name, group, chair, purpose, members, types, votes{member:
+  vote}, paused[{member, kind: criteria|unavailable|excluded|late|differ, reason, interveners, who}], interveners, due}`,
+  `pending["assignee_type"] = "committee"`, `pending["assignees"]` the members still to vote (and, while paused, whoever
+  intervenes). A person votes with `runner.decide(run, member, "approve"|"reject", meaning=..., payload_digest=...)` (or
+  `choose` with a committee transition); each vote is a signed `gate.vote` on the Track. A cog member votes through
+  `committee_cog_vote` (its queue's gate task): it agrees where its approval criteria hold; otherwise (criteria, not
+  available, kept out by segregation of duties, not trained on the SOP) the decision pauses (`gate.paused`) and the chair
+  gets an `intervention` notification. Every member agreeing on one way forward moves the item (`gate.decided` by
+  `committee:<name>`, `by_type` committee, with `votes` and `voters`); one objection (reject, with a reason) returns it at
+  once; there is no abstention. `runner.intervene(run, chair, "decide"|"extend"|"return", member=, meaning=, verdict=,
+  due=, payload_digest=)`: decide in the member's place (a vote signed by the chair, with `intervention`), extend the due
+  date (late members and paused cogs are asked again) or return the item. `tick` pauses the decision for each member late
+  past the due date and escalates a pause past due under the overdue rule; when the chair is the member in question,
+  absent (not a person of the organization) or kept out of the item, the pause goes at once to the people the overdue
+  rule names ("Overdue items in <process> go to ..."); with nobody, the run fails ("nobody can intervene"). A vote given
+  on an earlier version of the item no longer counts (`gate.vote_voided`).
+* **On a change order's panel** (`hubproto.changecontrol`): a review sentence may name a committee ("... is reviewed by
+  the design-review committee."); every member is on the panel with `committee`. `committee_reviews(hub, co)`: agreed,
+  objected (a blocking finding), waiting or paused (a member's review failed: its chair is told and may
+  `intervene_review`); a committee that has not agreed is a reason the change order cannot be sent for approval.
+* **The compile-frame committee** is defined on the `senior-cogs` group (cogs bundled with `claude-opus-5-5`, change
+  control 11.1); `hub.compile_committee()` gives its members with their models, those unavailable (hosted models off, no
+  key) and its chair; an unavailable member is a `member-unavailable` question naming the chair, never skipped.
 
 ## Record types (`config/record-types.json`)
 
@@ -277,6 +328,10 @@ hub.frames.frames  # name -> Frame(path, name, version, scope, maintainer, inher
 hub.releases.list()/current()/bundle(digest)/get(digest)
 hub.registry.cards()
 ```
+
+Cogs have no private memories (change control 13): a cog's judgment for an approval is filed as a review record on
+the item (evidence, with `judgment: {cog, key (the version it judged), verdict, findings}`) and read back only from
+there (`ReviewerCog._judgment_on_item`); a failed judgment binds for that version of the item.
 
 Cog ids available for process steps: record-filer, record-linker, notifier,
 document-renderer, risk-scorer, invoice-extractor, three-way-matcher,

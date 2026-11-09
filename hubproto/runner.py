@@ -146,7 +146,7 @@ class Runner:
         problems = list(track.verify())
         secret = self.secret()
         for ev in track.read():
-            if ev["type"] in ("gate.decided", "gate.signed") and verify_signature(secret, ev) == "forged":
+            if ev["type"] in ("gate.decided", "gate.signed", "gate.vote") and verify_signature(secret, ev) == "forged":
                 problems.append(f"the signature by {ev.get('by')} at {ev.get('step')} does not verify")
         return problems
 
@@ -560,6 +560,8 @@ class Runner:
             if pg.options(wf, at):
                 outcome = self._open_gate(state, bundle, track, wf)
                 self._save(state)
+                if outcome == "waiting" and (state.get("pending") or {}).get("committee"):
+                    return self._committee_cogs(state)
                 if outcome == "waiting" and (state.get("pending") or {}).get("assignee_type") == "cog":
                     return self.give_to_cog(state)
                 return state
@@ -839,8 +841,8 @@ class Runner:
             # The latest decision of that step (an item that loops back is decided afresh on each pass).
             last = next((ev for ev in reversed(Track(self._dir(state["id"])).read())
                          if ev["type"] == "gate.decided" and ev.get("transition") == n and ev.get("by")), None)
-            if last:
-                out.setdefault(last["by"], f"segregation of duties: they decided {n.replace('-', ' ')} on this item")
+            for who in (last or {}).get("voters") or ([last["by"]] if last else []):  # a committee: each member who voted
+                out.setdefault(who, f"segregation of duties: they decided {n.replace('-', ' ')} on this item")
         return out
 
     @staticmethod
@@ -879,6 +881,8 @@ class Runner:
              "title": t.get("name") or t["id"], "role": g.get("role") or g.get("fallback") or "system"}
         if g.get("kind") == "cog":
             d.update({"cog": g.get("cog"), "fallback": g.get("fallback")})
+        if g.get("kind") == "committee":
+            d.update({"committee": g.get("committee"), "role": ""})
         if g.get("not"):
             d["not"] = list(g["not"])
         return d
@@ -963,6 +967,8 @@ class Runner:
         rctx = self._routing_ctx(payload, record)
         gate = step["gate"]
         checkpoint = gate["step"]
+        if gate.get("committee"):  # every member of the committee decides (consensus), not a route
+            return self._committee_gate(state, bundle, step, payload, rctx, track)
         cands = [r for r in candidates(bundle, gate["route"]["process"], checkpoint, rctx) if r.get("mode", "assign") == "assign"]
         if gate.get("cog"):
             # A cog gate: the cog decides within its approval criteria, else the fallback role (or a routing sentence).
@@ -1119,6 +1125,495 @@ class Runner:
                    kind="organisation", gate=title)
         return "failed"
 
+    # ------------------------------------------------------------ committees (change control 11): consensus at a Gate
+    # A status whose decision is "the <name> committee decides" waits for every member of the committee (people and
+    # cogs): each vote is a signature with its meaning (agree, or object with a reason). The item moves when every member
+    # agrees on the same way forward; one objection returns it for revision at once. There is no standing aside. When a
+    # cog member's approval criteria do not hold (or it is unavailable, or may not decide this item), or a member has not
+    # answered by the due date, the decision pauses and the chair intervenes: decides in that member's place (recorded as
+    # an intervention with its meaning), extends the due date, or returns the item. If the chair is the member in question
+    # or absent, the pause escalates under the SOP's overdue rule. Nothing passes by default. The tally is on the card
+    # (``pending["committee"]``).
+    COMMITTEE_PAUSES = {"criteria": "its approval criteria do not hold", "unavailable": "is not available",
+                        "excluded": "may not decide this item", "late": "has not answered by the due date",
+                        "differ": "the members chose different ways forward"}
+
+    @staticmethod
+    def committee_outstanding(pending: dict) -> list[str]:
+        """The members of the committee deciding here who have not voted yet."""
+        cm = (pending or {}).get("committee") or {}
+        return [m for m in cm.get("members") or [] if m not in (cm.get("votes") or {})]
+
+    @staticmethod
+    def _paused(cm: dict, member: str) -> dict | None:
+        return next((p for p in cm.get("paused") or [] if p.get("member") == member), None)
+
+    def committee_options(self, state: dict, at: str | None = None) -> list[dict]:
+        """The ways the committee deciding at the item's status may take: the forward ones (agreement) and the way back
+        (an objection)."""
+        wf = self._graph(state)
+        name = (((state.get("pending") or {}).get("committee") or {}).get("name"))
+        return [t for t in pg.options(wf, at or state.get("at")) if (t.get("gate") or {}).get("kind") == "committee"
+                and (name is None or t["gate"].get("committee") == name)]
+
+    def _committee_ways(self, state: dict) -> tuple[dict | None, dict | None]:
+        """(the forward option an agreement takes by default, the option an objection takes)."""
+        wf = self._graph(state)
+        opts = self.committee_options(state)
+        fwd = next((t for t in opts if pg.option_verdict(wf, t) == "approve"), None)
+        back = next((t for t in opts if pg.option_verdict(wf, t) == "reject"), None) or pg.rejection_option(wf, state.get("at"))
+        return fwd, back
+
+    def _committee_assignees(self, state: dict) -> list[str]:
+        """Who the item waits for now: the members still to vote (a paused cog waits for the chair, not itself) and, while
+        the decision is paused, whoever intervenes."""
+        pending = state["pending"]
+        cm = pending["committee"]
+        out = [m for m in self.committee_outstanding(pending)
+               if not (cm.get("types", {}).get(m) == "cog" and self._paused(cm, m))]
+        if cm.get("paused"):
+            out += [p for p in cm.get("interveners") or [] if p not in out]
+        return out
+
+    def _committee_gate(self, state: dict, bundle: dict, step: dict, payload: dict, rctx: dict, track: Track) -> str:
+        """Open the committee's decision at the item's status: every member is asked; the due date is the status's."""
+        from .groups import committee as _committee
+
+        gate = step["gate"]
+        checkpoint = gate["step"]
+        name = gate["committee"]
+        title = gate.get("title") or "Decide"
+        c = _committee(bundle, name)
+        if not c or not c.get("members"):
+            self._fail(state, track, step["id"], f"“{title}” is decided by the {name} committee, which "
+                       + ("the release does not define" if not c else "has nobody in it"), kind="organisation", gate=title)
+            return "failed"
+        wf = self._graph(state, bundle)
+        at = state.get("at")
+        sla = (pg.status_of(wf, at) or {}).get("sla_days")
+        due = (date.today() + timedelta(days=int(sla))).isoformat() if sla else None
+        src = self._statement_source(bundle, state["process"], checkpoint) or {
+            "frame": "(process)", "line": 0, "text": f"{title}: the {name} committee decides"}
+        members = list(c["members"])
+        cm = {"name": name, "group": c.get("group") or "", "chair": c.get("chair") or "", "purpose": c.get("purpose") or "",
+              "members": members, "types": {m: (bundle["members"].get(m) or {}).get("type", "person") for m in members},
+              "votes": {}, "paused": [], "interveners": [], "due": due, "opened": utcnow()}
+        state["pending"] = {"kind": "decision", "step": step["id"], "checkpoint": checkpoint, "assignees": list(members),
+                            "assignee_type": "committee", "route_rule": src, "route": f"committee:{name}",
+                            "payload_digest": sha256_of(payload), "title": title, "due": due, "remaining": [], "routing_ctx": rctx,
+                            "gate": gate, "status": at, "transition": checkpoint, "committee": cm,
+                            "options": self._options(state, bundle, at, gate)}
+        track.append({"type": "gate.pending", "run_id": state["id"], "step": step["id"], "assignees": members, "assignee_type": "committee",
+                      "committee": name, "chair": cm["chair"], "route_rule": src, "route": f"committee:{name}",
+                      "payload_digest": sha256_of(payload), "routing_ctx": rctx, "due": due})
+        if state.get("record"):
+            try:
+                self.kernel.transition(state["record"], at, by="hub", run_id=state["id"], release=state["release"], assignees=members, due=due,
+                                       reason=f"the {name} committee decides ({src.get('text')})")
+            except KernelGuardError as e:
+                self._fail(state, track, step["id"], str(e))
+                return "failed"
+        people = [m for m in members if cm["types"][m] == "person"]
+        rec = self.kernel.get(state["record"]) if state.get("record") else None
+        self._notify(people, kind="approval", subject=f"{title}: your vote on {(rec or {}).get('number') or state['process']} ({name} committee)",
+                     body=(f"The {name} committee decides this by consensus: every member agrees, or an objection with its reason returns it "
+                           f"for revision. Routed by {src.get('frame')} line {src.get('line')}: {src.get('text')}" + (f" Due {due}." if due else "")),
+                     run_id=state["id"])
+        # A member who may not decide this item (it prepared it, a segregation sentence keeps it out) is a pause at once.
+        excluded = self.excluded(bundle, state, f"committee:{name}")
+        for m in members:
+            if m in excluded:
+                self._committee_pause(state, track, bundle, m, "excluded", excluded[m], save=False)
+                if state["status"] == "failed" or not state.get("pending"):
+                    return "failed"
+        state["pending"]["assignees"] = self._committee_assignees(state)
+        return "waiting"
+
+    def _committee_cogs(self, state: dict) -> dict:
+        """Each cog member that has not voted takes its turn (from its queue; inline, at once)."""
+        pending = state.get("pending") or {}
+        cm = pending.get("committee")
+        if not cm or not self.cog_users_inline:
+            return state
+        for cog in [m for m in self.committee_outstanding(pending) if cm.get("types", {}).get(m) == "cog" and not self._paused(cm, m)]:
+            if self.queue is None:
+                self.committee_cog_vote(state["id"], cog)
+            else:
+                rec = state.get("record")
+                self.queue.submit(cog, "gate", by=state.get("owner") or "hub", title=f"Vote ({cm['name']} committee): {pending.get('title') or 'Decide'}: {rec or state['process']}",
+                                  record=rec, payload={"run": state["id"], "step": pending.get("step")}, key=f"gate:{state['id']}:{pending.get('step')}:{cog}")
+            state = self.load(state["id"])
+            if state["status"] != "waiting" or not (state.get("pending") or {}).get("committee"):
+                break
+        return self.load(state["id"])
+
+    def committee_cog_vote(self, run_id: str, cog_name: str) -> dict:
+        """A cog member of the committee votes: it agrees where its approval criteria hold (its review, as at any Gate);
+        otherwise the decision pauses for the chair, naming the cog and the reason. A cog never objects on its own
+        judgment alone: a person decides what its findings mean."""
+        state = self.load(run_id)
+        pending = state.get("pending") or {}
+        cm = pending.get("committee") or {}
+        if state["status"] != "waiting" or cog_name not in self.committee_outstanding(pending) or self._paused(cm, cog_name):
+            return state
+        track = Track(self._dir(state["id"]))
+        bundle = self.releases.bundle(state["release"])
+        from .model import cog_availability
+        from .routing import criteria_for
+
+        ok, why = cog_availability(bundle, cog_name)
+        if not ok:
+            return self._committee_pause(state, track, bundle, cog_name, "unavailable", why)
+        excluded = self.excluded(bundle, state, pending.get("route") or "role:")
+        if cog_name in excluded:
+            return self._committee_pause(state, track, bundle, cog_name, "excluded", excluded[cog_name])
+        by_cog = self.prepared_by_cog(bundle, state)
+        if by_cog:
+            return self._committee_pause(state, track, bundle, cog_name, "excluded",
+                                         f"{by_cog} (a cog) prepared or wrote this item: a person signs a cog's work, never another cog")
+        why = self.cog_follows(bundle, cog_name, state["process"])
+        if why:
+            return self._committee_pause(state, track, bundle, cog_name, "criteria", why)
+        if not criteria_for(bundle, f"cog:{cog_name}", state["process"]):
+            return self._committee_pause(state, track, bundle, cog_name, "criteria",
+                                         f"no approval criteria let {cog_name} agree to {state['process']} items")
+        if cog_name not in self.registry.ids():
+            return self._committee_pause(state, track, bundle, cog_name, "unavailable", f"{cog_name} is not installed in this hub")
+        step = self._gate_step(state, pending)
+        cog = self.registry.get(cog_name)
+        env = state["steps"].get(step["id"], {}).get("envelope") or {}
+        seen = self.seen_digest(state)
+        review = cog.invoke("review", {"payload": env.get("payload") or {}, "process": state["process"], "routing_ctx": pending.get("routing_ctx") or {}},
+                            self._ctx(state, bundle, cog))
+        rp = review.get("payload") or {}
+        verdict = rp.get("verdict", "escalate")
+        reasons = list(rp.get("reasons") or [])
+        track.append({"type": "gate.cog_review", "run_id": state["id"], "step": step["id"], "cog": cog_name, "cog_version": cog.version,
+                      "verdict": verdict, "reasons": reasons, "seen": seen, "judged": bool(rp.get("judged")), "route_rule": pending.get("route_rule"),
+                      "delegating_rule": rp.get("delegating_rule"), "committee": cm.get("name")})
+        if verdict == "reviewing":
+            track.append({"type": "gate.reviewing", "run_id": state["id"], "step": step["id"], "cog": cog_name,
+                          "lenses": list(rp.get("lenses") or []), "reasons": reasons})
+            return self.load(run_id)
+        state = self.load(run_id)  # its review may have filed evidence on the item: what it agrees to is the item now
+        if verdict == "approve":
+            fwd, _ = self._committee_ways(state)
+            basis = "on its review, under its approval criteria" if rp.get("judged") else "within its approval criteria"
+            return self._committee_vote(state, track, cog_name, "agree", f"agrees {basis}: " + "; ".join(reasons) if reasons else f"agrees {basis}",
+                                        self.seen_digest(state), (fwd or {}).get("id"), delegating_rule=rp.get("delegating_rule"))
+        return self._committee_pause(state, track, bundle, cog_name, "criteria", "; ".join(reasons) or self.COMMITTEE_PAUSES["criteria"])
+
+    def _person_vote(self, state: dict, pending: dict, by: str, verdict: str | None, meaning: str, payload_digest: str | None,
+                     transition: str | None, fields: dict | None) -> dict:
+        """A person member's vote: agree (the forward way, or the one named) or object (the way back) with a reason."""
+        cm = pending["committee"]
+        bundle = self.releases.bundle(state["release"])
+        wf = self._graph(state)
+        if by not in self.committee_outstanding(pending):
+            raise RunError(f"{by} has already voted on this item")
+        excluded = self.excluded(bundle, state, pending.get("route") or "role:")
+        if by in excluded:
+            raise RunError(f"{excluded[by]}; {by} cannot vote on it (the chair decides in their place)")
+        if not payload_digest:
+            raise RunError("a vote must quote what you saw: pass the run's seen_digest (shown on the card and by inbox-pending)")
+        if payload_digest != self.seen_digest(state):
+            raise RunError("the item changed since you opened it (its fields, links or documents differ); open it again and vote on what it is now")
+        if fields:
+            raise RunError("a committee member's vote sets no fields; set them on the item first, then vote")
+        ways = self.committee_options(state)
+        if transition:
+            option = next((t for t in ways if t["id"] == transition), None)
+            if option is None:
+                raise RunError(f"{transition!r} is not a way the {cm['name']} committee decides here")
+        else:
+            if verdict not in ("approve", "reject"):
+                raise RunError("verdict must be approve (agree) or reject (object)")
+            fwd, back = self._committee_ways(state)
+            option = fwd if verdict == "approve" else back
+            if option is None:
+                raise RunError(f"the {cm['name']} committee has no way to {'agree' if verdict == 'approve' else 'object'} here")
+        vote = "agree" if pg.option_verdict(wf, option) == "approve" else "object"
+        if not meaning.strip():
+            raise RunError("an objection needs its reason: say what must change for you to agree" if vote == "object" else
+                           "a vote needs its meaning: say in a few words what you agree to")
+        if vote == "agree":
+            why = self._validators_block(state, wf, option)
+            if why:
+                raise RunError(why)
+        return self._committee_vote(state, Track(self._dir(state["id"])), by, vote, meaning.strip(), payload_digest, option["id"])
+
+    def _committee_vote(self, state: dict, track: Track, member: str, verdict: str, meaning: str, seen: str, option: str | None,
+                        *, by: str | None = None, intervention: dict | None = None, delegating_rule=None) -> dict:
+        """Record one member's vote (signed), then see where the committee stands."""
+        pending = state["pending"]
+        cm = pending["committee"]
+        rec = self.kernel.get(state["record"]) if state.get("record") else None
+        signer = by or member
+        vote = {"by": signer, "member": member, "verdict": verdict, "option": option, "meaning": meaning, "at": utcnow(), "seen": seen,
+                "payload_digest": pending["payload_digest"], "record_digest": self.record_digest(rec) if rec else None,
+                "committee": cm["name"], "step": pending.get("checkpoint"), "run_id": state["id"], "release_digest": state["release"],
+                "record": state.get("record"), "by_type": "person" if (intervention or cm.get("types", {}).get(member) != "cog") else "cog"}
+        if intervention:
+            vote["intervention"] = intervention
+        if delegating_rule:
+            vote["delegating_rule"] = delegating_rule
+        vote["signature"] = sign(self.secret(), vote)
+        cm.setdefault("votes", {})[member] = vote
+        cm["paused"] = [p for p in cm.get("paused") or [] if p.get("member") not in (member, None)]
+        track.append({"type": "gate.vote", "run_id": state["id"], "step": pending["step"], **vote})
+        if verdict == "object":
+            return self._committee_conclude(state, track, "object", vote)
+        return self._committee_tally(state, track)
+
+    def _committee_tally(self, state: dict, track: Track) -> dict:
+        """Where the committee stands after a vote: votes given on an earlier version of the item no longer count; when
+        every member has agreed on one way forward, the item moves; members who chose different ways forward pause the
+        decision for the chair."""
+        pending = state["pending"]
+        cm = pending["committee"]
+        seen = self.seen_digest(state)
+        for m, v in list((cm.get("votes") or {}).items()):
+            if v.get("seen") != seen:
+                del cm["votes"][m]
+                track.append({"type": "gate.vote_voided", "run_id": state["id"], "step": pending["step"], "member": m,
+                              "reason": "the item changed after this vote; the member votes again on what it is now"})
+                if cm.get("types", {}).get(m) == "person":
+                    self._notify([m], kind="approval", subject=f"Vote again: {pending.get('title')} ({cm['name']} committee)",
+                                 body="The item changed after you voted; your vote no longer counts. Vote again on what it is now.", run_id=state["id"])
+        votes = cm.get("votes") or {}
+        if all(m in votes for m in cm["members"]):
+            ways = sorted({v.get("option") for v in votes.values()}, key=str)
+            if len(ways) == 1:
+                return self._committee_conclude(state, track, "agree")
+            bundle = self.releases.bundle(state["release"])
+            said = "; ".join(f"{m}: {v.get('option')}" for m, v in votes.items())
+            return self._committee_pause(state, track, bundle, None, "differ", f"the members chose different ways forward ({said})")
+        pending["assignees"] = self._committee_assignees(state)
+        self._save(state)
+        if state.get("record"):
+            self.kernel.assign(state["record"], list(pending["assignees"]), by="hub", run_id=state["id"], release=state["release"])
+        return self.load(state["id"])
+
+    def _committee_conclude(self, state: dict, track: Track, how: str, vote: dict | None = None) -> dict:
+        """The committee's decision: every member agreed (``agree``), a member objected (``object``) or the chair returned
+        it (``return``). Signed as the committee's, with every vote, and the item moves."""
+        pending = state["pending"]
+        cm = pending["committee"]
+        wf = self._graph(state)
+        votes = [cm["votes"][m] for m in cm["members"] if m in (cm.get("votes") or {})]
+        fwd, back = self._committee_ways(state)
+        if how == "agree":
+            option = pg.transition(wf, votes[0].get("option")) or fwd
+            verdict = "approve"
+            meaning = (f"agreed by consensus of the {cm['name']} committee ({', '.join(cm['members'])}): "
+                       + "; ".join(f"{v['member']}: {v['meaning']}" for v in votes))
+        else:
+            option = (pg.transition(wf, (vote or {}).get("option")) if how == "object" else None) or back
+            if option is not None and pg.option_verdict(wf, option) != "reject":
+                option = back
+            verdict = "reject"
+            who = (vote or {}).get("member") or (vote or {}).get("by") or "the chair"
+            meaning = (f"returned for revision by the {cm['name']} committee: {who} objects: {(vote or {}).get('meaning')}" if how == "object"
+                       else f"returned for revision by {who}, chair of the {cm['name']} committee: {(vote or {}).get('meaning')}")
+            if option is None:
+                self._fail(state, track, pending["step"], f"{meaning}; but the process has no way back from {(pg.status_of(wf, state.get('at')) or {}).get('name')}",
+                           kind="organisation", gate=pending.get("title") or "")
+                return self.load(state["id"])
+        step = self._gate_step(state, pending)
+        self._record_decision(state, step, track, by=f"committee:{cm['name']}", by_type="committee", verdict=verdict, meaning=meaning,
+                              payload_digest=pending["payload_digest"], meaning_given=True, option=option,
+                              extra={"committee": cm["name"], "votes": votes, "voters": [v["member"] for v in votes],
+                                     **({"objection": vote} if how == "object" else {}), **({"returned_by": vote.get("by")} if how == "return" and vote else {})})
+        self._save(state)
+        result = self.advance(state["id"]) if state.get("moving") else self.load(state["id"])
+        owner = authz.principal_name(state["owner"])
+        rec = self.kernel.get(state["record"]) if state.get("record") else None
+        bundle = self.releases.bundle(state["release"])
+        if (bundle["members"].get(owner) or {}).get("type") == "person":
+            nxt = result.get("pending") or {}
+            where = (f"it now waits for {', '.join(nxt.get('assignees') or [])} at {nxt.get('title', 'the next step')}" if result["status"] == "waiting"
+                     else f"it is now {(rec or {}).get('state', result['status']).replace('-', ' ')}")
+            self._notify([owner], kind="moved" if verdict == "approve" else "returned",
+                         subject=f"The {cm['name']} committee {'agreed to' if verdict == 'approve' else 'returned'} {pending.get('title', 'a step')} on {(rec or {}).get('number') or state['process']}",
+                         body=f"{meaning}. {where[0].upper() + where[1:]}.", run_id=state["id"])
+        return self._committee_cogs(result) if (result.get("pending") or {}).get("committee") else result
+
+    def _interveners(self, state: dict, bundle: dict, cm: dict, member: str | None) -> tuple[list[str], str]:
+        """Who intervenes in a paused committee decision, and why them: the chair; or, when the chair is the member in
+        question or absent (not a person of the organization now, or kept out of this item), the people the SOP's overdue
+        rule sends overdue items of this process to."""
+        from .routing import candidates
+
+        chair = cm.get("chair") or ""
+        excluded = self.excluded(bundle, state, "role:")
+        why = ""
+        if not chair or (bundle["members"].get(chair) or {}).get("type") != "person":
+            why = f"the chair{(' ' + chair) if chair else ''} is absent (not a person of the organization)"
+        elif chair == member:
+            why = f"the chair, {chair}, is the member in question"
+        elif chair in excluded:
+            why = f"the chair, {chair}, may not decide this item ({excluded[chair]})"
+        else:
+            return [chair], "the chair"
+        rules = [r for r in candidates(bundle, state["process"], "*", {"overdue": True}) if r["step"] == "*" and r.get("mode", "assign") == "assign"]
+        people = []
+        for r in rules:
+            people += [p for p in principals_for(bundle, r["assignee"]) if (bundle["members"].get(p) or {}).get("type") == "person"
+                       and p != member and p not in excluded and p not in people]
+        cite = f" ({rules[0]['source']['text']})" if rules else ""
+        return people, f"{why}: escalated under the overdue rule{cite}"
+
+    def _committee_pause(self, state: dict, track: Track, bundle: dict, member: str | None, kind: str, reason: str, save: bool = True) -> dict:
+        """The committee cannot decide without a person: the chair (or, failing them, the overdue route) is asked to
+        intervene, naming the member and the reason. Nothing passes meanwhile."""
+        pending = state["pending"]
+        cm = pending["committee"]
+        if member is not None and self._paused(cm, member):
+            return self.load(state["id"]) if save else state
+        people, who = self._interveners(state, bundle, cm, member)
+        title = pending.get("title") or "the decision"
+        rec = self.kernel.get(state["record"]) if state.get("record") else None
+        number = (rec or {}).get("number") or state["process"]
+        what = f"{member} {reason}" if member and kind != "differ" else reason
+        if not people:
+            self._fail(state, track, pending["step"], f"The {cm['name']} committee cannot decide “{title}”: {what}; and nobody can intervene ({who}; "
+                       "no overdue rule names anyone)", kind="organisation", gate=title)
+            return self.load(state["id"])
+        pause = {"member": member, "kind": kind, "reason": reason, "at": utcnow(), "interveners": people, "who": who}
+        cm.setdefault("paused", []).append(pause)
+        cm["interveners"] = sorted(set(cm.get("interveners") or []) | set(people))
+        track.append({"type": "gate.paused", "run_id": state["id"], "step": pending["step"], "committee": cm["name"], **pause})
+        pending["assignees"] = self._committee_assignees(state)
+        if state.get("record"):
+            self.kernel.assign(state["record"], list(pending["assignees"]), by="hub", run_id=state["id"], release=state["release"])
+        self._notify(people, kind="intervention", subject=f"Intervene: {title} on {number} ({cm['name']} committee): {what}",
+                     body=(f"The {cm['name']} committee's decision on {number} is paused: {what}. You are asked as {who}. You may decide in "
+                           + (f"{member}'s place (with your reason)" if member and kind != "differ" else "the members' place")
+                           + ", extend the due date, or return the item for revision. Nothing passes by default."), run_id=state["id"])
+        if save:
+            self._save(state)
+            return self.load(state["id"])
+        return state
+
+    def intervene(self, run_id: str, by: str, action: str, *, member: str | None = None, meaning: str = "", verdict: str | None = None,
+                  transition: str | None = None, due: str | None = None, payload_digest: str | None = None) -> dict:
+        """The chair (or whoever the pause escalated to) intervenes in a paused committee decision. ``action``:
+        ``decide`` (in ``member``'s place: ``verdict`` approve/agree or reject/object, or ``transition``; recorded as an
+        intervention with its meaning), ``extend`` (a new ``due`` date; the late members, and the paused cogs, are asked
+        again) or ``return`` (the item goes back for revision). Every intervention needs its meaning."""
+        state = self.load(run_id)
+        by = authz.principal_name(by)
+        pending = state.get("pending") or {}
+        cm = pending.get("committee")
+        if state["status"] != "waiting" or not cm:
+            raise RunError(f"run {run_id} is not waiting for a committee")
+        if by not in (cm.get("interveners") or []) and by != cm.get("chair"):
+            raise RunError(f"only the chair of the {cm['name']} committee ({cm.get('chair') or 'none'}) intervenes"
+                           + (f", or {', '.join(cm['interveners'])} it was escalated to" if cm.get("interveners") else ""))
+        if not cm.get("paused") and action != "return":
+            raise RunError(f"the {cm['name']} committee's decision is not paused: its members are still voting")
+        if not (meaning or "").strip():
+            raise RunError("an intervention needs its meaning: say why you intervene")
+        bundle = self.releases.bundle(state["release"])
+        if by in self.excluded(bundle, state, "role:") and action != "extend":
+            raise RunError(f"{by} may not decide this item; it is escalated under the overdue rule")
+        track = Track(self._dir(state["id"]))
+        meaning = meaning.strip()
+        if action == "decide":
+            pause = self._paused(cm, member) if member else next((p for p in cm["paused"] if p.get("member") is None), None)
+            if member and pause is None:
+                raise RunError(f"{member} is not a member the decision is paused on")
+            if payload_digest != self.seen_digest(state):
+                raise RunError("the item changed since you opened it; open it again and decide on what it is now")
+            wf = self._graph(state)
+            if transition:
+                option = next((t for t in self.committee_options(state) if t["id"] == transition), None)
+            else:
+                fwd, back = self._committee_ways(state)
+                option = fwd if verdict in ("approve", "agree") else back if verdict in ("reject", "object") else None
+            if option is None:
+                raise RunError("say how you decide: approve (agree) or reject (object), or a way the committee decides here")
+            vote = "agree" if pg.option_verdict(wf, option) == "approve" else "object"
+            if vote == "agree":
+                why = self._validators_block(state, wf, option)
+                if why:
+                    raise RunError(why)
+            members = [member] if member else [m for m in cm["members"]]
+            intervention = {"by": by, "action": "decide", "meaning": meaning, "for": member, "pause": pause, "at": utcnow()}
+            track.append({"type": "gate.intervened", "run_id": state["id"], "step": pending["step"], **intervention})
+            if not member:  # the members chose different ways forward: the chair's choice is the committee's
+                cm["paused"] = [p for p in cm["paused"] if p.get("member") is not None]
+                for m in members:
+                    cm["votes"][m] = {**cm["votes"].get(m, {}), "option": option["id"]}
+                return self._committee_conclude(state, track, "agree" if vote == "agree" else "return",
+                                                None if vote == "agree" else {"by": by, "meaning": meaning})
+            return self._committee_vote(state, track, member, vote, f"decided by {by} in {member}'s place: {meaning}", self.seen_digest(state),
+                                        option["id"], by=by, intervention=intervention)
+        if action == "extend":
+            if not due or due <= date.today().isoformat():
+                raise RunError("say the new due date (YYYY-MM-DD), after today")
+            again = [p for p in cm["paused"] if p.get("kind") in ("late", "unavailable", "criteria") and (member is None or p.get("member") == member)]
+            cm["paused"] = [p for p in cm["paused"] if p not in again]
+            cm["due"] = due
+            pending["due"] = due
+            pending.pop("escalated", None)
+            if not cm["paused"]:
+                cm["interveners"] = []
+            track.append({"type": "gate.intervened", "run_id": state["id"], "step": pending["step"], "by": by, "action": "extend", "due": due,
+                          "meaning": meaning, "for": member, "asked_again": [p.get("member") for p in again], "at": utcnow()})
+            pending["assignees"] = self._committee_assignees(state)
+            if state.get("record"):
+                self.kernel.assign(state["record"], list(pending["assignees"]), by=by, due=due, run_id=state["id"], release=state["release"])
+            people = [p.get("member") for p in again if p.get("member") and cm.get("types", {}).get(p.get("member")) == "person"]
+            self._notify(people, kind="approval", subject=f"{pending.get('title')}: your vote is due {due} ({cm['name']} committee)",
+                         body=f"{by} extended the due date: {meaning}", run_id=state["id"])
+            self._save(state)
+            return self._committee_cogs(self.load(state["id"]))
+        if action == "return":
+            track.append({"type": "gate.intervened", "run_id": state["id"], "step": pending["step"], "by": by, "action": "return",
+                          "meaning": meaning, "for": member, "at": utcnow()})
+            return self._committee_conclude(state, track, "return", {"by": by, "meaning": meaning})
+        raise RunError(f"{action!r} is not an intervention (decide, extend or return)")
+
+    def _tick_committee(self, state: dict, today: str) -> dict | None:
+        """A committee decision past its due date: each member who has not answered pauses it for the chair; one already
+        paused past its due date escalates under the overdue rule."""
+        pending = state["pending"]
+        cm = pending["committee"]
+        track = Track(self._dir(state["id"]))
+        bundle = self.releases.bundle(state["release"])
+        late = [m for m in self.committee_outstanding(pending) if not self._paused(cm, m)]
+        if late:
+            for m in late:
+                self._committee_pause(state, track, bundle, m, "late", f"has not answered by {pending['due']}", save=False)
+                if state.get("status") == "failed" or not state.get("pending"):
+                    return {"run": state["id"], "record": state.get("record"), "to": [], "informed": [], "paused": late}
+            self._save(state)
+            return {"run": state["id"], "record": state.get("record"), "to": list(cm.get("interveners") or []), "informed": [], "paused": late}
+        if cm.get("paused") and not pending.get("escalated"):
+            from .routing import candidates
+
+            rules = [r for r in candidates(bundle, state["process"], "*", {"overdue": True}) if r["step"] == "*" and r.get("mode", "assign") == "assign"]
+            excluded = self.excluded(bundle, state, "role:")
+            added = []
+            for r in rules:
+                added += [p for p in principals_for(bundle, r["assignee"]) if (bundle["members"].get(p) or {}).get("type") == "person"
+                          and p not in excluded and p not in cm.get("interveners", []) and p not in added]
+            pending["escalated"] = today
+            cm["interveners"] = sorted(set(cm.get("interveners") or []) | set(added))
+            pending["assignees"] = self._committee_assignees(state)
+            track.append({"type": "gate.escalated" if added else "gate.overdue", "run_id": state["id"], "step": pending["step"], "assignees": added,
+                          "informed": sorted(set(pending["assignees"])), "due": pending.get("due"), "committee": cm["name"],
+                          "route_rule": rules[0]["source"] if rules else None})
+            self._notify(sorted(set(added + pending["assignees"])), kind="escalation", subject=f"Overdue: {pending['title']} on {state.get('record')}",
+                         body=f"The {cm['name']} committee's decision is paused past its due date {pending.get('due')}"
+                              + (f"; escalated by {rules[0]['source']['text']}" if rules else "; no escalation route"), run_id=state["id"])
+            if state.get("record"):
+                self.kernel.assign(state["record"], list(pending["assignees"]), by="hub", run_id=state["id"], release=state["release"])
+            self._save(state)
+            return {"run": state["id"], "record": state.get("record"), "to": added, "informed": [], "paused": []}
+        return None
+
     # ------------------------------------------------------------ cogs as users
     cog_users_inline = True  # False: an item waiting for a cog is not put in its queue (a sweep gives it later)
     queue = None  # the cogs' work queue (hubproto.workqueue.CogQueue), set by the Hub
@@ -1128,6 +1623,8 @@ class Runner:
         """An item now waits for a cog: it goes in that cog's queue, like a task in a person's tray. In inline mode the
         cog takes its turn before this returns; otherwise the item waits until the cog gets to it."""
         pending = state.get("pending") or {}
+        if pending.get("committee"):
+            return self._committee_cogs(state)
         cog = (pending.get("assignees") or [None])[0]
         if not cog or not self.cog_users_inline:
             return state
@@ -1144,6 +1641,8 @@ class Runner:
         to the next candidate on the route."""
         state = self.load(run_id)
         pending = state.get("pending") or {}
+        if pending.get("committee") and state["status"] == "waiting":
+            return self.committee_cog_vote(run_id, cog_name)  # a member's vote, not the Gate's decision
         if state["status"] != "waiting" or cog_name not in pending.get("assignees", []):
             raise RunError(f"run {run_id} is not waiting for {cog_name}")
         if self._follow_release(state, Track(self._dir(state["id"])), "a cog's turn"):
@@ -1248,6 +1747,8 @@ class Runner:
             return f"it is not waiting for a decision (it is {state['status']})"
         if pending.get("countersign_of"):
             return "it waits for a person's countersignature"
+        if pending.get("committee"):
+            return f"the {pending['committee']['name']} committee decides it by consensus"
         bundle = self.releases.bundle(state["release"])
         excluded = self.excluded(bundle, state, "role:")
         if asked_by is not None:
@@ -1380,7 +1881,8 @@ class Runner:
         return [f for f in self.kernel.required_missing(rec, next_state) if f not in system]
 
     def _record_decision(self, state: dict, step: dict, track: Track, *, by: str, by_type: str, verdict: str, meaning: str,
-                         payload_digest: str, delegating_rule=None, meaning_given: bool = True, option: dict | None = None) -> None:
+                         payload_digest: str, delegating_rule=None, meaning_given: bool = True, option: dict | None = None,
+                         extra: dict | None = None) -> None:
         """Sign the decision and make the move it chose: forward (a grant, then the transition's actions), or a rejection
         (to ``rejected``, back to the owner for rework, back to an earlier Gate, or on to a status that moves anew)."""
         rec = self.kernel.get(state["record"]) if state.get("record") else None
@@ -1392,7 +1894,7 @@ class Runner:
                     "delegating_rule": delegating_rule, "step": step["gate"]["step"], "run_id": state["id"],
                     "release_digest": state["release"], "record": state.get("record"),
                     "route": (state.get("pending") or {}).get("route"), "countersigns": (state.get("pending") or {}).get("countersign_of"),
-                    "transition": (option or {}).get("id")}
+                    "transition": (option or {}).get("id"), **(extra or {})}
         decision["signature"] = sign(self.secret(), decision)
         state["steps"][step["id"]]["decision"] = decision
         state["pending"] = None
@@ -1506,6 +2008,9 @@ class Runner:
         prim = pg.primary_option(wf, status) or {}
         gate = self._gate_dict(state, prim) if prim else {}
         bundle = self.releases.bundle(state["release"])
+        if gate.get("committee"):  # back to a committee: every member decides afresh (consensus), not the earlier deciders
+            self._committee_gate(state, bundle, {"id": carrier, "gate": gate}, env["payload"] or {}, {}, track)
+            return
         state["pending"] = {"kind": "decision", "step": carrier, "checkpoint": gate.get("step"), "assignees": people,
                             "route": self._prior_route(track, carrier),
                             "route_rule": {"frame": "(rejection)", "line": 0, "text": "returned by a rejection"},
@@ -1691,6 +2196,22 @@ class Runner:
         rejection transition; ``transition`` names any option instead (``choose`` does the same by id)."""
         state, pending = self._load_waiting(run_id, by, "decision", transition=transition)
         by = authz.principal_name(by)
+        cm = pending.get("committee")
+        if cm:
+            # At a committee's decision a vote is a member's (consensus); another way out that someone else decides (its own
+            # assignees) is taken only when named.
+            ways = {t["id"] for t in self.committee_options(state)}
+            other = next((o for o in pending.get("options") or [] if o.get("assignees") is not None and by in o["assignees"]
+                          and o["id"] == transition and o["id"] not in ways), None)
+            if other is None:
+                if by in self.committee_outstanding(pending) and (transition is None or transition in ways):
+                    return self._person_vote(state, pending, by, verdict, meaning, payload_digest, transition, fields)
+                if by in (cm.get("votes") or {}) and by not in (cm.get("interveners") or []):
+                    raise RunError(f"{by} has already voted on this item")
+                raise RunError(f"the {cm['name']} committee decides this by consensus: "
+                               + (f"as {'its chair' if by == cm.get('chair') else 'the person it was escalated to'} you intervene (decide in "
+                                  "the member's place, extend the due date, or return it)" if by in (cm.get("interveners") or [])
+                                  else f"{by} is not one of its members"))
         if Track(self._dir(state["id"])).has_decision(pending["step"], pending.get("checkpoint")):
             # One signature per Gate: a decision that landed before a crash is not followed by a second, contrary one.
             raise RunError("this step was already decided; open the item again to see where it stands")
@@ -1808,6 +2329,8 @@ class Runner:
         hook = POST_DECISION_HOOKS.get(rec["type"]) if rec is not None else None
         if hook:
             hook(self.kernel, self.kernel.get(rec["locator"]), verdict)
+        if (result.get("pending") or {}).get("committee") and result.get("status") == "waiting":
+            result = self._committee_cogs(result)  # back at a committee's decision: its cog members take their turn
         return result
 
     def _await_countersign(self, state: dict, pending: dict, step: dict, track: Track, bundle: dict, by: str, meaning: str,
@@ -2133,6 +2656,11 @@ class Runner:
         for state in self.list():
             pending = state.get("pending")
             if not pending or state["status"] != "waiting" or not pending.get("due") or pending["due"] >= today or pending.get("escalated"):
+                continue
+            if pending.get("committee"):  # late members pause it for the chair; a pause past due escalates
+                done = self._tick_committee(state, today)
+                if done:
+                    escalated.append(done)
                 continue
             track = Track(self._dir(state["id"]))
             self._follow_release(state, track, "an escalation")  # a reassignment is a move (change control 5.1)

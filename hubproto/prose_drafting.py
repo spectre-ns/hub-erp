@@ -7,6 +7,11 @@ the SOP the rule belongs to (the revision the change order carries, started when
 style. Without a model for the cog here (or with only a stand-in) it writes the sentence the grammar reads exactly, the
 one Settings wrote before.
 
+A direct change that gives a role, a group or a cog a part in the SOP (a step, a decision, a route, approval criteria, a
+duty, a create, approve or update permission) also gets its row in the SOP's Roles and responsibilities table, when the
+table does not list them yet (``guards.table_rows_needed``, ``extract.add_responsibility_row``): the table says who must
+read the SOP. A process written as a graph is stated in the graph sentences (``process_graph.to_sentences``).
+
 Then the round trip: the drafted text is compiled (by the compile-frame committee when the hub reads prose with models,
 else by the grammar) and must give back the same rule; a removed rule must be gone. A mismatch is a question with code
 ``round-trip``: the author answers it in the prose, and an unresolved one is a warning the approvers accept. Each direct
@@ -193,6 +198,102 @@ def _draft(writer, name: str, text: str, op: dict, new: dict, old: dict | None, 
     return list(op["lines"]), "sentence", "the qa-manager's draft was not usable; the grammar sentence was written"
 
 
+def _needs_of(item: dict, name: str, base: list[dict] | None = None) -> list[tuple[str, str]]:
+    """(who, what part) the item's new rule gives in the SOP ``name`` (a committee's part is its group's)."""
+    from .guards import table_needs
+
+    _old, new = rules_of(item)
+    if new is None:
+        return []
+    committees = [r for r in base or [] if r.get("kind") == "committee"]
+    return [(who, what) for who, what, _l in table_needs([{**new, "source": {"frame": name, "line": 0}}] + committees).get(name, [])]
+
+
+def _parts_of(item: dict, name: str, base: list[dict] | None = None) -> set[str]:
+    return {who for who, _w in _needs_of(item, name, base)}
+
+
+def _cog_of_step(step: str, t: dict) -> str:
+    """The cog a graph action runs: a step id names its cog, or the cog and the transition when it runs in several."""
+    return step[: -len(t["id"]) - 1] if t.get("id") and step.endswith("-" + t["id"]) else step
+
+
+def graph_lines(rule: dict, *, heading: bool = True) -> list[str]:
+    """The lines of a ``## Process:`` section for a process written as a graph: where its records are filed, its record
+    type, then its statuses and transitions as the sentences the compiler reads back (``process_graph.to_sentences``).
+    Accepts the process rule or the workflow (10.1) shape of the workflow editor (actions named by step id)."""
+    from .process_graph import to_sentences
+    from .settings import plural
+
+    name = rule.get("name") or rule.get("process")
+    lines = [f"## Process: {name}"] if heading else []
+    if rule.get("folder"):
+        lines.append(f"Records are filed in {rule['folder']}.")
+    for what, folder in (rule.get("files_by_type") or {}).items():
+        lines.append(f"{plural(what).capitalize()} are filed in {folder}.")
+    if rule.get("record_type"):
+        lines.append(f"The record type is {rule['record_type']}.")
+    cogs = {a: _cog_of_step(a, t) for t in rule.get("transitions") or [] for a in t.get("actions") or [] if isinstance(a, str)}
+    return lines + to_sentences(rule, cogs)
+
+
+def _row_text(what: str, said: str) -> str:
+    return f"{what[:1].upper()}{what[1:]}: {said}"
+
+
+def add_table_rows(hub, co_ref: str, name: str, items: list[dict], base: list[dict], processes: dict, by: str) -> list[dict]:
+    """The Roles and responsibilities rows the SOP ``name`` needs for the parts its direct changes give (a role, a group
+    or a cog the table does not list yet), written into its carried draft by the qa-manager cog. Returns the rows added
+    [{"who", "what"}]."""
+    from .extract import ConventionExtractor, add_responsibility_row, responsibilities_of
+    from .guards import table_rows_needed
+
+    draft = _carried_draft(hub, co_ref, name)
+    if draft is None:
+        return []
+    frame = _frame_of(hub, name, draft)
+    rules = ConventionExtractor().extract(frame).rules
+    # Who is who comes from the whole organization (a cog listed through one of its roles or groups needs no row).
+    rules += [r for r in base if r.get("kind") in ("member", "group", "committee") and (r.get("source") or {}).get("frame") != name]
+    parts = set().union(*[_parts_of(item, name, base) for item in items]) if items else set()
+    needed = [(who, what) for who, what in table_rows_needed(rules).get(name, []) if who in parts]
+    if not needed:
+        return []
+    text = frame.text
+    said = {}
+    for item in items:
+        for who, what in _needs_of(item, name, base):
+            said.setdefault((who, what), _says(item, processes))
+    added = []
+    for who, what in needed:
+        before = text
+        text = add_responsibility_row(text, who, _row_text(what, said.get((who, what)) or what))
+        if text != before:
+            added.append({"who": who, "what": what})
+    if not added:
+        return []
+    lines = text.splitlines()
+    head = next((i for i, ln in enumerate(lines) if ln.strip().lower() == "## roles and responsibilities"), None)
+    end = next((i for i in range(head + 1, len(lines)) if lines[i].startswith("#")), len(lines)) if head is not None else 0
+    body = [ln for ln in lines[head + 1:end]] if head is not None else []
+    while body and not body[-1].strip():
+        body.pop()
+    has_section = any(ln.strip().lower() == "## roles and responsibilities" for ln in frame.text.splitlines())
+    op = ({"op": "replace_section", "target": "Roles and responsibilities", "lines": [ln for ln in body if ln.strip()]} if has_section
+          else {"op": "insert", "at": "end", "lines": ["## Roles and responsibilities"] + [ln for ln in body if ln.strip()]})
+    try:
+        [rep] = sop_settings.apply_plan(hub, co_ref, {name: [op]}, by=by, author=QA_MANAGER,
+                                        note="the qa-manager adds the Roles and responsibilities rows the direct changes need")
+    except (ValueError, KernelGuardError):
+        return []
+    if not rep.get("ok"):
+        return []
+    # The rows read back as the table says (a row naming a group or a cog reads as that group or cog).
+    rows, _notes = responsibilities_of(_frame_of(hub, name, _carried_draft(hub, co_ref, name)))
+    listed = {r["who"] for r in rows}
+    return [a for a in added if a["who"] in listed]
+
+
 def _line_of(text: str, line: str) -> int | None:
     want = line.strip()
     for i, ln in enumerate(text.splitlines(), start=1):
@@ -248,6 +349,9 @@ def draft_direct_changes(hub, co_ref: str, by: str, *, call=None, extractor=None
             continue
         name, ops = sorted(planned.items())[0]  # one item is one edit, in the SOP the rule belongs to
         op = ops[0]
+        if new is not None and new.get("kind") == "process" and new.get("statuses") and op.get("lines"):
+            # A process written as a graph is stated in the graph sentences, which read back to the same graph.
+            op = {**op, "lines": graph_lines(new, heading=op["op"] != "replace_section")}
         how, why = "sentence", ""
         if writer and new is not None and new.get("kind") in sop_settings.SECTION and op.get("lines") \
                 and op["op"] in ("insert", "replace_paragraph"):
@@ -273,6 +377,19 @@ def draft_direct_changes(hub, co_ref: str, by: str, *, call=None, extractor=None
                           "line": _line_of(text, lines[0]) if lines else None, "lines": lines,
                           "removed": op.get("target") if op["op"] == "delete_paragraph" else None,
                           "by": QA_MANAGER, "how": how, "at": utcnow(), **({"note": why} if why else {})}
+    # The Roles and responsibilities rows the parts these changes give need (the table says who must read the SOP).
+    fresh: dict[str, list[dict]] = {}
+    for item in items:
+        st = item.get("stated") or {}
+        if st.get("sop") and st.get("at") and not item.get("stale") and not st.get("rows_checked"):
+            fresh.setdefault(st["sop"], []).append(item)
+    for name, its in sorted(fresh.items()):
+        rows = add_table_rows(hub, co["locator"], name, its, base, processes, by)
+        for item in its:
+            item["stated"]["rows_checked"] = True
+            mine = [r for r in rows if r["who"] in _parts_of(item, name, base)]
+            if mine:
+                item["stated"]["rows"] = mine
     # The round trip, for every item stated (now or in an earlier round): the drafted text compiled must give it back.
     stated: dict[str, list[dict]] = {}
     for item in items:

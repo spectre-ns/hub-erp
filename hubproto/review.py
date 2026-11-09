@@ -214,8 +214,9 @@ def render(reviews: list[dict], record: dict, question: str = "") -> str:
     return "\n".join(lines)
 
 
-def file_review(ctx, record: dict, reviews: list[dict], question: str = "", by: str = "") -> dict | None:
-    """File the review as evidence attached to the item (needs the DMS and a records reach)."""
+def file_review(ctx, record: dict, reviews: list[dict], question: str = "", by: str = "", fields: dict | None = None) -> dict | None:
+    """File the review as evidence attached to the item (needs the DMS and a records reach). ``fields``: more fields
+    for the review record (a cog's judgment for an approval says what it judged, so it is read back from the item)."""
     if ctx.dms is None:
         return None
     text = render(reviews, record, question)
@@ -233,7 +234,7 @@ def file_review(ctx, record: dict, reviews: list[dict], question: str = "", by: 
                               content=text.encode("utf-8"), filename=f"review-{record['number']}-{date.today().isoformat()}.md",
                               mime="text/markdown", doc_type="review", attach_to=record["locator"], run_id=ctx.run_id, release=ctx.release,
                               fields={"text": text, "verdict": "pass" if all(r["verdict"] == "pass" for r in reviews) else "fail",
-                                      "reviewers": [r["cog"] for r in reviews]})
+                                      "reviewers": [r["cog"] for r in reviews], **(fields or {})})
     except Exception:
         return None
 

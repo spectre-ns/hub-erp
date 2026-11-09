@@ -34,9 +34,13 @@ KINDS = {
     # A row of a document's Roles and responsibilities table: who (a role, a cog, a group) has what part in it. The table
     # says who must read the document and what a cog follows.
     "responsibility": {"frame", "who", "text"},
-    # A committee of cogs that does one piece of work together, each on its own: "compile-frame" reads the SOPs into
-    # rules; a rule needs ``quorum`` of the members to read it the same way.
-    "committee": {"name", "members", "quorum"},
+    # A named set of members, people and cogs (hubproto.groups): listed, or everyone holding some roles, or both. A group
+    # may carry permissions as a role does and be named in a Roles and responsibilities table.
+    "group": {"name", "members", "roles"},
+    # A committee, defined on a group (``group``; earlier texts list ``members``), with a person as its ``chair``: it decides
+    # by consensus, every member agreeing (``quorum`` from an earlier "Agree: n of m" is kept, not used). It decides at a
+    # gate of a process graph, reviews on a change order's panel, and reads the SOPs into rules (compile-frame).
+    "committee": {"name"},
 }
 
 CONDITION_VOCABULARY = {
@@ -143,8 +147,10 @@ def validate_graph(process: dict) -> list[str]:
         if t.get("type") == "directed" and not t.get("from"):
             errors.append(f"{where} says no status it comes from")
         g = t.get("gate") or {}
-        if g.get("kind") not in ("person", "cog", "auto"):
-            errors.append(f"{where} has no gate (a person, a cog or automatic)")
+        if g.get("kind") not in ("person", "cog", "committee", "auto"):
+            errors.append(f"{where} has no gate (a person, a cog, a committee or automatic)")
+        elif g["kind"] == "committee" and not g.get("committee"):
+            errors.append(f"{where}: a committee gate names the committee")
         elif g["kind"] == "cog" and not (g.get("cog") and g.get("fallback")):
             errors.append(f"{where}: a cog gate names the cog and the role it falls back to")
         elif g["kind"] == "auto" and g.get("when") not in ("actions-succeed", *CONDITION_VOCABULARY.values()):

@@ -231,8 +231,11 @@ def _readers(hub) -> str:
     committee = hub.compile_committee()
     if committee:
         ready = [n for n, m in committee["members"] if m]
-        return (f"; prose read by the compile-frame committee ({', '.join(ready)}; {committee['quorum']} of {len(committee['members'])} must agree)"
-                if len(ready) >= committee["quorum"] else "; sentence shapes only (the committee lacks a model for enough members)")
+        if len(ready) >= committee["quorum"]:
+            return f"; prose read by the compile-frame committee ({', '.join(ready)}; by consensus, every member agreeing)"
+        missing = [n for n, m in committee["members"] if not m]
+        return (f"; sentence shapes only: the compile-frame committee cannot reach consensus without {', '.join(missing)} "
+                f"(not available here); " + (f"its chair, {committee['chair']}, intervenes" if committee.get("chair") else "a person intervenes"))
     model = hub.compiler_model()
     return f"; prose read by the organization cog ({model})" if model else "; sentence shapes only (no local model)"
 

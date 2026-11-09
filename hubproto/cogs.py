@@ -601,14 +601,17 @@ def assign_training(runner, bundle: dict, kernel, rec: dict, roles: list[str], *
     """A read-and-acknowledge task for everyone in the roles a new revision trains: the roles its Roles and
     responsibilities table lists, unless ``roles`` (the document's hand-set training roles) overrides them
     (hubproto.training.roles_to_train)."""
-    from .training import roles_to_train
+    from .groups import group_members
+    from .training import groups_to_train, roles_to_train
 
+    groups = groups_to_train(bundle, rec, roles)
     roles = roles_to_train(bundle, rec, roles)
     assigned = []
-    if not roles or runner is None or "training-acknowledgement" not in bundle.get("ops", {}):
+    if not (roles or groups) or runner is None or "training-acknowledgement" not in bundle.get("ops", {}):
         return assigned
+    in_groups = {p for g in groups for p in group_members(bundle, g)}  # a group the table lists: each of its members
     for person, m in bundle["members"].items():
-        if m["type"] == "person" and set(m["roles"]) & set(roles):
+        if m["type"] == "person" and (set(m["roles"]) & set(roles) or person in in_groups):
             rid = runner.submit("training-acknowledgement",
                                 {"record": {"person": person, "document": rec["locator"], "revision": rec["fields"].get("revision"),
                                             "assigned": date.today().isoformat(), "assignee": person,
@@ -822,6 +825,12 @@ def capabilities_text(ctx: RunContext, *, tools_now: list[dict] | None = None) -
     if denies:
         out.append("What the SOPs forbid you:")
         out += [f"- \u201c{r['source']['text']}\u201d ({r['source']['frame']} line {r['source']['line']})" for r in denies[:6]]
+    via_groups = [r for r in bundle.get("permissions") or [] if r.get("effect") == "allow" and str(r.get("subject")).startswith("group:")
+                  and _names_me(bundle, cog, r["subject"])]
+    if via_groups:  # what it may do as a member of a group, as a person in the group may (principle 6)
+        out.append("What you may do as a member of a group:")
+        out += [f"- \u201c{r['source']['text']}\u201d ({r['source']['frame']} line {r['source']['line']}; through the "
+                f"{r['subject'][6:].replace('-', ' ')} group)" for r in via_groups[:8]]
     if tools_now:
         out.append("Tools you can call now (call them; never guess what a tool would return):")
         out += [line(t) for t in tools_now]
@@ -862,6 +871,10 @@ def _names_me(bundle: dict, cog: str, subject: str) -> bool:
     kind, _, name = (subject or "").partition(":")
     if kind == "role":
         return name in set(((bundle.get("members") or {}).get(cog) or {}).get("roles") or [])
+    if kind == "group":
+        from .groups import groups_of
+
+        return name in groups_of(bundle, cog)
     return name == cog
 
 
@@ -973,7 +986,10 @@ def procedures_context(ctx: RunContext, rec: dict | None, budget: int) -> str:
 
     bundle = ctx.bundle or {}
     cog = cog_name(ctx)
-    me = {"cog:" + cog} | {"role:" + r for r in ((bundle.get("members") or {}).get(cog) or {}).get("roles") or []}
+    from .groups import groups_of
+
+    me = {"cog:" + cog} | {"role:" + r for r in ((bundle.get("members") or {}).get(cog) or {}).get("roles") or []} \
+        | {"group:" + g for g in groups_of(bundle, cog)}
     divs = _divergences(ctx)
     procs = bundle.get("processes") or {}
     process = governing_process(ctx, rec)
@@ -1329,7 +1345,12 @@ class ReviewerCog(Cog):
         if rec is None:
             return make_envelope(self.id, self.version, "review-document", error={"code": "no-record", "detail": "nothing to review"})
         r = _review.review(self.id, ctx.profile, ctx, rec, input.get("question") or "", judgment=bool(input.get("judgment")))
-        doc = _review.file_review(ctx, rec, [r], input.get("question") or "", by=self.id) if input.get("file", True) else None
+        # A judgment for an approval is filed with what it judged (the version of the item), so it is read back from the
+        # item, never from a store of the cog's own (cogs have no private memories, change control 13).
+        extra = {"judgment": {"cog": self.id, "key": input["judgment_key"], "verdict": r.get("verdict"),
+                              "findings": [f"[{p.get('severity')}] {p.get('detail')}" for p in (r.get("findings") or [])][:6]}} \
+            if input.get("judgment_key") else None
+        doc = _review.file_review(ctx, rec, [r], input.get("question") or "", by=self.id, fields=extra) if input.get("file", True) else None
         return self.ok("review-document", {**r, "evidence": doc["locator"] if doc else None})
 
     def task_review(self, input: dict, ctx: RunContext) -> dict:
@@ -1351,22 +1372,21 @@ class ReviewerCog(Cog):
                 # The review is the cog's own work as a member (it files evidence), not a step of the run: full kernel, not the run's scope.
                 rctx = ctx if ctx.runner is None else replace(ctx, kernel=ctx.runner.kernel, dms=ctx.runner.dms or ctx.dms, owner=self.id)
                 key = self._content_key(rctx) if ctx.record else ""
-                earlier = self._judgments(ctx).get(key) if key else None
+                earlier = self._judgment_on_item(rctx, key) if key else None
                 if earlier and earlier.get("verdict") != "pass":
                     # A failed review binds for this version of the item: asking again does not roll the dice again.
                     judged.update({"passes": False, "verdict": "fail", "evidence": earlier.get("evidence"), "stand_in": False,
                                    "summary": f"it reviewed this same version on {earlier.get('at', '')[:10]} and it did not pass; that stands until the item changes",
                                    "findings": list(earlier.get("findings") or [])[:6], "bound": True})
                     return judged
-                env = self.task_review_document({"record": ctx.record, "judgment": True, "question": "Approval review: is the content fit to approve as it stands?"},
+                env = self.task_review_document({"record": ctx.record, "judgment": True, "judgment_key": key,
+                                                 "question": "Approval review: is the content fit to approve as it stands?"},
                                                 rctx) if ctx.record else {}
                 r = (env or {}).get("payload") or {}
                 passed = r.get("verdict") == "pass" and (not r.get("stand_in") or stand_in_allowed())
                 judged.update({"passes": passed, "verdict": r.get("verdict") or "no review", "evidence": r.get("evidence"),
                                "summary": (r.get("summary") or "").strip(), "stand_in": bool(r.get("stand_in")),
                                "findings": [f"[{p.get('severity')}] {p.get('detail')}" for p in (r.get("findings") or [])][:6]})
-                if key and not judged["passes"]:
-                    self._remember_judgment(ctx, key, judged)
             return judged
 
         seen_before = ""
@@ -1569,26 +1589,24 @@ class ReviewerCog(Cog):
                 docs = []
         return f"{rec['locator']}|{sha256_of({'fields': fields, 'docs': docs})[:24]}"
 
-    def _judgments(self, ctx) -> dict:
-        path = self._judgment_path(ctx)
+    def _judgment_on_item(self, ctx, key: str) -> dict | None:
+        """This cog's latest judgment of this version of the item (``key``: its content as an approver reads it), read
+        back from the review records filed on the item; None when it has not judged this version. Cogs have no private
+        memories (change control 13): what it judged is on the item, where everyone who may read the item sees it."""
+        if ctx.dms is None or not ctx.record or not key:
+            return None
         try:
-            return json.loads(path.read_text()) if path and path.exists() else {}
-        except (OSError, ValueError):
-            return {}
-
-    def _remember_judgment(self, ctx, key: str, judged: dict) -> None:
-        path = self._judgment_path(ctx)
-        if not path:
-            return
-        data = self._judgments(ctx)
-        data[key] = {"verdict": judged.get("verdict"), "evidence": judged.get("evidence"), "findings": judged.get("findings"),
-                     "at": __import__("hubproto.release", fromlist=["utcnow"]).utcnow()}
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=1, default=str))
-
-    def _judgment_path(self, ctx):
-        root = getattr(ctx.runner, "root", None)
-        return (root.parent / "judgments" / f"{self.id}.json") if root is not None else None
+            docs = ctx.dms.documents_of(ctx.record)
+        except Exception:
+            return None
+        found = None
+        for d in docs:
+            j = (d.get("fields") or {}).get("judgment") or {}
+            if d["fields"].get("doc_class") == "evidence" and j.get("cog") == self.id and j.get("key") == key:
+                if found is None or str(d.get("created_at") or "") >= str(found.get("at") or ""):
+                    found = {"verdict": j.get("verdict"), "evidence": d["locator"], "findings": list(j.get("findings") or []),
+                             "at": d.get("created_at") or ""}
+        return found
 
     def _within_caps(self, ctx: RunContext, crit: dict, routing_ctx: dict) -> tuple[bool, list[str]]:
         """A rail's running limits: at most N approvals a day, at most an amount a month, counted from this cog's own
