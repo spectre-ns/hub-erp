@@ -402,4 +402,5 @@ final report every place you needed another workstream's code and what you assum
   read under its roles' read permissions; effective revisions by default, a draft only when its task
   is about that draft); the item it is working on and that item's records; and the conversation it is
   in. No private store: the per-cog judgments file becomes review records on the item.
-- Open: whether a chat keeps the current conversation (proposed) or every chat message stands alone.
+- **A chat carries its context**: the conversation thread (a record both sides can read, cleared with
+  New conversation) goes into the cog's prompt as THE CONVERSATION. It is a record, not a private memory.
