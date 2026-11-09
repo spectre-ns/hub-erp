@@ -134,7 +134,12 @@ Existing steps (check, frame into force, publish revisions, forms, training, tel
 ## 4. Compilation
 
 - **Fast path, deterministic:** sentences in the shapes the grammar knows (DEV-NOTES.md, "Sentence
-  grammar") are read exactly, no model.
+  grammar") are read exactly, no model. **The grammar is never a gate** (agreed 2026-11-09): a
+  sentence it does not know is a note marked *unread*, not an error, and is left to the committee.
+  One that no reader read becomes a blocking `unread-rule` question for a person (it states no
+  rule, it is recorded as a divergence, or the author rewrites it), so prose still never ships
+  unread. Checks on what was read (a process graph that does not close, a persona value outside
+  its list) remain errors.
 - **Prose, by the compile-frame committee** (organization + qa-manager cogs, quorum as today):
   reading is **diff-based**. For a frame whose text differs from the version in force, the reader is
   given the unified diff with line numbers and the rules currently in force for that frame (and the

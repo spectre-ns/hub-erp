@@ -692,3 +692,42 @@ def test_there_is_no_global_model_override(hub, monkeypatch):
     assert isinstance(extract.get_extractor(), ModelExtractor)
     monkeypatch.setenv("HUBPROTO_EXTRACTOR", "convention")
     assert isinstance(extract.get_extractor(), GrammarReader)
+
+
+NO_LIMIT = "The ap-reviewer cog may approve purchase-to-pay bills with no upper limit"  # no full stop: the grammar does not read it
+OLD_CRITERIA = ("The ap-reviewer cog may approve purchase-to-pay bills under 2,000 USD when the three-way match is within tolerance "
+                "and the supplier is approved.")
+
+
+def _committee(hub, tmp_path, answer, name):
+    call, calls = reader(answer)
+    return CommitteeExtractor([("qa-manager", MODEL), ("organization", MODEL)], 2, cache_dir=tmp_path / name, context=context_for(hub),
+                              call=call, baseline=lambda: baseline_for(hub)), calls
+
+
+def test_a_sentence_the_grammar_cannot_read_is_read_by_the_committee_not_an_error(hub, tmp_path):
+    """The grammar is the fast path, never a gate: a changed sentence it does not know goes to the compile-frame
+    committee, which reads the diff (here: the limit on the cog's approvals is removed)."""
+    rewrite(hub, OLD_CRITERIA, NO_LIMIT)
+    line = line_of(hub, NO_LIMIT)
+    criteria = {"op": "add", "kind": "approval_criteria", "line": line, "quote": NO_LIMIT,
+                "fields": {"approver": "cog:ap-reviewer", "process": "purchase-to-pay", "max_amount": None, "currency": None, "conditions": []}}
+    ex, calls = _committee(hub, tmp_path, lambda user, system: {"changes": [criteria], "questions": []}, "read")
+    p = hub.compile(extractor=ex)
+    assert calls, "the committee read the diff"
+    assert not [f for f in p["findings"] if f["severity"] == "error"], p["findings"]
+    assert not [q for q in p["questions"] if q.get("unread_note")], "read by the committee: nothing for a person to decide"
+    [c] = [c for c in p["changes"] if c["op"] == "add" and c["rule"]["kind"] == "approval_criteria"]
+    assert c["rule"]["max_amount"] is None and c["widening"] and "read by the compile-frame committee" in c["reason"]
+
+
+def test_a_sentence_no_reader_read_is_a_question_for_a_person_not_an_error(hub, tmp_path):
+    rewrite(hub, OLD_CRITERIA, NO_LIMIT)
+    ex, _ = _committee(hub, tmp_path, lambda user, system: {"changes": [], "questions": []}, "none")
+    p = hub.compile(extractor=ex)
+    assert not [f for f in p["findings"] if f["severity"] == "error" and f["guard"] == "grammar"], "the grammar is not a gate"
+    [q] = [q for q in p["questions"] if q.get("unread_note")]
+    assert q["blocking"] and q["code"] == "unread-rule" and q["quote"] == NO_LIMIT
+    from hubproto.compile import readiness
+
+    assert any("unread-rule" in x for x in readiness(p)), "it still never ships unread"

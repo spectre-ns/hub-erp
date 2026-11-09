@@ -135,7 +135,7 @@ def test_group_grammar_listed_and_by_role(tmp_path):
     groups = {r["name"]: r for r in ex.rules if r["kind"] == "group"}
     assert groups["design-reviewers"]["members"] == ["kim"] and groups["design-reviewers"]["roles"] == ["design-reviewer"]
     assert groups["crew"]["members"] == ["kim", "lee"] and groups["crew"]["roles"] == ["designer", "design-lead"]
-    [bad] = [n for n in ex.notes if n.get("severity") == "error"]
+    [bad] = [n for n in ex.notes if n.get("severity") == "unread"]
     assert "is not a member name" in bad["note"] and "Somebody Else" in bad["text"]
     [c] = [r for r in ex.rules if r["kind"] == "committee"]
     assert (c["group"], c["chair"]) == ("design-reviewers", "sam") and c["purpose"].startswith("Reviews a design")

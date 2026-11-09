@@ -355,8 +355,7 @@ def preview(hub, co_ref: str) -> dict | None:
     p["errors"] = [f"{f['detail']} ({f['frame']} line {f['line']})" for f in blocking_findings(p)]
     # A page never calls a model: a changed sentence the grammar cannot read and the compile-frame committee has not read
     # yet is not an error of the draft, it is what the committee reads in the next review round.
-    p["unread"] = [{"frame": n["frame"], "line": n["line"], "text": n["text"]} for n in p.get("notes") or []
-                   if n.get("severity") == "error" and "looks like a rule but does not parse" in str(n.get("note"))]
+    p["unread"] = [{"frame": n["frame"], "line": n["line"], "text": n["text"]} for n in p.get("notes") or [] if n.get("severity") == "unread"]
     p["preview"] = True
     return p
 

@@ -551,6 +551,13 @@ def cmd_compile(args) -> int:
         files = sorted({frame_file(hub, f["frame"]) for f in errors})
         print(f"not releasable: fix the {len(errors)} error(s) in {', '.join(files)} and compile again")
         return 1
+    unread = [q for q in proposal.get("questions") or [] if q.get("unread_note") and q.get("status", "open") == "open"]
+    if unread:
+        for q in unread:
+            print(f"[question] {frame_file(hub, q['frame'])}:{q['line']}: not read: {q.get('quote')}")
+        print(f"not releasable yet: no reader read {len(unread)} sentence(s); a person answers each question "
+              f"on the change order that carries it, or the author rewrites the sentence and compiles again")
+        return 1
     if proposal["changes"] and proposal["reviewers"]:
         first = proposal["reviewers"][0]
         widen = any(c["widening"] for c in proposal["changes"])

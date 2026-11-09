@@ -170,14 +170,13 @@ def test_record_numbers_are_case_insensitive_and_runs_resolve_by_prefix(released
 
 
 # ------------------------------------------------------------------ compile, proposals, review, release (cli-admin-1, -2, -3, -8, -17, -18)
-def test_compile_exits_1_on_a_grammar_error_cited_by_file_and_line(fresh):
+def test_compile_exits_1_on_a_sentence_no_reader_read_cited_by_file_and_line(fresh):
     release_all(Hub(fresh))
     edit(fresh, FINANCE, "## Permissions", "## Permisions")
     rc, out = run_cli(fresh, "compile")
-    assert rc == 1
-    assert "[error] frames/finance/finance-policy.frame.md:18: grammar" in out
-    assert out.index("[error]") < out.index("\nchanges:\n"), "errors are printed first"
-    assert "not releasable" in out
+    assert rc == 1 and "[error]" not in out, "the grammar not knowing a line is not an error"
+    assert "[question] frames/finance/finance-policy.frame.md:18: not read: ## Permisions" in out
+    assert "not releasable yet" in out and "a person answers each question" in out
 
 
 def test_compile_collapses_rerendered_processes_and_says_what_to_run_next(fresh):

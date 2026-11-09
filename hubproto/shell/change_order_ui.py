@@ -1308,7 +1308,7 @@ class ChangeOrderMixin:
                             "you request review: it says what each sentence changes, and asks where the prose is unclear.</p><ul>"
                             + "".join(f"<li><q>{esc(u['text'])}</q> <span class='why'>({esc(u['frame'])} line {esc(u['line'])})</span></li>"
                                       for u in unread) + "</ul></div>")
-                rest = [e for e in pv.get("errors") or [] if "looks like a rule but does not parse" not in e]
+                rest = list(pv.get("errors") or [])
                 if rest:
                     out += ("<div class='card warn' role='status'><p><b>" + ("As the grammar alone reads the drafts, these would not hold"
                             if unread else "The drafts do not compile as they stand") + ".</b> "

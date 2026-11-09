@@ -259,7 +259,7 @@ def responsibilities_of(frame) -> tuple[list[dict], list[dict]]:
         if r is None:
             continue
         if r["kind"] == "unparsed":
-            notes.append({"frame": frame.name, "line": n, "text": line, "severity": "error",
+            notes.append({"frame": frame.name, "line": n, "text": line, "severity": "unread",
                           "note": "a Roles and responsibilities row reads '| <role, or the <name> cog> | <what they do> |'"})
             continue
         rules.append(r)
@@ -799,11 +799,11 @@ class ConventionExtractor:
                 if section not in RULE_SECTIONS and section != RESPONSIBILITIES and not section.startswith("process:"):
                     near = difflib.get_close_matches(section, RULE_SECTIONS, n=1, cutoff=0.75)
                     if near:
-                        out.notes.append({"frame": frame.name, "line": n, "text": line, "severity": "error",
-                                          "note": f"unknown section heading; did you mean '## {near[0].title()}'? Its sentences would be ignored"})
+                        out.notes.append({"frame": frame.name, "line": n, "text": line, "severity": "unread",
+                                          "note": f"unknown section heading; did you mean '## {near[0].title()}'? The sentence grammar does not read its sentences"})
                     elif section.startswith("process"):
-                        out.notes.append({"frame": frame.name, "line": n, "text": line, "severity": "error",
-                                          "note": "a process heading reads '## Process: <name>'; this one would be ignored"})
+                        out.notes.append({"frame": frame.name, "line": n, "text": line, "severity": "unread",
+                                          "note": "a process heading reads '## Process: <name>'; the sentence grammar does not read this one"})
                 continue
             if line.startswith("#"):
                 close_process()
@@ -863,7 +863,7 @@ class ConventionExtractor:
                     continue  # prose around the table
                 r = responsibility_rule(line, frame, n)
                 if r is not None and r["kind"] == "unparsed":
-                    out.notes.append({"frame": frame.name, "line": n, "text": line, "severity": "error",
+                    out.notes.append({"frame": frame.name, "line": n, "text": line, "severity": "unread",
                                       "note": "a Roles and responsibilities row reads '| <role, or the <name> cog> | <what they do> |'"})
                 elif r is not None:
                     out.rules.append(r)
@@ -874,22 +874,22 @@ class ConventionExtractor:
             if not matched:
                 note = {"frame": frame.name, "line": n, "text": line, "note": f"unparsed sentence in the {section!r} section"}
                 if section == "validation":
-                    note["severity"] = "error"
+                    note["severity"] = "unread"
                     note["note"] = ("a validation sentence reads '<Changes to> <permissions, routing, ...> are high|medium|low risk.' or "
                                     "'High|Medium|Low-risk changes need a test record|a test note|the review of the delta.'; this one names "
                                     "nothing the hub can class")
                 elif section == "duties":
-                    note["severity"] = "error"
+                    note["severity"] = "unread"
                     note["note"] = "a duty reads 'Every day|week|month the <cog> cog <does the task>.'; this one would be silently dropped"
                 elif section == "groups":
                     from .groups import parse_group
 
                     gm = _GROUP_ITEM.match(line)
-                    note["severity"] = "error"
+                    note["severity"] = "unread"
                     note["note"] = ((parse_group(gm.group("rest"))[2] if gm else "")
                                     or "a group reads '- <name>: <member>, <member> and <member>' or '- <name>: everyone holding <role>'")
                 elif _MODAL.search(line):
-                    note["severity"] = "error"
+                    note["severity"] = "unread"
                     note["note"] = (f"this sentence in the {section!r} section looks like a rule but does not parse "
                                     "(see the writing-policy-frames reference); it would be silently dropped")
                 out.notes.append(note)
