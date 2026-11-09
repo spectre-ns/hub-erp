@@ -425,12 +425,18 @@ def id_map(wf: dict) -> dict[str, str]:
     """{derived id: id} for the statuses and transitions whose ids the names do not give (a renamed element keeps its
     id): recorded beside the prose (the frame's ``workflow_ids``), never in it."""
     out = {}
+    # The prose names statuses, so an unnamed transition's id is read from the statuses' names ("From Open to Waiting
+    # here" gives open-to-waiting-here), before the map puts the kept ids back: derive it the same way here.
+    read_as = {s["id"]: derived_id(s, "status") for s in wf.get("statuses") or []}
     for s in wf.get("statuses") or []:
-        if not s.get("system") and derived_id(s, "status") != s["id"]:
-            out[derived_id(s, "status")] = s["id"]
+        if not s.get("system") and read_as[s["id"]] != s["id"]:
+            out[read_as[s["id"]]] = s["id"]
     for t in wf.get("transitions") or []:
-        if not t.get("system") and derived_id(t, "transition") != t["id"]:
-            out[derived_id(t, "transition")] = t["id"]
+        if t.get("system"):
+            continue
+        as_read = {**t, "to": read_as.get(t.get("to"), t.get("to")), "from": [read_as.get(x, x) for x in t.get("from") or []]}
+        if derived_id(as_read, "transition") != t["id"]:
+            out[derived_id(as_read, "transition")] = t["id"]
     return out
 
 

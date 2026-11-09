@@ -379,6 +379,15 @@ def carry(hub, co_ref: str, user: str, process: str) -> dict:
         items = changecontrol.add_direct_change(hub, co["locator"], {"op": "change" if was else "add", "rule": rule, **({"was": was} if was else {})},
                                                 user, origin={"editor": "workflow", "process": process})
         direct_id = next((i["id"] for i in reversed(items) if (i.get("origin") or {}).get("process") == process), None)
+        # A rename keeps the id: the item carries {id the new names give: id kept} (process_graph.id_map), which the
+        # drafter writes beside the prose (the revision's workflow_ids), so the compile reads the same ids back.
+        from .process_graph import id_map
+
+        ids = id_map(rule)
+        if direct_id and ids:
+            fresh = changecontrol.sync(hub, co["locator"])
+            its = [dict(i, workflow_ids=ids) if i.get("id") == direct_id else i for i in changecontrol._items(fresh)]
+            hub.kernel.set_fields(co["locator"], {"direct_changes": its}, by=user)
     # The state map says where the items of the statuses the draft removes go: only those (a status deleted and then put
     # back by undo is not removed), and the answers carried before for this process are replaced, not merged.
     removed = {k: v for k, v in (doc.get("state_map") or {}).items() if k not in wm.status_map(doc["graph"]) and k in wm.status_map(base["graph"]) and v}

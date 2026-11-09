@@ -416,7 +416,9 @@ def draft_direct_changes(hub, co_ref: str, by: str, *, call=None, extractor=None
             # its names do not give (a rename) go into the revision's front matter, never into the prose.
             from .process_graph import id_map
 
-            op = {**op, "lines": graph_lines(new, heading=op["op"] != "replace_section"), "workflow_ids": id_map(new)}
+            # The workflow editor's carried change brings its own map too (hubproto.workflows.carry): both are kept.
+            op = {**op, "lines": graph_lines(new, heading=op["op"] != "replace_section"),
+                  "workflow_ids": {**id_map(new), **(item.get("workflow_ids") or {})}}
         how, why = "sentence", ""
         if writer and new is not None and new.get("kind") in sop_settings.SECTION and op.get("lines") \
                 and op["op"] in ("insert", "replace_paragraph"):
