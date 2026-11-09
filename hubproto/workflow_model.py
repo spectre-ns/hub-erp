@@ -9,6 +9,7 @@ A process's workflow is one graph::
      "source": {"frame", "lines"}}
 
 Gates: ``{"kind": "person", "role", "not": ["author" | <transition id>]}``, ``{"kind": "cog", "cog", "fallback": <role>}``,
+``{"kind": "committee", "committee": <name>}`` (every member agrees; an objection sends the item back),
 ``{"kind": "auto", "when": "actions-succeed" | <condition> | "not <condition>"}`` (conditions: the closed vocabulary of
 ``hubproto.rules.CONDITION_VOCABULARY``). Validators, the closed list the graph grammar reads: ``{"fields_set": [...]}``,
 ``{"status_visited": <status id>}``, ``{"condition": <condition>}`` (a linked-records check such as "no open
@@ -44,8 +45,11 @@ CATEGORIES = ("todo", "in_progress", "done")
 CATEGORY_WORDS = {"todo": "to do", "in_progress": "in progress", "done": "done"}
 OUTCOMES = ("completed", "rejected", "cancelled", "superseded")
 TYPES = ("initial", "directed", "global")
-GATE_KINDS = ("person", "cog", "auto")
-GATE_RANK = {"auto": 0, "cog": 1, "person": 2}  # a gate weakens down this order (a widening)
+GATE_KINDS = ("person", "cog", "committee", "auto")
+# A gate weakens down this order (a widening): a committee (every member agrees) above one person, a person above a cog,
+# a cog above an automatic move.
+GATE_RANK = {"auto": 0, "cog": 1, "person": 2, "committee": 3}
+DECIDED_BY = ("person", "cog", "committee")  # the gates that wait for a decision
 CONDITIONS = tuple(sorted(set(CONDITION_VOCABULARY.values())))
 CONDITION_WORDS = {}
 for _phrase, _key in CONDITION_VOCABULARY.items():
@@ -154,7 +158,8 @@ def name_of(g: dict, sid: str | None) -> str:
 
 
 def gated(t: dict) -> bool:
-    return ((t.get("gate") or {}).get("kind")) in ("person", "cog")
+    """A decision waits here: a person, a cog or a committee decides (not an automatic move)."""
+    return ((t.get("gate") or {}).get("kind")) in DECIDED_BY
 
 
 def label_key(tid: str) -> str:
@@ -213,6 +218,8 @@ def gate_words(g: dict, gate: dict | None, *, initial: bool = False) -> str:
     if kind == "cog":
         return (f"the {gate.get('cog') or '?'} cog decides within its approval criteria, otherwise "
                 f"{role_words(gate.get('fallback'))}")
+    if kind == "committee":
+        return f"the {gate.get('committee') or '?'} committee decides (consensus)"
     if kind == "auto":
         w = gate.get("when") or "actions-succeed"
         return "automatically, once its actions succeed" if w == "actions-succeed" else f"automatically when {condition_words(w)}"
@@ -229,6 +236,8 @@ def gate_badge(gate: dict | None) -> tuple[str, str]:
         return "person", who + (" · not author" if "author" in (gate.get("not") or []) else "")
     if kind == "cog":
         return "cog", f"{gate.get('cog') or '?'} cog"
+    if kind == "committee":
+        return "committee", f"{gate.get('committee') or '?'} committee"
     if kind == "auto":
         w = gate.get("when") or "actions-succeed"
         return "auto", "auto" if w == "actions-succeed" else "auto: " + condition_words(w)
@@ -524,12 +533,14 @@ def validate(g: dict) -> list[dict]:
                     out.append(_problem("error", "reference", f"{label} names a status that is not in the workflow ({x})", "transition", tid))
         gate = t.get("gate")
         if not isinstance(gate, dict) or gate.get("kind") not in GATE_KINDS:
-            out.append(_problem("error", "gate", f"{label}: say who decides (a person's role, a cog, or automatically)", "transition", tid))
+            out.append(_problem("error", "gate", f"{label}: say who decides (a person's role, a cog, a committee, or automatically)", "transition", tid))
         else:
             if gate["kind"] == "person" and not gate.get("role"):
                 out.append(_problem("error", "gate", f"{label}: name the role that decides", "transition", tid))
             if gate["kind"] == "cog" and (not gate.get("cog") or not gate.get("fallback")):
                 out.append(_problem("error", "gate", f"{label}: name the cog and the role it falls back to", "transition", tid))
+            if gate["kind"] == "committee" and not gate.get("committee"):
+                out.append(_problem("error", "gate", f"{label}: name the committee that decides", "transition", tid))
             if gate["kind"] == "auto":
                 w = str(gate.get("when") or "actions-succeed")
                 if (w[4:] if w.startswith("not ") else w) not in AUTO_WHEN or w == "not actions-succeed":
@@ -689,6 +700,8 @@ def checks(g: dict, *, bundle: dict | None = None, old: dict | None = None, item
                 elif (gate.get("cog"), g.get("process")) not in criteria:
                     out.append(_problem("error", "cog-criteria", f"“{t['name']}”: the {gate.get('cog')} cog has no approval criteria for "
                                         f"{g.get('process')}, so it could never decide", "transition", t["id"]))
+            if gate.get("kind") == "committee":
+                out += _committee_checks(g, t, bundle)
     if len(g["statuses"]) > MAX_STATUSES:
         out.append(_problem("warning", "size", f"{len(g['statuses'])} statuses: more than about {MAX_STATUSES} is hard to follow"))
     if old:
@@ -704,6 +717,30 @@ def checks(g: dict, *, bundle: dict | None = None, old: dict | None = None, item
             else:
                 out.append(_problem("error", "state-map", f"{plural(n, 'item')} {'is' if n == 1 else 'are'} in “{osm[sid]['name']}”, which this "
                                     f"removes: say where {'it goes' if n == 1 else 'they go'}", "status", sid, count=n))
+    return out
+
+
+def _committee_checks(g: dict, t: dict, bundle: dict) -> list[dict]:
+    """A committee gate (workstream 9): the committee exists in the release, and an objection has a way back. A
+    committee decides by consensus: a decision it approves needs, from the same status, a transition the same
+    committee takes that sends the item back (the rule and words of the compile guard, ``hubproto.guards``, which
+    checks the SOP's prose; this checks the editor's draft, so a compile does not report it twice)."""
+    out = []
+    name, c = t.get("name") or t["id"], (t.get("gate") or {}).get("committee")
+    if c not in (bundle.get("committees") or {}):
+        known = ", ".join(sorted(bundle.get("committees") or {})) or "none yet"
+        return [_problem("error", "committee", f"“{name}” is decided by the {c} committee, which is not defined (committees: {known})",
+                         "transition", t["id"])]
+    if (t.get("type") or "directed") != "directed":
+        return out
+    from .process_graph import option_verdict
+
+    back = [x for x in g.get("transitions") or [] if (x.get("type") or "directed") == "directed" and set(x.get("from") or []) & set(t.get("from") or [])
+            and (x.get("gate") or {}).get("kind") == "committee" and option_verdict(g, x) == "reject"]
+    if option_verdict(g, t) == "approve" and not back:
+        frm = ", ".join(f"“{name_of(g, x)}”" for x in t.get("from") or [])
+        out.append(_problem("error", "committee-return", f"“{name}” is decided by the {c} committee, but an objection has no way back: add a "
+                            f"transition from {frm} to an earlier status (“Return”) that the {c} committee decides", "transition", t["id"]))
     return out
 
 
@@ -1284,7 +1321,7 @@ def apply_op(doc: dict, op: dict) -> dict:
         t = _transition(g, op.get("id"))
         gate = op.get("gate")
         if not isinstance(gate, dict) or gate.get("kind") not in GATE_KINDS:
-            raise ValueError("a gate is a person's role, a cog or automatic")
+            raise ValueError("a gate is a person's role, a cog, a committee or automatic")
         clean = {"kind": gate["kind"]}
         if gate.get("also"):
             clean["also"] = gate["also"]
@@ -1294,6 +1331,8 @@ def apply_op(doc: dict, op: dict) -> dict:
                 clean["not"] = list(dict.fromkeys(gate["not"]))
         elif gate["kind"] == "cog":
             clean["cog"], clean["fallback"] = gate.get("cog"), gate.get("fallback")
+        elif gate["kind"] == "committee":
+            clean["committee"] = gate.get("committee")
         else:
             clean["when"] = gate.get("when") or "actions-succeed"
         t["gate"] = clean

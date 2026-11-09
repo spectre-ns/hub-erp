@@ -350,7 +350,8 @@ class WorkflowsMixin:
         gate = gate or dict(wm.DEFAULT_GATE)
         kind = gate.get("kind") or "person"
         radios = "".join(f"<label><input type='radio' name='gate_kind' value='{k}'{' checked' if kind == k else ''}> {w}</label>"
-                         for k, w in (("person", "a person in a role"), ("cog", "a cog, within its criteria"), ("auto", "automatically")))
+                         for k, w in (("person", "a person in a role"), ("cog", "a cog, within its criteria"),
+                                      ("committee", "a committee (consensus)"), ("auto", "automatically")))
         roles = self._wf_roles()
         nots = gate.get("not") or []
         others = [(t["id"], t["name"]) for t in g["transitions"] if t["id"] != tid and t.get("type") != "initial"]
@@ -363,10 +364,21 @@ class WorkflowsMixin:
                 + (self._sel("not_t", others, not_t, label="and not whoever took", blank="(nobody else)") if others else "") + "</div>"
                 f"<div data-wf-show='gate_kind=cog' class='fields'>{self._sel('cog', self._wf_cogs(), gate.get('cog') or '', label='Cog', blank='choose…')}"
                 f"{self._sel('fallback', roles, gate.get('fallback') or '', label='Otherwise (the role it falls back to)', blank='choose…')}</div>"
+                f"<div data-wf-show='gate_kind=committee' class='fields'>{self._sel('committee', self._wf_committees(), gate.get('committee') or '', label='Committee', blank='choose…')}"
+                "<p class='wf-help'>Every member agrees, or the item goes back: give the status a way back that the same committee decides.</p></div>"
                 f"<div data-wf-show='gate_kind=auto' class='fields'>{self._sel('when', whens, gate.get('when') or 'actions-succeed', label='When')}</div></fieldset>")
+
+    def _wf_committees(self) -> list[tuple[str, str]]:
+        """The committees of the release in force (workstream 9), named with their group."""
+        out = []
+        for name, c in sorted(((self.bundle or {}).get("committees") or {}).items()):
+            out.append((name, f"{name} committee" + (f" ({c['group']} group)" if c.get("group") else "")))
+        return out
 
     def _wf_gate_from_form(self) -> dict:
         kind = self._f("gate_kind") or "person"
+        if kind == "committee":
+            return {"kind": "committee", "committee": self._f("committee")}
         if kind == "cog":
             return {"kind": "cog", "cog": self._f("cog"), "fallback": self._f("fallback")}
         if kind == "auto":
@@ -858,7 +870,8 @@ class WorkflowsMixin:
         out["gate"] = self._wf_gate_from_form()
         if old and (old.get("gate") or {}).get("kind") == out["gate"]["kind"]:
             # What the form does not show of the gate (who else may take it: "also") is kept as it is.
-            out["gate"] = {**{k: v for k, v in (old.get("gate") or {}).items() if k not in ("kind", "role", "not", "cog", "fallback", "when")}, **out["gate"]}
+            out["gate"] = {**{k: v for k, v in (old.get("gate") or {}).items() if k not in ("kind", "role", "not", "cog", "fallback", "when", "committee")},
+                           **out["gate"]}
         needs = _csv(self._f("needs"))
         vs = [{"fields_set": needs}] if needs else []
         if self._f("visited"):

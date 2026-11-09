@@ -437,3 +437,45 @@ def test_a_lone_transition_bows_round_a_status_in_its_way():
     g2 = wm.apply_op(g, {"op": "add_transition", "id": "skip", "name": "Skip", "from": ["open"], "to": "done"})
     assert lay["open"][1] == lay["review"][1] == lay["done"][1]
     assert wm.bends(g2).get("skip", 0) == 0 and wm.bends(g2, lay)["skip"] != 0, "the straight line would cross Review"
+
+
+# ---------------------------------------------------------------- committee gates (workstream 9)
+def committee_graph() -> dict:
+    """Review decided by a committee: Approve to Done, and Return to Open (the committee's way back for an objection)."""
+    g = small()
+    tm = wm.transition_map(g)
+    tm["approve"]["gate"] = {"kind": "committee", "committee": "compile-frame"}
+    tm["back"]["gate"] = {"kind": "committee", "committee": "compile-frame"}
+    return g
+
+
+def test_a_committee_gate_is_a_decision_in_words_badges_and_checks(bundle):
+    g = committee_graph()
+    t = wm.transition_map(g)["approve"]
+    assert wm.gate_words(g, t["gate"]) == "the compile-frame committee decides (consensus)"
+    assert wm.gate_badge(t["gate"]) == ("committee", "compile-frame committee") and wm.gated(t)
+    assert wm.checks(g, bundle=bundle["bundle"]) == [], "a defined committee with a way back for an objection"
+    assert wm.mandatory_gates(g)["approve"], "the bypass search counts a committee's decision"
+    unknown = copy.deepcopy(g)
+    wm.transition_map(unknown)["approve"]["gate"]["committee"] = "tea"
+    assert ("committee", "approve") in {(p["code"], p["id"]) for p in wm.checks(unknown, bundle=bundle["bundle"])}
+    no_way_back = copy.deepcopy(g)
+    wm.transition_map(no_way_back)["back"]["gate"] = {"kind": "person", "role": "quality-manager"}
+    found = [p for p in wm.checks(no_way_back, bundle=bundle["bundle"]) if p["code"] == "committee-return"]
+    assert found and found[0]["id"] == "approve" and "an objection has no way back" in found[0]["text"]
+    assert not [p for p in wm.checks(no_way_back) if p["code"].startswith("committee")], \
+        "without the release (the compile's call) the guard of hubproto.guards says it, not this too"
+    bad = copy.deepcopy(g)
+    wm.transition_map(bad)["approve"]["gate"] = {"kind": "committee"}
+    assert ("gate", "approve") in {(p["code"], p["id"]) for p in wm.validate(bad)}
+
+
+def test_from_a_committee_to_one_person_is_a_widening_and_set_gate_keeps_only_the_committee():
+    old = committee_graph()
+    new = wm.apply_op(old, {"op": "set_gate", "id": "approve", "gate": {"kind": "person", "role": "quality-manager"}})
+    assert any(p["id"] == "approve" and "weaker gate" in p["text"] for p in wm.checks(new, old=old) if p["code"] == "widening")
+    item = next(i for i in wm.diff(old, new) if i["key"] == "transition:approve" and i["change"] == "gate")
+    assert item["widening"] and "instead of the compile-frame committee decides (consensus)" in item["text"]
+    back = wm.apply_op(new, {"op": "set_gate", "id": "approve", "gate": {"kind": "committee", "committee": "compile-frame", "role": "x", "when": "y"}})
+    assert wm.transition_map(back)["approve"]["gate"] == {"kind": "committee", "committee": "compile-frame"}
+    assert not [p for p in wm.checks(back, old=new) if p["code"] == "widening" and p["id"] == "approve"], "a committee is stronger"
