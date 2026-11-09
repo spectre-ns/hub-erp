@@ -1056,6 +1056,14 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
 <div class="actions"><button>Check in</button></div></form>
 <form method="post" action="/undo-checkout" class="inline">{hidden_as(user)}<input type="hidden" name="doc" value="{esc(loc)}"><button class="secondary">Undo the check-out</button></form>"""
         body += "</div>"
+        if not self._may_withdraw(rec):
+            err_w = self._form_error(["reason"]) if self.route == "/withdraw-record" else ""
+            body += (f"<details class='card quiet' id='withdraw'{' open' if err_w else ''}><summary>Withdraw this draft</summary>{err_w}"
+                     f"<form method='post' action='/withdraw-record'>{hidden_as(user)}<input type='hidden' name='record' value='{esc(loc)}'>"
+                     f"<div class='fields'>{text_input('reason', 'Why it is withdrawn', self._val('reason') if self.route == '/withdraw-record' else '', required=True)}</div>"
+                     f"<div class='actions'><button class='reject'>{icon('x')}Withdraw</button><span class='why'>It stays in the history, closed"
+                     + (", and a new revision of the SOP can be started" if str(f.get("lineage", "")).startswith("sop") else "")
+                     + ".</span></div></form></details>")
         body += "<h2 id='attached'>Attached to</h2>" + table(["Item"], [[self._record_link(l["target"])] for l in attached], "Not attached to any item.")
         if other:
             body += "<h2 id='links'>Links</h2>" + table(["Relation", "Item", "Direction"], [[esc(l["label"]), self._record_link(l["target"]), esc(l["direction"])] for l in other])

@@ -603,3 +603,47 @@ def test_the_preview_leaves_a_sentence_the_grammar_cannot_read_to_the_compile_co
     assert "looks like a rule but does not parse" not in html and "Fix these first" not in html
     assert "As the grammar alone reads the drafts" in html, "what follows from the unread sentence is marked as the grammar's"
 
+
+
+def doc_page(shell, doc, who):
+    status, text = get(shell, "/document/" + quote(doc["locator"], safe=":"), **{"as": who})
+    assert status == 200, text[:600]
+    return main_of(text)
+
+
+def test_a_cancelled_change_order_withdraws_its_revision_so_a_new_one_can_start(shell):
+    """A revision exists only on its change order: cancelled, its draft is withdrawn (no other change order can carry it,
+    and an open draft would stop anyone revising the SOP again). A draft an open change order carries is taken off it,
+    not withdrawn from the document page; one that nothing carries any more is withdrawn there by its author."""
+    from hubproto import sopdocs
+
+    hub = shell["hub"]
+    co = new_co(shell)
+    draft = carry_revision(shell, co)
+    assert "Withdraw this draft" not in doc_page(shell, draft, "alice"), "carried by an open change order: taken off it instead"
+    ok(post(shell, "/co-review", {"as": "alice", "co": co["locator"], "choose": "own", "panel": ["management"]}))
+    ok(post(shell, "/co-send", {"as": "alice", "co": co["locator"]}))
+    run = hub.runner.run_for_record(co["locator"])
+    ok(post(shell, "/cancel", {"as": "alice", "run": run["id"], "reason": "a different revision instead", "confirm": "1"}))
+    assert hub.kernel.get(co["locator"])["state"] == "cancelled"
+    policy = sopdocs.in_force(hub.kernel, "finance-policy")
+    ok(post(shell, "/sop-revise", {"as": "alice", "doc": policy["locator"], "co": ""}))
+    old = hub.kernel.get(draft["locator"])
+    assert old["state"] == "withdrawn", "the cancelled change order's revision no longer stops a new one"
+    assert any("cancelled" in str((e.get("data") or {}).get("reason")) for e in hub.kernel.events(aggregate=old["locator"]))
+    new = next(c["draft"] for r in hub.kernel.query(type_="change-order") if r["state"] != "cancelled"
+               for c in eco.carried(hub, r) if c["name"] == "finance-policy")
+    assert new["locator"] != old["locator"] and new["state"] == "draft"
+
+
+def test_the_author_withdraws_a_draft_nothing_carries_from_the_document_page(shell):
+    hub = shell["hub"]
+    co = new_co(shell)
+    draft = carry_revision(shell, co)
+    hub.kernel.unlink(co["locator"], eco.CARRIES, draft["locator"], by="alice")  # left behind (as before cancelled orders withdrew theirs)
+    html = doc_page(shell, draft, "alice")
+    assert "Withdraw this draft" in html and "a new revision of the SOP can be started" in html
+    assert "Withdraw this draft" not in doc_page(shell, draft, "dave"), "only its author or a document controller"
+    refused(post(shell, "/withdraw-record", {"as": "alice", "record": draft["locator"], "reason": ""}))
+    ok(post(shell, "/withdraw-record", {"as": "alice", "record": draft["locator"], "reason": "starting over"}))
+    assert hub.kernel.get(draft["locator"])["state"] == "withdrawn"

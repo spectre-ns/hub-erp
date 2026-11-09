@@ -173,6 +173,20 @@ def finished(co: dict) -> bool:
     return co["state"] not in OPEN_STATES and not co["state"].startswith("awaiting")
 
 
+def withdraw_cancelled_drafts(hub, co: dict) -> list[str]:
+    """A cancelled change order's revisions are withdrawn: no other change order can carry them, and an open draft of an
+    SOP stops anyone starting another revision of it. Their versions and history stay. Returns their numbers."""
+    if co.get("state") != "cancelled":
+        return []
+    out = []
+    for c in carried(hub, co):
+        d = c["draft"]
+        if d["state"] in ("draft", "open", "held", "returned"):
+            hub.kernel.transition(d["locator"], "withdrawn", by="hub", reason=f"withdrawn with {co['number']}, which was cancelled")
+            out.append(d["number"])
+    return out
+
+
 def may_change_sop(bundle: dict, rec: dict, by: str) -> str:
     """Empty when ``by`` may revise this SOP or policy: its owner or author, a document controller, or (a policy) a
     policy owner."""
@@ -216,6 +230,8 @@ def add_sop(hub, co_ref: str, name: str, *, by: str, author: str | None = None) 
         if d["state"] in ("draft", "open", "held"):
             other = next((lk["target"] for lk in hub.kernel.links_of(d["locator"]) if lk["rel"] == CARRIES and lk["direction"] == "in"), None)
             o = hub.kernel.get(other) if other else None
+            if o is not None and d["number"] in withdraw_cancelled_drafts(hub, o):
+                continue  # the revision of a cancelled change order: withdrawn, it no longer stops a new one
             raise ValueError(f"{current['number']} is already being revised ({d['number']}" + (f", on {o['number']})" if o else ")"))
     content, v = hub.dms.content(current["locator"])
     f = current["fields"]
