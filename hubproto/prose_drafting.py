@@ -76,14 +76,18 @@ def rules_of(item: dict) -> tuple[dict | None, dict | None]:
 
 
 def same_rule(a: dict | None, b: dict | None) -> bool:
-    """The same rule, wherever stated (unset optional fields count as absent)."""
+    """The same rule, wherever stated (unset optional fields count as absent; a process's steps are compared without
+    the file lines they sit on)."""
     if not a or not b:
         return False
     if rule_key(a) == rule_key(b):
         return True
 
     def norm(r):
-        return {k: v for k, v in _strip(r).items() if v not in (None, [], {}, "")}
+        out = {k: v for k, v in _strip(r).items() if v not in (None, [], {}, "")}
+        if out.get("kind") == "process":
+            out["steps"] = [{k: v for k, v in s.items() if k != "line"} for s in out.get("steps") or []]
+        return out
     return norm(a) == norm(b)
 
 
@@ -247,9 +251,9 @@ def draft_direct_changes(hub, co_ref: str, by: str, *, call=None, extractor=None
         how, why = "sentence", ""
         if writer and new is not None and new.get("kind") in sop_settings.SECTION and op.get("lines") \
                 and op["op"] in ("insert", "replace_paragraph"):
-            draft = _carried_draft(hub, co["locator"], name)
-            text = sopdocs.frame_text(hub, draft) if draft else (hub.released_frames().get(name).text if name in hub.released_frames().frames else "")
-            lines, how, why = _draft(writer, name, text, op, new, live, processes)
+            draft, store = _carried_draft(hub, co["locator"], name), hub.released_frames()
+            text = sopdocs.frame_text(hub, draft) if draft else (store.get(name).text if name in store.frames else "")
+            lines, how, why = _draft(writer, name, text, op, new, live, processes)  # the style of the revision as it stands
             op = {**op, "lines": lines}
         try:
             [rep] = sop_settings.apply_plan(hub, co["locator"], {name: [op]}, by=by, author=QA_MANAGER,
