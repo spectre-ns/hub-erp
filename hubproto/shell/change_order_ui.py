@@ -462,9 +462,15 @@ class ChangeOrderMixin:
                          f"<span class='why'>{esc(m.get('type') or 'person')}, {esc(', '.join(r.replace('-', ' ') for r in m.get('roles') or []))}</span></label>"
                          for n, m in sorted(members.items(), key=lambda x: (x[1].get("type") != "cog", x[0])))
         plus = self._co_cv("/co-review", fid, "choose", "") == "plus"
+        try:
+            cmt_names = ", ".join(n for n, _ in (self.hub.compile_committee() or {}).get("members") or [])
+        except Exception:
+            cmt_names = ""
         inner = (f"<button>{icon('users')}{'Request review again' if again else 'Request review'}</button>"
                  f"<details class='inline-details'{' open' if own or plus else ''}><summary>Choose the panel yourself</summary>"
                  "<fieldset class='checks'><legend>Panel for this round</legend>"
+                 + (f"<p class='why'>Always on it: the compile-frame committee ({esc(cmt_names)}), which compiles the diff first.</p>" if cmt_names else "")
+                 + 
                  f"<label class='check'><input type='radio' name='choose' value='suggested'{'' if own or plus else ' checked'}> the reviewers the quality-assistant cog suggests "
                  "from the change-control SOP (with their reasons)</label>"
                  f"<label class='check'><input type='radio' name='choose' value='plus'{' checked' if plus else ''}> the suggested reviewers and the ones ticked below</label>"
@@ -821,7 +827,7 @@ class ChangeOrderMixin:
         elif st != "compiling":
             out += "<p class='why'>No reviewer suggested: the change-control SOP's section on reviewing changes names none for this delta.</p>"
         results = rnd.get("results") or {}
-        rows = []
+        rows = self._co_committee_rows(rnd)
         for e in rnd.get("panel") or []:
             res = results.get(e["who"]) or {}
             status = res.get("status") or ("not asked" if not e.get("member") else "queued")
@@ -864,6 +870,37 @@ class ChangeOrderMixin:
                          "<span class='why'>They are asked at once: a cog through its queue, a person in their inbox.</span></div>")
                 out += self._co_form("/co-reviewer-add", co, fid, inner, cls="sform card", label="Add a reviewer")
         return out + "</div>"
+
+    def _co_committee_rows(self, rnd: dict) -> list[list[str]]:
+        """The compile Op's members, first on the round's panel: the senior cogs of the compile-frame committee, which
+        compile the diff into the delta (by consensus) before anyone else reviews."""
+        cmt = cc.round_committee(self.hub, rnd) if hasattr(cc, "round_committee") else None
+        if not cmt:
+            return []
+        p = None
+        if rnd.get("compiled"):
+            try:
+                p = self.hub.proposals.load(rnd["compiled"])
+            except Exception:
+                p = None
+        st = rnd.get("status") or ""
+        rows = []
+        for m in cmt.get("members") or []:
+            if m.get("unavailable"):
+                status, scls, summary = "cannot read here", "crit", esc(m["unavailable"])
+            elif st == "compiling" or (st == "failed" and not rnd.get("compiled")):
+                status, scls, summary = ("compiling", "warn", "") if st == "compiling" else ("failed", "crit", esc(rnd.get("error") or ""))
+            else:
+                r = cc.committee_results(p, m["who"])
+                status, scls = "done", "ok"
+                summary = f"{r['items']} item(s) read by the committee, {r['questions']} question(s)"
+            why = ("compiles the diff into the delta (the compile Op), by consensus"
+                   + (f" <span class='why'>(compile-frame committee, group {esc(cmt.get('group'))}; chair {esc(cmt.get('chair') or '-')})</span>"
+                      if cmt.get("group") else ""))
+            model = f"<div class='why'>{esc(m.get('model') or '')}</div>" if m.get("model") and status == "done" else ""
+            rows.append([f"{self._co_who(m['who'])} <span class='chip'>cog</span> <span class='chip'>compile Op</span>", why,
+                         chip(status, scls), summary + model, ""])
+        return rows
 
     def _co_committees_html(self, ctx: dict) -> str:
         """Each committee on the panel and where its consensus stands (every member agrees; one objection returns it; a
@@ -940,7 +977,7 @@ class ChangeOrderMixin:
         un = cmt.get("unavailable") or {}
         names = ", ".join(n for n, _ in cmt.get("members") or [])
         if not un:
-            return f"<p class='why'>{icon('users')} The compile-frame committee ({esc(names)}; chair {esc(cmt.get('chair') or '-')}) read the prose by consensus.</p>"
+            return ""  # its members are on the round's panel (_co_committee_rows)
         qs = [q for q in self._co_unavailable_questions(ctx) if q.get("status", "open") == "open"]
         what = ("; ".join(f"{n}: {w}" for n, w in un.items()))
         unread = self._co_unread(ctx)

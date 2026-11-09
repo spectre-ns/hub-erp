@@ -1323,6 +1323,45 @@ def request_review(hub, co_ref, by: str, panel=None, drop_reason: str = "") -> d
     return current_round(co)
 
 
+def _committee_record(hub) -> dict | None:
+    """The compile-frame committee as a round records it: its members (each with the model it reads with, or why it
+    cannot read here), its group and its chair."""
+    try:
+        c = hub.compile_committee()
+    except Exception:
+        return None
+    if not c:
+        return None
+    un = c.get("unavailable") or {}
+    return {"members": [{"who": w, "model": m, **({"unavailable": un[w]} if w in un else {})} for w, m in c.get("members") or []],
+            "group": c.get("group"), "chair": c.get("chair")}
+
+
+def round_committee(hub, rnd: dict) -> dict | None:
+    """The compile-frame committee of a round: as the round recorded it when it was compiled, or, for a round compiled
+    before rounds recorded it, the committee in force when its compile was read by a committee."""
+    if rnd.get("committee"):
+        return rnd["committee"]
+    if not rnd.get("compiled"):
+        return _committee_record(hub) if rnd.get("status") == "compiling" else None
+    try:
+        p = hub.proposals.load(rnd["compiled"])
+    except Exception:
+        return None
+    return _committee_record(hub) if p.get("extractor") == "committee" else None
+
+
+def committee_results(p: dict | None, who: str) -> dict:
+    """What a compile-frame committee member's reading gave in a compile: the items read by the committee (the agreed
+    readings, which name every member) and the questions it asked (alone or with others)."""
+    if not p:
+        return {"items": 0, "questions": 0}
+    items = sum(1 for c in p.get("changes") or [] if "read by the compile-frame committee (" in str(c.get("reason") or "")
+                and who in str(c.get("reason") or "").split("read by the compile-frame committee (", 1)[1])
+    qs = sum(1 for q in p.get("questions") or [] if who in str(q.get("raised_by") or ""))
+    return {"items": items, "questions": qs}
+
+
 def _round_failed(hub, co: dict, n: int, why: str) -> None:
     _update_round(hub, co, n, lambda r: r.update({"status": "failed", "error": why}), stage="revising")
 
@@ -1335,7 +1374,9 @@ def round_compile(hub, co_ref, n: int, *, extractor=None) -> str:
         _round_failed(hub, co, n, "the drafts do not compile: " + "; ".join(out["errors"][:3]))
         raise ValueError("the drafts do not compile: " + "; ".join(out["errors"][:3]))
     p = out["proposal"]
-    _update_round(hub, co, n, lambda r: r.update({"compiled": (p or {}).get("id"), "compiled_number": (p or {}).get("number")}))
+    cmt = _committee_record(hub)  # the compile Op's members are on every round's panel: they compile the diff first
+    _update_round(hub, co, n, lambda r: r.update({"compiled": (p or {}).get("id"), "compiled_number": (p or {}).get("number"),
+                                                  **({"committee": cmt} if cmt else {})}))
     if p is None:
         return "nothing to compile: it carries forms or record types only"
     live = [c for c in p["changes"] if c.get("op") != "text"]
