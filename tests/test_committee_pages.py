@@ -86,7 +86,7 @@ def test_the_committee_tally_a_members_vote_and_the_chairs_intervention(design):
     kim = card(design, run_id, "kim")
     assert "The design-review committee decides by consensus" in kim and "Chair: <b>sam</b>" in kim
     assert "doc-reviewer" in kim and "paused" in kim and "the risk is high" in kim and "to vote" in kim
-    assert "You vote as a member of the design-review committee" in kim and ">Release</button>" in kim and ">Return</button>" in kim
+    assert "Your vote:</b> the design-review committee decides by consensus; one reasoned objection sends it back" in kim and ">Release</button>" in kim and ">Return</button>" in kim
     state = hub.runner.load(run_id)
     ok(post(design, "/decide", {"as": "kim", "run": run_id, "digest": hub.runner.seen_digest(state), "verdict": "approve", "transition": "release",
                                 "meaning": "fit to release", "confirm": "1"}))
@@ -98,7 +98,7 @@ def test_the_committee_tally_a_members_vote_and_the_chairs_intervention(design):
     assert "Committees waiting for you to intervene" in inbox and "A committee needs you" in inbox
     sam = card(design, run_id, "sam")
     assert "you intervene as its chair" in sam and "Decide in the member's place" in sam and "Extend the due date" in sam and "Return the item" in sam
-    assert "You vote as a member" not in sam
+    assert "Your vote:" not in sam
     state = hub.runner.load(run_id)
     resp = post(design, "/decide", {"as": "sam", "run": run_id, "digest": hub.runner.seen_digest(state), "verdict": "approve", "transition": "release",
                                     "meaning": "fine", "confirm": "1"})
@@ -139,9 +139,9 @@ def test_a_committee_on_the_panel_and_its_chair_reviews_in_a_members_place(board
     cc.submit_review(hub, co["number"], "dave")
     page = main_of(get(board, "/record/" + quote(co["locator"], safe=":"), **{"as": "alice"})[1])
     assert "Committees on the panel" in page and "The change-board committee" in page and "could not review" in page and "its model is down" in page
-    assert "Review in it-admin" not in page, "only the chair intervenes"
+    assert "Intervene for it-admin" not in page, "only the chair intervenes"
     page = main_of(get(board, "/record/" + quote(co["locator"], safe=":"), **{"as": "bob"})[1])
-    assert "The change-board committee needs you, its chair" in page and "Review in it-admin" in page
+    assert "The change-board committee needs you, its chair" in page and "Intervene for it-admin" in page
     refused(post(board, "/co-intervene-review", {"as": "carol", "co": co["locator"], "form": "x", "committee": "change-board", "member": "it-admin",
                                                  "meaning": "looked"}))
     ok(post(board, "/co-intervene-review", {"as": "bob", "co": co["locator"], "form": "x", "committee": "change-board", "member": "it-admin",

@@ -74,8 +74,8 @@ class CommitteesMixin:
 
     def _committee_vote_note(self, run: dict) -> str:
         cm = (run.get("pending") or {}).get("committee") or {}
-        return (f"<p class='why'>You vote as a member of the {esc(cm.get('name'))} committee: choose the way forward you agree to, or object with "
-                "your reason; your vote is your signature.</p>")
+        return (f"<p class='why'><b>Your vote:</b> the {esc(cm.get('name'))} committee decides by consensus; one reasoned objection sends it back. "
+                "Choose the way forward you agree to, or object with your reason; there is no standing aside, and your vote is your signature.</p>")
 
     # ------------------------------------------------------------ the chair's intervention
     def _intervention_html(self, run: dict) -> str:
