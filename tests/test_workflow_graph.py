@@ -212,6 +212,9 @@ def test_workflow_model_checks_are_called_when_present(tmp_path, monkeypatch):
     fake = types.ModuleType("hubproto.workflow_model")
     fake.checks = lambda graph: seen_graphs.append(graph) or [{"severity": "error", "message": "an unreachable status", "element": "review"}]
     monkeypatch.setitem(sys.modules, "hubproto.workflow_model", fake)
+    import hubproto
+
+    monkeypatch.setattr(hubproto, "workflow_model", fake, raising=False)  # the real module may be imported already (the editor's)
     h = gizmo_hub(tmp_path)
     found = [f for f in h.compile()["findings"] if f["guard"] == "workflow"]
     graph_errors = [f for f in found if f["severity"] == "error"]
@@ -509,8 +512,10 @@ def test_an_item_in_a_status_the_new_release_removed_stays_until_a_state_map_mov
     run_id = submit(gizmos)
     decide(gizmos, run_id, "kim", "check")
     old_graph = gizmos.current_bundle()["workflows"][G]
-    # Under review goes: Check approves directly.
+    # Under review goes: Check approves directly. Rejected goes with it (only Under review led there, and the workflow
+    # checks refuse a status nothing leads to).
     edit_gizmo(gizmos, "Under review [review] (in progress), ", "", "1.1.0")
+    edit_gizmo(gizmos, "Rejected (done, rejected), ", "", "1.1.0")
     text = gizmos.frames.get("gizmo-policy").path.read_text()
     text = text.replace('From Checking to Under review ("Check"): the gizmo checker.', 'From Checking to Approved ("Check"): the gizmo checker.')
     for line in ('From Under review to Approved ("Approve")', 'From Under review to Open ("Send back")', 'From Under review to Rejected ("Reject")'):

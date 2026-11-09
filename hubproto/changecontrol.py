@@ -473,7 +473,7 @@ def contributors(hub, co_ref) -> list[str]:
     for it in _items(co):
         o = it.get("origin") or {}
         out += [o.get("by"), o.get("accepted_by")] if o.get("kind") == "suggested" else [o.get("by")]
-    for kind in ("form_changes", "record_type_changes"):
+    for kind in ("form_changes", "record_type_changes", "workflow_changes"):
         carried = co["fields"].get(kind) or {}
         out += [(v or {}).get("by") for v in (carried.values() if isinstance(carried, dict) else carried)]
     return sorted({w for w in out if w and w not in MACHINES})
@@ -823,6 +823,7 @@ def touches(hub, co_ref, p: dict | None = None) -> dict[str, set]:
             out["slot"].add(_slot_key(r))
             out["role"] |= _roles_named(r)
     out["form"] = set(f.get("form_changes") or {})
+    out["process"] |= set(f.get("workflow_changes") or {})  # a workflow carried from the editor (hubproto.workflows)
     rtc = f.get("record_type_changes") or []
     out["record_type"] = {x.get("type") for x in (rtc if isinstance(rtc, list) else [{"type": k} for k in rtc])}
     for k in out:
@@ -1016,7 +1017,7 @@ def request_review(hub, co_ref, by: str, panel=None) -> dict:
     if st not in EDITABLE:
         raise ValueError(f"{co['number']} is {st.replace('-', ' ')}: review rounds are over")
     f = co["fields"]
-    if not (eco.carried(hub, co) or _items(co) or f.get("form_changes") or f.get("record_type_changes")):
+    if not (eco.carried(hub, co) or _items(co) or f.get("form_changes") or f.get("record_type_changes") or f.get("workflow_changes")):
         raise ValueError(f"{co['number']} changes nothing yet: carry an SOP or policy revision, make a direct change or carry a form first")
     last = current_round(co)
     if last and last.get("status") == "compiling":
@@ -1662,7 +1663,7 @@ def send_reasons(hub, co_ref) -> list[str]:
     f = co["fields"]
     carried = eco.carried(hub, co)
     items = _items(co)
-    if not (carried or items or f.get("form_changes") or f.get("record_type_changes")):
+    if not (carried or items or f.get("form_changes") or f.get("record_type_changes") or f.get("workflow_changes")):
         return ["it changes nothing yet: carry an SOP or policy revision, make a direct change or carry a form"]
     reasons = []
     last = current_round(co)
@@ -1699,6 +1700,9 @@ def send_reasons(hub, co_ref) -> list[str]:
         recordtypes = None
     if recordtypes is not None:
         reasons += recordtypes.carried_reasons(hub, co)
+    from . import workflows  # workstream 8: workflow layouts and graph snapshots carried from the editor
+
+    reasons += workflows.carried_reasons(hub, co)
     reasons += _cr_reasons(hub, co)
     return reasons
 

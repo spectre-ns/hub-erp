@@ -21,32 +21,7 @@ from .text import (type_name, BLOB_FIELDS, chip, day, days_from, esc, event_sent
                    summary_of_record, tag, track_sentence, type_name, value_text, verb_for, when)
 from .views import BUCKET_WORDS, EXIT_STATES, bucket_of
 
-MERMAID_URL = "https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.4.1/mermaid.min.js"
 EDITABLE_DOC_STATES = ("draft", "open", "returned", "failed")
-
-
-def mermaid_for(wf: dict, current: str | None) -> str:
-    states = list(wf["states"])
-    if current and current not in states:
-        states.append(current)
-    ids = {s: f"s{i}" for i, s in enumerate(states)}
-    lines = ["stateDiagram-v2"]
-    for s, i in ids.items():
-        lines.append(f'    state "{state_name(s, wf)}" as {i}')
-    lines.append(f"    [*] --> {ids[states[0]]}")
-    for t in legacy_transitions(wf):
-        if t["from"] not in ids or t["to"] not in ids:
-            continue
-        label = ", ".join(t.get("steps") or []) or "automatic" if t["kind"] == "automatic" else f"{t['title']} (approve)"
-        lines.append(f"    {ids[t['from']]} --> {ids[t['to']]} : {label}")
-        if t["kind"] == "human" and t.get("on_reject") in ids:
-            lines.append(f"    {ids[t['from']]} --> {ids[t['on_reject']]} : reject")
-    if wf["terminal"] in ids:
-        lines.append(f"    {ids[wf['terminal']]} --> [*]")
-    if current in ids:
-        lines.append("    classDef current stroke:#0b5f8a,stroke-width:3px")  # a stroke only, so it reads in both themes
-        lines.append(f"    class {ids[current]} current")
-    return "\n".join(lines)
 
 
 def workflow_for(bundle: dict, rec: dict, run: dict | None) -> tuple[str | None, dict | None]:
@@ -834,9 +809,8 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
         # Workflow and decisions
         body += '<section class="tab-panel" id="tab-workflow"><h2 id="workflow">Workflow</h2>'
         if wf:
-            diagram = mermaid_for(wf, rec["state"])
             states = list(wf["states"]) + [s for s in ("returned", "failed", "cancelled") if s not in wf["states"]]
-            body += f'<div class="card"><pre class="mermaid" id="wf-diagram">{esc(diagram)}</pre><p class="why">States: ' + " &middot; ".join(self._state_chip(s, wf) + (" (current)" if s == rec["state"] else "") for s in states) \
+            body += f'<div class="card">{self._workflow_card(rec, process)}<p class="why">States: ' + " &middot; ".join(self._state_chip(s, wf) + (" (current)" if s == rec["state"] else "") for s in states) \
                 + "<br>Returned, failed and cancelled are side exits: a rejection that returns the item to its owner, a stopped step, a cancelled run.</p>"
             trows = []
             for t in legacy_transitions(wf):
@@ -866,14 +840,12 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
                                                                self._rule_html(d["delegating_rule"]) if d.get("delegating_rule") else ""]
                                                               for d in decisions], "No signatures yet.") + "</section>"
         body += self._chatter(rec, run)
-        head = (f'<script src="{MERMAID_URL}"></script><script>if(window.mermaid){{mermaid.initialize({{startOnLoad:true,theme:(document.documentElement.getAttribute("data-theme")==="dark"||(document.documentElement.getAttribute("data-theme")==="auto"&&matchMedia("(prefers-color-scheme: dark)").matches))?"dark":"default"}})}}'
-                f'else{{addEventListener("load",function(){{var d=document.getElementById("wf-diagram");if(d&&!window.mermaid){{d.hidden=true}}}})}}</script>')
         parts = rec["folder"].split("/")
         crumbs = [("Files", href("/files", user))] + [(p, href("/files", user, folder="/".join(parts[: i + 1]))) for i, p in enumerate(parts)]
         if process:
             crumbs.append((self._process_name(process), href("/items/" + rec["type"], user)))
         crumbs.append((rec["number"], None))
-        self._page(rec["number"], body, status=status, head=head, crumbs=crumbs, app_type=rec["type"])
+        self._page(rec["number"], body, status=status, crumbs=crumbs, app_type=rec["type"])
 
     OPS_ON_RECORD = {"document-control": "Send for approval", "design-release": "Submit for release", "requirements-capture": "Submit for acceptance",
                      "purchase-request": "Request the purchase", "goods-receipt": "Record the receipt", "nonconformance": "Open the nonconformance",

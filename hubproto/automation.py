@@ -408,7 +408,10 @@ def r_publish(hub, job, memo):
 def r_forms(hub, job, memo):
     from . import formlayout
 
+    from . import workflows
+
     done = formlayout.activate(hub, hub.kernel.get(job["subject"]), memo["release"])
+    done += workflows.activate(hub, hub.kernel.get(job["subject"]), memo["release"])  # workflow layouts, like form layouts
     return ("in force: " + ", ".join(done)) if done else "no form change", {}
 
 

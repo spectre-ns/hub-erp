@@ -196,6 +196,7 @@ class EcoMixin:
                         f"<button class='secondary'>{icon('plus')}Add</button></form>")
         # Forms
         out += self._forms_co_section(co, mine, preparing)
+        out += self._workflows_co_section(co, mine, preparing)
         # Staged Frame
         out += self._staged_html(co, st)
         # The review loop (hubproto.changecontrol; the full page is the shell workstream's): request review, then send

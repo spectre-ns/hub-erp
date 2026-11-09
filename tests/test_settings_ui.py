@@ -54,7 +54,7 @@ def test_every_section_renders_for_a_person(shell, clean):
     status, text = get(shell, "/settings/permissions", **{"as": "bob"})
     assert "Staff may read Policy." in text and "finance-policy line" in text
     status, text = get(shell, "/settings/workflows", **{"as": "bob"})
-    assert "## Process: purchase-to-pay" in text and "workflow builder" in text
+    assert "## Process: purchase-to-pay" in text and "workflow editor" in text and "/workflows/purchase-to-pay" in text and "<svg class=\"wf wf-view\"" in text
     status, text = get(shell, "/", **{"as": "bob"})
     assert "/settings" in text  # in the launcher
 

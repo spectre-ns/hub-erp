@@ -44,7 +44,7 @@ TYPE_LEAD = {"part": ["title", "ipn", "revision", "description", "category", "un
              "supplier-part": ["part", "supplier", "sku", "manufacturer_part", "pack_quantity", "price_breaks", "currency", "lead_time_days", "primary"],
              "manufacturer-part": ["part", "manufacturer", "mpn", "approved"], "stock-adjustment": ["lot", "new_quantity", "reason"],
              "stock-release": ["lot", "to_location", "reason"], "receipt": ["po", "location", "lines", "packing_slip"]}
-NOT_ON_FORMS = {"text", "office_comments", "checked_out_by", "checked_out_via", "editors", "wopi_lock", "content_sha", "reviews", "attachments"}
+NOT_ON_FORMS = {"text", "office_comments", "checked_out_by", "checked_out_via", "editors", "wopi_lock", "content_sha", "reviews", "attachments", "workflow_changes", "state_map"}
 
 
 # ---------------------------------------------------------------- storage
