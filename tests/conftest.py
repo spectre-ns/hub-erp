@@ -21,8 +21,20 @@ def hub(tmp_path) -> Hub:
     return h
 
 
-def release_all(hub: Hub, reviewers=("bob", "carol"), effective_from=None, now=None) -> dict:
-    """Compile, approve every change with two policy owners, and release."""
+FRAME_FILES_REASON = "a suite of the Frame-file workflow (tests/conftest.py release_all)"
+
+
+def release_all(hub: Hub, reviewers=("bob", "carol"), effective_from=None, now=None, keep_frame_files: bool = True) -> dict:
+    """Compile, approve every change with two policy owners, and release.
+
+    A hub's first release converts the SOPs into documents, so every later change needs a change order
+    (hubproto.closure.after_release). Most suites test the Frame-file workflow (edit a Frame, compile, review, release),
+    so this helper opts out explicitly, on the record (``sopdocs.keep_frame_files``), unless ``keep_frame_files=False``.
+    Suites that convert afterwards (test_eco, test_automation, ...) call ``sopdocs.convert`` as before."""
+    from hubproto import sopdocs
+
+    if keep_frame_files and not hub.releases.list() and not hub.sop_source():
+        sopdocs.keep_frame_files(hub, by="tests", reason=FRAME_FILES_REASON)
     proposal = hub.compile(now=now)
     for r in reviewers:
         hub.review(proposal["id"], r, approve_all=True)

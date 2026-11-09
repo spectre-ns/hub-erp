@@ -81,6 +81,17 @@ what in your final report and work around it meanwhile.
   (`closure.ChangeOrderRequired`, a `CompileError`): the verbs exit 1 with a sentence ending "Configuration changes only
   through a change order: open one under Quality > Change orders." (`compile`, `review`, `release`,
   `bootstrap-release --force`, `seed`). See `docs/design/config-paths.md`.
+* A hub's **first release converts the SOPs into documents** at once (`closure.after_release` ->
+  `sopdocs.convert_after_release`), however it is made (`bootstrap-release`, the entrypoint's first start, `release`, the
+  shell): on a new hub the first release is the only change released without a change order. `bootstrap-release` says
+  what it converted; a blocked conversion exits 1 with why, `status --check` exits 1 until it is done, and running
+  `bootstrap-release` again finishes it. The opt-out is explicit and recorded: `bootstrap-release --keep-frame-files
+  REASON` or `sopdocs.keep_frame_files(hub, by=, reason=)` (state/frame-files-kept.json, shown by `status`) keeps the
+  Frame files as the source (the pre-conversion mode); `sops convert` ends it.
+* Tests: `tests/conftest.py`'s `release_all` opts out (`keep_frame_files=True`, the default) because most suites test
+  the Frame-file workflow (edit a Frame, compile, review, release), and so does every fixture built on it (`released`,
+  and the suites that call `sopdocs.convert` themselves afterwards). Pass `keep_frame_files=False`, or bootstrap with the
+  CLI, for the converted default (`tests/test_config_closure.py`).
 
 ## The model in one paragraph
 

@@ -1,7 +1,8 @@
 #!/bin/sh
 # First start: seed the kernel, install the ISO 9001 profile, compile and
-# release the first policy release with the two seeded policy owners, so the
-# shell opens on a working hub. A failure is printed once, noted in
+# release the first policy release with the two seeded policy owners, and make
+# the SOPs documents, so the shell opens on a working hub where every later
+# configuration change goes through a change order. A failure is printed once, noted in
 # state/.bootstrap-failed, and the shell still starts (with no release in
 # effect) so the operator can fix the Frame and run one command.
 # Later starts keep the existing state, seed only what a newer version needs
@@ -19,7 +20,7 @@ if [ ! -f state/.bootstrapped ]; then
     touch state/.bootstrapped
     rm -f state/.bootstrap-failed
   else
-    echo "no release is in effect: fix the Frame named above, then run:" | tee state/.bootstrap-failed
+    echo "the bootstrap stopped (no release in effect, or the SOPs not yet documents): fix what is named above, then run:" | tee state/.bootstrap-failed
     echo "  docker compose exec hub hubproto bootstrap-release --as bob --second carol" | tee -a state/.bootstrap-failed
     echo "the shell starts anyway; it answers every page with 'no policy release is in effect' until then"
   fi
