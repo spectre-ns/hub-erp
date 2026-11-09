@@ -1909,64 +1909,90 @@ def reject_suggestion(hub, co_ref, sid: str, by: str, reason: str = "") -> dict:
     return _find_suggestion(_co(hub, co["locator"]), sid)[2]
 
 
-def answer_question(hub, co_ref, qid: str, answer: str, by: str, line: int | None = None, record_divergence: bool = False) -> dict:
+PROCEDURE = "procedure: a procedure people follow; the hub does not enforce it"
+ANSWER_CATEGORIES = {"procedure": PROCEDURE}  # categories an unread-rule answer may take besides "states no rule" and a divergence
+
+
+def committee_answerer(hub, co_ref, q: dict, by: str, p: dict | None = None) -> tuple[str, str, list[str]]:
+    """Who may answer a committee question (``COMMITTEE_CODES``): (why not, or "" when ``by`` may; "chair" | "system
+    administrator" | "policy-owner"; the items it concerns). A person answers: the committee's chair or a system
+    administrator who contributed nothing to the change order; when the release in force names no person as either
+    (a cog in either place does not count), any policy owner who did not make what the question is about."""
+    co = _co(hub, co_ref)
+    p = p if p is not None else _proposal(hub, co)
+    chair = q.get("chair") or ((hub.compile_committee() or {}).get("chair") if hasattr(hub, "compile_committee") else None)
+    b = _bundle(hub)
+    if not _person(hub, by):
+        return f"{by} is a cog: a person answers a {q.get('code')} question for the committee", "", []
+    if by == chair or "system-administrator" in authz.roles_of(b, by):
+        if by in contributors(hub, co):
+            return f"segregation of duties: {by} contributed to {co['number']}; someone who did not answers for the committee", "", []
+        return "", "chair" if by == chair else "system administrator", []
+    if _human_intervener(hub, chair):
+        return f"only the committee's chair ({chair or 'none'}) or a system administrator answers a {q.get('code')} question", "", []
+    if by not in _owners(hub):
+        return (f"the release in force names no person as the committee's chair or as a system administrator: a policy owner "
+                f"({', '.join(_owners(hub)) or 'none'}) answers a {q.get('code')} question"), "", []
+    concerned = _question_items(p, q)
+    own = {w for c in (p or {}).get("changes") or [] if c["id"] in concerned for w in c.get("makers") or []}
+    if not concerned:
+        own |= set(_draft_authors(hub, co).get(q.get("frame") or "") or [])  # the line is in their own prose
+    if by in own:
+        return f"segregation of duties: {by} made what this question is about; the other policy owner answers it", "", []
+    return "", "policy-owner", concerned
+
+
+def answer_question(hub, co_ref, qid: str, answer: str, by: str, line: int | None = None, record_divergence: bool = False,
+                    category: str | None = None) -> dict:
     """Mark a question answered, with the answer (and, best, the line of the prose that answers it). The next compile
     also closes a compiler question that no longer arises. A committee question (``COMMITTEE_CODES``) is answered by a
-    person: the committee's chair or a system administrator who contributed nothing; when the release in force names no
-    person as either, any policy owner who did not make what it is about (the answer is then an accepted warning on each
-    item it concerns). ``record_divergence`` (a committee question): the line stays unenforced and the release records it
-    as a divergence, with the answer as its meaning. Other questions: the requester, a document controller or a
-    contributor answers."""
+    person (``committee_answerer``: its chair or a system administrator; with no person as either in the release in
+    force, a policy owner, and the answer is then an accepted warning on each item it concerns). ``record_divergence``
+    (a committee question): the line stays unenforced and the release records it as a divergence, with the answer as its
+    meaning. ``category="procedure"`` (an ``unread-rule`` question): the sentence is a procedure people follow and the
+    hub does not enforce it; not a divergence, an accepted warning like any answer. Other questions: the requester, a
+    document controller or a contributor answers."""
     co = sync(hub, co_ref)
     if not (answer or "").strip():
         raise ValueError("say what the answer is (and, best, which line of the prose says it)")
+    if category is not None and category not in ANSWER_CATEGORIES:
+        raise ValueError(f"an answer's category is one of: {', '.join(ANSWER_CATEGORIES)}")
+    if category and record_divergence:
+        raise ValueError("a procedure the hub does not enforce is not a divergence: choose one")
     now = utcnow()
-    upd = {"status": "answered", "answer": answer.strip(), "by": by, "at": now, "answer_line": line}
+    meaning = (f"{ANSWER_CATEGORIES[category]}. " if category else "") + answer.strip()
+    upd = {"status": "answered", "answer": meaning, "by": by, "at": now, "answer_line": line}
     if record_divergence:  # the chair says "record it as a divergence": the release records one (QMS A4); the answer is its meaning
         upd["record_divergence"] = True
+    if category:
+        upd["category"] = category
     p = _proposal(hub, co)
     q = next((x for x in (p or {}).get("questions") or [] if x["id"] == qid), None)
     committee_q = q is not None and q.get("code") in COMMITTEE_CODES
     concerned: list[str] = []
+    if category and (q is None or q.get("code") != "unread-rule"):
+        raise ValueError("only an unread-rule question (prose that reads like a rule and configures nothing) is answered as a procedure")
     if committee_q:
-        # The compile committee could not read (a member was unavailable) or did not agree: a person intervenes, and that
-        # is its chair or a system administrator, never whoever made the change. When the release in force names no person
-        # as chair and no person as system administrator, the policy owners answer (a cog in either place does not count).
-        chair = q.get("chair") or ((hub.compile_committee() or {}).get("chair") if hasattr(hub, "compile_committee") else None)
-        b = _bundle(hub)
-        if not _person(hub, by):
-            raise ValueError(f"{by} is a cog: a person answers a {q.get('code')} question for the committee")
-        if by == chair or "system-administrator" in authz.roles_of(b, by):
-            if by in contributors(hub, co):
-                raise ValueError(f"segregation of duties: {by} contributed to {co['number']}; someone who did not answers for the committee")
-        elif not _human_intervener(hub, chair):
-            if by not in _owners(hub):
-                raise ValueError(f"the release in force names no person as the committee's chair or as a system administrator: a policy "
-                                 f"owner ({', '.join(_owners(hub)) or 'none'}) answers a {q.get('code')} question")
-            concerned = _question_items(p, q)
-            authors = _draft_authors(hub, co)
-            own = {w for c in p.get("changes") or [] if c["id"] in concerned for w in c.get("makers") or []}
-            if not concerned:
-                own |= set(authors.get(q.get("frame") or "") or [])  # the line is in their own prose
-            if by in own:
-                raise ValueError(f"segregation of duties: {by} made what this question is about; the other policy owner answers it")
+        # The compile committee could not read (a member was unavailable) or did not agree: a person intervenes.
+        why, as_, concerned = committee_answerer(hub, co, q, by, p)
+        if why:
+            raise ValueError(why)
+        if as_ == "policy-owner":
             upd["answered_as"] = "policy-owner"
             upd["items"] = concerned
-        else:
-            raise ValueError(f"only the committee's chair ({chair or 'none'}) or a system administrator answers a {q.get('code')} question")
     elif record_divergence:
         raise ValueError("only a committee question (answered by its chair or a system administrator) is recorded as a divergence")
     elif _may_edit(hub, co, by) and by not in contributors(hub, co):
         raise ValueError(f"only {requester(co)}, a document controller or a contributor answers questions on {co['number']}")
     if q is not None:
         q.update(upd)
-        _record(hub, co, "question_answered", {**_signed(hub, co, by=by, verdict="answer", meaning=answer.strip(), step=qid,
+        _record(hub, co, "question_answered", {**_signed(hub, co, by=by, verdict="answer", meaning=meaning, step=qid,
                                                          payload=_hash(q.get("text")), at=now), "question": qid}, by)
         if committee_q:  # the intervention is an accepted warning on the change order (and on each item it concerns)
-            for key in [f"co|question|{qid}"] + [f"{cid}|question|{qid}" for cid in concerned]:
-                p.setdefault("acceptances", {})[key] = {"by": by, "meaning": answer.strip(), "at": now}
-            _record(hub, co, "warning_accepted", {**_signed(hub, co, by=by, verdict="accept", meaning=answer.strip(), step=key,
-                                                            payload=_hash(q.get("text")), at=now), "item": None}, by)
+            for item, key in [(None, f"co|question|{qid}")] + [(cid, f"{cid}|question|{qid}") for cid in concerned]:
+                p.setdefault("acceptances", {})[key] = {"by": by, "meaning": meaning, "at": now}
+                _record(hub, co, "warning_accepted", {**_signed(hub, co, by=by, verdict="accept", meaning=meaning, step=key,
+                                                                payload=_hash(q.get("text")), at=now), "item": item}, by)
         _refresh(hub, co, p)
         hub.proposals.save(p)
         _seal(hub, co)

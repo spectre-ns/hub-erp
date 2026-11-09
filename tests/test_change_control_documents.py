@@ -192,3 +192,83 @@ def test_once_a_person_chairs_the_committee_the_normal_rule_applies(hub):
     assert cc._human_intervener(hub, "carol")
     with pytest.raises(ValueError, match="only the committee's chair"):  # bob is a system administrator here: dave is neither
         cc.answer_question(hub, co["number"], q["id"], "fine", "dave")
+
+
+# ---------------------------------------------------------------- a revision keeps its Frame's place
+def test_a_revision_keeps_its_frame_s_path_through_the_release(hub):
+    co = new_co(hub, by="bob", title="Clarify the writing guide")
+    d = eco.add_sop(hub, co["number"], "writing-policy-frames", by="bob", author="alice")
+    assert d["fields"]["frame_relpath"] == "reference/writing-policy-frames.frame.md"
+    write(hub, hub.kernel.get(d["locator"]), "Narrative\ncan go anywhere else.", "Narrative\nmay go anywhere else.", "alice")
+    released(hub, co, deciders=("carol",), signer="carol")
+    assert [j["status"] for j in hub.automation.of(co["locator"]) if j["automation"] == "release-change-order"] == ["success"]
+    assert not (hub.root / "frames/documents").exists(), "no second copy of the Frame under documents/"
+    assert "may go anywhere" in (hub.root / "frames/reference/writing-policy-frames.frame.md").read_text(encoding="utf-8")
+    assert hub.kernel.get(d["locator"])["state"] == "effective"
+
+
+def test_a_revision_made_before_it_kept_its_path_follows_the_document_it_revises(hub):
+    co = new_co(hub, by="bob", title="Clarify the writing guide")
+    d = eco.add_sop(hub, co["number"], "writing-policy-frames", by="bob", author="alice")
+    hub.kernel.set_fields(d["locator"], {"frame_relpath": None}, by="setup")  # a draft opened on the live hub before the fix
+    assert sopdocs._relpath(hub, "writing-policy-frames", hub.kernel.get(d["locator"]), {}) == "reference/writing-policy-frames.frame.md"
+
+
+def test_the_release_stops_before_anything_comes_into_force_when_a_frame_has_no_sound_place(hub):
+    co = new_co(hub, by="bob", title="Clarify the writing guide")
+    d = eco.add_sop(hub, co["number"], "writing-policy-frames", by="bob", author="alice")
+    hub.kernel.set_fields(d["locator"], {"frame_relpath": "documents/writing-policy-frames.frame.md"}, by="setup")  # the bug's path
+    write(hub, hub.kernel.get(d["locator"]), "Narrative\ncan go anywhere else.", "Narrative\nmay go anywhere else.", "alice")
+    before = hub.releases.current()["digest"]
+    cc.request_review(hub, co["number"], "bob", panel=[])
+    cc.send_for_approval(hub, co["number"], "bob")
+    decide_all(hub, co, who=("carol",))
+    accept_co_warnings(hub, co, "carol")
+    assert eco.release_problems(hub, co["number"]) == [
+        "writing-policy-frames: the Frame writing-policy-frames is at frames/reference/writing-policy-frames.frame.md, not "
+        "frames/documents/writing-policy-frames.frame.md: a second file would give two Frames one name"]
+    gate(hub, co, who="carol")
+    [j] = [j for j in hub.automation.of(co["locator"]) if j["automation"] == "release-change-order"]
+    assert j["status"] != "success" and "would stop part-way" in str(j["steps"][0]), j["steps"][0]
+    assert hub.releases.current()["digest"] == before, "nothing came into force"
+    assert not (hub.root / "frames/documents").exists() and hub.kernel.get(d["locator"])["state"] != "effective"
+
+
+def test_a_new_document_needs_a_sound_place(hub):
+    co = new_co(hub, by="carol", title="Add the coach persona")
+    for rel, why in (("../coach.frame.md", "not a place for a Frame"), ("personas/persona-advisor.frame.md", "is the Frame persona-advisor"),
+                     ("personas/coach.md", "not a place for a Frame")):
+        with pytest.raises(ValueError, match=why):
+            eco.add_new_sop(hub, co["number"], "persona-coach", coach_text(), by="carol", relpath=rel)
+
+
+def test_a_policy_owner_may_carry_revisions_new_documents_and_retirements_on_any_change_order(hub):
+    co = new_co(hub)  # alice's
+    eco.add_sop(hub, co["number"], "finance-policy", by="bob")
+    eco.add_new_sop(hub, co["number"], "persona-coach", coach_text(), by="bob", relpath=COACH)
+    eco.retire_sop(hub, co["number"], "persona-reviewer", by="bob", reason="replaced")
+    assert "bob" in cc.contributors(hub, co["number"])
+    with pytest.raises(ValueError, match="a document controller or a policy owner"):
+        eco.add_sop(hub, co["number"], "document-control-sop", by="dave")
+
+
+def test_an_unread_rule_is_answered_as_a_procedure_not_a_divergence(hub):
+    co = new_co(hub)
+    d = eco.add_sop(hub, co["number"], "finance-policy", by="alice")
+    write(hub, hub.kernel.get(d["locator"]), OLD, NEW, "alice")
+    cc.request_review(hub, co["number"], "alice", panel=[])
+    p = hub.proposals.load(hub.kernel.get(co["locator"])["fields"]["staged_proposal"])
+    q = question("finance-policy", 42, "reads like a rule", raised_by="hub", code="unread-rule", chair="carol", blocking=True,
+                 quote="Bills are filed by month.")
+    other = committee_question(hub, co)
+    p = hub.proposals.load(p["id"])
+    p["questions"].append(q)
+    hub.proposals.save(p)
+    with pytest.raises(ValueError, match="not a divergence: choose one"):
+        cc.answer_question(hub, co["number"], q["id"], "x", "carol", record_divergence=True, category="procedure")
+    with pytest.raises(ValueError, match="only an unread-rule question"):
+        cc.answer_question(hub, co["number"], other["id"], "x", "carol", category="procedure")
+    a = cc.answer_question(hub, co["number"], q["id"], "the clerks file them; nothing to configure", "carol", category="procedure")
+    assert a["category"] == "procedure" and a["answer"].startswith(cc.PROCEDURE) and not a.get("record_divergence")
+    [w] = [w for w in cc.co_warnings(hub, co["number"]) if w["ref"] == q["id"]]
+    assert w["accepted"]["by"] == "carol" and cc.PROCEDURE in w["accepted"]["meaning"]

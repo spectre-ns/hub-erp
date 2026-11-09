@@ -61,10 +61,37 @@ def retirements(co: dict) -> dict[str, dict]:
     return dict(co["fields"].get("retires") or {})
 
 
+def _may_carry(bundle: dict, co: dict, by: str, what: str) -> str:
+    """Empty when ``by`` may change what the change order carries: its requester, a document controller or a policy owner
+    (who then contributes to it)."""
+    roles = authz.roles_of(bundle, by)
+    if by in (co["fields"].get("requested_by"), co.get("created_by")) or {"document-controller", "policy-owner"} & set(roles):
+        return ""
+    return (f"{co['number']} is {co['fields'].get('requested_by') or co.get('created_by')}'s change order: they, a document controller or a "
+            f"policy owner {what}")
+
+
+def frame_path_problem(hub, name: str, rel: str) -> str:
+    """Why a Frame named ``name`` may not live at ``rel`` under frames/ (empty when it may): a relative path inside
+    frames/, ending in .frame.md, not another Frame's file, and not a second file for a Frame that has one."""
+    from pathlib import PurePosixPath
+
+    p = PurePosixPath(str(rel or ""))
+    if not rel or p.is_absolute() or ".." in p.parts or any(part.startswith(".") for part in p.parts) or not p.name.endswith(".frame.md"):
+        return f"{rel!r} is not a place for a Frame: a relative path under frames/ ending in .frame.md"
+    for other in hub.frames.frames.values():
+        if str(other.relpath) == str(p) and other.name != name:
+            return f"frames/{p} is the Frame {other.name}"
+        if other.name == name and str(other.relpath) != str(p):
+            return f"the Frame {name} is at frames/{other.relpath}, not frames/{p}: a second file would give two Frames one name"
+    return ""
+
+
 def add_new_sop(hub, co_ref: str, name: str, text: str, *, by: str, author: str | None = None, relpath: str | None = None) -> dict:
     """A new SOP, work instruction, policy, cog profile or persona document carried by the change order: ``text`` is its
     whole Frame text (front matter and body, ``name`` its Frame name). It is a draft at revision A until the change
-    order's release makes it effective, like any revision. ``by`` asks (the requester or a document controller);
+    order's release makes it effective, like any revision. ``by`` asks (the requester, a document controller or a policy
+    owner);
     ``author`` writes it (default ``by``). ``relpath`` is where its Frame file goes under frames/ (default
     ``<name>.frame.md``). Returns the draft (or the one the change order already carries for that name)."""
     from .frames import load_frame_text
@@ -73,8 +100,9 @@ def add_new_sop(hub, co_ref: str, name: str, text: str, *, by: str, author: str 
     if finished(co) or (co.get("state") or "").startswith("awaiting"):
         raise ValueError(f"{co['number']} is {co['state']}: change what it carries while it is being prepared or revised")
     bundle = hub.releases.bundle(hub.releases.current()["digest"])
-    if by not in (co["fields"].get("requested_by"), co.get("created_by")) and "document-controller" not in authz.roles_of(bundle, by):
-        raise ValueError(f"{co['number']} is {co['fields'].get('requested_by') or co.get('created_by')}'s change order: they or a document controller add documents to it")
+    why = _may_carry(bundle, co, by, "add documents to it")
+    if why:
+        raise ValueError(why)
     for c in carried(hub, co):
         if c["name"] == name:
             return c["draft"]
@@ -83,6 +111,9 @@ def add_new_sop(hub, co_ref: str, name: str, text: str, *, by: str, author: str 
     from pathlib import Path
 
     rel = relpath or f"{name}.frame.md"
+    why = frame_path_problem(hub, name, rel)
+    if why:
+        raise ValueError(why)
     frame = load_frame_text(text, Path(hub.root) / "frames" / rel)
     if frame.name != name:
         raise ValueError(f"the text is the Frame {frame.name!r}, not {name!r}")
@@ -104,15 +135,16 @@ def add_new_sop(hub, co_ref: str, name: str, text: str, *, by: str, author: str 
 def retire_sop(hub, co_ref: str, name: str, *, by: str, reason: str) -> dict:
     """The change order retires the document in force for ``name``: the delta compiles without that Frame (a delta item
     says so), and at release the document becomes obsolete and its Frame leaves the release (its file is moved aside
-    to frames/.retired/). The requester or a document controller, with a reason. Returns the change order."""
+    to frames/.retired/). The requester, a document controller or a policy owner, with a reason. Returns the change order."""
     from .release import utcnow
 
     co = _co(hub, co_ref)
     if finished(co) or (co.get("state") or "").startswith("awaiting"):
         raise ValueError(f"{co['number']} is {co['state']}: change what it carries while it is being prepared or revised")
     bundle = hub.releases.bundle(hub.releases.current()["digest"])
-    if by not in (co["fields"].get("requested_by"), co.get("created_by")) and "document-controller" not in authz.roles_of(bundle, by):
-        raise ValueError(f"{co['number']} is {co['fields'].get('requested_by') or co.get('created_by')}'s change order: they or a document controller retire documents on it")
+    why = _may_carry(bundle, co, by, "retire documents on it")
+    if why:
+        raise ValueError(why)
     if not (reason or "").strip():
         raise ValueError("say why the document is retired")
     if any(c["name"] == name for c in carried(hub, co)):
@@ -168,8 +200,9 @@ def add_sop(hub, co_ref: str, name: str, *, by: str, author: str | None = None) 
     if finished(co) or (co.get("state") or "").startswith("awaiting-approve"):
         raise ValueError(f"{co['number']} is {co['state']}: add SOPs while it is being prepared, or send it back to the start")
     bundle = hub.releases.bundle(hub.releases.current()["digest"])
-    if by not in (co["fields"].get("requested_by"), co.get("created_by")) and "document-controller" not in authz.roles_of(bundle, by):
-        raise ValueError(f"{co['number']} is {co['fields'].get('requested_by') or co.get('created_by')}'s change order: they or a document controller add SOPs to it")
+    why = _may_carry(bundle, co, by, "add SOPs to it")
+    if why:
+        raise ValueError(why)
     for c in carried(hub, co):
         if c["name"] == name:
             return c["draft"]
@@ -187,6 +220,8 @@ def add_sop(hub, co_ref: str, name: str, *, by: str, author: str | None = None) 
     content, v = hub.dms.content(current["locator"])
     f = current["fields"]
     keep = {k: f.get(k) for k in ("lineage", "sop_name", "frame_meta", "frame_header", "description", "owner", "review_date") if f.get(k) is not None}
+    bom = {x["name"]: x for x in (hub.releases.current() or {}).get("frames") or []}
+    keep["frame_relpath"] = sopdocs._relpath(hub, name, current, bom)  # the revision's Frame stays where the one in force is
     writer = author or by
     draft = hub.dms.create(title=f.get("title") or name, doc_class="controlled", folder=current["folder"], by=writer, content=content,
                            filename=v.get("filename") or f"{name}.docx", mime=v.get("mime") or "application/octet-stream",
@@ -389,6 +424,43 @@ def activate_frame(hub, co_ref: str) -> dict:
     meta = hub.release(proposal["id"], f"change-order:{co['number']}")
     hub.kernel.set_fields(co["locator"], {"released_release": meta["digest"]}, by="hub")
     return meta
+
+
+def release_problems(hub, co_ref: str) -> list[str]:
+    """What would stop the release part-way, checked before anything comes into force (empty when nothing would): each
+    Frame the release writes goes to a sound place that is not another Frame's file and not a second file for its name,
+    no two go to one place, each carried revision may still be published, and each document it retires is in force."""
+    co = _co(hub, co_ref)
+    out = []
+    try:
+        disk = hub.frames
+    except Exception as e:  # the Frames on disk do not load as they are: writing more would not help
+        return [f"the Frames on disk do not load: {e}"]
+    retired = set(retirements(co))
+    pid = co["fields"].get("staged_proposal")
+    p = hub.proposals.load(pid) if pid else None
+    places: dict[str, str] = {}
+    for name, o in sorted(((p or {}).get("overrides") or {}).items()):
+        rel = str(o.get("path") or (disk.get(name).relpath if name in disk.frames else f"{name}.frame.md"))
+        why = frame_path_problem(hub, name, rel)
+        if why:
+            out.append(f"{name}: {why}")
+        if rel in places:
+            out.append(f"{name} and {places[rel]} would both be written to frames/{rel}")
+        places[rel] = name
+    for name in sorted(retired):
+        r = retirements(co)[name]
+        d = hub.kernel.get(r["locator"])
+        if d is None or d["state"] != "effective":
+            out.append(f"{r.get('document')} ({name}) is {(d or {}).get('state') or 'gone'}, not in force: it cannot be retired")
+    for c in carried(hub, co):
+        d = c["draft"]
+        if d["state"] in ("withdrawn", "obsolete", "rejected"):
+            out.append(f"{d['number']} ({c['name']}) is {d['state']}: it cannot be published")
+        cur = c["in_force"]
+        if d["fields"].get("revises") and (cur is None or cur["number"] != d["fields"]["revises"]):
+            out.append(f"{d['number']} revises {d['fields']['revises']}, which is no longer the {c['name']} in force")
+    return out
 
 
 def publish_revisions(hub, co_ref: str, digest: str) -> list[str]:

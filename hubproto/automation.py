@@ -361,6 +361,10 @@ def r_check(hub, job, memo):
     blocked = eco.check_approval(hub, job["subject"])
     if blocked:
         raise StepError("not ready: " + "; ".join(blocked))
+    if not co["fields"].get("released_release"):  # what would fail after the Frame is in force is found now, before it is
+        problems = eco.release_problems(hub, job["subject"])
+        if problems:
+            raise StepError("the release would stop part-way: " + "; ".join(problems))
     return f"{co['number']} is approved and its delta is decided; what it carries is what was signed", {}
 
 
