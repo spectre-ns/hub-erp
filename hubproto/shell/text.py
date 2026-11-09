@@ -610,3 +610,65 @@ def summary_of_record(rec: dict) -> str:
 def owner_of(rec: dict) -> str:
     f = rec.get("fields", {})
     return str(f.get("owner") or f.get("author") or f.get("filed_by") or rec.get("created_by") or "")
+
+
+# ---------------------------------------------------------------- a small Markdown subset (generated documents)
+_MD_LINK = re.compile(r"(?<![\w/\"'=])(/(?:document|frame|record)/[A-Za-z0-9:._-]+)")
+
+
+def markdown_html(text: str, link=None) -> str:
+    """Headings, paragraphs, bullet lists and pipe tables of a generated Markdown document (the training matrix) as HTML,
+    escaped. ``link(path)`` makes a site path ("/document/rec:document:DOC-0008") an href; tables scroll on their own."""
+    def inline(t: str) -> str:
+        out = esc(t)
+        out = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", out)
+        out = re.sub(r"`([^`]+)`", r"<code>\1</code>", out)
+        out = re.sub(r"(?<![\w/:-])([A-Za-z0-9]+(?:-[A-Za-z0-9]+)+)(?![\w/:-])", r"<span class='nw'>\1</span>", out)  # names break at spaces
+        if link:
+            out = _MD_LINK.sub(lambda m: f"<a href='{esc(link(m.group(1)))}'>{esc(m.group(1).rsplit(':', 1)[-1].rsplit('/', 1)[-1])}</a>", out)
+        return out
+
+    def cells(line: str) -> list[str]:
+        return [c.strip() for c in line.strip().strip("|").split("|")]
+
+    lines = (text or "").splitlines()
+    out, para, i = [], [], 0
+
+    def flush():
+        if para:
+            out.append("<p>" + inline(" ".join(para)) + "</p>")
+            para.clear()
+    while i < len(lines):
+        ln = lines[i]
+        st = ln.strip()
+        if not st:
+            flush()
+        elif st.startswith("#"):
+            flush()
+            level = min(len(st) - len(st.lstrip("#")) + 1, 4)
+            out.append(f"<h{level}>{inline(st.lstrip('#').strip())}</h{level}>")
+        elif st.startswith("|") and i + 1 < len(lines) and re.match(r"^\|?\s*:?-{3,}", lines[i + 1].strip()):
+            flush()
+            head = cells(st)
+            i += 2
+            rows = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                rows.append(cells(lines[i]))
+                i += 1
+            out.append("<div class='tbl'><table><thead><tr>" + "".join(f"<th scope='col'>{inline(h)}</th>" for h in head) + "</tr></thead><tbody>"
+                       + "".join("<tr>" + "".join(f"<td{'' if ' ' in c.strip() else ' class=nw'}>{inline(c)}</td>" for c in r) + "</tr>" for r in rows)
+                       + "</tbody></table></div>")
+            continue
+        elif st.startswith(("- ", "* ")):
+            flush()
+            items = []
+            while i < len(lines) and lines[i].strip().startswith(("- ", "* ")):
+                items.append(f"<li>{inline(lines[i].strip()[2:])}</li>")
+                i += 1
+            out.append("<ul>" + "".join(items) + "</ul>")
+            continue
+        else:
+            para.append(st)
+        i += 1
+    flush()
+    return "<div class='md'>" + "".join(out) + "</div>"

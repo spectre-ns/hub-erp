@@ -46,7 +46,9 @@ STAY_ROUTES = ("/", "/inbox", "/files", "/documents", "/templates", "/change-ord
 STAY_PREFIXES = ("/record/", "/document/", "/run/", "/frame/", "/release/", "/items/", "/app/", "/user/", "/settings/", "/workflows/")
 # The small script: tabs show one panel at a time (every panel is visible without it) and the print button prints.
 SCRIPT = """document.documentElement.classList.add('js');
-addEventListener('click',function(e){var b=e.target.closest&&e.target.closest('[data-theme-toggle]');if(!b)return;var r=document.documentElement;var t=r.getAttribute('data-theme')==='dark'?'light':'dark';r.setAttribute('data-theme',t);try{localStorage.setItem('hub-theme',t)}catch(_){}});
+addEventListener('click',function(e){var b=e.target.closest&&e.target.closest('[data-theme-toggle]');if(!b)return;var r=document.documentElement;var cur=r.getAttribute('data-theme');if(cur==='auto')cur=getComputedStyle(r).colorScheme==='dark'?'dark':'light';var t=cur==='dark'?'light':'dark';r.setAttribute('data-theme',t);try{localStorage.setItem('hub-theme',t)}catch(_){}});
+addEventListener('DOMContentLoaded',function(){var al=document.querySelector('main [role=alert], main .err');if(al&&!location.hash){al.scrollIntoView({block:'center'})}
+var mx=function(){var t=document.querySelector('.mx-toggle');if(t)t.classList.toggle('mini',scrollY>40)};addEventListener('scroll',mx,{passive:true});mx()});
 addEventListener('DOMContentLoaded',function(){var tabs=document.querySelectorAll('.tabs a[data-tab]');
 function show(id){tabs.forEach(function(a){var on=a.getAttribute('data-tab')===id;a.setAttribute('aria-selected',on?'true':'false');
 var p=document.getElementById(a.getAttribute('data-tab'));if(p){p.classList.toggle('active',on)}})}
@@ -260,7 +262,7 @@ class BaseHandler(BaseHTTPRequestHandler):
                  "/co-dismiss-related": self.post_co_dismiss_related, "/co-direct-remove": self.post_co_direct_remove,
                  "/co-rt-uncarry": self.post_co_rt_uncarry, "/record-types-carry": self.post_record_types_carry,
                  "/co-intervene-review": self.post_co_intervene_review, "/co-report-unavailable": self.post_co_report_unavailable,
-                 "/co-answer-all": self.post_co_answer_all, "/co-accept-all": self.post_co_accept_all, "/intervene": self.post_intervene, "/assign": self.post_assign, "/agent-confirm": self.post_agent_confirm, "/new-person": self.post_new_person, "/new-cog": self.post_new_cog, "/cog-model": self.post_cog_model, "/restart": self.post_restart, "/mark-applied": self.post_mark_applied, "/verify-edit": self.post_verify_edit, "/editor-debug": self.post_editor_debug,
+                 "/co-answer-all": self.post_co_answer_all, "/co-accept-all": self.post_co_accept_all, "/co-ask-sop": self.post_co_ask_sop, "/intervene": self.post_intervene, "/assign": self.post_assign, "/agent-confirm": self.post_agent_confirm, "/new-person": self.post_new_person, "/new-cog": self.post_new_cog, "/cog-model": self.post_cog_model, "/restart": self.post_restart, "/mark-applied": self.post_mark_applied, "/verify-edit": self.post_verify_edit, "/editor-debug": self.post_editor_debug,
                  "/upload": self.post_upload, "/checkout": self.post_checkout, "/checkin": self.post_checkin, "/link": self.post_link,
                  "/snapshot": self.post_snapshot, "/hold": self.post_hold, "/resubmit": self.post_resubmit, "/retry": self.post_retry,
                  "/cancel": self.post_cancel, "/undo-checkout": self.post_undo_checkout, "/bulk-hold": self.post_bulk_hold}
@@ -489,7 +491,10 @@ class BaseHandler(BaseHTTPRequestHandler):
             cur = ' aria-current="page"' if (self.route == p or (p != "/" and self.route.startswith(p))) else ""
             return f'<li><a{cur} href="{href(p, user)}">{icon(ic)}<span>{esc(n)}</span></a></li>'
 
-        out = '<nav class="rail" aria-label="Workspace"><ul class="main">' + "".join(item(n, p, ic) for n, p, ic in RAIL_MAIN) + "</ul>"
+        main = list(RAIL_MAIN)
+        if bundle and (members.get(user) or {}).get("type") == "person":  # people who may edit Settings find it here
+            main.append(("Settings", "/settings", "sliders"))
+        out = '<nav class="rail" aria-label="Workspace"><ul class="main">' + "".join(item(n, p, ic) for n, p, ic in main) + "</ul>"
         if self._policy_owner():
             out += '<h2 id="rail-policy">Policy</h2><ul class="main" aria-labelledby="rail-policy">' + "".join(item(n, p, ic) for n, p, ic in RAIL_POLICY) + "</ul>"
         if bundle and user in members and (self.route in ("/files", "/documents") or self.route.startswith(("/document/", "/doc/", "/edit/"))):
@@ -546,7 +551,7 @@ class BaseHandler(BaseHTTPRequestHandler):
         launcher = launcher_html(apps, user, href, app["key"] if app else None) if apps and self._is_member() else ""
         appbar = appbar_html(app, user, href, self.route, rt) if app and self._is_member() else ""
         me = (f'<span class="who">{self._avatar(user, size="sm")} {esc(user)}</span>' if user else "")
-        page = f"""<!doctype html><html lang="en" data-theme="light"><head><meta charset="utf-8"><script>try{{var t=localStorage.getItem("hub-theme");if(t==="dark"||t==="auto")document.documentElement.setAttribute("data-theme",t)}}catch(e){{}}</script><meta name="viewport" content="width=device-width, initial-scale=1">
+        page = f"""<!doctype html><html lang="en" data-theme="auto"><head><meta charset="utf-8"><script>try{{var t=localStorage.getItem("hub-theme");if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t)}}catch(e){{}}</script><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{esc(full_title)}</title><style>{CSS}</style><script>{SCRIPT}</script>{head}</head>
 <body><a class="skip" href="#main">Skip to content</a><div class="top">{launcher}<a class="brand" href="{href("/", user) if user else "/"}">{icon("home")}Hub</a><ol class="crumb" aria-label="You are here">{crumb}</ol>
 <form method="get" action="{esc(action)}"><button type="button" class="theme" data-theme-toggle aria-label="Switch between light and dark" title="Light or dark"><span class="i-light">{icon("moon")}</span><span class="i-dark">{icon("sun")}</span></button>{keep}{me}<label><span class="who">Acting as</span> <select name="as">{self._identity_options()}</select></label> <button class="secondary">Go</button></form></div>{appbar}

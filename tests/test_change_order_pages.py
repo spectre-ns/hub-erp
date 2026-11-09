@@ -372,3 +372,31 @@ def test_the_pages_work_without_a_round_and_for_people_who_may_only_read(shell):
     assert "alice is preparing it" in html and "Request review" not in html and "/co-decide" not in html
     assert "No review round yet." in html and "No question has been asked." in html and "No item is in a state this change removes." in html
     assert refused(post(shell, "/co-review", {"as": "dave", "co": co["locator"]}), 403)
+
+
+def test_usability_fixes_on_the_change_order_and_shell_pages(shell):
+    hub = shell["hub"]
+    co = new_co(shell)
+    html = co_page(shell, co, "alice")
+    # Add an SOP is always there: the ones alice may not revise are listed, disabled, with who may, and she can ask.
+    assert "Add an SOP or policy" in html and re.search(r"<option value='ncr-sop' disabled>[^<]*only", html)
+    assert "Ask them to add it here" in html
+    ok(post(shell, "/co-ask-sop", {"as": "alice", "co": co["locator"], "form": "ask-sop", "sop": "ncr-sop"}))
+    owner = sopdocs.in_force(hub.kernel, "ncr-sop")["fields"]["owner"]
+    assert any(m["to"] == owner and "ncr-sop" in m["subject"] for m in hub.inbox.all())
+    # No generic Start on a change order; a start form makes a change order in preparing.
+    assert "Start change order" not in html
+    url, body = ok(post(shell, "/start", {"as": "alice", "process": "change-order", "title": "From a start form"}))
+    made = next(r for r in hub.kernel.query(type_="change-order") if r["fields"]["title"] == "From a start form")
+    assert "/record/" in url and cc.stage_of(made) == "preparing" and hub.runner.run_for_record(made["locator"]) is None
+    # Settings is in the rail for people; the theme follows the OS until chosen.
+    text = get(shell, "/", **{"as": "alice"})[1]
+    assert 'href="/settings?as=alice"' in text.split('<nav class="rail"')[1].split("</nav>")[0] and 'data-theme="auto"' in text
+    # The training matrix is rendered, not shown as Markdown source.
+    from hubproto import training
+
+    training.publish_matrix(hub, hub.releases.current()["digest"])
+    doc = training.matrix_document(hub)
+    page = main_of(get(shell, "/document/" + quote(doc["locator"], safe=":"), **{"as": "carol"})[1])
+    text = page.split("<h2>Text</h2>")[1].split("<h2 id=")[0]
+    assert "<table>" in text and "|---|" not in text and "<a href='/document/rec:document:DOC-" in text

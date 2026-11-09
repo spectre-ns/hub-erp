@@ -25,6 +25,12 @@ from .handler import details, hidden_as, href, log_line, table
 from .icons import icon
 from .text import chip, esc, short, when
 
+
+def cc_api(name: str):
+    """A changecontrol helper by its public name when workstream 1 exposes it, else the private one this page used."""
+    return getattr(cc, name, None) or getattr(cc, "_" + name)
+
+
 STAGE_NAMES = {"preparing": "Preparing", "in-review": "In review", "revising": "Revising", "awaiting-approval": "Awaiting approval",
                "approved": "Approved", "released": "Released"}
 STAGE_HINTS = {"preparing": "changes carried", "in-review": "compile, panel, reviews", "revising": "answer, accept, reject",
@@ -175,14 +181,14 @@ def after_rules(hub, co: dict, p: dict | None) -> list[dict]:
     changes the prose does not state applied and every override in place."""
     base = hub.settings_rules()
     if p is None:
-        return cc._apply(base, cc._items(co))
+        return cc_api("apply")(base, cc_api("items")(co))
     rules = {rule_key(r): r for r in p.get("rules") or []}
     for c in p.get("changes") or []:
         if c.get("op") == "text":
             continue
         if c.get("unstated"):
-            old, new = cc._old_new(c)
-            cc._with(rules, old, (c.get("override") or {}).get("rule") or new)
+            old, new = cc_api("old_new")(c)
+            cc_api("with")(rules, old, (c.get("override") or {}).get("rule") or new)
         elif c.get("override") and c.get("op") == "add":
             rules.pop(rule_key(c["rule"]), None)
             rules[rule_key(c["override"]["rule"])] = c["override"]["rule"]
@@ -197,9 +203,9 @@ def cog_effects(hub, co: dict, p: dict | None, delta: list[dict], say) -> list[d
     after = _light(after_rules(hub, co, p))
     widened = set()
     for c in delta:
-        if c.get("op") == "text" or not cc._widening(c):
+        if c.get("op") == "text" or not cc_api("widening")(c):
             continue
-        widened.add(rule_key(cc._effective(c)))
+        widened.add(rule_key(cc_api("effective")(c)))
     cogs = sorted({n for b in (before, after) for n, m in (b.get("members") or {}).items() if m.get("type") == "cog"})
     out = []
     for cog in cogs:
@@ -297,7 +303,7 @@ class ChangeOrderMixin:
         try:
             return sentence({k: v for k, v in rule.items() if k != "source"}, (self.bundle or {}).get("processes") or {}).replace("\n", " / ")
         except Exception:
-            return (rule.get("source") or {}).get("text") or cc._sentence(rule)
+            return (rule.get("source") or {}).get("text") or cc_api("sentence")(rule)
 
     def _co_cv(self, action: str, form_id: str, name: str, default=""):
         """What was typed in this form when it was just refused, else ``default``."""
@@ -347,7 +353,7 @@ class ChangeOrderMixin:
         me = (rnd.get("results") or {}).get(self.user) or {}
         on_panel = self.user in {e["who"] for e in rnd.get("panel") or []}
         return {"ov": ov, "co": co, "f": co["fields"], "stage": stage, "mine": mine, "editable": stage in cc.EDITABLE and not eco.finished(co),
-                "decider": not cc._may_decide(self.hub, co, self.user) and not eco.finished(co), "run": run, "waiting": waiting,
+                "decider": not cc_api("may_decide")(self.hub, co, self.user) and not eco.finished(co), "run": run, "waiting": waiting,
                 "p": p, "current": current, "round": ov["round"], "reviewing_me": on_panel and me.get("status") == "queued" and not self._viewing_cog(),
                 "answerer": (mine or self.user in ov["contributors"]) and not eco.finished(co), "groups": groups(ov["delta"]),
                 "requester": cc.requester(co)}
@@ -483,7 +489,7 @@ class ChangeOrderMixin:
         if stage == "preparing":
             if not mine:
                 return f"<p>{esc(who)} is preparing it: carrying the revisions and changes it makes.</p>"
-            carries = eco.carried(self.hub, co) or cc._items(co) or f.get("form_changes") or f.get("record_type_changes") or f.get("workflow_changes")
+            carries = eco.carried(self.hub, co) or cc_api("items")(co) or f.get("form_changes") or f.get("record_type_changes") or f.get("workflow_changes")
             if not carries:
                 return ("<p><b>Next:</b> carry what it changes: start a revision of an SOP or policy below, make a direct change in "
                         f"<a href='{href('/settings', self.user)}'>Settings</a>, the <a href='{href('/forms', self.user)}'>forms editor</a>, "
@@ -544,11 +550,11 @@ class ChangeOrderMixin:
     def _co_direct_html(self, ctx: dict) -> str:
         co = ctx["co"]
         prep = ctx["mine"] and ctx["editable"]
-        items = cc._items(co)
+        items = cc_api("items")(co)
         rows = []
         for it in items:
             o = it.get("origin") or {}
-            old, new = cc._old_new(it)
+            old, new = cc_api("old_new")(it)
             op = item_op(it)
             sign, word, cls = SIGN[op]
             if (new or old or {}).get("kind") == "process":  # a workflow from the editor: its changes, one line each
@@ -616,7 +622,7 @@ class ChangeOrderMixin:
                              f"<input type='hidden' name='co' value='{esc(co['locator'])}'><input type='hidden' name='sop' value='{esc(c['name'])}'>"
                              f"<button class='ghost'>{icon('x')}Remove</button></form>")
             kind = {"policy": "Policy", "sop": "SOP", "wi": "Work instruction"}.get(dft["fields"].get("doc_type"), "Document")
-            authors = cc._version_authors(self.hub, dft)
+            authors = cc_api("version_authors")(self.hub, dft)
             rows.append([f"{esc(c['name'])} <span class='why'>{esc(kind)}</span>",
                          f"<a href='{self._doc_page(dft)}'>{esc(dft['number'])}</a> rev {esc(dft['fields'].get('revision') or '')}"
                          + (f" <span class='why'>revises {esc(dft['fields'].get('revises'))}</span>" if dft["fields"].get("revises") else ""),
@@ -624,20 +630,65 @@ class ChangeOrderMixin:
         out = f"<h3>{icon('file-text')}SOP and policy revisions</h3>" + table(["SOP or policy", "Revision", "Written by", "Where it stands", ""], rows,
                                                                               "No revision yet: add the SOPs and policies this change order changes.")
         if prep:
-            carried = {c["name"] for c in eco.carried(self.hub, co)}
-            opts = []
-            for d in self.hub.kernel.query(type_="document"):
-                fd = d["fields"]
-                name = fd.get("sop_name")
-                if (d["state"] == "effective" and str(fd.get("lineage", "")).startswith(sopdocs.LINEAGE) and name not in carried
-                        and self._can_read(d["folder"])["allowed"] and not eco.may_change_sop(self.bundle or {}, d, user)):
-                    opts.append((name, f"{name} ({d['number']}, rev {fd.get('revision') or ''})"))
-            if opts:
-                sel = "".join(f"<option value='{esc(v)}'>{esc(t)}</option>" for v, t in sorted(opts))
-                out += (f"<form method='post' action='/co-add-sop' class='sform row'>{hidden_as(user)}{self._once()}<input type='hidden' name='co' value='{esc(co['locator'])}'>"
-                        f"<label class='f'><span>Add an SOP or policy</span><select name='sop'>{sel}</select></label>"
-                        f"<button class='secondary'>{icon('plus')}Start its revision here</button></form>")
+            out += self._co_add_sop_html(co)
+        elif ctx["editable"] and not ctx["mine"]:
+            out += (f"<p class='why'>Only {esc(ctx['requester'])} (its requester) or a document controller adds an SOP or policy to this change "
+                    "order.</p>")
         return out
+
+    def _co_add_sop_html(self, co: dict) -> str:
+        """Add an SOP or policy: always shown. One you may not revise is listed, disabled, with who may and a way to ask
+        them to add it."""
+        user = self.user
+        carried = {c["name"] for c in eco.carried(self.hub, co)}
+        mine, others = [], []
+        for d in self.hub.kernel.query(type_="document"):
+            fd = d["fields"]
+            name = fd.get("sop_name")
+            if not (d["state"] == "effective" and str(fd.get("lineage", "")).startswith(sopdocs.LINEAGE) and name not in carried
+                    and self._can_read(d["folder"])["allowed"]):
+                continue
+            why = eco.may_change_sop(self.bundle or {}, d, user)
+            label = f"{name} ({d['number']}, rev {fd.get('revision') or ''})"
+            (others if why else mine).append((name, label, why, fd.get("owner") or ""))
+        mine.sort()
+        others.sort()
+        opts = "".join(f"<option value='{esc(v)}'>{esc(t)}</option>" for v, t, _, _ in mine)
+        opts += "".join(f"<option value='{esc(v)}' disabled>{esc(t)}: {esc(w)}</option>" for v, t, w, _ in others)
+        if not opts:
+            return "<p class='muted'>Every SOP and policy in force is already carried here.</p>"
+        out = (f"<form method='post' action='/co-add-sop' class='sform row'>{hidden_as(user)}{self._once()}<input type='hidden' name='co' value='{esc(co['locator'])}'>"
+               f"<label class='f'><span>Add an SOP or policy</span><select name='sop'{'' if mine else ' disabled'}>{opts}</select></label>"
+               f"<button class='secondary'{'' if mine else ' disabled'}>{icon('plus')}Start its revision here</button></form>")
+        if not mine:
+            out += ("<p class='why'>You may not revise any SOP or policy here: only its owner, its author, a document controller or a policy owner "
+                    "revises one. Ask its owner to add it to this change order:</p>")
+        if others:
+            ask = "".join(f"<option value='{esc(v)}'>{esc(v)} (ask {esc(o or 'its owner')})</option>" for v, _, _, o in others if o)
+            if ask:
+                out += self._co_form("/co-ask-sop", co, "ask-sop",
+                                     f"<label class='f'><span>Ask the owner to revise</span><select name='sop'>{ask}</select></label>"
+                                     f"<button class='ghost'>{icon('send')}Ask them to add it here</button>", cls="sform row", label="Ask an SOP's owner")
+        return out
+
+    def post_co_ask_sop(self):
+        from .. import sopdocs as _sd
+
+        co = self._co_post()
+        if co is None:
+            return
+        name = self._f("sop")
+        doc = _sd.in_force(self.hub.kernel, name)
+        if doc is None:
+            raise ShellError(f"There is no SOP or policy {name} in force.")
+        owner = doc["fields"].get("owner")
+        if not owner or owner not in self._co_members():
+            raise ShellError(f"{name} has no owner who is a member: ask a document controller.")
+        self.hub.send(self.user, owner, f"Please add {name} to {co['number']}",
+                      f"{self.user} asks you to start a revision of {name} ({doc['number']}) on {co['number']} ({co['fields'].get('title') or ''}): "
+                      "you may revise it and they may not. Open the change order and use Add an SOP or policy, or say why not.",
+                      channel="dm", record=co["locator"])
+        self._co_done(co, f"Asked {owner} to add {name} to {co['number']}.", "co-carries")
 
     def _co_implements_html(self, co: dict, ctx: dict) -> str:
         user = self.user
@@ -841,11 +892,30 @@ class ChangeOrderMixin:
             return f"<p class='why'>{icon('users')} The compile-frame committee ({esc(names)}; chair {esc(cmt.get('chair') or '-')}) read the prose by consensus.</p>"
         qs = [q for q in self._co_unavailable_questions(ctx) if q.get("status", "open") == "open"]
         what = ("; ".join(f"{n}: {w}" for n, w in un.items()))
+        unread = self._co_unread(ctx)
+        if qs:
+            said = f"{len(qs)} question(s) say what it could not read: <a href='#co-unavailable'>see Questions</a>. "
+        elif unread:
+            said = ("<b>Not every changed sentence was read:</b> " + "; ".join(esc(short(x, 220)) for x in unread[:3])
+                    + (f" (and {len(unread) - 3} more)" if len(unread) > 3 else "") + ". ")
+        else:
+            said = "Each changed sentence that became an item below was read by the hub's sentence grammar. "
         return (f"<div class='card warn' role='status' id='co-committee-unavailable'><p style='margin-top:0'>{icon('alert')} <b>The compile-frame committee cannot read here.</b> "
-                f"{esc(what)}.</p><p>" + ("Every changed sentence was read exactly by the hub's sentence grammar, so this round did not need it. "
-                                          if not qs else f"{len(qs)} question(s) say what it could not read: <a href='#co-unavailable'>see Questions</a>. ")
+                f"{esc(what)}.</p><p>" + said
                 + "Prose outside the grammar's sentence shapes waits for the committee, which reads by consensus.</p>"
                 + self._co_fix_unavailable_html(ctx) + "</div>")
+
+    def _co_unread(self, ctx: dict) -> list[str]:
+        """What the round could not read: the compile's errors, the round's stop, notes about prose not read."""
+        out = list(ctx["f"].get("staged_errors") or [])
+        rnd = ctx["round"] or {}
+        if rnd.get("status") == "failed" and rnd.get("error"):
+            out.append(rnd["error"])
+        for n in (ctx["p"] or {}).get("notes") or []:
+            text = n.get("note") or n.get("detail") or ""
+            if "not read" in text or "does not parse" in text or "not understood" in text:
+                out.append((f"{n.get('frame')} line {n.get('line')}: " if n.get("line") else "") + text)
+        return list(dict.fromkeys(out))
 
     def _co_fix_unavailable_html(self, ctx: dict) -> str:
         co = ctx["co"]
@@ -1035,7 +1105,7 @@ class ChangeOrderMixin:
     def _co_group_words(self, g: list[dict]) -> str:
         c = g[0]
         op = item_op(c)
-        new = cc._effective(c) if c.get("op") != "remove" else None
+        new = cc_api("effective")(c) if c.get("op") != "remove" else None
         old = c.get("changes_from") or c.get("was") or (c["rule"] if c.get("op") == "remove" else None)
         if (new or old or {}).get("kind") == "process":
             from ..workflow_model import process_change_reason
@@ -1050,7 +1120,7 @@ class ChangeOrderMixin:
     def _co_group_html(self, g: list[dict]) -> str:
         c = g[0]
         op = item_op(c)
-        new = cc._effective(c) if c.get("op") != "remove" else None
+        new = cc_api("effective")(c) if c.get("op") != "remove" else None
         old = c.get("changes_from") or c.get("was") or (c["rule"] if c.get("op") == "remove" else None)
         if (new or old or {}).get("kind") == "process":  # a workflow: one line per change of meaning (workflow_model), no ids
             from ..workflow_model import process_change_words
@@ -1071,9 +1141,11 @@ class ChangeOrderMixin:
         kind = o.get("kind") or "prose"
         bits = []
         if kind == "prose":
+            how = ("; read by the " + esc(o["read_by"]) + " cog, checked by the guards" if o.get("read_by") else
+                   "; read by the hub's sentence grammar from the quoted line (no model)" if o.get("quote") and o.get("line") else
+                   "; no line of the prose states it as a rule: it was not read from a sentence")
             bits.append(f"Read from {self._co_frame_line(o.get('frame'), o.get('line')) or 'the prose'}"
-                        + (f", written by {esc(o.get('by'))}" if o.get("by") else "")
-                        + ("; read by the " + esc(o["read_by"]) + " cog" if o.get("read_by") else "; read exactly by the hub's sentence grammar (no model)"))
+                        + (f", written by {esc(o.get('by'))}" if o.get("by") else "") + how)
         elif kind == "suggested":
             bits.append(f"Suggested by {esc(o.get('by'))}, accepted by {esc(o.get('accepted_by'))}"
                         + (f" ({esc(when(o.get('at')))})" if o.get("at") else ""))
@@ -1091,7 +1163,7 @@ class ChangeOrderMixin:
         """The model's (or the author's) quote next to the hub's explained sentence."""
         o = c.get("origin") or {}
         quote_ = o.get("quote")
-        mine = self._say(cc._effective(c) if c.get("op") != "remove" else c["rule"])
+        mine = self._say(cc_api("effective")(c) if c.get("op") != "remove" else c["rule"])
         out = "<div class='co-reads'>"
         if quote_:
             out += (f"<div><h4>The SOP says ({self._co_frame_line(o.get('frame'), o.get('line'))})</h4><q>{esc(quote_)}</q></div>")
@@ -1125,7 +1197,7 @@ class ChangeOrderMixin:
                               "(request review), and the change order goes for approval once a round has run on what it carries.</p>"
                               + ("<ul class='staged'>" + "".join(rows) + "</ul>" if rows else "<p class='muted'>No rule changes in the drafts.</p>")) + "</section>"
         gs = ctx["groups"]
-        n_w = sum(1 for g in gs if any(cc._widening(x) for x in g))
+        n_w = sum(1 for g in gs if any(cc_api("widening")(x) for x in g))
         states = [group_state(g) for g in gs]
         if p is not None:
             out += (f"<p class='why'>What the configuration becomes when {esc(co['number'])} is released, against the release in force "
@@ -1145,7 +1217,7 @@ class ChangeOrderMixin:
         op = item_op(c)
         sign, word, cls = SIGN[op]
         st = group_state(g)
-        widening = any(cc._widening(x) for x in g)
+        widening = any(cc_api("widening")(x) for x in g)
         stale = any(x.get("stale") for x in g)
         chips = chip(st, {"approved": "ok", "rejected": "crit"}.get(st, "warn"))
         if widening:
@@ -1208,7 +1280,7 @@ class ChangeOrderMixin:
                   f"<p class='why' id='{fid}-h'>Approve: it goes into force with the change order. Reject: it does not; if the prose states it, "
                   "the configuration then differs from the prose (a divergence the release records).</p>")
         if c.get("op") != "remove":
-            rule = cc._effective(c)
+            rule = cc_api("effective")(c)
             fields = [(k, v) for k, v in rule.items() if k not in ("kind", "source", "key") and (v is None or isinstance(v, (str, int, float, bool)))]
             if fields:
                 ctl = "".join(f"<label class='f'><span>{esc(k.replace('_', ' '))}</span><input name='ov_{esc(k)}' "
@@ -1287,7 +1359,13 @@ class ChangeOrderMixin:
             if pv is not None and not pv.get("errors") and pv.get("rules"):
                 p, delta, note = pv, pv.get("changes") or [], " From the drafts as they stand (a review round compiles the delta that counts)."
         try:
-            effects = cog_effects(self.hub, co, p, delta, self._say)
+            effects = None
+            if hasattr(cc, "cog_impact") and p is ctx["p"]:  # workstream 1's derivation, when it has landed and fits this view
+                got = cc.cog_impact(self.hub, co["locator"])
+                if isinstance(got, list) and all(isinstance(e, dict) and {"cog", "gained", "lost"} <= set(e) for e in got):
+                    effects = [{"roles": [], "new": False, "gone": False, **e} for e in got]
+            if effects is None:
+                effects = cog_effects(self.hub, co, p, delta, self._say)
         except Exception as e:  # never let a derived view stop the page
             log_line(f"cog effects failed for {co['number']}: {type(e).__name__}: {e}")
             return out + "<p class='muted'>Could not work out the effect on cogs for this delta.</p></section>"
@@ -1358,7 +1436,7 @@ class ChangeOrderMixin:
         the change order's own reasons (readiness, warnings on it as a whole, the state map)."""
         out = []
         base = self._co_href(co)
-        owners = set(cc._owners(self.hub))
+        owners = set(cc_api("owners")(self.hub))
         for n, g in enumerate(groups(delta), 1):
             c = g[0]
             link = f"<a href='{base}#{anchor(c['id'])}'>item {n}</a>"
@@ -1367,7 +1445,7 @@ class ChangeOrderMixin:
             if st == "pending":
                 if any(x.get("stale") for x in g):
                     out.append(f"{link} was decided before the baseline changed: decide it again ({words})")
-                elif any(cc._widening(x) for x in g):
+                elif any(cc_api("widening")(x) for x in g):
                     have = sorted({d["by"] for d in c.get("decisions") or [] if d["verdict"] == "approve" and not d.get("stale")} & owners)
                     out.append(f"{link} widens authority: both policy owners approve it" + (f" (approved by {esc(', '.join(have))})" if have else "") + f": {words}")
                 else:
@@ -1612,7 +1690,7 @@ class ChangeOrderMixin:
         self._co_done(co, "The question is marked answered.", "co-questions")
 
     def _co_override_from_form(self, c: dict) -> dict:
-        rule = cc._effective(c)
+        rule = cc_api("effective")(c)
         out = {}
         for k, v in rule.items():
             if k in ("kind", "source", "key") or not (v is None or isinstance(v, (str, int, float, bool))):
@@ -1665,7 +1743,7 @@ class ChangeOrderMixin:
         if not group:
             raise ShellError("That item is no longer in the delta: the page has changed, look again.")
         if verdict != "reject":  # every warning ticked before anything is recorded
-            missing = [w for c in group for w in c.get("warnings") or [] if not w.get("accepted") and not cc._accepts(accept, w)
+            missing = [w for c in group for w in c.get("warnings") or [] if not w.get("accepted") and not cc_api("accepts")(accept, w)
                        and not (verdict == "override" and c is group[0] and w.get("code") == "override")]
             if missing:
                 raise ShellError("Tick I accept for each warning to approve it: " + "; ".join(w["text"] for w in missing[:3]) + ".")
@@ -1679,7 +1757,7 @@ class ChangeOrderMixin:
         log_line(f"change order {co['number']} item {ids[0]} {verdict} by={self.user}")
         words = {"approve": "Approved", "reject": "Rejected", "override": "Approved with your override"}[verdict]
         done = next((c for c in cc.delta(self.hub, co["locator"]) if c["id"] == group[0]["id"]), group[0])
-        said = self._say(cc._effective(done)) if done.get("op") != "remove" else "no longer: " + self._say(done["rule"])
+        said = self._say(cc_api("effective")(done)) if done.get("op") != "remove" else "no longer: " + self._say(done["rule"])
         self._co_done(co, f"{words}: {short(said, 140)}", anchor(group[0]["id"]))
 
     def post_co_accept_warning(self):

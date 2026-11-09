@@ -882,6 +882,8 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
             for name, wf in sorted((bundle.get("workflows") or {}).items()):
                 if wf.get("record_type") != rec["type"] or is_frame_doc(rec["fields"]) or rec["fields"].get("doc_type") == "frame-draft":
                     continue
+                if rec["type"] == "change-order":  # a change order goes in through Request review and Send for approval only
+                    continue
                 op = bundle["ops"].get(name) or {}
                 d = authz.check(bundle, user, "create", op.get("object", rec["type"]), op.get("folder") or rec["folder"])
                 first = op["steps"][0]["role"] if op.get("steps") else "system"
@@ -1000,7 +1002,12 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
                                                (f'<a href="{href("/compare/" + quote(loc, safe=":"), user, a=v["version"] - 1, b=v["version"])}">what changed</a>'
                                                 if v["version"] > 1 else "")] for v in versions], "No content yet.")
         if f.get("text"):
-            body += f"<h2>Text</h2><pre>{esc(short(f['text'], 20000))}</pre>"
+            if f.get("mime") == "text/markdown" or str(f.get("filename") or "").endswith(".md"):  # a generated document: rendered
+                from .text import markdown_html
+
+                body += "<h2>Text</h2>" + markdown_html(str(f["text"])[:60000], link=lambda path: href(path, user))
+            else:
+                body += f"<h2>Text</h2><pre>{esc(short(f['text'], 20000))}</pre>"
         body += self._sop_doc_html(rec)
         body += "<h2 id='checkout'>Check-out and check-in</h2><div class='card'>"
         err = self._form_error(["file", "note"]) if self.route in ("/checkout", "/checkin", "/undo-checkout") else ""
