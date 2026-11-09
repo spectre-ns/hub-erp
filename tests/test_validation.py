@@ -93,7 +93,7 @@ def test_without_validation_sentences_the_defaults_apply_and_say_so(released):
     frame = load_frame_text('---\ntype: frame [0.2]\nname: v-sop\ndescription: x\nvisibility: internal\nversion: "1"\nscope: department\n'
                             'maintainer: bob\n---\n# V\n\n## Validation\nChanges to the weather are high risk.\n', Path("v-sop.frame.md"))
     notes = ConventionExtractor().extract(frame).notes
-    assert any(n.get("severity") == "error" and "names nothing the hub can class" in n["note"] for n in notes)
+    assert any(n.get("severity") == "unread" and "names nothing the hub can class" in n["note"] for n in notes)
 
 
 def test_a_change_order_needs_the_evidence_its_items_risk_class_asks_for(cc_hub):

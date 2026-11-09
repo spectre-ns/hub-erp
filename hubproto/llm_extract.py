@@ -276,7 +276,7 @@ _STRUCTURED = ("process:", "cog:", "persona:", "scope:", "committee:", "graph:")
 def unread_rule_questions(frame: Frame, lines: set[int], rules: list[dict], notes: list[dict], chair: str = "") -> list[dict]:
     """A sentence on ``lines`` (the lines that changed, or a new SOP's) that reads like a rule and from which nothing was
     read, neither by the grammar nor by the committee, never ships silently: a blocking question (code ``unread-rule``)
-    quoting it, for the committee's chair. A sentence the grammar refused already stops the release (its error); the Roles
+    quoting it, for the committee's chair (as is any sentence the grammar marked unread that no reader read, in compile_proposal); the Roles
     and responsibilities table and the sections the SOP's header lists under ``narrative:`` hold no rules."""
     from .compile import question
     from .extract import RULE_SECTIONS
@@ -454,7 +454,7 @@ def _assemble(frame: Frame, conv, plan: DiffPlan, adds: list[dict], removes: set
         notes.append({"frame": frame.name, "line": at, "text": r["source"].get("text") or "", "severity": "warning",
                       "note": f"left out: “{said}” was read from a line that changed" + ("" if read else ", and the change is not read yet")})
     for n in conv.notes:
-        if n.get("severity") == "error" and n.get("line") in covered:
+        if n.get("severity") in ("error", "unread") and n.get("line") in covered:
             continue  # the compiler could not read this sentence; the model did, and the reviewers see what it read
         out.notes.append(n)
     seen = set()
@@ -1049,7 +1049,7 @@ def _whole_result(frame: Frame, conv, adds: list[dict], questions: list[dict], n
             seen.add((n.get("line"), n.get("note")))
             out.notes.append(n)
     for n in conv.notes:
-        if n.get("severity") == "error" and n.get("line") in covered:
+        if n.get("severity") in ("error", "unread") and n.get("line") in covered:
             continue
         out.notes.append(n)
     out.questions = merge_questions(questions)

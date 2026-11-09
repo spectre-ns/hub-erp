@@ -20,12 +20,16 @@ def _summary(proposal: dict, frames: set[str] | None = None) -> dict:
     """What a proposal holds, as a cog should hear it: its number, changes (and widenings), errors and reviewers."""
     changes = [c for c in proposal.get("changes") or [] if frames is None or _rule_frame(c) in frames or not _rule_frame(c)]
     errors = [f"{f.get('detail')} ({f.get('frame')}:{f.get('line')})" for f in proposal.get("findings") or [] if f.get("severity") == "error"]
+    unread = [f"{q.get('quote')} ({q.get('frame')}:{q.get('line')})" for q in proposal.get("questions") or []
+              if q.get("unread_note") and q.get("status", "open") == "open"]
     return {"proposal": proposal.get("number"), "proposal_id": proposal.get("id"), "status": proposal.get("status"),
             "changes": len(changes), "change_list": [c["reason"] for c in changes][:20],
             "widenings": [c["reason"] for c in changes if c.get("widening")],
-            "errors": errors, "blocked": bool(errors), "reviewers": proposal.get("reviewers") or [],
+            "errors": errors, "unread": unread, "blocked": bool(errors or unread), "reviewers": proposal.get("reviewers") or [],
             "note": (("The release is blocked until these errors are fixed: reword the policy and propose again (your draft carries "
-                      "forward), or a policy owner withdraws the draft. ") if errors else "") + _OWNERS_DECIDE}
+                      "forward), or a policy owner withdraws the draft. ") if errors else "")
+                    + (("No reader read a rule from the sentences under unread: a person answers each question, or reword the policy "
+                        "and propose again (your draft carries forward). ") if unread else "") + _OWNERS_DECIDE}
 
 
 def _notify_owners(tools, proposal: dict, subject: str, body: str, record: str | None = None) -> None:

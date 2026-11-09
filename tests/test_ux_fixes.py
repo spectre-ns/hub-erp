@@ -130,15 +130,18 @@ def test_a_mistyped_heading_or_rule_blocks_the_release(hub):
     release_all(hub)
     edit_frame(hub, "finance-policy", "## Permissions", "## Permisions", bump="1.1")
     proposal = hub.compile()
-    errors = [f for f in proposal["findings"] if f["severity"] == "error" and f["guard"] == "grammar"]
-    assert errors and "did you mean '## Permissions'" in errors[0]["detail"]
+    assert not [f for f in proposal["findings"] if f["guard"] == "grammar"], "the grammar not knowing a line is not an error"
+    [q] = [q for q in proposal["questions"] if q.get("unread_note")]
+    assert q["blocking"] and "did you mean '## Permissions'" in q["text"] and "A person decides" in q["text"]
     with pytest.raises(CompileError, match="not ready"):
         hub.release(proposal["id"], "bob")
     edit_frame(hub, "finance-policy", "## Permisions", "## Permissions")
     edit_frame(hub, "finance-policy", "Finance clerks may create bills in Finance/Payables.", "Finance clerks can create bills in Finance/Payables", bump="1.2")
     proposal = hub.compile()
-    errors = [f for f in proposal["findings"] if f["severity"] == "error" and f["guard"] == "grammar"]
-    assert errors and "looks like a rule but does not parse" in errors[0]["detail"] and errors[0]["frame"] == "finance-policy"
+    [q] = [q for q in proposal["questions"] if q.get("unread_note") and q.get("quote", "").startswith("Finance clerks can")]
+    assert "looks like a rule but does not parse" in q["text"] and q["frame"] == "finance-policy"
+    with pytest.raises(CompileError, match="not ready"):
+        hub.release(proposal["id"], "bob")
 
 
 def test_citations_use_file_line_numbers(released):

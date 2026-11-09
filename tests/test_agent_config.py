@@ -49,7 +49,7 @@ def test_a_change_that_does_not_parse_is_reported_as_an_error(released, tools):
     out = tools.execute("propose_policy_change", {"frame": "finance-policy", "reason": "simpler wording",
                                                   "ops": "@@ replace: The controller approval threshold is 10,000 USD.\n"
                                                          "@@ with: The controller approval threshold may be about ten thousand dollars."})
-    assert out["ok"] and out["blocked"] and out["errors"] and "reword" in out["note"]
+    assert out["ok"] and out["blocked"] and not out["errors"] and out["unread"] and "reword" in out["note"]
     assert digest(released) == released.releases.current()["digest"]
 
 

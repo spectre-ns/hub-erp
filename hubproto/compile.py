@@ -238,6 +238,23 @@ def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], re
     for r in rules:
         by_key[rule_key(r)] = r
     rules = list(by_key.values())
+    # A sentence the grammar could not read is not an error: the grammar is the fast path, and the compile-frame
+    # committee (the senior cogs) reads the diff. One that no reader read is a blocking question for a person (its
+    # chair): it states no rule, it is recorded as a divergence, or the author rewrites it.
+    cited = {((r.get("source") or {}).get("frame"), (r.get("source") or {}).get("line")) for r in rules}
+    asked = {(q.get("frame"), ln): q for q in questions.values() if q.get("code") == "unread-rule" for ln in (q.get("lines") or [q.get("line")])}
+    for n in notes:
+        if n.get("severity") != "unread" or (n.get("frame"), n.get("line")) in cited:
+            continue
+        if (n.get("frame"), n.get("line")) in asked:  # the diff reading asked about this sentence already
+            asked[(n["frame"], n["line"])]["unread_note"] = True
+            continue
+        q = question(n["frame"], n["line"], f"Line {n['line']}, “{n.get('text')}”, was not read: the sentence grammar does not know "
+                     f"it ({n.get('note')}) and no reader read a rule from it, so nothing would be configured for it. A person "
+                     "decides: it states no rule, it is recorded as a divergence, or the author rewrites it.",
+                     raised_by="hub", code="unread-rule", quote=n.get("text") or "", blocking=True, lines=[n["line"]], unread_note=True)
+        questions.setdefault(q["id"], q)
+        asked[(n["frame"], n["line"])] = q
     findings = []
     from .guards import Finding as _Finding
     findings += [_Finding("grammar", "error", n["note"] + ": " + n["text"], frame=n["frame"], line=n["line"])
@@ -360,6 +377,9 @@ def readiness(proposal: dict) -> list[str]:
     problems = []
     for f in blocking_findings(proposal):
         problems.append(f"{f['guard']}: {f['detail']} ({f['frame']}:{f['line']})")
+    for q in proposal.get("questions") or []:  # a sentence nobody read stops a release made without a change order too
+        if q.get("unread_note") and q.get("blocking") and q.get("status", "open") == "open":
+            problems.append(f"question ({q.get('code')}): {q.get('text')}")
     for c in proposal["changes"]:
         if change_state(c) == "pending":
             need = 2 if c["widening"] else 1

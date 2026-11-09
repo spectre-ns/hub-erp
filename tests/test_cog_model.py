@@ -273,7 +273,7 @@ def test_duty_and_permission_shapes():
                            "Staff may comment on anything in Tasks.\n", scope="department")
     duty = next(r for r in rules if r["kind"] == "duty")
     assert duty["cog"] == "it-admin" and duty["every"] == "week" and duty["task"] == "checks the backups."
-    assert any(n.get("severity") == "error" and "a duty reads" in n["note"] for n in notes)
+    assert any(n.get("severity") == "unread" and "a duty reads" in n["note"] for n in notes)
     perm = [r for r in rules if r["kind"] == "permission"]
     assert perm[0]["subject"] == "cog:stores" and perm[0]["effect"] == "propose" and perm[0]["confirmer"] == "storekeeper"
     assert perm[1] == {**perm[1], "subject": "role:staff", "action": "comment", "object": "*", "resource": "folder:Tasks", "effect": "allow"}

@@ -38,7 +38,7 @@ def test_the_table_is_read_in_the_fast_path_even_where_nothing_else_is():
     rules, notes = extract("Some prose.\n\n" + table)
     rows = [(r["who"], r["text"]) for r in rules if r["kind"] == "responsibility"]
     assert rows == [("role:quality-manager", "Disposition."), ("cog:stores", "Keeps stock."), ("group:auditors", "Audit.")]
-    assert all(r["frame"] == "x-sop" for r in rules) and [n["severity"] for n in notes] == ["error"], "a row that is not two cells"
+    assert all(r["frame"] == "x-sop" for r in rules) and [n["severity"] for n in notes] == ["unread"], "a row that is not two cells: left to the readers"
     rules, _ = extract("1. Do this.\n\n" + table, compile_mode="none")
     assert [r["who"] for r in rules] == ["role:quality-manager", "cog:stores", "group:auditors"], "a work instruction's table is read too"
 
