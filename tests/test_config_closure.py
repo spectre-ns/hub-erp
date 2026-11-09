@@ -195,7 +195,8 @@ def test_a_staged_proposal_comes_into_force_only_with_its_approved_change_order(
     co, p = staged_co(closed)
     assert p["eco"] == co["number"]
     # The policy owners still sign a staged proposal's widenings (here: none needed), but never release it themselves.
-    closed.review(p["id"], "bob", approve_all=True, meaning="ok")
+    rc, out = run_cli(closed.root, "review", p["id"][:6], "--as", "bob", "--approve-all")
+    assert rc == 0 and f"it comes into force with {co['number']}" in out and "ready: hubproto release" not in out
     with pytest.raises(closure.ChangeOrderRequired) as e:
         closed.release(p["id"], "bob")
     assert f"staged by {co['number']}" in str(e.value) and CO_SENTENCE in str(e.value)
@@ -244,6 +245,8 @@ def test_the_policy_verbs_refuse_on_the_command_line(closed):
     for argv in (("review", p["id"][:6], "--as", "bob", "--approve-all"), ("release", p["id"][:6], "--as", "bob")):
         rc, out = run_cli(root, *argv)
         assert rc == 1 and CO_SENTENCE in out and "Traceback" not in out, (argv, out)
+    rc, out = run_cli(root, "proposal", p["id"][:6])
+    assert rc == 0 and "not released this way" in out and CO_SENTENCE in out and "ready: hubproto release" not in out
     rc, out = run_cli(root, "sops", "convert", "--as", "carol")
     assert rc == 0 and "already" in out
     assert ap_limit(closed) == 2000.0
@@ -486,3 +489,47 @@ def test_the_automation_api_for_a_change_order_with_no_record_type_changes(close
     co = new_co(closed)
     assert recordtypes.carried_reasons(closed, co) == [] and recordtypes.delta_items(closed, co) == []
     assert recordtypes.activate(closed, co, closed.releases.current()["digest"]) == [], "nothing carried: nothing to do, whatever its state"
+
+
+def test_a_hub_converted_before_record_types_were_kept_starts_from_the_release_in_force(closed, config_dir):
+    shutil.rmtree(closed.root / "state" / "record-types")  # converted by a hub that did not keep them yet
+    path = config_dir / "record-types.json"
+    data = json.loads(path.read_text())
+    data["ncr"]["fields"]["batch"] = "text"
+    path.write_text(json.dumps(data))  # and the file changed since that release
+    restarted = Hub(closed.root)
+    rt = recordtypes.in_force(restarted)
+    assert rt["version"] == 1 and "was compiled with" in rt["source"]
+    assert "batch" not in restarted.kernel.types["ncr"]["fields"], "the file as of the release in force, not as it is now"
+    assert any("ncr.batch" in x for x in recordtypes.drift(restarted)["in_file"])
+
+
+def test_record_types_in_force_that_cannot_be_read_stop_the_hub_rather_than_fall_back_to_the_file(closed):
+    (closed.root / "state" / "record-types" / "active.json").write_text("{not json")
+    with pytest.raises(ValueError) as e:
+        Hub(closed.root)
+    assert "restore it from a backup" in str(e.value)
+
+
+def test_status_reports_other_configuration_files_that_differ_from_the_release(closed, config_dir):
+    path = config_dir / "links.json"
+    data = json.loads(path.read_text())
+    data["inspires"] = "is inspired by"
+    path.write_text(json.dumps(data))
+    rc, out = run_cli(closed.root, "status", "--check")
+    assert rc == 1 and "config/links.json differs from what the release in force, v1 (" in out and "recorded: it is used as it is" in out
+
+
+def test_form_layouts_come_into_force_only_for_an_approved_change_order(closed):
+    from hubproto import formlayout
+
+    co = new_co(closed)
+    lay = formlayout.active_layout(closed, "ncr")
+    lay["sections"][0]["title"] = "The nonconformance"
+    formlayout.save_draft(closed, "carol", "ncr", lay)
+    formlayout.carry(closed, co["number"], "carol", "ncr")
+    co = closed.kernel.get(co["locator"])
+    with pytest.raises(closure.ChangeOrderRequired):
+        formlayout.activate(closed, co, closed.releases.current()["digest"])
+    assert formlayout.active_entry(closed, "ncr") is None
+    assert formlayout.activate(closed, approved(closed, co), closed.releases.current()["digest"]) == ["ncr v1"]

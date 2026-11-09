@@ -89,10 +89,15 @@ class RecordTypeStore:
         return self.root / "active.json"
 
     def active(self) -> dict | None:
-        try:
-            return json.loads(self.active_path.read_text(encoding="utf-8")) if self.active_path.exists() else None
-        except ValueError:
+        """The record types in force, or None when the hub does not keep them (yet). A file that does not parse is an
+        error, never "none": starting again from the file would silently drop what change orders released."""
+        if not self.active_path.exists():
             return None
+        try:
+            return json.loads(self.active_path.read_text(encoding="utf-8"))
+        except ValueError as e:
+            raise ValueError(f"{self.active_path} does not parse ({e}): the record types in force are unknown; "
+                             "restore it from a backup (hubproto restore)") from None
 
     def stamp(self) -> int | None:
         try:
@@ -165,7 +170,10 @@ def governed(hub) -> bool:
 def _converted(hub) -> bool:
     from . import sopdocs
 
-    return sopdocs.converted(hub.kernel)
+    # Cheap first: no event ever named an SOP lineage, so nothing was converted (no need to fold every record).
+    seen = hub.kernel.db.execute("SELECT 1 FROM events WHERE aggregate LIKE 'rec:document:%' AND data LIKE ? LIMIT 1",
+                                 ('%"lineage": "' + sopdocs.LINEAGE + '%',)).fetchone()
+    return seen is not None and sopdocs.converted(hub.kernel)
 
 
 def ensure(hub, by: str = "hub") -> dict:

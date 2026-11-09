@@ -602,7 +602,12 @@ def cmd_proposal(args) -> int:
         print("no changes")
     for line in hub.readiness(p["id"]):
         print("  needs: " + line)
-    if p["status"] == "open" and not errors and not hub.readiness(p["id"]):
+    from .closure import release_blocker
+
+    closed = release_blocker(hub, p) if p["status"] == "open" else ""
+    if closed:  # the SOPs are documents: only an approved change order brings it into force
+        print("  not released this way: " + closed)
+    elif p["status"] == "open" and not errors and not hub.readiness(p["id"]):
         print(f"ready: hubproto release #{proposal_number(hub, p['id'])} --as {p['reviewers'][0] if p['reviewers'] else '<policy owner>'}")
     return 0
 
@@ -635,7 +640,9 @@ def cmd_review(args) -> int:
     needs = hub.readiness(p["id"])
     for line in needs:
         print("  needs: " + line)
-    if not needs:
+    if p.get("eco"):
+        print(f"it comes into force with {p['eco']} when that change order is approved and released")
+    elif not needs:
         print(f"ready: hubproto release #{proposal_number(hub, p['id'])} --as {args.as_user}")
     return 0
 
@@ -1143,8 +1150,8 @@ def config_drift(hub: Hub, cur: dict) -> bool:
         current = _config_sha(Path(hub.kernel.config_dir) / name)
         if current != recorded[name]:
             differs = True
-            print(f"config/{name} differs from the release in force ({version_of(hub, cur['digest'])}): it is used as it is "
-                  "(link vocabulary and retention classes are not under change control yet)")
+            print(f"config/{name} differs from what the release in force, {version_of(hub, cur['digest'])}, recorded: it is used as it "
+                  "is (link vocabulary and retention classes are not under change control yet)")
     return differs
 
 
