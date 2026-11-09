@@ -358,6 +358,9 @@ def workflow_checks(rule: dict, key: str, frame: str, line: int, record_types: d
         if isinstance(el, dict):
             el = el.get("id") or ""
         out.append(Finding("workflow", sev, f"{rule['name']}: {detail}", key, frame, int(lines.get(el, 0) or line)))
+    return out
+
+
 FIELD_STEP_ROLES = {"system", "assignee", "owner", "author", "requester", "auditor", "chair", "evaluator", "reporter"}
 
 
