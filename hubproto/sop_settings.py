@@ -14,8 +14,9 @@ from .rules import rule_key
 from .settings import sentence
 
 SECTION = {"permission": "Permissions", "routing": "Routing", "sla": "Routing", "approval_criteria": "Approval criteria",
-           "sod": "Segregation of duties", "threshold": "Thresholds", "member": "Members", "role": "Roles", "folder": "Folders"}
-SECTIONED = {"cog": "Cog: {name}", "process": "Process: {name}"}  # rules written as a whole section
+           "sod": "Segregation of duties", "threshold": "Thresholds", "member": "Members", "role": "Roles", "folder": "Folders",
+           "duty": "Duties"}
+SECTIONED = {"cog": "Cog: {name}", "process": "Process: {name}", "persona": "Persona: {name}"}  # rules written as a whole section
 
 
 def slot(rule: dict) -> tuple:
@@ -35,8 +36,10 @@ def slot(rule: dict) -> tuple:
         return (k, rule.get("object"), tuple(rule.get("roles") or []))
     if k == "member":
         return (k, rule.get("principal"))
-    if k in ("cog", "process", "role"):
+    if k in ("cog", "process", "role", "persona"):
         return (k, rule.get("name"))
+    if k == "duty":
+        return (k, rule.get("cog"), rule.get("task"))
     if k == "folder":
         return (k, rule.get("path"))
     return (k, rule_key(rule))
@@ -73,6 +76,12 @@ def home_frame(rule: dict, base_rules: list[dict]) -> str:
             return owner
     if k == "threshold":
         same = next((_frame_of(r) for r in base_rules if r.get("kind") == "threshold" and _frame_of(r)), "")
+        if same:
+            return same
+    if k == "duty":  # with the cog's other duties, or in the SOP whose routes or criteria name the cog
+        same = next((_frame_of(r) for r in base_rules if r.get("kind") == "duty" and r.get("cog") == rule.get("cog") and _frame_of(r)), "") or \
+            next((_frame_of(r) for r in base_rules if r.get("kind") in ("routing", "approval_criteria")
+                  and f"cog:{rule.get('cog')}" in (r.get("assignee"), r.get("approver")) and _frame_of(r)), "")
         if same:
             return same
     return next((_frame_of(r) for r in base_rules if r.get("kind") == "member" and _frame_of(r)), "org-model")

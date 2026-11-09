@@ -80,7 +80,7 @@ def test_carrying_an_sop_stages_the_frame_and_shows_what_blocks_approval(shell):
     write(hub, draft, OLD, NEW, "alice")
     html = page(shell, co, "alice")
     assert "1,500" in html and "was:" in html and "2,000" in html, "the changed rule as a sentence, with what it was"
-    assert "must be approved through document control first" in html and "Send for approval" not in html and "Preview from the drafts" in html
+    assert "no review round has run yet" in html and "Request review" in html and "Send for approval" not in html and "Preview from the drafts" in html
     assert "compare with the version in force" in html
     status, url, body = post(shell, "/co-remove-sop", {"as": "alice", "co": co["locator"], "sop": "finance-policy"})
     assert status == 200 and eco.carried(hub, hub.kernel.get(co["locator"])) == []
@@ -108,18 +108,16 @@ def test_an_sop_page_offers_a_revision_on_a_change_order(shell):
     assert "only alice, its author, a document controller" in page(shell, policy, "dave") or "Revise on a change order" not in page(shell, policy, "dave")
 
 
-def test_send_for_approval_once_every_revision_is_approved(shell):
+def test_send_for_approval_once_a_review_round_has_run(shell):
     hub = shell["hub"]
     co = new_co(shell)
     post(shell, "/co-add-sop", {"as": "alice", "co": co["locator"], "sop": "finance-policy"})
     [c] = eco.carried(hub, hub.kernel.get(co["locator"]))
     write(hub, c["draft"], OLD, NEW, "alice")
-    run = hub.runner.submit("document-control", {"record": {"change_type": "minor"}}, owner="alice", record=c["draft"]["locator"])
-    state = hub.runner.load(run)
-    who = state["pending"]["assignees"][0]
-    hub.runner.decide(run, who, "approve", meaning="ok", payload_digest=hub.runner.seen_digest(state))
+    status, url, body = post(shell, "/co-review", {"as": "alice", "co": co["locator"]})
+    assert status == 200, body[:400]
     html = page(shell, co, "alice")
-    assert "approved, held for this change order" in html and "Send for approval" in html
+    assert "Review round 1" in html and "Send for approval" in html
     status, url, body = post(shell, "/co-send", {"as": "alice", "co": co["locator"]})
     assert status == 200, body[:400]
     cos = hub.runner.run_for_record(co["locator"])

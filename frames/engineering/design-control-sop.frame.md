@@ -3,7 +3,7 @@ type: frame [0.2]
 name: design-control-sop
 description: How a mechanical or electrical design is submitted, exported, reconciled against inventory, reviewed and released as a part revision.
 visibility: internal
-version: "1.1.0"
+version: "1.2.0"
 scope: department
 maintainer: engineering
 inherits: org-model
@@ -45,6 +45,7 @@ Design authorities may read Engineering.
 Design engineers may create items in Inventory/Items.
 Design engineers may create purchase requests in Purchasing/Requests.
 Quality managers may read Engineering.
+Quality managers may comment on anything in Engineering.
 
 ## Thresholds
 The design rule error limit is 0 percent.

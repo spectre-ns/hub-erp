@@ -345,7 +345,8 @@ def test_people_page_and_cog_profile(shell):
     status, text = get(shell, "/user/ap-reviewer", **{"as": "alice"})
     assert status == 200 and "<h1>ap-reviewer" in text and "payables reviewer" in text and "finance clerk" in text
     about = text.split("About this cog")[1].split("May approve")[0]
-    assert "ollama/qwen3:14b" in about and "You are the payables reviewer" in about and 'href="/frame/finance-policy?as=alice">finance-policy</a>' in about
+    assert "ollama/qwen3:14b" in about and "Matches supplier bills" in about and 'href="/frame/finance-policy?as=alice">finance-policy</a>' in about
+    assert "persona-reviewer" in about and "Derived" in about, "its persona, and what it follows derived from the SOPs"
     assert re.search(r"\d+ model calls? since the hub started", about) and "Version" in about and "Reaches" in about
     assert "up to 2,000.00 USD" in text.split("May approve")[1].split("</ul>")[0]
     decs = text.split("Recent decisions")[1].split("</h2>")[1].split("<h2")[0]

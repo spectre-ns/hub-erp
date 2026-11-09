@@ -171,7 +171,7 @@ def test_a_model_change_carries_only_itself_and_its_release_overwrites_the_file(
     """A model change is proposed on the release in force: unreleased edits on disk are not swept into it, and
     releasing it overwrites the Frame file with the released text (the Frame is derived output)."""
     path = hub.frames.get("cog-profiles").path
-    pending = "Prompt: You are the purchasing assistant. You check suppliers against the approved list"
+    pending = "About: Checks suppliers against the approved list"
     text = path.read_text()
     assert pending in text
     path.write_text(text.replace(pending, pending + " (an unreleased edit)"))

@@ -11,14 +11,11 @@ from .handler import hidden_as, href, log_line, table
 from .icons import icon
 from .text import esc, short, when
 
-MODE_WORDS = {"act": "acts on its own through the system's governed paths", "propose": "proposes actions; a person confirms them",
-              "read": "only looks and reports"}
 
 
 class AgentsMixin:
     def _agent_section(self, cog: str, prof: dict) -> str:
         user = self.user
-        mode = prof.get("autonomy") or "propose"
         store = AgentStore(self.hub.root / "state" / "agents")
         runs = store.runs(cog, limit=12)
         from ..model import cog_availability
@@ -27,9 +24,14 @@ class AgentsMixin:
         body = f"<h2>{icon('zap')} Working on its own</h2>"
         if not ok:
             return body + f"<div class='card crit' role='status'><b>Not available.</b> {esc(why)}. A cog comes with its model; until the model can be reached it takes no work, no chat and no tasks, and Gates route past it.</div>"
-        body += (f"<p>Autonomy <span class='chip {'ok' if mode == 'act' else 'warn'}'>{esc(mode)}</span>: {esc(cog)} {esc(MODE_WORDS.get(mode, ''))}. "
-                 f"Set in its profile; changing it is a policy change two policy owners approve.</p>")
-        if prof.get("duties"):
+        body += (f"<p>Autonomy <span class='chip'>derived</span>: for each action, {esc(cog)} acts where the SOPs give it or its roles the "
+                 "permission or the step, proposes where an SOP says a person confirms, and otherwise only reads and says what should be done. "
+                 "Changing it is a change to those SOPs, through a change order.</p>")
+        duties = [d for d in (self.bundle.get("duties") or []) if d.get("cog") == cog]
+        if duties:
+            body += ("<p><b>Duties</b> (from the SOPs that own the work):</p><ul>"
+                     + "".join(f"<li>{esc(d['source']['text'])} <span class='why'>{self._rule_link(d['source'])}</span></li>" for d in duties) + "</ul>")
+        elif prof.get("duties"):
             body += "<p><b>Duties</b> (taken up once a day):</p><ul>" + "".join(f"<li>{esc(d)}</li>" for d in prof["duties"]) + "</ul>"
         if not agents_enabled():
             body += "<div class='card warn'>Agent runs are switched off in this hub (HUBPROTO_AGENTS=off).</div>"
@@ -38,7 +40,7 @@ class AgentsMixin:
             body += (f"<form method='post' action='/agent-task' class='card'>{hidden_as(user)}{self._once()}<input type='hidden' name='cog' value='{esc(cog)}'>{err}"
                      f"<label class='f'><span>Give {esc(cog)} a task <b>*</b></span><textarea name='goal' rows='2' required "
                      f"placeholder='e.g. find nonconformances older than a week and remind their owners'>{esc(self._val('goal') if self.route == '/agent-task' else '')}</textarea></label>"
-                     f"<div class='actions'><button>{icon('play')}Add to its queue</button><span class='why'>It takes it when it gets to it, looks things up, then acts within its autonomy and a budget of 5 actions; "
+                     f"<div class='actions'><button>{icon('play')}Add to its queue</button><span class='why'>It takes it when it gets to it, looks things up, then acts where the SOPs let it, within a budget of 5 actions; "
                      f"you are told what it did.</span></div></form>")
         runs = [r for r in runs if self._run_seen_by(r.get("by"), cog)]
         if runs:
@@ -157,9 +159,7 @@ class NewMemberMixin:
             return ""
         roles = "".join(f"<label class='check'><input type='checkbox' name='roles' value='{esc(r)}'> {esc(r.replace('-', ' '))}</label>" for r in sorted(bundle.get("roles") or []))
         chosen = self._val("model") if self.route == "/new-cog" else self._default_model()
-        frames = "".join(f"<label class='check'><input type='checkbox' name='follows' value='{esc(n)}'> {esc(n)}"
-                         f"<span class='muted'> {esc(short(self.hub.frames.get(n).description, 110))}</span></label>"
-                         for n in self._sop_names())
+        personas = sorted((bundle.get("personas") or {}).items())
         servable = [c for c in self._model_choices() if c["available"]]
         err = self._form_error(["name", "roles"]) if self.route in ("/new-person", "/new-cog") else ""
         return (f"<h2>{icon('plus')} Add someone</h2><p class='why'>A new member is a change to the organization model: it goes to the policy owners "
@@ -176,12 +176,13 @@ class NewMemberMixin:
                 f"<label class='f'><span>Model <i>(what Ollama serves now; a cog comes with its model)</i></span><select name='model' required>"
                 + "".join(f"<option value='{esc(c['value'])}'{' selected' if c['value'] == chosen else ''}{'' if c['available'] else ' disabled'}>{esc(c['label'])}</option>"
                           for c in self._model_choices()) + "</select></label>"
-                f"<label class='f'><span>Prompt: its standing instructions <b>*</b></span><textarea name='prompt' rows='3' required>{esc(self._val('prompt') if self.route == '/new-cog' else '')}</textarea></label>"
+                f"<label class='f'><span>About: what it does, in one paragraph <b>*</b></span><textarea name='about' rows='3' required>{esc(self._val('about') if self.route == '/new-cog' else '')}</textarea></label>"
+                f"<label class='f'><span>Persona: how it behaves</span><select name='persona'>"
+                + "".join(f"<option value='{esc(n)}'>{esc(n)}: {esc(p.get('stance') or '')}, {esc(p.get('tone') or '')}</option>" for n, p in personas)
+                + "</select></label>"
                 f"<fieldset><legend>Roles <b>*</b></legend><div class='checks'>{roles}</div></fieldset>"
-                f"<fieldset><legend>Procedures it follows (it is routed work only from these)</legend><div class='checks'>{frames}</div></fieldset>"
-                f"<label class='f'><span>Autonomy</span><select name='autonomy'><option value='propose'>propose: its actions wait for a person</option>"
-                f"<option value='act'>act: it acts on its own through governed paths</option><option value='read'>read: it only looks and reports</option></select></label>"
-                f"<label class='f'><span>Duties (one per line; taken up daily)</span><textarea name='duties' rows='2'></textarea></label>"
+                f"<p class='why'>What it follows and what it may do come from the SOPs that name it or its roles; its duties are sentences in "
+                f"the SOP that owns the work. Give it only the roles its work needs.</p>"
                 f"<div class='actions'><button>{icon('send')}Propose</button></div></form></details>" if servable else ""))
 
     def _sop_names(self) -> list[str]:
@@ -261,9 +262,8 @@ class NewMemberMixin:
         if done:
             return self._redirect(done)
         try:
-            p = self.hub.propose_new_cog(name=self._f("name"), roles=self._multi("roles"), model=self._f("model"), prompt=self._f("prompt"),
-                                         follows=self._multi("follows"), autonomy=self._f("autonomy") or "propose",
-                                         duties=[d for d in (self.form.get("duties") or "").splitlines() if d.strip()], by=self.user)
+            p = self.hub.propose_new_cog(name=self._f("name"), roles=self._multi("roles"), model=self._f("model"),
+                                         about=self._f("about") or self._f("prompt"), persona=self._f("persona"), by=self.user)
         except ValueError as e:
             raise ShellError(str(e), field="name") from None
         if p.get("change_order"):

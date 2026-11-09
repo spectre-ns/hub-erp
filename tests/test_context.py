@@ -1,5 +1,6 @@
-"""What a cog has in front of it: the window comes from the model, the cog's SOPs go in whole with the item's
-governing SOP first, and its prompt discloses its tools, what it may sign and how people reach it."""
+"""What a cog has in front of it: the window comes from the model, the governing process (its steps and the cog's part
+in it, quoted) rather than whole SOPs, an index of the SOPs it follows, and its prompt discloses its tools, what it may do
+(derived from the SOPs), what it may sign and how people reach it."""
 
 import shutil
 
@@ -40,33 +41,38 @@ def test_the_window_comes_from_the_model(monkeypatch):
     assert model_mod.num_ctx_for("ollama/qwen3:14b") == 40960  # never past what the model was trained for
 
 
-def test_a_cog_reads_its_sops_whole_with_the_governing_one_first(hub):
+def test_a_cog_works_from_its_process_not_whole_sops(hub):
     ctx = ctx_for(hub, "qa-manager")
     follows = ctx.profile["follows"]
     texts = ctx.sop_texts()
-    assert sum(len(t) for t in texts.values()) > 14000  # more than the old fixed budget
     doc = hub.dms.create(title="Context check", doc_class="controlled", folder="Quality/Controlled Documents", by="alice",
                          content=b"# Context check\n", filename="c.md", mime="text/markdown", doc_type="sop")
     rec = hub.kernel.get(doc["locator"])
     assert governing_sop(ctx, rec) == "document-control-sop"
     prompt = cog_context(ctx, rec, task="review")
-    for name in follows:
-        assert texts[name].strip()[-200:] in prompt, f"{name} is cut short"
-    assert prompt.index("# document-control-sop (the procedure that governs this item)") < prompt.index("# quality-manual")
-    assert "not shown: the window is full" not in prompt
+    assert "THE PROCESS THAT GOVERNS THIS ITEM: document-control" in prompt and "Its steps:" in prompt
+    mine = prompt.split("YOUR PART IN IT")[1].split("SOPS YOU FOLLOW")[0]
+    assert "The qa-manager cog may approve document-control documents when 3 adversarial reviews pass, countersigned by a quality manager." in mine
+    assert "(document-control-sop line " in mine, "each sentence with where it is, to cite"
+    index = prompt.split("SOPS YOU FOLLOW")[1].split("YOUR TOOLS")[0]
+    assert all(f"- {n}: " in index for n in follows) and "read_sop_section" in index
+    # Not whole SOPs: the prose of an SOP it follows, outside the governing process, is not in front of it.
+    capa = texts["capa-sop"].split("## ")[0].strip().splitlines()[-1]
+    assert capa and capa not in prompt
+    assert len(prompt) < sum(len(t) for t in texts.values()) / 2
 
 
 def test_a_small_window_trims_and_says_so(hub):
     ctx = ctx_for(hub, "qa-manager")
-    prompt = cog_context(ctx, None, sop_chars=5000)
-    assert "not shown: the window is full" in prompt
+    prompt = cog_context(ctx, None, sop_chars=400)
+    assert "the window is full" in prompt
 
 
 def test_the_prompt_discloses_tools_criteria_and_how_to_reach_the_cog(hub):
     ctx = ctx_for(hub, "qa-manager")
     text = capabilities_text(ctx)
-    assert "autonomy act" in text and "In this reply you cannot call tools" in text
-    for name in ("search_records", "read_document", "comment", "take_turn", "draft_document", "complete_step", "finish"):
+    assert "derived from the SOPs, action by action" in text and "In this reply you cannot call tools" in text
+    for name in ("search_records", "read_document", "comment", "take_turn", "draft_document", "complete_step", "read_sop_section", "finish"):
         assert f"- {name}:" in text
     assert "its review passes, countersigned by a quality manager" in text and "document-control-sop line" in text
     assert "@mention" in text and "Assign" in text
@@ -75,7 +81,9 @@ def test_the_prompt_discloses_tools_criteria_and_how_to_reach_the_cog(hub):
     now = capabilities_text(ctx, tools_now=TOOLS)
     assert "Tools you can call now" in now and "Not available in this conversation:" in now and "draft_document" in now.split("Not available")[1]
     reader = capabilities_text(ctx_for(hub, "doc-reviewer"))
-    assert "autonomy propose" in reader
+    assert "Where a person confirms first" in reader and "The doc-reviewer cog may comment on anything in Quality when a person confirms." in reader
+    it = capabilities_text(ctx_for(hub, "it-admin"))
+    assert "What the SOPs forbid you" in it and "The it-admin cog may not approve documents in Policy." in it
 
 
 def test_a_cog_without_criteria_is_told_it_does_not_sign(hub):

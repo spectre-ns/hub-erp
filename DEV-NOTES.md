@@ -25,6 +25,7 @@ reason written in the PR. Tests: `python -m pytest -q` (all must pass).
 | `hubproto/worker.py` | the CAD worker (its own image, docker/cad-worker): /invoke envelope seam over FreeCADCmd and kicad-cli, fake mode | core |
 | `frames/engineering/design-control-sop.frame.md` | design-release process (submit, export, reconcile BOM, risk, review, release part) | core |
 | `hubproto/app.py` | `Hub` wiring | core |
+| `hubproto/changecontrol.py` | the change-order loop (change control v2): stages and review rounds, panel suggestion and reviews, the delta (origins, warnings, item decisions, overrides), send/approval readiness, revision approval with the CO, release steps (divergences, related changes); the API the CO pages use | core |
 | `hubproto/closure.py` | no configuration change without a change order once the SOPs are documents: the guards `Hub.compile`, `review`, `release` and `frame_draft` call; the sentence (`CO_ROUTE`) | core |
 | `hubproto/recordtypes.py` | record types under change control: the record types in force (`state/record-types`), changes carried on change orders (`carry`, `carried_reasons`, `delta_items`, `activate`), the file's drift | core |
 | `hubproto/cli_recordtypes.py` | CLI verbs `record-types status`, `show`, `carry` (`register(sub)`) | cli agent |
@@ -98,8 +99,10 @@ run's Track (`state/runs/<id>/track.jsonl`) and on the record's events.
 
 Only inside these sections: `## Roles`, `## Members`, `## Folders`,
 `## Permissions`, `## Thresholds`, `## Routing`, `## Approval criteria`,
-`## Segregation of duties`, `## Process: <name>`. Frontmatter may carry
-`compile: convention|guided|none` (default convention) and `clauses: [...]`.
+`## Segregation of duties`, `## Duties`, `## Process: <name>`, and the keyed sections
+`## Scope:`, `## Committee:`, `## Cog:`, `## Persona:`. Frontmatter may carry
+`compile: convention|guided|none` (default convention) and `clauses: [...]`. A `For: <roles>.` line under the
+title (a work instruction's audience) is read even with `compile: none`.
 
 ```
 ## Roles            - quality-manager
@@ -108,6 +111,10 @@ Only inside these sections: `## Roles`, `## Members`, `## Folders`,
 ## Permissions      Quality managers may approve nonconformances in Quality/Nonconformances.
                     Finance clerks may not approve bills in Finance/Payables.
                     Controllers may read Finance.
+                    Staff may comment on anything in Quality.                 (anything = every object)
+                    The it-admin cog may not approve documents in Policy.     (a permission naming one cog: subject cog:it-admin)
+                    The stores cog may move stock items in Inventory/Stock when a storekeeper confirms.
+                                                                (effect propose, confirmer storekeeper; "when a person confirms": whoever gave the task)
 ## Thresholds       The match tolerance is 2 percent.      The effectiveness check interval is 90 days.
                     (name words + threshold|tolerance|limit|interval; units USD EUR GBP percent days)
 ## Routing          Approvals in purchase-to-pay over 10,000 USD go to the controller.
@@ -123,6 +130,12 @@ Only inside these sections: `## Roles`, `## Members`, `## Folders`,
                     conditions (closed vocabulary, rules.py CONDITION_VOCABULARY): the three-way match is within tolerance;
                     the supplier is approved; the risk is low; the risk is not high; the change is minor; the document is a minor revision; no open nonconformance exists
 ## Segregation of duties  The preparer and the approver of a bill must be different people.   (object = record object noun)
+                    Whoever made a direct configuration change on a change-order is not its only approver.   (only: true)
+## Duties           Every day|week|month the quality-assistant cog finds nonconformances that ... .   (a cog's standing goal)
+## Cog: ap-reviewer About: <one paragraph: what it does>   Model: ollama/qwen3:14b   Persona: reviewer
+                    [Prompt from: DOC-n (its job from a pinned document)   References: DOC-n, ...]
+## Persona: reviewer  Tone: formal|informal   Stance: reviewer|executor|author|advisor   Lenses: compliance, consistency, impact
+                    Reviews: 3 adversarial passes   Escalates: when ...   Behaviour: <the behaviour prompt, may run on>
 ## Process: nonconformance
 Records are filed in Quality/Nonconformances.
 The record type is ncr.                      (optional; otherwise derived from the first step's object)
@@ -142,6 +155,18 @@ must hold the first step's role and a `create <object>` permission on the
 filing folder; a person deciding a checkpoint must hold `approve <object>`
 there. The record type is the config type whose `object` equals that noun,
 unless `The record type is X.` says otherwise.
+
+**Cogs** (change control v2, section 7). A cog's profile is its identity; its persona (shared) says how it behaves;
+the bundle's `cogs[name]` is the merged view (`about`, `model`, `persona`, the persona's fields, the composed `prompt`).
+What it **follows** (`follows`, `follows_why`) is derived (`release.follows_for`): the company scope plus every Frame whose
+rules name it or one of its roles (permission subject, routing assignee, criteria approver or countersigning role, process
+step role or cog, duty, committee, member line). A person's required reading is the same plus the work instructions whose
+`For:` names their roles (`scopes.required_reading`). **Autonomy** is derived per write (`authz.autonomy`, used by
+`AgentTools.decide` with each tool's `intent`): a deny refuses, a "when ... confirms" sentence proposes (it narrows a broader
+allow), an allow acts, its own step (its turn at a Gate, a step assigned to it) acts; with none, a tool that applies its own
+rule decides, anything else is refused ("describe what should be done instead"). A cog's context is its process
+(`cogs.process_context`): steps, its part with the sentences cited, divergences, and an index of the SOPs it follows,
+read on demand with `read_sop_section`.
 
 A checkpoint with no routing sentence routes to the role on its step (warning).
 A routed role with no member is an error ("fill the org model"): this is how

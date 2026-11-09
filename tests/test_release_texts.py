@@ -86,7 +86,7 @@ def test_a_stored_text_that_is_not_the_compiled_one_is_read_as_the_compiled_one(
 def test_a_draft_written_on_an_older_text_keeps_the_edits_it_replaces(hub):
     """Releasing a draft overwrites its Frame file. Edits on disk in neither the text in force nor the draft are kept
     by hash, and the policy owners are told."""
-    pending = "Prompt: You are the purchasing assistant. You check suppliers against the approved list"
+    pending = "About: Checks suppliers against the approved list"
     path = hub.frames.get("cog-profiles").path
     path.write_text(path.read_text().replace(pending, pending + " (an unreleased edit)"))
     hub._frames = None
