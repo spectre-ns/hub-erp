@@ -69,6 +69,13 @@ def _parse_scalar(raw: str):
         return ""
     if (raw[0] == raw[-1]) and raw[0] in "\"'" and len(raw) >= 2:
         return raw[1:-1]
+    if raw.startswith("{") and raw.endswith("}"):  # a one-line JSON object (e.g. workflow_ids), read as YAML would
+        import json
+
+        try:
+            return json.loads(raw)
+        except ValueError as e:
+            raise FrameError(f"cannot parse frontmatter value {raw!r}: {e}") from None
     if raw.startswith("[") and raw.endswith("]"):
         inner = raw[1:-1].strip()
         return [_parse_scalar(x) for x in inner.split(",")] if inner else []
