@@ -411,3 +411,9 @@ When the release in force has no human chair and no human system administrator (
 to this design), the policy owners answer the blocking committee questions. Only people count; a
 policy owner who contributed to the change order does not answer questions about their own items;
 each answer stays visible as an accepted warning on the items it concerns.
+
+## 15. A maker as one of two owners (confirmed 2026-11-09)
+
+A policy owner who made or contributed to a widening may be one of its two approving policy owners,
+provided the other owner contributed nothing to the change order. A maker is never the only approver
+of anything, and never decides a non-widening item of their own change.
