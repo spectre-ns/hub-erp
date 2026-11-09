@@ -500,3 +500,61 @@ def test_a_committee_member_agrees_or_objects_and_a_cog_profile_lists_its_commit
     finally:
         server.shutdown()
         server.server_close()
+
+
+def _post_file(shell, path, fields, files):
+    import uuid
+    from urllib.error import HTTPError
+    from urllib.request import Request, urlopen
+
+    boundary = "----hubproto" + uuid.uuid4().hex
+    body = b""
+    for k, v in fields.items():
+        for one in (v if isinstance(v, list) else [v]):
+            body += f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{one}\r\n'.encode("utf-8")
+    for name, filename, content in files:
+        body += (f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'
+                 f"Content-Type: application/octet-stream\r\n\r\n").encode("utf-8") + content + b"\r\n"
+    body += f"--{boundary}--\r\n".encode("utf-8")
+    req = Request(shell["base"] + path, data=body, headers={"Content-Type": f"multipart/form-data; boundary={boundary}"}, method="POST")
+    try:
+        with urlopen(req, timeout=10) as r:
+            return r.status, r.url, r.read().decode("utf-8")
+    except HTTPError as e:
+        return e.code, e.url, e.read().decode("utf-8")
+
+
+def test_a_test_report_is_attached_as_validation_evidence_from_the_page(shell):
+    """The Validation section takes a test report as a file: filed as a test-evidence document on the change order, it
+    counts as a test record, so the change order can be signed without typing a record."""
+    from hubproto import validation
+
+    hub = shell["hub"]
+    co = new_co(shell)
+    carry_revision(shell, co)
+    ok(post(shell, "/co-review", {"as": "alice", "co": co["locator"], "choose": "own", "panel": ["management"]}))
+    ok(post(shell, "/co-send", {"as": "alice", "co": co["locator"]}))
+    for i in items(hub, co):
+        if i["state"] == "pending" and not (i["op"] == "remove" and i.get("changed_to")):
+            ok(decide(shell, co, i, "carol", "checked against the SOP", accept=[w["ref"] for w in i["warnings"]]))
+    assert any("need test evidence" in r for r in cc.approval_reasons(hub, co["number"]))
+    html = co_page(shell, co, "dave")
+    assert "Attach a test report as evidence" in html and "attach a test report as evidence" in html
+    assert "document of type test-evidence" not in html, "the advice names what the page offers"
+    # No file: refused, nothing recorded.
+    status, _, page = _post_file(shell, "/co-evidence-file", {"as": "dave", "co": co["locator"], "form": "evidence-file", "result": "pass"}, [])
+    assert status == 400 and "choose the test report" in page.lower()
+    assert validation.evidence(hub, co["number"]) == []
+    status, url, page = _post_file(shell, "/co-evidence-file",
+                                   {"as": "dave", "co": co["locator"], "form": "evidence-file", "result": "pass", "title": "Limit test",
+                                    "text": "a 1,600 USD bill waited for a person; a 1,400 USD one was approved by the cog"},
+                                   [("file", "limit-test.txt", b"ran two bills against the staged rules: as expected\n")])
+    assert status == 200 and "is attached as validation evidence" in page and "#co-validation" in url
+    [e] = validation.evidence(hub, co["number"])
+    doc = next(d for d in hub.dms.documents_of(co["locator"]) if d["number"] == e["document"])
+    assert doc["fields"]["doc_type"] == "test-evidence" and doc["fields"]["author"] == "dave" and doc["fields"]["result"] == "pass"
+    assert e["kind"] == "test-record" and e["result"] == "pass" and "Limit test" in e["text"] and "1,600 USD" in e["text"]
+    assert not any("need test evidence" in r for r in cc.approval_reasons(hub, co["number"])), cc.approval_reasons(hub, co["number"])
+    assert "Limit test" in co_page(shell, co, "carol")
+    ok(sign(shell, co))
+    assert hub.kernel.get(co["locator"])["state"] == "released" and ap_limit(hub) == 1500.0

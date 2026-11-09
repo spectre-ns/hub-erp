@@ -160,6 +160,7 @@ def evidence(hub, co_ref) -> list[dict]:
     for d in hub.dms.documents_of(co["locator"]):
         if (d.get("fields") or {}).get("doc_type") == EVIDENCE_TYPE:
             out.append({"kind": "test-record", "document": d["number"], "result": str(d["fields"].get("result") or "pass").lower(),
+                        "text": f"{d['number']} {d['fields'].get('title') or ''}".strip() + (f": {d['fields']['evidence_note']}" if d["fields"].get("evidence_note") else ""),
                         "items": list(d["fields"].get("items") or []), "by": d["fields"].get("author"), "at": d.get("created_at")})
     return out
 
@@ -187,6 +188,31 @@ def record_evidence(hub, co_ref, *, by: str, kind: str, text: str, result: str =
     return entry
 
 
+def attach_evidence(hub, co_ref, *, by: str, filename: str, content: bytes, title: str = "", result: str = "pass",
+                    items: list[str] | None = None, text: str = "") -> dict:
+    """Attach a test report (a file) to a change order as validation evidence: it is filed in the change order's folder
+    as a document of type test-evidence, with its result (pass or fail), the delta items it covers (none: every item)
+    and what it shows, and counts as a test record (``evidence``). Returns the document."""
+    co = _co(hub, co_ref)
+    from . import eco
+
+    if eco.finished(co):
+        raise ValueError(f"{co['number']} is finished: evidence is recorded before approval")
+    if (hub.current_bundle() or {}).get("members", {}).get(by) is None:
+        raise ValueError(f"{by} is not a member of the organization")
+    if not filename or not content:
+        raise ValueError("choose the test report to attach")
+    result = (result or "").lower()
+    if result not in ("pass", "fail"):
+        raise ValueError("the result is pass or fail")
+    doc = hub.dms.create(title=title or filename, doc_class="external", folder=co["folder"], by=by, content=content,
+                         filename=filename, doc_type=EVIDENCE_TYPE,
+                         fields={"result": result, "items": list(items or []), "evidence_note": " ".join((text or "").split())},
+                         provenance={"channel": "shell", "sender": by, "received_at": utcnow(), "evidence_for": co["number"]},
+                         attach_to=co["locator"])
+    return doc
+
+
 def _covers(e: dict, item_id: str) -> bool:
     return not e.get("items") or item_id in e["items"]
 
@@ -209,8 +235,8 @@ def requirements(hub, co_ref, items: list[dict] | None = None) -> list[str]:
                  and not any(e["result"] == "pass" and _covers(e, i["id"]) for e in ev)]
     if need_record:
         out.append(f"{len(need_record)} high-risk item(s) need test evidence (" + "; ".join((i.get("reason") or i["id"])[:80] for i in need_record[:4])
-                   + ("; ..." if len(need_record) > 4 else "") + "): attach a document of type test-evidence to the change order, or record "
-                   "a test record (what was run, expected and actual result, pass or fail)")
+                   + ("; ..." if len(need_record) > 4 else "") + "): on the change order's Validation section, record a test record (what was run, expected and actual "
+                   "result, pass or fail) or attach a test report as evidence")
     if need_note:
         out.append(f"{len(need_note)} medium-risk item(s) need a test note (" + "; ".join((i.get("reason") or i["id"])[:80] for i in need_note[:4])
                    + ("; ..." if len(need_note) > 4 else "") + "): record what was tried and what was seen")

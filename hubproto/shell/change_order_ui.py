@@ -1509,6 +1509,23 @@ class ChangeOrderMixin:
                      + f"<div class='actions'><button class='secondary'>{icon('plus')}Record the evidence</button></div>")
             out += details("Record validation evidence", self._co_form(act, co, fid, inner, label="Record validation evidence"),
                            open_=bool(self.err and self.route == act))
+            # A test report as a file: filed as a test-evidence document on the change order, which counts as a test record.
+            fid2, act2 = "evidence-file", "/co-evidence-file"
+            err2 = ""
+            if self.err and self.route == act2:
+                self._err_shown = True
+                err2 = f"<p class='err' role='alert'>{esc(self.err[0])}</p>"
+            inner2 = ("<div class='fields'>"
+                      "<label class='f'><span>Test report <b aria-hidden='true'>*</b></span><input type='file' name='file' required></label>"
+                      "<label class='f'><span>Title <i>(defaults to the file name)</i></span><input name='title'></label>"
+                      "<label class='f'><span>Result</span><select name='result'><option value='pass'>pass</option><option value='fail'>fail</option></select></label></div>"
+                      "<label class='f'><span>What it shows <i>(optional)</i></span><textarea name='text' rows='2'></textarea></label>"
+                      + (f"<fieldset class='checks'><legend>Covers <i>(none ticked: every item)</i></legend>{boxes}</fieldset>" if boxes else "")
+                      + f"<div class='actions'><button class='secondary'>{icon('paperclip')}Attach as evidence</button></div>")
+            form2 = (f"<form method='post' action='{act2}' enctype='multipart/form-data' class='sform' id='f-{fid2}' aria-label='Attach a test report as evidence'>"
+                     f"{hidden_as(self.user)}{self._once()}<input type='hidden' name='co' value='{esc(co['locator'])}'>"
+                     f"<input type='hidden' name='form' value='{fid2}'>{err2}{inner2}</form>")
+            out += details("Attach a test report as evidence", form2, open_=bool(self.err and self.route == act2))
         return out + "</section>"
 
     def post_co_evidence(self):
@@ -1527,6 +1544,24 @@ class ChangeOrderMixin:
         except ValueError as e:
             raise self._co_refused(e) from None
         self._co_done(co, "The validation evidence is recorded.", "co-validation")
+
+    def post_co_evidence_file(self):
+        from .. import validation
+
+        co = self._co_post()
+        if co is None:
+            return
+        picked = self._multi("items")
+        for g in groups(cc.delta(self.hub, co["locator"])):  # an item covers the removal it replaces too
+            if g[0]["id"] in picked:
+                picked += [x["id"] for x in g[1:] if x["id"] not in picked]
+        filename, content = self._file()
+        try:
+            doc = validation.attach_evidence(self.hub, co["locator"], by=self.user, filename=filename, content=content,
+                                             title=self._f("title"), result=self._f("result") or "pass", items=picked, text=self._f("text"))
+        except ValueError as e:
+            raise self._co_refused(e) from None
+        self._co_done(co, f"{doc['number']} is attached as validation evidence.", "co-validation")
 
     # ------------------------------------------------------------ 6. state map
     def _co_state_map_html(self, ctx: dict) -> str:
