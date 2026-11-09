@@ -337,3 +337,13 @@ def test_validation_annotates_the_items_when_the_module_is_there(hub):
     got = cc.validation_items(hub, co["number"])
     assert len(got) == len(cc.delta(hub, co["number"]))
     json.dumps(got, default=str)
+
+
+def test_a_drafted_revision_is_the_qa_manager_s_so_a_settings_maker_may_sign_alongside_an_independent_approver(hub):
+    co = new_co(hub, by="carol", title="Looser match")
+    tol = next(r for r in hub.settings_rules() if r["kind"] == "threshold" and r["name"] == "match-tolerance")
+    cc.add_direct_change(hub, co["number"], {**{k: v for k, v in tol.items() if k != "source"}, "value": 1.0}, "carol")
+    cc.request_review(hub, co["number"], "carol", panel=[])
+    [c] = eco.carried(hub, hub.kernel.get(co["locator"]))
+    assert c["draft"]["fields"]["author"] == "qa-manager" and c["draft"]["fields"]["started_by"] == "carol"
+    assert "carol" not in cc.revision_authors(hub, co["number"]) and "carol" in cc.contributors(hub, co["number"])

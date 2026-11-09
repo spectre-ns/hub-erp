@@ -137,7 +137,7 @@ def apply_plan(hub, co_ref: str, plan_ops: dict[str, list[dict]], *, by: str, au
 
     report = []
     for frame, ops in sorted(plan_ops.items()):
-        draft = eco.add_sop(hub, co_ref, frame, by=by)
+        draft = eco.add_sop(hub, co_ref, frame, by=by, author=author)  # a drafter's revision is the drafter's
         content, v = hub.dms.content(draft["locator"])
         ext = (v.get("filename") or "x.docx").rsplit(".", 1)[-1].lower()
         for op in ops:
