@@ -509,9 +509,14 @@ class ChangeOrderMixin:
                 todo.append(f"<a href='#co-questions'>answer {open_q} question{'s' if open_q != 1 else ''}</a> in the prose")
             if open_s:
                 todo.append(f"<a href='#co-suggestions'>accept or reject {open_s} suggestion{'s' if open_s != 1 else ''}</a>")
-            out += ("<p><b>Next:</b> " + (", ".join(todo) + "; then " if todo else "") +
-                    ("request review again, or send it for approval (open findings and questions become warnings the approver accepts).</p>" if sendable else
-                     "request review again: " + esc(ov["send_reasons"][0]) + ".</p>"))
+            if stage == "in-review" and waiting_for:
+                out += ("<p><b>Next:</b> wait for the panel" + (f" ({esc(', '.join(waiting_for))})" if waiting_for else "")
+                        + (" and meanwhile " + ", ".join(todo) if todo else "") + "; you may add or take off reviewers under "
+                        "<a href='#co-review'>Review</a>. A new round restarts the review.</p>")
+            else:
+                out += ("<p><b>Next:</b> " + (", ".join(todo) + "; then " if todo else "") +
+                        ("request review again, or send it for approval (open findings and questions become warnings the approver accepts).</p>" if sendable else
+                         "request review again: " + esc(ov["send_reasons"][0]) + ".</p>"))
             out += "<div class='actions'>" + (self._co_send_form(ctx) + " " if sendable else "") + self._co_request_form(ctx, True) + "</div>"
         elif not out:
             out = f"<p>{esc(who)} is revising it after round {esc(rnd.get('n'))}.</p>"

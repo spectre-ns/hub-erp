@@ -334,11 +334,14 @@ class InboxMixin:
             if user in outstanding:
                 return (f"<article class='card decide' aria-labelledby='h-{esc(r['id'])}'>{head}<div class='facts'>{' '.join(facts)}</div>{meta}{policy}{blocked_html}{checks}"
                         f"{tally}{self._intervention_html(r)}{self._committee_vote_note(r)}{approve_form}<h4>The item</h4>{brief}{reject_form}</article>")
+            refusal = f"<div class='card crit' role='alert'><p>{esc(self.err[0])}</p></div>" if mine else ""
+            if mine:
+                self._err_shown = True
             vote = (cm.get("votes") or {}).get(user)
             said = (f"<p class='status'>You {'agreed' if vote.get('verdict') == 'agree' else 'objected'}: “{esc(vote.get('meaning') or '')}”. "
                     "Waiting for the other members.</p>" if vote else "")
             return (f"<article class='card decide' aria-labelledby='h-{esc(r['id'])}'>{head}<div class='facts'>{' '.join(facts)}</div>{meta}{policy}{blocked_html}{checks}"
-                    f"{tally}{said}{self._intervention_html(r)}<h4>The item</h4>{brief}</article>")
+                    f"{tally}{refusal}{said}{self._intervention_html(r)}<h4>The item</h4>{brief}</article>")
         return (f"<article class='card decide' aria-labelledby='h-{esc(r['id'])}'>{head}<div class='facts'>{' '.join(facts)}</div>{meta}{policy}{blocked_html}{checks}"
                 f"{co_gate}{approve_form}<h4>The item</h4>{brief}{reject_form}</article>")
 

@@ -90,8 +90,9 @@ def test_the_committee_tally_a_members_vote_and_the_chairs_intervention(design):
     state = hub.runner.load(run_id)
     ok(post(design, "/decide", {"as": "kim", "run": run_id, "digest": hub.runner.seen_digest(state), "verdict": "approve", "transition": "release",
                                 "meaning": "fit to release", "confirm": "1"}))
-    kim = card(design, run_id, "kim")
-    assert "You agreed" in kim and "agrees" in kim and "fit to release" in kim
+    rec = hub.runner.load(run_id)["record"]
+    kim = main_of(get(design, "/record/" + quote(rec, safe=":"), **{"as": "kim"})[1])
+    assert "You agreed" in kim and "agrees" in kim and "fit to release" in kim, "the item's page shows the tally to a member who voted"
     # sam, the chair: told, listed, and given the intervention forms instead of a vote.
     inbox = main_of(get(design, "/inbox", **{"as": "sam"})[1])
     assert "Committees waiting for you to intervene" in inbox and "A committee needs you" in inbox

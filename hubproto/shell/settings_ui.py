@@ -136,7 +136,7 @@ class SettingsMixin:
                       + (f" <b class='count'>{len(draft['edits'])}</b>" if k == "overview" and draft and draft.get("edits") else "") + "</a></li>"
                       for k, n, ic in SECTIONS)
         top = ""
-        if not self.hub.settings_source():
+        if not self.hub.settings_source() and not self.hub.sop_source():
             top += ("<div class='card quiet'>The rules in force came from the Frames (the policy documents). Proposing a change from "
                     "Settings makes Settings the source of truth from then on: the rules are edited here, and the Frames become the SOPs "
                     "people and cogs read.</div>")

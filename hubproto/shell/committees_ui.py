@@ -155,7 +155,8 @@ class CommitteesMixin:
         rec = self.hub.kernel.get(state["record"]) if state.get("record") else None
         words = {"decide": "Decided in the member's place", "extend": f"Due date extended to {self._f('due')}", "return": "Returned for revision"}.get(action, "Done")
         log_line(f"committee intervention run={run_id} action={action} by={user}")
-        where = href("/record/" + quote(rec["locator"], safe=":"), user) if rec else href("/inbox", user)
+        readable = rec is not None and self._can_read(rec["folder"])["allowed"]  # a chair may intervene without reading the folder
+        where = href("/record/" + quote(rec["locator"], safe=":"), user) if readable else href("/inbox", user)
         self._redirect(self._once_finish(where + "&done=" + quote(f"{words}: {rec['number'] if rec else run_id[:8]} is now {state.get('at') or state['status']}.")))
 
     def _interventions_inbox_html(self) -> str:
@@ -192,7 +193,7 @@ class CommitteesMixin:
                 words = sentence({k: v for k, v in r.items() if k != "via"} | {"kind": "permission"}, bundle.get("processes") or {})
             except Exception:
                 words = (r.get("source") or {}).get("text") or ""
-            rows.append([esc(words), eff, esc(via), self._rule_link(r.get("source")) if r.get("source") else ""])
+            rows.append([esc(words), f"<span style='white-space:nowrap'>{eff}</span>", esc(via), self._rule_link(r.get("source")) if r.get("source") else ""])
         return ("<p class='why'>Every permission that reaches it, and what it comes through. A widening of any of these needs both policy "
                 "owners.</p>" + table(["Permission", "", "Through", "Stated in"], rows))
 
@@ -201,7 +202,11 @@ class CommitteesMixin:
         from .. import groups as gr
         from ..settings import sentence
 
-        members = sorted((r for r in rules if r["kind"] == "member"), key=lambda r: (r["principal_type"], r["principal"]))
+        seen: dict[str, dict] = {}
+        for r in sorted((r for r in rules if r["kind"] == "member"), key=lambda r: (r["principal_type"], r["principal"])):
+            cur = seen.setdefault(r["principal"], {**r, "roles": []})  # a member may be stated in several SOPs: one entry, every role
+            cur["roles"] = sorted(set(cur["roles"]) | set(r.get("roles") or []))
+        members = list(seen.values())
         roles = sorted(r["name"] for r in rules if r["kind"] == "role")
         people = [m["principal"] for m in members if m["principal_type"] == "person"]
         groups = sorted((r for r in rules if r["kind"] == "group"), key=lambda r: r["name"])
@@ -228,7 +233,8 @@ class CommitteesMixin:
             fid = f"g-{k}"
             perms = [r for r in rules if r["kind"] == "permission" and r.get("subject") == f"group:{g['name']}"]
             edit = self._sform(fid, "groups", "group", "replace", group_fields(fid, g), f"{icon('check')}Save the group", key=k, cls="sform card")
-            body = (f"<details><summary><b>{esc(g['name'])}</b> <span class='muted'>{esc(sentence(g, procs).lstrip('- '))}</span></summary>{edit}"
+            said = sentence(g, procs).lstrip("- ").split(": ", 1)[-1]
+            body = (f"<details><summary><b>{esc(g['name'])}</b> <span class='muted'>{esc(said)}</span></summary>{edit}"
                     f"{self._remove('groups', g, 'Remove the group')}</details>" if self._settings_editor() else f"<b>{esc(g['name'])}</b>")
             rows.append([body, esc(", ".join(now(g)) or "nobody"),
                          "<br>".join(esc(sentence(r, procs)) for r in perms) or "<span class='muted'>none</span>", self._origin(g, released)])
@@ -237,7 +243,7 @@ class CommitteesMixin:
                "group, with a person as its chair, and decides by consensus.</p>")
         out += f"<h2>Groups <span class='muted'>{len(groups)}</span></h2>" + table(["Group", "Members now", "Permissions it carries", "From"], rows, "No group yet.")
         out += self._sform("add-group", "groups", "group", "add", group_fields("add-group", None), f"{icon('plus')}Add the group", cls="sform card")
-        out += "<p class='why'>Give a group a permission under Permissions (choose it as the role), or name it in an SOP. A group change is a widening: both policy owners approve it.</p>"
+        out += "<p class='why'>Give a group a permission under Permissions (choose the group), or name it in an SOP. A group change is a widening: both policy owners approve it.</p>"
         rows = []
         gnames = [g["name"] for g in groups]
         for c in committees:
@@ -249,7 +255,8 @@ class CommitteesMixin:
                                key=k, cls="sform card")
             body = (f"<details><summary><b>{esc(c['name'])}</b> <span class='muted'>{esc(c.get('purpose') or '')}</span></summary>{edit}"
                     f"{self._remove('groups', c, 'Remove the committee')}</details>" if self._settings_editor() else f"<b>{esc(c['name'])}</b>")
-            rows.append([body, esc(c.get("group") or "-"), esc(c.get("chair") or "-"), esc(", ".join(members_now) or "nobody"), self._origin(c, released)])
+            rows.append([body, f"<span style='white-space:nowrap'>{esc(c.get('group') or '-')}</span>", f"<span style='white-space:nowrap'>{esc(c.get('chair') or '-')}</span>",
+                         esc(", ".join(members_now) or "nobody"), self._origin(c, released)])
         out += f"<h2>Committees <span class='muted'>{len(committees)}</span></h2>" + table(["Committee", "Group", "Chair", "Members now", "From"], rows, "No committee yet.")
         out += self._sform("add-committee", "groups", "committee", "add", self._committee_fields("add-committee", None, gnames, people),
                            f"{icon('plus')}Add the committee", cls="sform card")

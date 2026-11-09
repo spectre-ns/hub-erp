@@ -267,6 +267,12 @@ class PagesMixin:
                 out += f"<div id='decide'>{self._decision_card(run, standalone=True)}</div>"
             else:
                 out += f"<div class='card warn'>Waiting for {' '.join(self._avatar(a, size='sm', named=True) for a in pending['assignees'])} at <b>{esc(pending['title'])}</b>{' (approval due ' + esc(day(pending['due'])) + ')' if pending.get('due') else ''}.</div>"
+                if pending.get("committee"):  # a committee decides here: everyone who may read the item sees the tally
+                    vote = (pending["committee"].get("votes") or {}).get(user)
+                    if vote:
+                        out += (f"<p class='status'>You {'agreed' if vote.get('verdict') == 'agree' else 'objected'}: “{esc(vote.get('meaning') or '')}”. "
+                                "Waiting for the other members.</p>")
+                    out += self._committee_tally_html(run)
         return out
 
     def _layout_sheet(self, rec: dict, layout: dict | None = None) -> str:
