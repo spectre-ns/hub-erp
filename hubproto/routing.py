@@ -49,6 +49,10 @@ def principals_for(bundle: dict, assignee: str) -> list[str]:
     kind, _, name = assignee.partition(":")
     if kind in ("person", "cog"):
         return [name] if name in bundle["members"] else []
+    if kind == "group":  # a route to a group: any of its members (hubproto.groups)
+        from .groups import group_members
+
+        return sorted(group_members(bundle, name))
     return sorted(p for p, m in bundle["members"].items() if name in m["roles"])
 
 

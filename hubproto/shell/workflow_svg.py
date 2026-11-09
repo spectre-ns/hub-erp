@@ -19,7 +19,8 @@ from .. import workflow_model as wm
 from .text import esc
 
 WF_CSS = """
-.wf{width:100%;height:auto;display:block;font-family:inherit;-webkit-user-select:none;user-select:none;overflow:visible}
+.wf{display:block;max-width:none;font-family:inherit;-webkit-user-select:none;user-select:none;overflow:visible}
+.wf-card,.wf-pane,.wf-thumb{overflow:auto;-webkit-overflow-scrolling:touch;max-width:100%}.wf-card>svg.wf,.wf-thumb>svg.wf{margin:0 auto}
 .wf .wf-box{fill:var(--panel);stroke:var(--line-strong);stroke-width:1.5}.wf .wf-cat{stroke:none}
 .wf .cat-todo .wf-cat{fill:var(--ctl)}.wf .cat-in_progress .wf-cat{fill:var(--info)}.wf .cat-done .wf-cat{fill:var(--ok)}
 .wf .wf-name{font-size:13px;font-weight:600;fill:var(--fg)}.wf .wf-sub{font-size:11.5px;fill:var(--muted)}
@@ -48,7 +49,7 @@ WF_CSS = """
 ol.wf-changes{margin:0;padding-left:1.2em}ol.wf-changes li{margin:2px 0}ol.wf-changes button.linkish,ul.wf-checks button.linkish{background:none;border:0;padding:0;color:var(--accent);text-align:left;font:inherit;min-height:0;cursor:pointer;text-decoration:underline;text-underline-offset:2px}
 ol.wf-changes li.wf-hl{background:var(--accent-soft);border-radius:4px}ol.wf-changes ul{margin:2px 0;padding-left:1.1em;color:var(--muted)}
 .wf-sign{display:inline-block;min-width:1.4em;text-align:center;font-weight:700;border-radius:4px;margin-right:4px}.wf-sign.add{color:var(--ok);background:var(--ok-bg)}.wf-sign.del{color:var(--crit);background:var(--crit-bg)}.wf-sign.chg{color:var(--warn);background:var(--warn-bg)}
-.wf-card .wf{max-height:560px}.wf-diffbox .wf{max-height:640px}
+.wf-pane{max-height:80vh}
 """
 
 ICON_PATHS = {
@@ -62,46 +63,6 @@ MARK_WORD = {"add": "Added", "del": "Removed", "chg": "Changed"}
 
 def _n(v) -> str:
     return wm._n(v)
-
-
-def _lines(name: str, width: int = 22) -> list[str]:
-    """A status name in at most two lines of about ``width`` characters (the second cut with an ellipsis)."""
-    words, lines, cur = str(name).split(), [], ""
-    for w in words:
-        if cur and len(cur) + 1 + len(w) > width:
-            lines.append(cur)
-            cur = w
-        else:
-            cur = (cur + " " + w).strip()
-    if cur:
-        lines.append(cur)
-    if len(lines) > 2:
-        lines = [lines[0], " ".join(lines[1:])]
-    if len(lines) == 2 and len(lines[1]) > width:
-        lines[1] = lines[1][: width - 1].rstrip() + "…"
-    if lines and len(lines[0]) > width + 4:
-        lines[0] = lines[0][: width + 3] + "…"
-    return lines or [""]
-
-
-def _short(text: str, n: int) -> str:
-    return text if len(text) <= n else text[: n - 1].rstrip() + "…"
-
-
-def badge_text(t: dict) -> tuple[str, str]:
-    icon_kind, who = wm.gate_badge(t.get("gate"))
-    bits = [who]
-    nv, na = len(t.get("validators") or []), len(t.get("actions") or [])
-    if nv:
-        bits.append(wm.plural(nv, "check"))
-    if na:
-        bits.append(wm.plural(na, "action"))
-    return icon_kind, " · ".join(bits)
-
-
-def label_size(name: str, badge: str) -> tuple[int, int]:
-    w = max(len(name) * 7.0, len(badge) * 6.1 + 16) + 22
-    return max(72, min(176, int((w + 7) // 8 * 8))), 38
 
 
 def ways_out(g: dict, sid: str) -> int:
@@ -125,9 +86,9 @@ def transition_label(g: dict, t: dict) -> str:
     return "; ".join(bits)
 
 
-def geometry(g: dict, layout: dict) -> dict[str, dict]:
+def geometry(g: dict, layout: dict, sz: dict | None = None) -> dict[str, dict]:
     """Every transition's drawing (workflow_model.transition_geometry) with its bend and index."""
-    bends = wm.bends(g, layout)
+    bends = wm.bends(g, layout, sz)
     globals_to: dict[str, list[str]] = {}
     loops_at: dict[str, list[str]] = {}
     for t in g.get("transitions") or []:
@@ -146,28 +107,24 @@ def geometry(g: dict, layout: dict) -> dict[str, dict]:
             k, n = ids.index(t["id"]), len(ids)
         elif t["id"] in loops_at.get(t.get("to"), []):
             k = loops_at[t["to"]].index(t["id"])
-        geo = wm.transition_geometry(g, layout, t, bend=bends.get(t["id"], 0.0), k=k, n=n)
+        geo = wm.transition_geometry(g, layout, t, bend=bends.get(t["id"], 0.0), k=k, n=n, sz=sz)
         geo.update({"bend": bends.get(t["id"], 0.0), "k": k, "n": n})
         out[t["id"]] = geo
     return out
 
 
-def bounds(g: dict, layout: dict, geos: dict, pad: int = 28) -> list[int]:
+def bounds(g: dict, layout: dict, geos: dict, sz: dict | None = None, pad: int = 24) -> list[int]:
     xs, ys = [], []
     for s in g.get("statuses") or []:
-        x, y, w, h = wm.box(layout, s["id"])
+        x, y, w, h = wm.box(layout, s["id"], sz)
         xs += [x, x + w]
         ys += [y, y + h]
     tm = wm.transition_map(g)
     for tid, geo in geos.items():
-        t = tm[tid]
-        _, badge = badge_text(t)
-        lw, lh = label_size(t.get("name") or tid, badge)
+        lw, lh = wm.label_size(tm[tid])
         lx, ly = geo["label"]
         xs += [lx - lw / 2, lx + lw / 2]
         ys += [ly - lh / 2, ly + lh / 2]
-        if geo["kind"] == "loop":
-            ys.append(ly + lh / 2)
         if geo.get("start"):
             xs.append(geo["start"][0] - 10)
     if not xs:
@@ -197,9 +154,9 @@ def render(g: dict, layout: dict, *, idp: str = "wf", mode: str = "view", curren
     ``inner_only`` returns (the inside of the <svg>, its view box) for the editor to swap in."""
     layout = wm.complete_layout(g, layout)
     sm = wm.status_map(g)
-    tm = wm.transition_map(g)
-    geos = geometry(g, layout)
-    vb = view_box or bounds(g, layout, geos)
+    sz = wm.sizes(g, items, current)
+    geos = geometry(g, layout, sz)
+    vb = view_box or bounds(g, layout, geos, sz)
     marks, flags, seen, taken = marks or {}, flags or {}, seen or set(), taken or set()
     edit = mode == "edit"
     focusable = mode in ("edit", "diff", "read")
@@ -235,13 +192,8 @@ def render(g: dict, layout: dict, *, idp: str = "wf", mode: str = "view", curren
             sx, sy = geo["start"]
             paths += f'<circle class="wf-start" data-part="start" cx="{_n(sx)}" cy="{_n(sy)}" r="6"/>'
         edges_out.append(f'<g class="{cls}" data-t="{esc(t["id"])}" aria-hidden="true">{paths}</g>')
-        icon_kind, badge = badge_text(t)
-        name = t.get("name") or t["id"]
-        if t.get("type") == "global":
-            name = "Any status → " + name
-        name = _short(name, 22)
-        badge = _short(badge, 26)
-        lw, lh = label_size(name, badge)
+        nlines, blines, icon_kind = wm.label_lines(t)
+        lw, lh = wm.label_size(t)
         lx, ly = geo["label"]
         off = layout.get(wm.label_key(t["id"])) or [0, 0]
         lcls = " ".join(x for x in ("wf-l", "wf-any" if t.get("type") == "global" else "", f"m-{m}" if m else "",
@@ -249,45 +201,39 @@ def render(g: dict, layout: dict, *, idp: str = "wf", mode: str = "view", curren
         aria = transition_label(g, t) + (f". {MARK_WORD[m]}" if m in MARK_WORD else "")
         attrs = (f' tabindex="0" role="button" aria-roledescription="transition" aria-label="{esc(aria)}"' if focusable else "")
         data = (f' data-id="{esc(t["id"])}" data-kind="{geo["kind"]}" data-src="{esc(",".join(x for x in (t.get("from") or []) if x in sm))}" '
-                f'data-dst="{esc(t.get("to"))}" data-bend="{_n(geo["bend"])}" data-k="{geo["k"]}" data-n="{geo["n"]}" data-dx="{off[0]}" data-dy="{off[1]}"')
+                f'data-dst="{esc(t.get("to"))}" data-bend="{_n(geo["bend"])}" data-k="{geo["k"]}" data-n="{geo["n"]}" data-dx="{off[0]}" data-dy="{off[1]}" '
+                f'data-lw="{lw}"')
+        top = -lh / 2 + 6
+        texts = "".join(f'<text class="wf-lname" x="{-lw / 2 + 10:g}" y="{top + 11 + 15 * i:g}">{esc(x)}</text>' for i, x in enumerate(nlines))
+        by = top + 15 * len(nlines) + 11
+        texts += (f'<use class="wf-ic" href="#{idp}-i-{icon_kind}" x="{-lw / 2 + 9:g}" y="{by - 9.5:g}" width="12" height="12"/>'
+                  + "".join(f'<text class="wf-lbadge" x="{-lw / 2 + 25:g}" y="{by + 14 * i:g}">{esc(x)}</text>' for i, x in enumerate(blines)))
         fl = flags.get(key)
         labels_out.append(
             f'<g class="{lcls}" id="{idp}-t-{esc(t["id"])}"{data}{attrs} transform="translate({_n(lx)},{_n(ly)})">'
             f'<title>{esc(wm.sentence(g, t))}{(" " + MARK_WORD[m] + ".") if m in MARK_WORD else ""}</title>'
-            f'<rect class="wf-lbox" x="{-lw / 2:g}" y="{-lh / 2:g}" width="{lw}" height="{lh}" rx="7"/>'
-            f'<text class="wf-lname" x="{-lw / 2 + 10:g}" y="-3">{esc(name)}</text>'
-            f'<use class="wf-ic" href="#{idp}-i-{icon_kind}" x="{-lw / 2 + 9:g}" y="3.5" width="12" height="12"/>'
-            f'<text class="wf-lbadge" x="{-lw / 2 + 25:g}" y="13">{esc(badge)}</text>'
+            f'<rect class="wf-lbox" x="{-lw / 2:g}" y="{-lh / 2:g}" width="{lw}" height="{lh}" rx="7"/>{texts}'
             + _mark_badge(m, lw / 2, -lh / 2) + _flag(fl, -lw / 2, -lh / 2) + "</g>")
     nodes, handles = [], []
     for s in g.get("statuses") or []:
-        x, y, w, h = wm.box(layout, s["id"])
+        x, y, w, h = wm.box(layout, s["id"], sz)
         key = f"status:{s['id']}"
         m = mark_of(key)
         cls = " ".join(x_ for x_ in ("wf-s", f"cat-{s.get('category')}", f"m-{m}" if m else "", "wf-cur" if s["id"] == current else "",
                                      "wf-seen" if s["id"] in seen and s["id"] != current else "",
                                      "wf-sel" if selected == f"s:{s['id']}" else "") if x_)
-        lines = _lines(s["name"])
-        sub = [wm.CATEGORY_WORDS.get(s.get("category"), "").capitalize()]
-        if s.get("category") == "done" and (s.get("outcome") or "completed") != "completed":
-            sub[0] += f", {s.get('outcome')}"
-        if s.get("sla_days"):
-            sub.append(f"{s['sla_days']} days")
-        if items is not None and items.get(s["id"]):
-            sub.append(wm.plural(int(items[s["id"]]), "item"))
-        if s["id"] == current:
-            sub.insert(0, "Current")
-        if s["id"] in wm.SYSTEM_STATUSES:
-            sub.append("system")
-        texts = "".join(f'<text class="wf-name" x="16" y="{(22 if len(lines) == 2 else 27) + 16 * i}">{esc(ln)}</text>' for i, ln in enumerate(lines))
-        texts += f'<text class="wf-sub" x="16" y="{55 if len(lines) == 2 else 47}">{esc(" · ".join(sub))}</text>'
+        sub = wm.status_sub(s, (items or {}).get(s["id"]), s["id"] == current)
+        _, _, lines = wm.status_size(s, sub)
+        first = 27 if len(lines) == 1 else 22
+        texts = "".join(f'<text class="wf-name" x="16" y="{first + 16 * i}">{esc(ln)}</text>' for i, ln in enumerate(lines))
+        texts += f'<text class="wf-sub" x="16" y="{47 if len(lines) == 1 else first + 16 * (len(lines) - 1) + 17}">{esc(sub)}</text>'
         aria = status_label(g, s, items, current) + (f". {MARK_WORD[m]}" if m in MARK_WORD else "")
         attrs = f' tabindex="0" role="button" aria-roledescription="status" aria-label="{esc(aria)}"' if focusable else ""
         if edit:
             handles.append(f'<circle class="wf-handle" data-handle="{esc(s["id"])}" cx="{_n(x + w)}" cy="{_n(y + h / 2)}" r="7"><title>Drag to connect '
                            f'{esc(s["name"])} to another status</title></circle>')
         nodes.append(
-            f'<g class="{cls}" id="{idp}-s-{esc(s["id"])}" data-id="{esc(s["id"])}"{attrs} transform="translate({_n(x)},{_n(y)})">'
+            f'<g class="{cls}" id="{idp}-s-{esc(s["id"])}" data-id="{esc(s["id"])}" data-w="{w:g}" data-h="{h:g}"{attrs} transform="translate({_n(x)},{_n(y)})">'
             f'<title>{esc(status_label(g, s, items, current))}{(". " + MARK_WORD[m]) if m in MARK_WORD else ""}</title>'
             f'<rect class="wf-box" width="{w:g}" height="{h:g}" rx="8"/><path class="wf-cat" d="M8,0 H11 V{h:g} H8 A8,8 0 0 1 0,{h - 8:g} V8 A8,8 0 0 1 8,0 Z"/>'
             f'{texts}{_mark_badge(m, w, 0)}{_flag(flags.get(key), 0, 0)}</g>')
@@ -300,7 +246,8 @@ def render(g: dict, layout: dict, *, idp: str = "wf", mode: str = "view", curren
         a11y = f'role="group" aria-roledescription="workflow diagram" aria-label="{esc(label or "Workflow")}"'
     else:
         a11y = f'role="img" aria-label="{esc(label or summary(g, current))}"'
-    return (f'<svg class="{cls}" id="{idp}" xmlns="http://www.w3.org/2000/svg" viewBox="{" ".join(str(v) for v in vb)}" '
+    size = "" if edit else f' width="{vb[2]}" height="{vb[3]}"'  # a picture is drawn at its own size (never shrunk to unreadable)
+    return (f'<svg class="{cls}" id="{idp}" xmlns="http://www.w3.org/2000/svg" viewBox="{" ".join(str(v) for v in vb)}"{size} '
             f'preserveAspectRatio="xMidYMid meet" {a11y}>{inner}</svg>')
 
 

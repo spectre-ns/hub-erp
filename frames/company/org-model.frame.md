@@ -3,7 +3,7 @@ type: frame [0.2]
 name: org-model
 description: Roles, members (people and cogs) and folders of Example Instruments Ltd.
 visibility: internal
-version: "1.6.0"
+version: "1.7.0"
 scope: company
 maintainer: operations
 ---
@@ -13,9 +13,16 @@ This Frame is the root of the scope tree. Every other policy Frame inherits
 it. Roles, members and folders named anywhere else must be declared here.
 Cogs are members like anyone else: they hold roles, receive routed work and
 messages, and are bound by segregation of duties. What a member may do is
-what the SOPs give their roles (or them by name); a cog is given no role
-wider than its work needs. A member comments on the items it may read where
-a sentence below or in the SOP that owns them says so.
+what the SOPs give their roles, their groups (or them by name); a cog is given
+no role wider than its work needs. A member comments on the items it may read
+where a sentence below or in the SOP that owns them says so.
+
+Groups are named sets of members, people and cogs: listed by name, or
+everyone holding a role (they follow role changes). A group may carry
+permissions as a role does, be named in a Roles and responsibilities table,
+and carry a committee, which decides by consensus. Senior cogs are bundled
+with a hosted model and sit on the compile-frame committee; junior cogs work
+on the local model day to day.
 
 ## Roles
 - finance-clerk
@@ -47,6 +54,12 @@ a sentence below or in the SOP that owns them says so.
 - organization (cog): policy-reader
 - it-admin (cog): system-administrator
 - management (cog): management-reviewer
+- senior-organization (cog): policy-reader
+- senior-qa-manager (cog): policy-reader
+
+## Groups
+- senior-cogs: senior-organization and senior-qa-manager
+- junior-cogs: ap-reviewer, doc-reviewer, quality-assistant, qa-manager, organization, it-admin and management
 
 ## Folders
 - Finance

@@ -48,9 +48,11 @@ class Hub:
         self.proposals = ProposalStore(state / "proposals")
         self.kernel = Kernel(state / "kernel.db")
         self.registry = CogRegistry()
-        from .org_cog import OrganizationCog
+        from .org_cog import SENIOR_COGS, OrganizationCog
 
-        self.registry.register(OrganizationCog())  # the compile-frame committee's organization member
+        self.registry.register(OrganizationCog())  # the organization cog (a junior: day-to-day questions)
+        for cls in SENIOR_COGS:  # the senior cogs of the compile-frame committee (on the senior-cogs group)
+            self.registry.register(cls())
         try:
             meta = self.releases.current()
             self.registry.install_profiles(self.releases.bundle(meta["digest"]) if meta else None)
@@ -144,7 +146,8 @@ class Hub:
             # hosted models are switched on); a member without one is a question, not skipped.
             return CommitteeExtractor(committee["members"], committee["quorum"], cache_dir=Path(self.root) / "state" / "extract-cache",
                                       context=context_for(self), gateway=self.model, calls=calls, baseline=baseline,
-                                      unavailable=committee.get("unavailable"), perspectives=committee.get("perspectives"))
+                                      unavailable=committee.get("unavailable"), perspectives=committee.get("perspectives"),
+                                      chair=committee.get("chair") or "")
         ex.baseline = baseline
         if not __import__("os").environ.get("HUBPROTO_EXTRACTOR_MODEL"):
             ex.model = self.compiler_model() or ex.model
@@ -152,16 +155,20 @@ class Hub:
 
     def compile_committee(self) -> dict | None:
         """The compile-frame committee of the release in force: {"members": [(cog, its model, or "" when it cannot read
-        here)], "quorum", "unavailable": {cog: why}, "perspectives": {cog: its own view}}. Each member reads with the model its profile bundles it with: an
-        Ollama model, or a Claude model only where hosted models are switched on (``model.backend_for``). The committee
-        reads by consensus, so ``quorum`` is every member (the release's ``Agree:`` is kept as ``agree``)."""
+        here)], "quorum", "unavailable": {cog: why}, "perspectives": {cog: its own view}, "group", "chair"}. Its members are
+        those of the group it is defined on (``senior-cogs``: cogs bundled with a Claude model, change control 11.1). Each
+        member reads with the model its profile bundles it with: an Ollama model, or a Claude model only where hosted
+        models are switched on (``model.backend_for``). The committee reads by consensus, so ``quorum`` is every member; a
+        member that cannot read here is a ``member-unavailable`` question for a person (its chair), never skipped."""
         from .model import backend_for, hosted_allowed, resolve_model
 
         meta = self.releases.current()
         if not meta:
             return None
         b = self.releases.bundle(meta["digest"])
-        c = (b.get("committees") or {}).get("compile-frame")
+        from .groups import committee as _committee
+
+        c = _committee(b, "compile-frame")
         if not c:
             return None
         members, unavailable = [], {}
@@ -182,8 +189,8 @@ class Hub:
         from .llm_extract import perspective_of
 
         # Each member reads from its own perspective (its identity, persona and roles); the material is the same for all.
-        return {"members": members, "quorum": len(members), "agree": int(c.get("quorum") or 1), "unavailable": unavailable,
-                "perspectives": {n: perspective_of(b, n) for n, _ in members}}
+        return {"members": members, "quorum": len(members), "agree": len(members), "unavailable": unavailable,
+                "perspectives": {n: perspective_of(b, n) for n, _ in members}, "group": c.get("group") or "", "chair": c.get("chair") or ""}
 
     def compiler_model(self) -> str:
         """The model of the organization cog, which reads SOPs in the Compile the Frame Op when no committee is set: its
@@ -929,6 +936,25 @@ class Hub:
         bundle = self.releases.bundle(run["release"])
         pending = run["pending"]
         reasons = []
+        cm = pending.get("committee")
+        if cm:  # a committee decides by consensus: its members vote; the chair intervenes when it pauses
+            principal = authz.principal_name(principal)
+            if principal in self.runner.committee_outstanding(pending) and principal in (pending.get("assignees") or []):
+                return {"may": True, "reasons": [], "waiting_for": pending.get("assignees") or [], "gate": pending.get("title"),
+                        "committee": cm["name"], "as": "member"}
+            if principal in (cm.get("interveners") or []) and cm.get("paused"):
+                return {"may": True, "reasons": [], "waiting_for": pending.get("assignees") or [], "gate": pending.get("title"),
+                        "committee": cm["name"], "as": "intervener"}
+            if principal in (cm.get("votes") or {}):
+                reasons.append(f"{principal} has voted on it already ({cm['votes'][principal]['verdict']})")
+            elif principal not in cm.get("members") or []:
+                reasons.append(f"the {cm['name']} committee decides it by consensus, and {principal} is not one of its members "
+                               f"({', '.join(cm.get('members') or [])}; chair {cm.get('chair') or 'none'})")
+            excluded = self.runner.excluded(bundle, run, pending.get("route") or "role:")
+            if principal in excluded:
+                reasons.append(excluded[principal] + "; the chair decides in their place")
+            return {"may": False, "reasons": reasons or ["it does not wait for them now"], "waiting_for": pending.get("assignees") or [],
+                    "gate": pending.get("title"), "committee": cm["name"]}
         perm = authz.check(bundle, principal, "approve", run["manifest"]["object"], run["manifest"]["folder"])
         if not perm["allowed"]:
             reasons.append(perm["why"])

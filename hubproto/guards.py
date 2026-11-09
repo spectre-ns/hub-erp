@@ -109,11 +109,16 @@ def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict |
     roles_with_members = {role for m in members.values() for role in m["roles"]}
     personas = {r["name"]: r for r in rules if r["kind"] == "persona"}
     listed = {r["who"] for r in rules if r["kind"] == "responsibility"}  # who some Roles and responsibilities table lists
+    groups = {r["name"]: r for r in rules if r["kind"] == "group"}
+    committees = {r["name"]: r for r in rules if r["kind"] == "committee"}
+    light = _light(rules)
 
     def ref_ok(ref: str) -> bool:
         kind, _, name = ref.partition(":")
         if kind == "field":
             return True
+        if kind == "group":
+            return name in groups
         if kind == "role":
             return name in roles
         if kind == "person":
@@ -126,7 +131,9 @@ def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict |
         key = rule_key(rule)
         frame, line = _where(rule)
         kind = rule["kind"]
-        if kind == "member":
+        if kind == "group":
+            out += _group_consistency(rule, key, frame, line, roles, members, light)
+        elif kind == "member":
             for role in rule["roles"]:
                 if role not in roles:
                     out.append(Finding("consistency", "error", f"member {rule['principal']} holds unknown role {role!r}", key, frame, line))
@@ -144,7 +151,10 @@ def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict |
                 out.append(Finding("consistency", "error", f"cog {rule['name']}: there is no persona {rule['persona']!r} "
                                    f"(the personas are: {', '.join(sorted(personas)) or 'none'})", key, frame, line))
             m = members.get(rule["name"]) or {}
-            if m and not ({"cog:" + rule["name"]} | {"role:" + x for x in m.get("roles") or []}) & listed:
+            from .groups import groups_of as _gof
+
+            if m and not ({"cog:" + rule["name"]} | {"role:" + x for x in m.get("roles") or []}
+                          | {"group:" + g for g in _gof(light, rule["name"])}) & listed:
                 out.append(Finding("consistency", "warning", f"cog {rule['name']} is listed in no Roles and responsibilities table (nor are its "
                                    "roles): it follows only the company scope and will be routed nothing", key, frame, line))
         elif kind == "persona":
@@ -200,7 +210,8 @@ def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict |
             if rule.get("countersign") and not ref_ok("role:" + rule["countersign"]):
                 out.append(Finding("consistency", "error", f"countersigning role {rule['countersign']!r} is not declared", key, frame, line))
         elif kind == "process" and rule.get("statuses"):
-            out += _graph_consistency(rule, key, frame, line, roles, roles_with_members, members, cog_ids, criteria_by_cog, folders, record_types)
+            out += _graph_consistency(rule, key, frame, line, roles, roles_with_members, members, cog_ids, criteria_by_cog, folders, record_types,
+                                      committees)
         elif kind == "process":
             if rule["folder"] and rule["folder"] not in folders:
                 out.append(Finding("consistency", "error", f"process folder {rule['folder']!r} is not declared", key, frame, line))
@@ -233,7 +244,7 @@ def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict |
                            and (checkpoint_for(rule, r["step"]) or {}).get("id") == cp["id"] for r in rules):
                     out.append(Finding("consistency", "warning", f"checkpoint {cp['title']!r} of {rule['name']} has no routing sentence; it will route to the role on the step", key, frame, cp["line"]))
             out += workflow_checks(rule, key, frame, line, record_types)
-    out += responsibilities_guard(rules, roles, roles_with_members, members)
+    out += responsibilities_guard(rules, roles, roles_with_members, members, groups)
     profiled = {r["name"] for r in rules if r["kind"] == "cog"}
     for name, m in members.items():
         if m["principal_type"] == "cog" and name not in profiled:
@@ -278,8 +289,36 @@ def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict |
 FIELD_GATE_ROLES = ("system", "assignee", "owner", "author", "requester", "auditor", "chair", "evaluator", "reporter")
 
 
+def _light(rules: list[dict]) -> dict:
+    """Who is who in the rules, before rendering: members, groups, committees (for group membership)."""
+    from .release import render_light
+
+    return render_light(rules)
+
+
+def _group_consistency(rule: dict, key: str, frame: str, line: int, roles: set, members: dict, light: dict) -> list[Finding]:
+    """A group names members of the organization and declared roles, does not share a name with a role, and has someone
+    in it."""
+    from .groups import group_members
+
+    out: list[Finding] = []
+    name = rule["name"]
+    if name in roles:
+        out.append(Finding("consistency", "error", f"group {name}: a role has the same name; give the group another name", key, frame, line))
+    for m in rule.get("members") or []:
+        if m not in members:
+            out.append(Finding("consistency", "error", f"group {name} lists {m}, who is not a member of the organization", key, frame, line))
+    for r in rule.get("roles") or []:
+        if r not in roles:
+            out.append(Finding("consistency", "error", f"group {name}: everyone holding {r!r}, which is not a declared role", key, frame, line))
+    if not group_members(light, name) and not [m for m in rule.get("members") or [] if m not in members]:
+        out.append(Finding("consistency", "warning", f"group {name} has nobody in it", key, frame, line))
+    return out
+
+
 def _graph_consistency(rule: dict, key: str, frame: str, line: int, roles: set, roles_with_members: set, members: dict,
-                       cog_ids: set, criteria_by_cog: dict, folders: set, record_types: dict | None) -> list[Finding]:
+                       cog_ids: set, criteria_by_cog: dict, folders: set, record_types: dict | None,
+                       committees: dict | None = None) -> list[Finding]:
     """The checks a process written as a graph gets at compile: what it names exists, a cog gate has approval criteria,
     and the graph checks of the workflow model (``hubproto.workflow_model.checks``, when that module is present)."""
     out: list[Finding] = []
@@ -309,6 +348,22 @@ def _graph_consistency(rule: dict, key: str, frame: str, line: int, roles: set, 
                 out.append(Finding("consistency", "error", f"{name!r} is decided by the {cog} cog, which is not a cog member of the org model", key, frame, tl))
             elif not [c for c in criteria_by_cog.get(f"cog:{cog}", []) if c["process"] == rule["name"]]:
                 out.append(Finding("consistency", "error", f"{name!r} is decided by the {cog} cog, which has no approval criteria for {rule['name']}", key, frame, tl))
+        if g.get("kind") == "committee":
+            c = (committees or {}).get(g.get("committee"))
+            if c is None:
+                out.append(Finding("consistency", "error", f"{name!r} is decided by the {g.get('committee')} committee, which is not defined "
+                                   "('## Committee: <name>' with Group: and Chair:)", key, frame, tl))
+            elif t.get("type") == "directed":
+                # Consensus or back for revision: an objection needs a way back from the status the committee decides at.
+                from .process_graph import option_verdict
+
+                probe = {"statuses": rule.get("statuses") or [], "transitions": [x for x in rule.get("transitions") or []]}
+                back = [x for x in rule.get("transitions") or [] if x.get("type") == "directed" and set(x.get("from") or []) & set(t.get("from") or [])
+                        and (x.get("gate") or {}).get("kind") == "committee" and option_verdict(probe, x) == "reject"]
+                if option_verdict(probe, t) == "approve" and not back:
+                    out.append(Finding("consistency", "error", f"{name!r} is decided by the {g.get('committee')} committee, but an objection has no way "
+                                       f"back: say where it returns the item ('From {', '.join(t.get('from') or [])} to <an earlier status> "
+                                       f"(\"Return\"): the {g.get('committee')} committee decides.')", key, frame, tl))
         for a in t.get("actions") or []:
             if isinstance(a, str) and a not in cog_ids:
                 near = sorted(c for c in cog_ids if c.endswith("-" + a) or c.startswith(a + "-"))
@@ -369,6 +424,7 @@ def table_needs(rules: list[dict]) -> dict[str, list[tuple[str, str, int]]]:
     countersignature, a duty, or a create, approve or update permission). Its Roles and responsibilities table must list
     each of them, or a role the cog holds."""
     out: dict[str, list[tuple[str, str, int]]] = {}
+    committees = {r["name"]: r for r in rules if r.get("kind") == "committee"}
     for r in rules:
         src = r.get("source") or {}
         frame = src.get("frame") or ""
@@ -389,7 +445,10 @@ def table_needs(rules: list[dict]) -> dict[str, list[tuple[str, str, int]]]:
                         found.append(("role:" + role, "a decision", tl))
                 if g.get("kind") == "cog" and g.get("cog"):
                     found.append(("cog:" + g["cog"], "a decision", tl))
-        elif k == "routing" and str(r.get("assignee", "")).startswith(("role:", "cog:")):
+                if g.get("kind") == "committee" and (committees.get(g.get("committee")) or {}).get("group"):
+                    # A committee decides: its group's members have a part (the table lists the group, or each of them).
+                    found.append(("group:" + committees[g["committee"]]["group"], "a decision (the " + g["committee"] + " committee)", tl))
+        elif k == "routing" and str(r.get("assignee", "")).startswith(("role:", "cog:", "group:")):
             found.append((r["assignee"], "a route" if r.get("mode", "assign") == "assign" else "a report", line))
         elif k == "approval_criteria":
             found.append((r["approver"], "approval criteria", line))
@@ -408,6 +467,8 @@ def table_rows_needed(rules: list[dict]) -> dict[str, list[tuple[str, str]]]:
     """{Frame: [(who, what part)]} for each role or cog a document gives a part that its Roles and responsibilities
     table does not list (a cog counts as listed when one of its roles is): the rows a writer should add
     (``extract.add_responsibility_row``)."""
+    from .groups import groups_of
+
     tables: dict[str, set[str]] = {}
     roles_of: dict[str, set[str]] = {}
     for r in rules:
@@ -415,19 +476,22 @@ def table_rows_needed(rules: list[dict]) -> dict[str, list[tuple[str, str]]]:
             tables.setdefault(r["frame"], set()).add(r["who"])
         elif r.get("kind") == "member":
             roles_of.setdefault(r["principal"], set()).update(r.get("roles") or [])
+    light = _light(rules)
     out: dict[str, list[tuple[str, str]]] = {}
     for frame, needs in table_needs(rules).items():
         table = tables.get(frame, set())
         for who, what, _line in needs:
             kind, _, name = who.partition(":")
-            if who in table or (kind == "cog" and any("role:" + x in table for x in roles_of.get(name, set()))):
+            if who in table or (kind == "cog" and (any("role:" + x in table for x in roles_of.get(name, set()))
+                                                   or any("group:" + g in table for g in groups_of(light, name)))):
                 continue
             if (who, what) not in out.setdefault(frame, []):
                 out[frame].append((who, what))
     return {f: v for f, v in out.items() if v}
 
 
-def responsibilities_guard(rules: list[dict], roles: set[str], roles_with_members: set[str], members: dict) -> list[Finding]:
+def responsibilities_guard(rules: list[dict], roles: set[str], roles_with_members: set[str], members: dict,
+                          groups: dict | None = None) -> list[Finding]:
     """Each document's Roles and responsibilities table against its rules, so the table (who must read the document,
     what a cog follows) cannot drift from what the document gives people and cogs: a warning for each role or cog the
     document gives a part that its table does not list, and for each table row naming a role nobody holds, a role that
@@ -449,9 +513,12 @@ def responsibilities_guard(rules: list[dict], roles: set[str], roles_with_member
         elif kind == "cog" and (members.get(name) or {}).get("principal_type") != "cog":
             out.append(Finding("consistency", "warning", f"{r['frame']}'s Roles and responsibilities table names the {name} cog, which the "
                                "organization does not have", rule_key(r), frame, line))
-        elif kind == "group":
-            out.append(Finding("consistency", "warning", f"{r['frame']}'s Roles and responsibilities table names the {name} group; groups are "
-                               "not declared yet, so it makes nobody read it", rule_key(r), frame, line))
+        elif kind == "group" and name not in (groups or {}):
+            out.append(Finding("consistency", "warning", f"{r['frame']}'s Roles and responsibilities table names the {name} group, which the "
+                               "organization model does not declare (## Groups), so it makes nobody read it", rule_key(r), frame, line))
+    from .groups import groups_of
+
+    light = _light(rules)
     for frame, needs in table_needs(rules).items():
         table = tables.get(frame)
         if table is None:
@@ -461,11 +528,13 @@ def responsibilities_guard(rules: list[dict], roles: set[str], roles_with_member
         seen = set()
         for who, what, line in needs:
             kind, _, name = who.partition(":")
-            ok = who in table or (kind == "cog" and any("role:" + x in table for x in (members.get(name) or {}).get("roles") or []))
+            ok = who in table or (kind == "cog" and (any("role:" + x in table for x in (members.get(name) or {}).get("roles") or [])
+                                                     or any("group:" + g in table for g in groups_of(light, name))))
             if ok or (who, what) in seen:
                 continue
             seen.add((who, what))
-            words = f"the {name} cog" if kind == "cog" else f"the {name.replace('-', ' ')} role"
+            words = (f"the {name} cog" if kind == "cog" else f"the {name.replace('-', ' ')} group" if kind == "group"
+                     else f"the {name.replace('-', ' ')} role")
             out.append(Finding("consistency", "warning", f"{frame} gives {words} {what} (line {line}) but its Roles and responsibilities "
                                "table does not list it", "", frame, line))
     return out
@@ -481,7 +550,7 @@ def rule_identity(rule: dict) -> str:
         "routing": ("process", "step", "condition"), "permission": ("subject", "action", "object", "folder"),
         "approval_criteria": ("approver", "process"), "sla": ("process", "step"), "sod": ("object",),
         "member": ("principal",), "role": ("name",), "folder": ("path",), "threshold": ("name",), "cog": ("name",),
-        "persona": ("name",), "duty": ("cog", "task"),
+        "persona": ("name",), "duty": ("cog", "task"), "group": ("name",), "committee": ("name",),
     }.get(kind)
     if not fields:
         return rule_key(rule)
@@ -547,12 +616,14 @@ def _widens_over(old: dict, new: dict) -> bool:
     if new.get("kind") == "process":
         def checkpoints(r):
             return {s.get("id") for s in r.get("steps") or [] if s.get("kind") == "checkpoint"} | {
-                t.get("id") for t in r.get("transitions") or [] if (t.get("gate") or {}).get("kind") in ("person", "cog")}
+                t.get("id") for t in r.get("transitions") or [] if (t.get("gate") or {}).get("kind") in ("person", "cog", "committee")}
         return not checkpoints(old) <= checkpoints(new) or old.get("folder") != new.get("folder")
     if new.get("kind") == "routing":
         return old.get("assignee") != new.get("assignee") or (old.get("mode") or "assign") != (new.get("mode") or "assign")
     if new.get("kind") == "member":
         return not set(new.get("roles") or []) <= set(old.get("roles") or [])
+    if new.get("kind") == "group":  # someone more is in it (what the group may do reaches them)
+        return not (set(new.get("members") or []) <= set(old.get("members") or []) and set(new.get("roles") or []) <= set(old.get("roles") or []))
     return old != {**new, "source": old.get("source")}
 
 
@@ -581,8 +652,8 @@ def _widens(rule: dict, old_rules) -> bool:
         return rule["effect"] in ("allow", "propose")  # a proposing permission lets a cog do, once confirmed, what it could not
     if kind == "member":
         return True
-    if kind in ("cog", "persona", "scope", "committee", "duty"):
-        return True  # who a cog is and how it behaves (its model, persona), the scopes, a standing duty: two policy owners
+    if kind in ("cog", "persona", "scope", "committee", "duty", "group"):
+        return True  # who a cog is and how it behaves (its model, persona), the scopes, a standing duty, who is in a group: two policy owners
     if kind == "routing":
         return rule["assignee"].startswith("cog:")
     if kind == "approval_criteria":
@@ -630,12 +701,59 @@ def _reason(rule: dict, op: str) -> str:
                 f"{', '.join(rule.get('lenses') or []) or 'none'}, {int(rule.get('passes') or 0)} adversarial passes")
     if kind == "duty":
         return f"{op} duty of the {rule['cog']} cog, every {rule['every']}: {rule['task']}"
+    if kind == "group":
+        who = list(rule.get("members") or []) + [f"everyone holding {r}" for r in rule.get("roles") or []]
+        return f"{op} group {rule['name']}: {', '.join(who) or 'nobody'}"
+    if kind == "committee":
+        return (f"{op} committee {rule['name']}" + (f" on the {rule['group']} group" if rule.get("group") else
+                                                    f" of {', '.join(rule.get('members') or [])}")
+                + (f", chaired by {rule['chair']}" if rule.get("chair") else "") + ": decides by consensus")
     if kind == "responsibility":
         return f"{op} in {rule.get('frame')}'s Roles and responsibilities: {rule.get('who')}: {rule.get('text')}"
     if kind == "scope":
         return f"{op} scope {rule['name']} ({rule.get('level')}): compiles {', '.join(rule.get('compiles') or [])}" + (
             f", layers on {', '.join(rule['layers_on'])}" if rule.get("layers_on") else "")
     return f"{op} {kind} " + str({k: v for k, v in rule.items() if k not in ('kind', 'source')})
+
+
+COMPILE_COMMITTEE = "compile-frame"
+
+
+def committee_guard(rules: list[dict], cogs: set[str] | None = None) -> list[Finding]:
+    """A committee is defined on a group that exists (or, in earlier texts, lists its members), has a person of the
+    organization as its chair and somebody in it. The compile-frame committee reads the SOPs: its members are cogs."""
+    from .groups import committee as _committee
+
+    out: list[Finding] = []
+    light = _light(rules)
+    people = {r["principal"] for r in rules if r["kind"] == "member" and r["principal_type"] == "person"}
+    everyone = {r["principal"] for r in rules if r["kind"] == "member"}
+    cogs = cogs if cogs is not None else {r["principal"] for r in rules if r["kind"] == "member" and r["principal_type"] == "cog"}
+    for c in (r for r in rules if r["kind"] == "committee"):
+        key, (frame, line) = rule_key(c), _where(c)
+        name = c["name"]
+        if c.get("group") and c["group"] not in (light.get("groups") or {}):
+            out.append(Finding("consistency", "error", f"committee {name} is defined on the {c['group']} group, which the organization model "
+                               "does not declare (## Groups)", key, frame, line))
+        elif not c.get("group") and not c.get("members"):
+            out.append(Finding("consistency", "error", f"committee {name}: say the group it is defined on (Group: <group>)", key, frame, line))
+        for m in c.get("members") or []:
+            if m not in everyone:
+                out.append(Finding("consistency", "error", f"committee {name}: {m} is not a member of the organization", key, frame, line))
+        if not c.get("chair"):
+            out.append(Finding("consistency", "error", f"committee {name}: name its chair, a person who intervenes when a member cannot "
+                               "agree in time (Chair: <person>)", key, frame, line))
+        elif c["chair"] not in people:
+            out.append(Finding("consistency", "error", f"committee {name}: its chair {c['chair']} is not a person of the organization", key, frame, line))
+        resolved = (_committee({**light, "committees": {name: c}}, name) or {}).get("members") or []
+        if (c.get("group") in (light.get("groups") or {}) or c.get("members")) and not resolved:
+            out.append(Finding("consistency", "error", f"committee {name} has nobody in it", key, frame, line))
+        if name == COMPILE_COMMITTEE:
+            for m in resolved:
+                if m not in cogs:
+                    out.append(Finding("consistency", "error", f"committee {name}: {m} is not a cog; the compile-frame committee's members read the "
+                                       "SOPs with their models", key, frame, line))
+    return out
 
 
 def scope_guard(rules: list[dict], frame_names: set[str], frame_scopes: dict[str, str] | None = None) -> list[Finding]:
@@ -678,14 +796,7 @@ def scope_guard(rules: list[dict], frame_names: set[str], frame_scopes: dict[str
     for p in personas:
         if p["name"] not in used:
             out.append(Finding("consistency", "warning", f"persona {p['name']} is used by no cog", rule_key(p), *_where(p)))
-    for c in (r for r in rules if r["kind"] == "committee"):
-        key, (frame, line) = rule_key(c), _where(c)
-        for m in c.get("members") or []:
-            if m not in cogs:
-                out.append(Finding("consistency", "error", f"committee {c['name']}: {m} is not a cog of the organization", key, frame, line))
-        if not 1 <= int(c.get("quorum") or 0) <= len(c.get("members") or []):
-            out.append(Finding("consistency", "error", f"committee {c['name']}: say how many of its {len(c.get('members') or [])} members must agree (Agree: n)",
-                               key, frame, line))
+    out += committee_guard(rules, cogs)
     if scopes:
         covered = {f for s in scopes.values() for f in s.get("compiles") or []}
         for f in sorted(frame_names - covered):

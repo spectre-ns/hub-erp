@@ -693,8 +693,9 @@ class CommitteeExtractor:
 
     def __init__(self, members: list[tuple[str, str]], quorum: int, cache_dir: Path | None = None, context: dict | None = None,
                  gateway=None, calls: bool = True, call=None, baseline=None, budget: int | None = None,
-                 unavailable: dict[str, str] | None = None, perspectives: dict[str, str] | None = None):
+                 unavailable: dict[str, str] | None = None, perspectives: dict[str, str] | None = None, chair: str = ""):
         self.size = len(members)  # every member, with a model here or not: consensus needs each one's reading
+        self.chair = chair  # the person who intervenes when a member cannot read (hubproto.groups)
         self.members = [(n, m) for n, m in members if m]
         # A member with no model here, and why (hub.compile_committee): the committee cannot agree without it.
         self.unavailable = {n: (unavailable or {}).get(n) or "no model is available for it here" for n, m in members if not m}
@@ -719,10 +720,12 @@ class CommitteeExtractor:
 
         questions, notes = [], []
         for name, why in who.items():
+            who = f"its chair, {self.chair}, intervenes" if self.chair else "a person intervenes"
             text = (f"The compile-frame committee cannot read the prose of {frame.name}: the {name} cog is not available ({why}), and "
-                    "the committee reads by consensus. Make its model available here, or change the committee or the cog's model "
-                    "through a change order.")
-            questions.append(question(frame.name, 0, text, raised_by="hub", code="member-unavailable", member=name))
+                    f"the committee reads by consensus, so {who}. Make its model available here, or change the committee or the cog's "
+                    "model through a change order.")
+            questions.append(question(frame.name, 0, text, raised_by="hub", code="member-unavailable", member=name,
+                                      **({"chair": self.chair} if self.chair else {})))
             notes.append({"frame": frame.name, "line": 0, "text": "", "severity": "warning",
                           "note": f"the prose of {frame.name} is not read: the {name} cog of the compile-frame committee is not available ({why})"})
         return questions, notes

@@ -162,6 +162,7 @@ def render(rules: list[dict], record_types: dict | None = None) -> dict:
     scopes: dict[str, dict] = {}
     personas: dict[str, dict] = {}
     committees: dict[str, dict] = {}
+    groups: dict[str, dict] = {}
     duties: list[dict] = []
     responsibilities: list[dict] = []
     for r in rules:
@@ -201,6 +202,8 @@ def render(rules: list[dict], record_types: dict | None = None) -> dict:
             personas[r["name"]] = body
         elif kind == "committee":
             committees[r["name"]] = body
+        elif kind == "group":
+            groups[r["name"]] = {"members": list(r.get("members") or []), "roles": list(r.get("roles") or []), "source": r["source"]}
         elif kind == "duty":
             duties.append(dict(body))
         elif kind == "responsibility":
@@ -220,7 +223,25 @@ def render(rules: list[dict], record_types: dict | None = None) -> dict:
         cogs[name] = merged
     for name, p in personas.items():
         p["cogs"] = sorted(n for n, c in cogs.items() if c.get("persona") == name)
-    partial = {"members": members, "permissions": permissions, "routing": routing, "approval_criteria": criteria,
+    # Groups (hubproto.groups): a permission or a route naming a group rather than a role is the group's; who is in each
+    # group is resolved from the members (a group by role follows role changes); a committee's members are its group's.
+    from .groups import committee as _committee, group_members, resolve_subject
+
+    role_set = set(roles)
+    for r in permissions:
+        r["subject"] = resolve_subject(r["subject"], role_set, groups)
+    for r in routing:
+        if str(r.get("assignee") or "").startswith("role:"):
+            r["assignee"] = resolve_subject(r["assignee"], role_set, groups)
+    grouped = {"members": members, "groups": groups}
+    for name in groups:
+        groups[name]["resolved"] = group_members(grouped, name)
+    for name, c in list(committees.items()):
+        resolved = (_committee({**grouped, "committees": committees}, name) or {}).get("members") or []
+        committees[name] = {**c, "group": c.get("group") or "", "chair": c.get("chair") or "", "purpose": c.get("purpose") or "",
+                            "listed": list(c.get("members") or []), "members": resolved, "agree": c.get("quorum") or 0,
+                            "quorum": len(resolved)}  # consensus: every member agrees
+    partial = {"members": members, "groups": groups, "permissions": permissions, "routing": routing, "approval_criteria": criteria,
                "processes": processes, "duties": duties, "committees": committees, "scopes": scopes, "responsibilities": responsibilities}
     for name in cogs:
         why = follows_for(partial, name)
@@ -271,6 +292,7 @@ def render(rules: list[dict], record_types: dict | None = None) -> dict:
         "scopes": dict(sorted(scopes.items())),
         "personas": dict(sorted(personas.items())),
         "committees": dict(sorted(committees.items())),
+        "groups": dict(sorted(groups.items())),
         "duties": duties,
         "responsibilities": responsibilities,
         "ops": ops,
@@ -357,7 +379,11 @@ def rule_names(rule: dict) -> set[str]:
     elif kind == "duty" or ("task" in rule and "every" in rule):
         out.add("cog:" + rule["cog"])
     elif kind == "committee" or ("quorum" in rule and "members" in rule):
-        out |= {"cog:" + m for m in rule.get("members") or []}
+        if rule.get("group"):
+            out.add("group:" + rule["group"])
+        out |= {"cog:" + m for m in rule.get("listed", rule.get("members")) or [] if not rule.get("group")}
+        if rule.get("chair"):
+            out.add("person:" + rule["chair"])
     elif kind == "member" or "principal" in rule:
         out.add(f"{rule.get('principal_type') or 'person'}:{rule['principal']}")
     return out
@@ -380,13 +406,17 @@ def frames_naming(bundle: dict, names: set[str]) -> dict[str, set[str]]:
 
 
 def principal_names(bundle: dict, principal: str) -> set[str]:
+    """The names that stand for a member in the rules: its roles, its groups and itself ("role:x", "group:g", "cog:x")."""
+    from .groups import groups_of
+
     m = (bundle.get("members") or {}).get(principal) or {}
-    return {"role:" + r for r in m.get("roles") or []} | {f"{m.get('type') or 'person'}:{principal}"}
+    return ({"role:" + r for r in m.get("roles") or []} | {f"{m.get('type') or 'person'}:{principal}"}
+            | {"group:" + g for g in groups_of(bundle, principal)})
 
 
 def follows_for(bundle: dict, principal: str) -> dict[str, set[str]]:
     """What a cog follows, or a person must read, from the documents' Roles and responsibilities tables: every
-    document whose table lists one of its roles (or the cog by name); a cog also follows the company scope (the org
+    document whose table lists one of its roles, one of its groups (or the cog by name); a cog also follows the company scope (the org
     model, the quality manual, the tasks SOP). Returns {Frame: the names that make it so ("role:quality-manager",
     "cog:stores"; "company" for the company scope)}: the company Frames first, then the others alphabetically."""
     named = frames_naming(bundle, principal_names(bundle, principal))
@@ -404,6 +434,11 @@ def follows_for(bundle: dict, principal: str) -> dict[str, set[str]]:
 def table_roles(bundle: dict, frame: str) -> list[str]:
     """The roles a document's Roles and responsibilities table lists (who must read it, who is trained on it)."""
     return sorted({r["who"][5:] for r in bundle.get("responsibilities") or [] if r.get("frame") == frame and r.get("who", "").startswith("role:")})
+
+
+def table_groups(bundle: dict, frame: str) -> list[str]:
+    """The groups a document's Roles and responsibilities table lists (their members must read it)."""
+    return sorted({r["who"][6:] for r in bundle.get("responsibilities") or [] if r.get("frame") == frame and r.get("who", "").startswith("group:")})
 
 
 def followed_by_cogs(rules: list[dict]) -> set[str]:
@@ -424,7 +459,7 @@ def render_light(rules: list[dict]) -> dict:
     """The parts of a bundle that say who is named where, without rendering workflows or manifests."""
     members: dict[str, dict] = {}
     out = {"members": members, "permissions": [], "routing": [], "approval_criteria": [], "processes": {}, "duties": [],
-           "committees": {}, "scopes": {}}
+           "committees": {}, "scopes": {}, "groups": {}}
     for r in rules:
         k = r.get("kind")
         body = {x: y for x, y in r.items() if x != "kind"}
@@ -443,6 +478,8 @@ def render_light(rules: list[dict]) -> dict:
             out["duties"].append(body)
         elif k == "committee":
             out["committees"][r["name"]] = body
+        elif k == "group":
+            out["groups"][r["name"]] = {"members": list(r.get("members") or []), "roles": list(r.get("roles") or [])}
         elif k == "scope":
             out["scopes"][r["name"]] = body
     for n in out["scopes"]:

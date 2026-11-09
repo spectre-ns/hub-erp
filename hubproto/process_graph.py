@@ -24,7 +24,8 @@ import re
 
 CATEGORIES = ("todo", "in_progress", "done")
 OUTCOMES = ("completed", "rejected", "cancelled", "superseded")
-GATE_KINDS = ("person", "cog", "auto")
+GATE_KINDS = ("person", "cog", "committee", "auto")
+DECIDED_BY = ("person", "cog", "committee")  # gates that wait for a decision (a committee: every member agrees)
 TRANSITION_TYPES = ("initial", "directed", "global")
 # Roles a gate may name that are fields of the item (who is named on it), not roles of the org model.
 FIELD_ROLES = ("assignee", "owner", "author", "requester", "auditor", "chair", "evaluator", "reporter")
@@ -183,7 +184,7 @@ def gated_checkpoints(process: dict) -> list[dict]:
     out = []
     for t in process.get("transitions") or []:
         g = t.get("gate") or {}
-        if t.get("type") == "directed" and g.get("kind") in ("person", "cog"):
+        if t.get("type") == "directed" and g.get("kind") in DECIDED_BY:
             out.append({"id": t["id"], "title": t.get("name") or t["id"], "role": g.get("role") or g.get("fallback") or "system",
                         "kind": "checkpoint", "line": t.get("line", 0)})
     return out
@@ -238,7 +239,7 @@ def legacy_transitions(wf: dict | None) -> list[dict]:
             g = (t.get("gate") or {}).get("kind")
             if g == "auto":
                 out.append({"from": s["id"], "to": t["to"], "kind": "automatic", "steps": [a for a in t.get("actions") or [] if isinstance(a, str)]})
-            elif g in ("person", "cog") and option_verdict(wf, t) == "approve" and not t.get("system"):
+            elif g in DECIDED_BY and option_verdict(wf, t) == "approve" and not t.get("system"):
                 rej = rejection_option(wf, s["id"])
                 human.append({"from": s["id"], "to": t["to"], "kind": "human", "step": t["id"], "title": t.get("name") or t["id"],
                               "on_reject": rej["to"] if rej else None, "sla_days": s.get("sla_days")})
@@ -288,7 +289,7 @@ def transitions_out(wf: dict, sid: str, include_global: bool = True) -> list[dic
 
 
 def is_gated(t: dict) -> bool:
-    return (t.get("gate") or {}).get("kind") in ("person", "cog")
+    return (t.get("gate") or {}).get("kind") in DECIDED_BY
 
 
 def is_auto(t: dict) -> bool:
@@ -366,6 +367,8 @@ def gate_words(gate: dict, wf: dict | None = None) -> str:
         return "automatically" + (f" when {condition_phrase(cond)}" if cond and cond != "actions-succeed" else "")
     if g.get("kind") == "cog":
         return f"the {g.get('cog', '').replace('-', ' ')} cog decides, else {_role_words(g.get('fallback') or 'quality-manager')}"
+    if g.get("kind") == "committee":
+        return f"the {g.get('committee', '')} committee decides"
     words = _role_words(g.get("role") or "system")
     nots = []
     for n in g.get("not") or []:
