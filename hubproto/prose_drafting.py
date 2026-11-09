@@ -115,6 +115,10 @@ def reads_back(item: dict, rules: list[dict]) -> bool:
 
 def _says(item: dict, processes: dict) -> str:
     old, new = rules_of(item)
+    if (new or old or {}).get("kind") == "process":  # a workflow change in words, not the whole process section
+        from .workflow_model import process_change_reason
+
+        return process_change_reason(old, new)
     try:
         if new is None:
             return "remove: " + sentence(old, processes)
@@ -270,12 +274,18 @@ def add_table_rows(hub, co_ref: str, name: str, items: list[dict], base: list[di
     text = frame.text
     said = {}
     for item in items:
+        _old, new = rules_of(item)
         for who, what in _needs_of(item, name, base):
-            said.setdefault((who, what), _says(item, processes))
+            if (new or {}).get("kind") == "process":  # a short cell: what this role, cog or group decides in the workflow
+                from .workflow_model import responsibility_words
+
+                said.setdefault((who, what), responsibility_words(new, who))
+            else:
+                said.setdefault((who, what), _row_text(what, _says(item, processes)))
     added = []
     for who, what in needed:
         before = text
-        text = add_responsibility_row(text, who, _row_text(what, said.get((who, what)) or what))
+        text = add_responsibility_row(text, who, said.get((who, what)) or _row_text(what, what))
         if text != before:
             added.append({"who": who, "what": what})
     if not added:
