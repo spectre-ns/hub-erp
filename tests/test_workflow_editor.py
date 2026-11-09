@@ -343,3 +343,19 @@ def test_a_layout_only_change_comes_into_force_with_an_approved_change_order(she
     with pytest.raises(ValueError, match="changed since your draft was started"):
         wfs.carry(hub, new_co(shell, "bob", "Other")["locator"], "bob", NCR)
     assert wfs.delta_items(hub, co)[0]["stale"], "what the first change order carried is stale against the new layout"
+
+
+def test_the_editor_offers_the_committees_of_the_release(shell):
+    status, text = get(shell, f"/workflow-panel/{NCR}", **{"as": "carol", "sel": "t:disposition-the-nonconformance"})
+    html = json.loads(text)["html"]
+    assert "value='committee'" in html and "a committee (consensus)" in html and "<option value='compile-frame'>compile-frame committee (senior-cogs group)</option>" in html
+    op(shell, "carol", {"op": "edit_transition", "id": "disposition-the-nonconformance", "name": "Disposition the nonconformance", "from": [AWAIT],
+                        "to": "closed", "gate_kind": "committee", "committee": "compile-frame",
+                        "actions": "apply-the-disposition\nopen-corrective-action\nrender-the-record"})
+    g = doc_of(shell)["graph"]
+    assert wm.transition_map(g)["disposition-the-nonconformance"]["gate"] == {"kind": "committee", "committee": "compile-frame"}
+    status, text = get(shell, "/workflows/" + NCR, **{"as": "carol"})
+    body = main_of(text)
+    assert "compile-frame committee" in body and 'href="#wfc-i-committee"' in body, "the badge names the committee, with the group icon"
+    assert "an objection has no way back" in body, "the committee needs a way back: the Reject goes to a done status"
+
