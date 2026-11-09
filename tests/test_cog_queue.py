@@ -258,3 +258,22 @@ def test_a_cog_has_a_kanban_board_of_its_work(tmp_path):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_a_task_held_by_a_replaced_container_comes_back_within_minutes(tmp_path):
+    """A redeploy kills the old container mid-task; the new hub, on another hostname, cannot see that worker die, so the
+    task comes back when its lease runs out. The lease is short enough that the cog is free again within minutes."""
+    import time
+
+    from hubproto import workqueue
+
+    q = workqueue.CogQueue(tmp_path / "queue.db", mode="service")  # it only queues
+    q.submit("quality-assistant", "chat", by="carol", title="What is CO-2026-0002 doing?")
+    held = q.claim()
+    with q._db() as db:  # held by the old container's worker
+        db.execute("UPDATE tasks SET worker = 'old-container:1' WHERE id = ?", (held["id"],))
+    assert q.recover() == 0, "its lease has not run out: it may still be working"
+    assert workqueue.LEASE + workqueue.LEASE / 3 <= 180, "back within three minutes of the redeploy"
+    with q._db() as db:
+        db.execute("UPDATE tasks SET lease_until = ? WHERE id = ?", (time.time() - 1, held["id"]))
+    assert q.recover() == 1 and q.get(held["id"])["status"] == "queued"
