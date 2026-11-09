@@ -550,6 +550,7 @@ def cmd_clean(args) -> int:
             if d.exists():
                 if not (d / MARKER).exists():
                     print(f"kept {d}: it is not a dev instance's directory (no {MARKER})")
+                    reg["stopped"].pop(n, None)  # forget the instance; the directory is not ours to remove
                     continue
                 shutil.rmtree(d)
                 removed += 1

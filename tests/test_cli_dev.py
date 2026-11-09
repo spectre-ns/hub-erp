@@ -177,6 +177,8 @@ def test_stop_and_clean(home):
     rc, out, _ = dev("clean", "--all")
     assert rc == 0 and "removed leftover" in out and "kept" in out
     assert not (home / "leftover").exists() and (home / "mine" / "notes.txt").exists() and (home / "s2").exists()
+    assert "plain" not in registry(home)["stopped"], "forgotten, though its directory is left alone"
+    assert "s2" in registry(home)["instances"]
     rc, out, _ = dev("stop", "--all")
     assert rc == 0 and "stopped s2" in out and alive.wait(5) is not None
     assert dev("stop")[0] == 2

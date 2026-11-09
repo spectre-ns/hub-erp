@@ -32,7 +32,7 @@ for pytest-xdist, a development-only dependency; without `-n auto` the suite run
 | `hubproto/changecontrol.py` | the change-order loop (change control v2): stages and review rounds, panel suggestion and reviews, the delta (origins, warnings, item decisions, overrides), send/approval readiness, revision approval with the CO, release steps (divergences, related changes); the API the CO pages use | core |
 | `hubproto/closure.py` | no configuration change without a change order once the SOPs are documents: the guards `Hub.compile`, `review`, `release` and `frame_draft` call; the sentence (`CO_ROUTE`) | core |
 | `hubproto/recordtypes.py` | record types under change control: the record types in force (`state/record-types`), changes carried on change orders (`carry`, `carried_reasons`, `delta_items`, `activate`), the file's drift | core |
-| `hubproto/cli_dev.py`, `hubproto/dev_demo.py` | CLI verbs `dev serve`, `dev list`, `dev stop`, `dev clean` (`register(sub)`): development hubs on localhost, the registry, ports; the demo data a served hub gets | dev tooling |
+| `hubproto/cli_dev.py`, `hubproto/dev_demo.py`, `hubproto/__main__.py` | `python -m hubproto`; CLI verbs `dev serve`, `dev list`, `dev stop`, `dev clean` (`register(sub)`): development hubs on localhost, the registry, ports; the demo data a served hub gets | dev tooling |
 | `hubproto/cli_recordtypes.py` | CLI verbs `record-types status`, `show`, `carry` (`register(sub)`) | cli agent |
 | `hubproto/cli.py` | command line: policy, run, message and operations verbs; `main` returns the exit code; shared helpers (`fail`, `clean`, `require_member`, `resolve_*`) | cli agent |
 | `hubproto/shell/` | the workspace shell package (handler, pages, inbox, forms, actions, policy, css, text; stdlib http.server) | shell agent |
@@ -104,10 +104,14 @@ workstream its own worktree and its own hub:
 ```bash
 git worktree add ../hub-erp-proto-wt/ws12-foo -b cc/ws12-foo change-control-v2
 cd ../hub-erp-proto-wt/ws12-foo
-hubproto dev serve --detach --name ws12-foo   # prints the URL, e.g. http://127.0.0.1:8103/
-hubproto dev list                             # name, port, pid, branch, commit, started, url, worktree, state dir
-hubproto dev stop ws12-foo                    # state kept; `hubproto dev clean ws12-foo` removes it
+python -m hubproto dev serve --detach --name ws12-foo   # prints the URL, e.g. http://127.0.0.1:8103/
+python -m hubproto dev list                   # name, port, pid, branch, commit, started, url, worktree, state dir
+python -m hubproto dev stop ws12-foo          # state kept; `python -m hubproto dev clean ws12-foo` removes it
 ```
+
+`python -m hubproto` runs the command line from the code in the current directory; the venv's `hubproto` script runs
+the checkout the venv installed (`pip install -e`), which may not have `dev` yet. Either way the served hub runs the
+`--worktree`'s code (default: the git checkout you are in).
 
 * `dev serve` builds a **fresh** hub from that worktree's code (child processes with `PYTHONPATH=<worktree>`, its
   `.venv` interpreter when it has one) and Frames, as the container's first start does: `init`, `seed iso9001`, the
@@ -125,12 +129,13 @@ hubproto dev stop ws12-foo                    # state kept; `hubproto dev clean 
 * In a browser or a headless one (Playwright MCP, `curl`): open `<url>?as=carol`; every link carries `?as=`, so the
   session stays that person. `<url>healthz` answers `ok` once the shell is up. The Playwright Chromium under
   `~/.cache/ms-playwright` lacks `libnspr4` on the shared dev machine, so use a browser tool, not its CLI.
-* Foreground (no `--detach`): Ctrl-C stops it. `dev stop --all` stops every instance you started; stop yours when the
-  workstream is done, then `dev clean`.
+* Foreground (no `--detach`): Ctrl-C stops it. Stop yours by name when the workstream is done, then `dev clean` it;
+  `dev stop --all` and `dev clean --all` act on every instance in the registry, other agents' too.
 
 ### Tests in parallel
 
-`python -m pytest -q -n auto` runs the suite on every core (pytest-xdist; `-n 8` on a shared machine). Each worker is
+`python -m pytest -q -n auto` runs the suite on every core (pytest-xdist; `-n 8` on a shared machine): about 40 s
+against 3.5 minutes serially on the 20-core development machine (988 tests; `-n 8` takes about 42 s). Each worker is
 its own process, and a test may run on any worker in any order, so:
 
 * a test never depends on another having run first: a module-scoped hub (the `shell` fixtures) is set up with what its

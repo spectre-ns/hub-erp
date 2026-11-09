@@ -36,6 +36,22 @@ hubproto init && hubproto seed iso9001 && hubproto bootstrap-release --as bob --
 hubproto shell
 ```
 
+For development, run as many hubs as you like beside the Docker one, each from a
+worktree's code, released and with a little demo data, on its own port from 8100
+(never 8080, 9980 or 11434), with stand-in models; see DEV-NOTES.md, "Running hubs
+for development and for agents" (in a worktree, `python -m hubproto dev ...` runs
+that worktree's command line):
+
+```bash
+hubproto dev serve --detach --name ws12   # prints http://127.0.0.1:81xx/; open it with ?as=carol
+hubproto dev list                         # what runs: name, port, pid, branch, commit, url
+hubproto dev stop ws12 && hubproto dev clean ws12
+```
+
+Tests: `pip install -r requirements-dev.txt` (pytest and pytest-xdist, development
+only), then `python -m pytest -q -n auto` (parallel; without `-n auto` the suite runs
+serially and passes that way too).
+
 `hubproto --help` lists every verb in the order an operator uses them, and
 `hubproto <verb> --help` explains each flag. Exit codes: 0 done; 1 the hub
 refused or the outcome is a failure (error findings, `DENIED`, a failed run);
