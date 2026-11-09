@@ -268,6 +268,7 @@ def sync(hub, co_ref) -> dict:
     changed after it was sent for approval (a revision, a direct, form, record-type or workflow change, the state map)
     sends it back to revising too, its decisions void (``_back_to_revising``)."""
     co = _co(hub, co_ref)
+    eco.withdraw_cancelled_drafts(hub, co)
     if co["state"] == "rejected":
         dec = next((d for d in reversed(co.get("decisions") or []) if d.get("verdict") == "reject"), {})
         hub.kernel.transition(co["locator"], "open", by="hub", reason="its approval was rejected: back to revising")

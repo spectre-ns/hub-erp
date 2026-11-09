@@ -624,6 +624,12 @@ class ActionsMixin:
         run = self.hub.runner.run_for_record(rec["locator"])
         if run and run["status"] not in ("completed", "cancelled", "rejected"):
             return f"{rec['number']} is in a {run['process']} run: cancel the run instead"
+        from .. import eco
+
+        for lk in self.hub.kernel.links_of(rec["locator"]):
+            co = self.hub.kernel.get(lk["target"]) if lk["rel"] == eco.CARRIES and lk["direction"] == "in" else None
+            if co is not None and not eco.finished(co):
+                return f"{rec['number']} is carried by {co['number']}: take it off the change order instead"
         f = rec["fields"]
         if self.user in (rec.get("created_by"), f.get("owner"), f.get("author"), f.get("requested_by")):
             return ""
