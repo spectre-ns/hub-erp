@@ -1340,6 +1340,29 @@ def cmd_backup(args) -> int:
     return 0
 
 
+def _set_aside(state: Path, src: Path, stamp: str) -> Path:
+    """Move the state being replaced out of the way: beside it (state.before-restore-<time>) when it can be renamed;
+    inside it (state/.before-restore-<time>) when it cannot, as in the container where /hub/state is the volume's mount
+    point, or when the backup being restored lies inside it (README: /hub/state/backups/...): then the folder that holds
+    the backup stays where it is."""
+    src_res, st_res = src.resolve(), state.resolve()
+    inside = st_res in src_res.parents
+    if not inside and not os.path.ismount(state):
+        beside = state.parent / f"state.before-restore-{stamp}"
+        try:
+            state.rename(beside)
+            return beside
+        except OSError:  # busy (a mount point the check missed) or another file system: set it aside in place
+            pass
+    aside = state / f".before-restore-{stamp}"
+    aside.mkdir()
+    for child in list(state.iterdir()):
+        if child.name.startswith(".before-restore-") or (inside and (child.resolve() == src_res or child.resolve() in src_res.parents)):
+            continue
+        child.rename(aside / child.name)
+    return aside
+
+
 def cmd_restore(args) -> int:
     src = Path(args.dir)
     if not src.exists():
@@ -1361,8 +1384,7 @@ def cmd_restore(args) -> int:
     if state.exists() and any(state.iterdir()):
         if not args.force:
             fail(f"{state} already holds a hub; stop the shell and pass --force to replace it (the old state is kept beside it)", 2)
-        moved = root / f"state.before-restore-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
-        state.rename(moved)
+        moved = _set_aside(state, src, datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'))
         print(f"previous state moved to {moved}")
     state.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(src / "kernel.db", state / "kernel.db")

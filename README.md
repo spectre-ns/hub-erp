@@ -383,8 +383,12 @@ docker compose start hub
 
 `restore` refuses a partial set (every part must be present) and refuses to
 overwrite a live state without `--force`; with it the previous state is moved
-beside the new one (`state.before-restore-<time>`). `hubproto status` then
-shows the release in force and the run counts.
+beside the new one (`state.before-restore-<time>`), or, when `state/` cannot be
+renamed (in the container it is the volume's mount point) or holds the backup
+being restored (`/hub/state/backups/...` above), into
+`state/.before-restore-<time>/`, leaving the backups folder where it is; the
+command above works in the container as written. `hubproto status` then shows
+the release in force and the run counts.
 
 ## What it demonstrates
 
