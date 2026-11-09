@@ -399,7 +399,9 @@ def test_the_chair_recording_unread_prose_as_a_divergence_records_one(hub):  # q
     p["questions"].append(q)
     hub.proposals.save(p)
     assert any("answer the question first" in r for r in cc.approval_reasons(hub, co["number"]))
-    cc.answer_question(hub, co["number"], q["id"], "record as a divergence", "carol")
+    with pytest.raises(ValueError, match="only a committee question"):
+        cc.answer_question(hub, co["number"], "not-a-committee-question", "x", "alice", record_divergence=True)
+    cc.answer_question(hub, co["number"], q["id"], "this is not a divergence by its words, but record it", "carol", record_divergence=True)
     cc.send_for_approval(hub, co["number"], "alice")
     decide_all(hub, co, who=("bob",))
     accept_co_warnings(hub, co, "bob")
