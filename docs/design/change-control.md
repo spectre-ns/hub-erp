@@ -329,3 +329,20 @@ without running rules, with pending decisions withdrawn explicitly and the move 
 Rules for every workstream: stdlib only; keep the full suite green (`python -m pytest -q`); update
 tests that encoded the old behaviour rather than deleting them; no model calls in tests; say in the
 final report every place you needed another workstream's code and what you assumed.
+
+## 11. Groups and committees (agreed 2026-11-09; workstream 9, after workstreams 3 and 7 merge)
+
+- **Groups** are named sets of members, people and cogs, defined in the org model and changed by a
+  change order like everything else. A group is listed ("quality board: carol, bob, qa-manager") or
+  defined by role ("everyone holding quality-manager", following role changes). **Groups may carry
+  permissions** (e.g. "Administrators may ...") as roles do, and are also simply a way of grouping
+  members. Permission checks consider a member's roles and groups; the per-cog permissions listing
+  (principle 6) includes what a cog gains through a group.
+- **Committees** are defined on a group and **decide by consensus**: an item passes only when every
+  member agrees; an objection with a reason blocks it and returns it for revision. Committees are
+  used as a gate kind in workflow graphs, as reviewers on a change order's panel, and as the
+  compile-frame committee (whose members' readings must agree; a disagreement becomes a question).
+- Created and edited in Settings > People and roles > Groups and committees; each edit is a direct
+  change on a change order.
+- Open: whether a member may stand aside (abstain with a reason); how a cog outside its approval
+  criteria takes part; what happens when a member does not respond by the due date.
