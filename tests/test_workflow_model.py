@@ -247,6 +247,16 @@ def test_diff_in_words_keyed_by_element(bundle):
     assert len({i["id"] for i in items}) == len(items)
 
 
+def test_a_global_whose_exceptions_still_mean_the_done_statuses_has_not_changed():
+    old = small()
+    wm.transition_map(old)["cancel"]["except"] = ["done", "cancelled"]  # written out, as the compile writes it
+    new = wm.apply_op(old, {"op": "add_status", "id": "void", "name": "Void", "category": "done", "outcome": "cancelled", "at": [0, 0]})
+    new = wm.apply_op(new, {"op": "add_transition", "id": "void-it", "name": "Void it", "from": ["review"], "to": "void"})
+    assert [i["change"] for i in wm.diff(old, new) if i["key"] == "transition:cancel"] == ["rerouted"], "Void is done but not excepted"
+    trimmed = wm.apply_op(old, {"op": "delete_status", "id": "done"})
+    assert not [i for i in wm.diff(old, trimmed) if i["key"] == "transition:cancel"], "the done statuses, one fewer: the same meaning"
+
+
 def test_a_removed_status_is_one_item_with_its_transitions_as_children():
     old = small()
     doc = wm.apply_op({"graph": old, "layout": {}, "state_map": {}}, {"op": "delete_status", "id": "review", "move_to": "open"})

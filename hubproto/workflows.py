@@ -55,6 +55,7 @@ class WorkflowStore:
             return default
 
     def _write(self, p: Path, data) -> None:
+        p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, indent=1, default=str), encoding="utf-8")
         tmp.replace(p)
@@ -66,6 +67,7 @@ class WorkflowStore:
         data = self.layouts()
         data[process] = entry
         self._write(self.root / "layouts.json", data)
+        (self.root / "history").mkdir(parents=True, exist_ok=True)
         with (self.root / "history" / f"{process}.jsonl").open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, default=str) + "\n")
 

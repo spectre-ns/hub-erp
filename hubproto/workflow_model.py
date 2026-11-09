@@ -727,7 +727,7 @@ def diff(old: dict, new: dict, *, old_layout: dict | None = None, new_layout: di
         if (o.get("name") or tid) != name:
             item("transition", tid, "renamed", f"Transition “{o.get('name') or tid}” renamed “{name}”")
         if (o.get("type") or "directed") != (t.get("type") or "directed") or sorted(o.get("from") or []) != sorted(t.get("from") or []) \
-                or o.get("to") != t.get("to") or (o.get("except") != t.get("except") and (t.get("type") == "global")):
+                or o.get("to") != t.get("to") or (t.get("type") == "global" and _except_key(old, o) != _except_key(new, t)):
             item("transition", tid, "rerouted", f"“{name}” now goes {route_words(new, t)} (was {route_words(old, o)})",
                  widening=(t.get("type") == "global" and o.get("type") != "global"))
         if not _same(o.get("gate") or {}, t.get("gate") or {}):
@@ -755,6 +755,14 @@ def diff(old: dict, new: dict, *, old_layout: dict | None = None, new_layout: di
     if old_layout is not None and new_layout is not None and not _same(_layout_of(new, old_layout), _layout_of(new, new_layout)):
         item("layout", None, "layout", "Layout changed: no effect on how items move", no_effect=True)
     return out
+
+
+def _except_key(g: dict, t: dict):
+    """What a global transition's exceptions mean: "done" when they are the done statuses (however written), else them."""
+    ex = t.get("except")
+    if ex is None or sorted(set(ex) - {t.get("to")}) == sorted(set(done_ids(g)) - {t.get("to")}):
+        return "done"
+    return sorted(ex)
 
 
 def _layout_of(g: dict, layout: dict) -> dict:
@@ -1401,7 +1409,7 @@ def transition_geometry(g: dict, layout: dict, t: dict, *, bend: float = 0.0, k:
     kind = t.get("type") or "directed"
     if kind == "initial":
         sp = start_point(dst)
-        lbl = (sp[0], sp[1] - 30)
+        lbl = (sp[0], sp[1] - H / 2 - 26)  # above and to the left of the status, clear of it
         return {"kind": "initial", "start": sp, "parts": [("line", f"M{_n(sp[0])},{_n(sp[1])} L{_n(dst[0])},{_n(sp[1])}", True)],
                 "label": (lbl[0] + off[0], lbl[1] + off[1])}
     if kind == "global":

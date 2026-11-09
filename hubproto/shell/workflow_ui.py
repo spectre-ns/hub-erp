@@ -47,7 +47,7 @@ body:has(.wf-ed) .layout{grid-template-columns:minmax(0,1fr)}body:has(.wf-ed) na
 ul.wf-checks{list-style:none;margin:0;padding:0}ul.wf-checks li{padding:4px 6px;border-radius:var(--r);margin:2px 0;font-size:var(--fs-s)}ul.wf-checks li.err{background:var(--crit-bg);color:var(--crit)}
 ul.wf-checks li.warn{background:var(--warn-bg);color:var(--warn)}ul.wf-checks li a{color:inherit}ul.wf-checks li.ok{color:var(--ok)}
 .wf-ways{list-style:none;margin:var(--sp-1) 0;padding:0}.wf-ways li{margin:2px 0}dialog.wf-dlg{border:1px solid var(--line);border-radius:var(--r-lg);background:var(--panel);color:var(--fg);padding:var(--sp-4);width:min(36rem,94vw);box-shadow:0 18px 50px var(--shadow-lg)}
-dialog.wf-dlg::backdrop{background:rgba(0,0,0,.35)}.wf-dlg .close{float:right}html:not(.js) .wf-jsonly{display:none!important}.js .wf-nojs{display:none}
+dialog.wf-dlg::backdrop{background:rgba(0,0,0,.35)}.wf-ed [hidden],.wf-text [hidden]{display:none!important}.wf-dlg .close{float:right}html:not(.js) .wf-jsonly{display:none!important}.js .wf-nojs{display:none}
 .wf-text section.card{scroll-margin-top:var(--sp-4)}.wf-text section.card:target{outline:3px solid var(--focus);outline-offset:2px}.wf-text details{margin:var(--sp-2) 0}
 .wf-help{font-size:var(--fs-s);color:var(--muted);margin:var(--sp-1) 0}.wf-err{color:var(--crit)}
 @media(max-width:1000px){.wf-grid{grid-template-columns:1fr}.wf-side{max-height:none}}
@@ -80,7 +80,7 @@ function curve(p1,p2,bend){var dx=p2[0]-p1[0],dy=p2[1]-p1[1],ln=Math.sqrt(dx*dx+
 function loopG(b,k){var cx=b[0]+b[2]/2,base=b[1]+b[3],hh=G.LOOP_H+G.LOOP_STEP*k,x1=cx-18,x2=cx+18;return {d:'M'+n1(x1)+','+n1(base)+' C'+n1(x1-22)+','+n1(base+hh)+' '+n1(x2+22)+','+n1(base+hh)+' '+n1(x2)+','+n1(base),label:[cx,base+hh*0.75+16]}}
 function stemD(l,b){var p=port(b,l);return 'M'+n1(l[0])+','+n1(l[1])+' L'+n1(p[0])+','+n1(p[1])}
 function geo(L){var ds=L.dataset,dst=boxOf(ds.dst);if(!dst)return null;var off=[+ds.dx||0,+ds.dy||0],k=+ds.k||0,n=+ds.n||1,bend=+ds.bend||0,src=(ds.src||'').split(',').filter(Boolean);
- if(ds.kind==='initial'){var sp=[dst[0]-G.START_DX,dst[1]+dst[3]/2];return {parts:{line:'M'+n1(sp[0])+','+n1(sp[1])+' L'+n1(dst[0])+','+n1(sp[1])},start:sp,label:[sp[0]+off[0],sp[1]-30+off[1]]}}
+ if(ds.kind==='initial'){var sp=[dst[0]-G.START_DX,dst[1]+dst[3]/2];return {parts:{line:'M'+n1(sp[0])+','+n1(sp[1])+' L'+n1(dst[0])+','+n1(sp[1])},start:sp,label:[sp[0]+off[0],sp[1]-G.H/2-26+off[1]]}}
  if(ds.kind==='global'){var l=[dst[0]+dst[2]/2+(k-(n-1)/2)*G.GLOBAL_PITCH+off[0],dst[1]-G.GLOBAL_DY+off[1]];return {parts:{line:stemD([l[0],l[1]+18],dst)},label:l}}
  if(ds.kind==='loop'){var lg=loopG(dst,k);return {parts:{line:lg.d},label:[lg.label[0]+off[0],lg.label[1]+off[1]]}}
  if(ds.kind==='edge'){var a=boxOf(src[0]);if(!a)return null;var c=curve(port(a,center(dst)),port(dst,center(a)),bend);return {parts:{line:c.d},label:[c.label[0]+off[0],c.label[1]+off[1]]}}
