@@ -9,7 +9,7 @@ import pytest
 
 from conftest import BIG_BILL, ROOT, dated, release_all
 from hubproto.app import Hub
-from hubproto.shell import free_port, serve_in_thread
+from hubproto.shell import serve_in_thread
 from test_shell_views import get, post
 
 LIMIT = "The cog purchase limit is 500 USD."
@@ -21,8 +21,8 @@ def shell(tmp_path):
     hub = Hub(tmp_path)
     hub.kernel.seed()
     release_all(hub)
-    port = free_port()
-    server = serve_in_thread(hub, "127.0.0.1", port)
+    server = serve_in_thread(hub, "127.0.0.1", 0)  # port 0: bound at once, no race with other test workers
+    port = server.server_address[1]
     yield {"hub": hub, "root": tmp_path, "base": f"http://127.0.0.1:{port}", "port": port, "server": server}
     server.shutdown()
     server.server_close()

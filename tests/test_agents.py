@@ -126,15 +126,15 @@ def test_the_shell_hands_a_cog_a_task_and_adds_members(monkeypatch, tmp_path):
     import shutil
 
     from hubproto.app import Hub
-    from hubproto.shell import free_port, serve_in_thread
+    from hubproto.shell import serve_in_thread
     from test_shell import get, post
 
     shutil.copytree(ROOT / "frames", tmp_path / "frames")
     hub = Hub(tmp_path)
     hub.kernel.seed()
     release_all(hub)
-    port = free_port()
-    server = serve_in_thread(hub, "127.0.0.1", port)
+    server = serve_in_thread(hub, "127.0.0.1", 0)  # port 0: bound at once, no race with other test workers
+    port = server.server_address[1]
     sh = {"hub": hub, "base": f"http://127.0.0.1:{port}"}
     try:
         status, text = get(sh, "/user/quality-assistant", **{"as": "carol"})

@@ -17,7 +17,7 @@ import pytest
 from conftest import BIG_BILL, MID_BILL, ROOT, SMALL_BILL, dated, release_all, seen
 from hubproto import cli
 from hubproto.app import Hub
-from hubproto.shell import free_port, serve_in_thread
+from hubproto.shell import serve_in_thread
 
 
 @pytest.fixture(scope="module")
@@ -27,11 +27,32 @@ def shell(tmp_path_factory):
     hub = Hub(root)
     hub.kernel.seed()
     release_all(hub)
-    port = free_port()
-    server = serve_in_thread(hub, "127.0.0.1", port)
+    server = serve_in_thread(hub, "127.0.0.1", 0)  # port 0: bound at once, no race with other test workers
+    port = server.server_address[1]
     yield {"hub": hub, "root": root, "base": f"http://127.0.0.1:{port}", "port": port, "server": server}
     server.shutdown()
     server.server_close()
+
+
+@pytest.fixture(scope="module")
+def posted_bill(shell) -> dict:
+    """The big bill bob approved for posting, with a document attached. test_start_decide_upload_attach_flow makes it
+    over HTTP; when that test has not run in this process (the test run alone, or on another pytest-xdist worker) it is
+    made here through the API, so the tests that read it do not depend on which tests ran before them."""
+    hub = shell["hub"]
+    for rec in hub.kernel.query(type_="bill", state="posted"):
+        if rec["fields"].get("description") == BIG_BILL["description"] and rec["decisions"]:
+            return rec
+    # Its own purchase order, so the flow test can still bill PO-1002 when it runs after this.
+    hub.kernel.append("po.issued", "po:PO-2901", {"supplier": "acme-metals", "amount": BIG_BILL["amount"], "currency": "USD",
+                                                 "description": BIG_BILL["description"], "received": True}, by="seed")
+    hub.kernel._cache = None
+    run_id = hub.runner.submit("purchase-to-pay", {"record": dated({**BIG_BILL, "po_ref": "PO-2901"})}, owner="alice")
+    hub.runner.decide(run_id, "bob", "approve", meaning="approved for posting", payload_digest=seen(hub.runner, run_id))
+    locator = hub.runner.load(run_id)["record"]
+    hub.dms.create(title="Invoice for the CNC fixtures", doc_class="external", folder="Finance/Payables", by="alice", content=b"Invoice\n",
+                   filename="acme-4711.txt", attach_to=locator)
+    return hub.kernel.get(locator)
 
 
 def get(shell, path: str, **params) -> tuple[int, str]:
@@ -213,14 +234,14 @@ def test_document_checkout_checkin_over_http(shell):
     assert "second" in text
 
 
-def test_boards_filters_and_inbox_message(shell):
+def test_boards_filters_and_inbox_message(shell, posted_bill):
     status, text = get(shell, "/boards", **{"as": "alice", "type": "bill", "folder": "Finance/Payables", "text": "fixtures"})
     assert status == 200 and "CNC fixtures" in text and "Link to this filter" in text
     status, url, text = post(shell, "/msg", {"as": "alice", "to": "ap-reviewer", "subject": "status", "body": "what is the status?", "channel": "dm"})
     assert status == 200 and "/inbox" in url and "replied" in text.lower() or "Re: status" in text
 
 
-def test_record_links_and_hold(shell):
+def test_record_links_and_hold(shell, posted_bill):
     hub = shell["hub"]
     bills = hub.kernel.query(type_="bill")
     assert bills
@@ -245,20 +266,21 @@ def run_cli(root: Path, *argv) -> str:
     return out.getvalue()
 
 
-def test_cli_records_and_documents(shell, tmp_path):
+def test_cli_records_and_documents(shell, posted_bill, tmp_path):
     root = shell["root"]
     hub = shell["hub"]
+    bill = posted_bill["number"]
     out = run_cli(root, "records")
-    assert "BILL-0001" in out and "bill" in out
+    assert bill in out and "bill" in out
     out = run_cli(root, "records", "--type", "bill", "--state", "posted")
-    assert "BILL-0001" in out
-    out = run_cli(root, "record", "BILL-0001")
+    assert bill in out
+    out = run_cli(root, "record", bill)
     assert "fields:" in out and "links:" in out and "documents:" in out and "decisions:" in out and "transitions:" in out
     assert "approved for posting" in out and "has-document" in out
     src = tmp_path / "wi-3.md"
     src.write_text("# Work instruction 3\n")
     out = run_cli(root, "doc-new", "--title", "WI-3", "--class", "controlled", "--folder", "Quality/Controlled Documents", "--as", "alice",
-                  "--file", str(src), "--attach-to", "BILL-0001", "--type", "work-instruction")
+                  "--file", str(src), "--attach-to", bill, "--type", "work-instruction")
     number = out.split()[0]
     assert number.startswith("DOC-") and "rev A.0" in out
     out = run_cli(root, "doc-versions", number)
@@ -273,18 +295,18 @@ def test_cli_records_and_documents(shell, tmp_path):
     target = tmp_path / "out.md"
     run_cli(root, "doc-get", number, "--out", str(target), "--version", "1")
     assert target.read_text() == "# Work instruction 3\n"
-    out = run_cli(root, "upload", "--folder", "Finance/Payables", "--as", "alice", "--file", str(src), "--attach-to", "BILL-0001")
+    out = run_cli(root, "upload", "--folder", "Finance/Payables", "--as", "alice", "--file", str(src), "--attach-to", bill)
     assert "filed in Finance/Payables" in out
-    out = run_cli(root, "snapshot", "BILL-0001", "--as", "bob")
+    out = run_cli(root, "snapshot", bill, "--as", "bob")
     assert "snapshot" in out
-    out = run_cli(root, "link", "BILL-0001", "references", number, "--as", "alice")
+    out = run_cli(root, "link", bill, "references", number, "--as", "alice")
     assert "references" in out
-    out = run_cli(root, "attach", "BILL-0001", number, "--as", "alice")
-    assert "attached to BILL-0001" in out
+    out = run_cli(root, "attach", bill, number, "--as", "alice")
+    assert f"attached to {bill}" in out
     hub.kernel._cache = None
-    assert any(d["number"] == number for d in hub.dms.documents_of("BILL-0001"))
+    assert any(d["number"] == number for d in hub.dms.documents_of(bill))
     with pytest.raises(SystemExit, match="link-vocabulary"):
-        run_cli(root, "link", "BILL-0001", "bogus", number, "--as", "alice")
+        run_cli(root, "link", bill, "bogus", number, "--as", "alice")
 
 
 # ------------------------------------------------------- request handling
@@ -344,7 +366,7 @@ def test_oversize_upload_is_refused_with_413(shell):
 
 
 # ------------------------------------------------------- permission trimming
-def test_non_member_sees_no_release_routing_runs_or_inbox(shell):
+def test_non_member_sees_no_release_routing_runs_or_inbox(shell, posted_bill):
     hub = shell["hub"]
     run_id = hub.runner.list()[0]["id"]
     status, text = get(shell, "/", **{"as": "mallory"})
@@ -364,7 +386,7 @@ def test_non_member_sees_no_release_routing_runs_or_inbox(shell):
     assert status == 404
 
 
-def test_runs_are_trimmed_to_folders_the_user_may_read(shell):
+def test_runs_are_trimmed_to_folders_the_user_may_read(shell, posted_bill):
     hub = shell["hub"]
     bills = [r for r in hub.runner.list() if r["process"] == "purchase-to-pay"]
     assert bills
@@ -595,7 +617,7 @@ def test_owner_cancels_a_failed_run(shell):
     assert hub.kernel.get(state["record"])["number"] in text
 
 
-def test_decisions_table_lists_each_signature_once(shell):
+def test_decisions_table_lists_each_signature_once(shell, posted_bill):
     hub = shell["hub"]
     rec = next(r for r in hub.kernel.query(type_="bill", state="posted") if r["decisions"])
     status, text = get(shell, "/record/" + quote(rec["locator"], safe=":"), **{"as": "bob"})

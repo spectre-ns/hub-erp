@@ -297,7 +297,7 @@ def test_status_says_configuration_changes_only_through_change_orders(closed):
 
 # ------------------------------------------------------------------ the shell
 def test_the_shell_refuses_a_frame_draft_and_a_release_outside_a_change_order(fresh):
-    from hubproto.shell import free_port, serve_in_thread
+    from hubproto.shell import serve_in_thread
     from test_shell_views import main_of, post
 
     release_all(fresh)
@@ -311,8 +311,8 @@ def test_the_shell_refuses_a_frame_draft_and_a_release_outside_a_change_order(fr
     d = eco.add_sop(fresh, co["number"], "finance-policy", by="carol")
     write(fresh, d, OLD, NEW, "carol")
     loose = fresh.compile(sop_drafts={"finance-policy": d["locator"]})
-    port = free_port()
-    server = serve_in_thread(fresh, "127.0.0.1", port)
+    server = serve_in_thread(fresh, "127.0.0.1", 0)  # port 0: bound at once, no race with other test workers
+    port = server.server_address[1]
     shell = {"hub": fresh, "base": f"http://127.0.0.1:{port}"}
     said = "Configuration changes only through a change order: open one under Quality &gt; Change orders"
     try:

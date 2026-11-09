@@ -568,11 +568,11 @@ def test_related_by_meaning_flags_change_orders_and_change_requests_and_may_be_d
 
 
 def test_the_change_order_page_requests_review_and_sends_for_approval(hub):
-    from hubproto.shell import free_port, serve_in_thread
+    from hubproto.shell import serve_in_thread
     from test_shell_views import get, main_of, post
 
-    port = free_port()
-    server = serve_in_thread(hub, "127.0.0.1", port)
+    server = serve_in_thread(hub, "127.0.0.1", 0)  # port 0: bound at once, no race with other test workers
+    port = server.server_address[1]
     shell = {"hub": hub, "base": f"http://127.0.0.1:{port}"}
     try:
         co = new_co(hub)

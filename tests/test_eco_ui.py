@@ -10,7 +10,7 @@ import pytest
 from conftest import ROOT, release_all
 from hubproto import eco, sopdocs
 from hubproto.app import Hub
-from hubproto.shell import free_port, serve_in_thread
+from hubproto.shell import serve_in_thread
 from test_shell_views import get, main_of, post
 
 OLD = "The ap-reviewer cog may approve purchase-to-pay bills under 2,000 USD when the three-way match is within tolerance and the supplier is approved."
@@ -26,8 +26,8 @@ def shell(tmp_path):
     sopdocs.convert(hub, by="carol")
     policy = sopdocs.in_force(hub.kernel, "finance-policy")
     hub.kernel.set_fields(policy["locator"], {"owner": "alice"}, by="setup")  # alice, an author, owns the policy here
-    port = free_port()
-    server = serve_in_thread(hub, "127.0.0.1", port)
+    server = serve_in_thread(hub, "127.0.0.1", 0)  # port 0: bound at once, no race with other test workers
+    port = server.server_address[1]
     yield {"hub": hub, "base": f"http://127.0.0.1:{port}"}
     server.shutdown()
     server.server_close()
@@ -150,14 +150,14 @@ def test_a_policy_owner_converts_the_sops_from_the_policies_page(tmp_path):
 
     from conftest import ROOT, release_all
     from hubproto.app import Hub
-    from hubproto.shell import free_port, serve_in_thread
+    from hubproto.shell import serve_in_thread
 
     shutil.copytree(ROOT / "frames", tmp_path / "frames")
     hub = Hub(tmp_path)
     hub.kernel.seed()
     release_all(hub)
-    port = free_port()
-    server = serve_in_thread(hub, "127.0.0.1", port)
+    server = serve_in_thread(hub, "127.0.0.1", 0)  # port 0: bound at once, no race with other test workers
+    port = server.server_address[1]
     shell = {"hub": hub, "base": f"http://127.0.0.1:{port}"}
     try:
         status, text = get(shell, "/frames", **{"as": "dave"})

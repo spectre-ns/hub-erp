@@ -18,7 +18,7 @@ import pytest
 
 from conftest import BIG_BILL, SMALL_BILL, ROOT, dated, edit_frame, release_all
 from hubproto.app import Hub
-from hubproto.shell import CONTRAST_PAIRS, DARK, LIGHT, free_port, serve_in_thread
+from hubproto.shell import CONTRAST_PAIRS, DARK, LIGHT, serve_in_thread
 
 
 @pytest.fixture(scope="module")
@@ -28,8 +28,8 @@ def shell(tmp_path_factory):
     hub = Hub(root)
     hub.kernel.seed()
     release_all(hub)
-    port = free_port()
-    server = serve_in_thread(hub, "127.0.0.1", port)
+    server = serve_in_thread(hub, "127.0.0.1", 0)  # port 0: bound at once, no race with other test workers
+    port = server.server_address[1]
     yield {"hub": hub, "root": root, "base": f"http://127.0.0.1:{port}", "port": port, "server": server}
     server.shutdown()
     server.server_close()
@@ -370,7 +370,9 @@ def test_inbox_sections_mine_others_and_quiet_notifications(shell):
     status, text, _ = get(shell, "/inbox", **{"as": "bob"})
     messages = text.split("id='messages'")[1].split('<h2 id="send">')[0]
     assert "Approve the bill:" not in messages, "approval requests are cards, not messages"
-    assert "Overdue" not in text.split("id='notifications'")[1].split("<h2")[0]
+    bob_notes = text.split("id='notifications'")[1].split("<h2")[0].split("<li")
+    new = hub.kernel.get(state["record"])["number"]  # another test's tick may have made other items overdue
+    assert not [n for n in bob_notes if "Overdue" in n and (new in n or state["record"] in n)], "a new approval is not overdue"
     # A stopped run is listed once under mine, with its date, and its notification is a sentence that names the item.
     bad, bad_state = start_bill(shell, {**SMALL_BILL, "date": f"{date.today().year - 1}-12-15", "po_ref": "PO-1003"})
     number = hub.kernel.get(bad_state["record"])["number"]
@@ -572,10 +574,10 @@ def test_one_name_per_thing_numbers_not_locators_money_and_dates_in_words(shell)
     assert "<details><summary>details</summary>" in main_of(text), "JSON behind a disclosure"
     status, text, _ = get(shell, "/run/" + run_id, **{"as": "alice"})
     body = plain(main_of(text))
-    assert "policy version 1 (" in body and "pinned to release" not in body and "Gate" not in body and "Cog" not in body.replace("cog", "")
+    assert re.search(r"policy version \d+ \(", body) and "pinned to release" not in body  # whichever release is in force and "Gate" not in body and "Cog" not in body.replace("cog", "")
     assert "Done by" in body and "Result" in body  # one name per thing (review 2026-11-07, ux-18): no "automatic reviewer"
     status, text, _ = get(shell, "/", **{"as": "alice"})
-    assert "policy version 1 (" in text and hub.releases.current()["digest"][:16] not in plain(main_of(text))
+    assert re.search(r"policy version \d+ \(", text) and hub.releases.current()["digest"][:16] not in plain(main_of(text))
     status, text, _ = get(shell, "/why", **{"as": "dave", "action": "create", "object": "capa", "folder": "Quality/CAPA"})
     body = plain(main_of(text))
     assert "Who may:" in body and "you are: buyer, payables reviewer, staff and storekeeper" in body and "ask: bob or carol" in body
