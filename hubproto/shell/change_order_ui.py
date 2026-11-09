@@ -97,6 +97,13 @@ def anchor(item_id: str) -> str:
     return "item-" + re.sub(r"[^A-Za-z0-9_-]+", "-", str(item_id)).strip("-")
 
 
+def warning_word(w: dict) -> str:
+    """What a warning is, as the page names it: a reviewer's finding says whether it was blocking or advisory."""
+    if w.get("code") == "finding" and w.get("severity") == "advisory":
+        return "advisory finding"
+    return WARNING_WORDS.get(w.get("code"), w.get("code") or "warning")
+
+
 def item_op(c: dict) -> str:
     """add, remove or change, as people read it (an add that replaces a rule is a change)."""
     if c.get("op") == "change" or (c.get("op") == "add" and (c.get("changes_from") or c.get("was"))):
@@ -393,6 +400,7 @@ class ChangeOrderMixin:
         out = (f"<style>{CO_CSS}</style><section class='co' id='change-order' aria-label='Change order {esc(co['number'])}'>"
                "<nav class='co-toc' aria-label='On this change order'>" + " ".join(f"<a href='#{a}'>{esc(t)}</a>" for a, t in toc) + "</nav>")
         out += self._co_stage_html(ctx)
+        out += self._co_details_html(ctx)
         out += self._co_carries_html(ctx)
         out += self._co_review_html(ctx)
         out += self._co_questions_html(ctx)
@@ -408,6 +416,34 @@ class ChangeOrderMixin:
         return out + "</section>"
 
     # ------------------------------------------------------------ 1. where it stands
+    def _co_details_html(self, ctx: dict) -> str:
+        """Title and what it changes and why, which its preparer sets while it is prepared or revised (the approval needs
+        the description); open while the description is missing."""
+        co, f = ctx["co"], ctx["f"]
+        if not (ctx["mine"] and ctx["editable"]):
+            return ""
+        missing = not str(f.get("description") or "").strip()
+        act, fid = "/co-details", "details"
+        title = self._co_cv(act, fid, "title", f.get("title") or "")
+        desc = self._co_cv(act, fid, "description", f.get("description") or "")
+        inner = ("<div class='fields'>"
+                 f"<label class='f'><span>Title <b aria-hidden='true'>*</b></span><input name='title' required value='{esc(title)}'></label>"
+                 f"<label class='f'><span>What it changes and why <b aria-hidden='true'>*</b></span><textarea name='description' rows='2' required>{esc(desc)}</textarea></label></div>"
+                 f"<div class='actions'><button class='secondary'>{icon('check')}Save</button>"
+                 "<span class='why'>The approver reads it first; it is needed before the change order goes for approval.</span></div>")
+        summary = "Title and description" + (": say what it changes and why" if missing else "")
+        return details(summary, self._co_form(act, co, fid, inner, cls="sform", label="Title and description"), open_=missing, cls="card quiet")
+
+    def post_co_details(self):
+        co = self._co_post()
+        if co is None:
+            return
+        try:
+            cc.set_details(self.hub, co["locator"], self.user, title=self._f("title"), description=self._f("description"))
+        except ValueError as e:
+            raise self._co_refused(e) from None
+        self._co_done(co, "The title and description are saved.", "co-stage")
+
     def _co_stage_html(self, ctx: dict) -> str:
         co, stage, f = ctx["co"], ctx["stage"], ctx["f"]
         stages = list(cc.STAGES)
@@ -1370,7 +1406,7 @@ class ChangeOrderMixin:
                             f"“{(x.get('origin') or {}).get('quote') or self._say(x['rule'])}”")
                 return w["text"]
             out += "<ul class='co-warn' aria-label='Warnings on this item'>" + "".join(
-                f"<li>{icon('alert')} <b>{esc(WARNING_WORDS.get(w['code'], w['code']))}:</b> {esc(wtext(x, w))}"
+                f"<li>{icon('alert')} <b>{esc(warning_word(w))}:</b> {esc(wtext(x, w))}"
                 + (f" <span class='chip ok'>accepted by {esc(w['accepted'].get('by'))}</span> <span class='why'>“{esc(w['accepted'].get('meaning') or '')}”</span>"
                    if w.get("accepted") else "") + "</li>" for x, w in ws) + "</ul>"
         decs = [d for x in g for d in x.get("decisions") or []]
@@ -1481,7 +1517,8 @@ class ChangeOrderMixin:
         words = {"test-record": "a test record (a scripted check)", "test-note": "a test note (an unscripted try-out)", "review": "the review of the delta"}
         label, folded = {}, set()
         for n, g in enumerate(ctx["groups"], 1):  # items as the delta numbers them; a change and the removal it replaces are one
-            label[g[0]["id"]] = f"item {n}: {self._co_group_words(g)}"
+            new = cc_api("effective")(g[0]) if g[0].get("op") != "remove" else None
+            label[g[0]["id"]] = f"item {n}: " + (self._say(new) if new is not None and (new.get("kind") != "process") else self._co_group_words(g))
             folded |= {x["id"] for x in g[1:]}
         for c in ctx["ov"]["delta"]:
             if c.get("op") == "text":
@@ -1494,7 +1531,7 @@ class ChangeOrderMixin:
         if ev:
             out += "<h3>Evidence</h3>" + table(["Kind", "What was checked", "Expected", "Actual", "Result", "Covers", "By"],
                                                [[esc(e.get("kind")), esc(e.get("text") or e.get("document") or ""), esc(e.get("expected") or ""), esc(e.get("actual") or ""),
-                                                 chip(e.get("result"), "ok" if e.get("result") == "pass" else "crit"), esc(", ".join(e.get("items") or []) or "every item"),
+                                                 chip(e.get("result"), "ok" if e.get("result") == "pass" else "crit"), esc(", ".join(dict.fromkeys(label.get(x, x).split(":", 1)[0] for x in e.get("items") or [] if x not in folded)) or "every item"),
                                                  f"{esc(e.get('by') or '')} <span class='why'>{esc(when(e.get('at')))}</span>"] for e in ev])
         if need:
             out += "<ul class='blockers'>" + "".join(f"<li>{esc(x)}</li>" for x in need) + "</ul>"
@@ -1754,7 +1791,7 @@ class ChangeOrderMixin:
         if ws:
             out += "<h3>Warnings on the change order as a whole</h3><ul class='co-warn'>"
             for w in ws:
-                line = f"<li>{icon('alert')} <b>{esc(WARNING_WORDS.get(w['code'], w['code']))}:</b> {esc(w['text'])}"
+                line = f"<li>{icon('alert')} <b>{esc(warning_word(w))}:</b> {esc(w['text'])}"
                 if w.get("accepted"):
                     line += f" <span class='chip ok'>accepted by {esc(w['accepted'].get('by'))}</span> <span class='why'>“{esc(w['accepted'].get('meaning') or '')}”</span>"
                 elif ctx["decider"] and not self._viewing_cog():

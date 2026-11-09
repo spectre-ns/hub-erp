@@ -70,7 +70,9 @@ def evaluate_criteria(crit: dict, ctx: dict) -> tuple[bool, list[str]]:
         elif not amount > 0:
             reasons.append("amount is not positive")
         elif not amount < crit["max_amount"]:
-            reasons.append(f"amount {amount} is not under {crit['max_amount']} {crit['currency']}")
+            from .settings import money
+
+            reasons.append(f"amount {money(amount)} is not under {money(crit['max_amount'])} {crit['currency']}")
     facts = ctx.get("conditions", {})
     for c in crit.get("conditions", []):
         if not facts.get(c):

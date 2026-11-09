@@ -256,7 +256,7 @@ class BaseHandler(BaseHTTPRequestHandler):
                  "/agent-task": self.post_agent_task, "/settings-edit": self.post_settings_edit, "/settings-check": self.post_settings_check,
                  "/settings-propose": self.post_settings_propose, "/settings-discard": self.post_settings_discard, "/queue-withdraw": self.post_queue_withdraw, "/template-revise": self.post_template_revise,
                  "/co-new": self.post_co_new, "/co-add-sop": self.post_co_add_sop, "/co-remove-sop": self.post_co_remove_sop,
-                 "/co-implements": self.post_co_implements, "/co-send": self.post_co_send, "/co-review": self.post_co_review, "/sop-revise": self.post_sop_revise,
+                 "/co-implements": self.post_co_implements, "/co-send": self.post_co_send, "/co-details": self.post_co_details, "/co-review": self.post_co_review, "/sop-revise": self.post_sop_revise,
                  "/co-reviewer-add": self.post_co_reviewer_add, "/co-reviewer-remove": self.post_co_reviewer_remove,
                  "/co-submit-review": self.post_co_submit_review, "/co-suggestion": self.post_co_suggestion, "/co-answer": self.post_co_answer,
                  "/co-decide": self.post_co_decide, "/co-accept-warning": self.post_co_accept_warning, "/co-state-map": self.post_co_state_map,

@@ -1482,7 +1482,9 @@ class ReviewerCog(Cog):
             if within:
                 checks = [f"{c} holds" for c in crit.get("conditions", []) if c != "review_passes"]
                 if crit.get("max_amount") is not None:
-                    checks.append(f"amount {routing_ctx.get('amount')} under {crit['max_amount']} {crit['currency']}")
+                    from .settings import money
+
+                    checks.append(f"amount {money(routing_ctx.get('amount'))} under {money(crit['max_amount'])} {crit['currency']}")
                 checks = [c for c in checks if "adversarial" not in c]
                 if judged:
                     checks.insert(0, "its review passed" + (f" (evidence {self._number(ctx, judged['evidence'])})" if judged.get("evidence") else "")
