@@ -404,7 +404,11 @@ class PolicyDocsMixin:
             body += (f"<details><summary>Other warnings in the policy ({len(other_w)}), not caused by this proposal</summary><ul>"
                      + "".join(f"<li>{self._human(x['detail'])}</li>" for x in other_w) + "</ul></details>")
         rows = self._change_rows(p)
-        can_decide = status == "open" and owner
+        can_decide = status == "open" and owner and not p.get("eco")
+        if p.get("eco") and status == "open":  # a change order's delta is decided on the change order, with its warnings
+            body += (f"<div class='card info' role='status'>{icon('layers')} This is the compiled delta of {self._staged_by(p).replace('staged by ', '')}. "
+                     "Its items are decided on the change order's page, each with its origin and the warnings an approver accepts; "
+                     "the change order's release brings it into force.</div>")
         trs = ""
         for r in rows:
             c = r["change"]
@@ -440,7 +444,7 @@ class PolicyDocsMixin:
                      f"<span class='why'>A rejected change is left out when the rest is released; it can be proposed again.</span></div></form>")
         else:
             body += "<h2>Changes</h2>" + changes_table
-        if status == "open" and owner:
+        if status == "open" and owner and not p.get("eco"):
             if not blocking:
                 body += (f"<form method='post' action='/proposal-release' class='card ok'>{hidden_as(user)}{self._once()}<input type='hidden' name='proposal' value='{esc(p['id'])}'>"
                          f"<p>Every change has the decisions it needs. Releasing makes the approved changes the policy in force (rejected ones are left out)"
@@ -498,8 +502,8 @@ class PolicyDocsMixin:
         """Open proposals with a change still waiting for this policy owner's decision."""
         out = []
         for q in self.hub.proposals.list():
-            if q.get("status") != "open" or self.user not in (q.get("reviewers") or []):
-                continue
+            if q.get("status") != "open" or self.user not in (q.get("reviewers") or []) or q.get("eco"):
+                continue  # a change order's delta is decided on the change order (the inbox lists it under Change orders)
             todo = [c for c in q.get("changes") or [] if change_state(c) == "pending" and not any(d["by"] == self.user for d in c.get("decisions") or [])]
             if todo:
                 out.append({"proposal": q, "todo": todo})

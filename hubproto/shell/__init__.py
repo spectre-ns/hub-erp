@@ -11,7 +11,8 @@ map, launcher and avatars), ``charts`` (server-rendered SVG), ``forms`` (control
 plumbing, errors, page frame), ``pages`` (dashboard, files library, boards, runs, records as forms, documents),
 ``views`` (list and kanban views, app pages, people and cog profiles, chatter), ``inbox`` (the queue and the decision
 card), ``policy`` (versions, policies, why, people and roles, conformance), ``actions`` (POSTs), ``editor`` (WOPI),
-``inventory_ui`` (parts and stock, the location tree, the stock panels and movements), ``workflow_svg`` and ``workflow_ui``
+``eco_ui`` and ``change_order_ui`` (change orders: the list, and the loop on one page), ``record_types_ui`` (the record types in
+force, carried on a change order), ``inventory_ui`` (parts and stock, the location tree, the stock panels and movements), ``workflow_svg`` and ``workflow_ui``
 (workflow graphs drawn on the server, the workflow editor, its Text view and the visual diff).
 """
 
@@ -40,6 +41,8 @@ from .queue import QueueMixin
 from .settings_ui import SettingsMixin
 from .templates_ui import TemplatesMixin
 from .eco_ui import EcoMixin
+from .change_order_ui import ChangeOrderMixin
+from .record_types_ui import RecordTypesMixin
 from .automation_ui import AutomationMixin
 from .scopes_ui import ScopesMixin
 from .forms_ui import FormsMixin
@@ -54,7 +57,7 @@ __all__ = ["Handler", "ShellError", "coerce", "make_server", "serve", "serve_in_
            "when", "why_sentence", "sentence_diff", "widget", "prefill", "chip", "esc", "href", "table"]
 
 
-class Handler(WorkflowsMixin, SettingsMixin, TemplatesMixin, EcoMixin, AutomationMixin, ScopesMixin, FormsMixin, InventoryMixin, QueueMixin, PagesMixin, ViewsMixin, InboxMixin, PolicyMixin, ActionsMixin, EditorMixin, MessengerMixin, PolicyDocsMixin, McpMixin, AgentsMixin, NewMemberMixin, BaseHandler):
+class Handler(WorkflowsMixin, SettingsMixin, TemplatesMixin, ChangeOrderMixin, RecordTypesMixin, EcoMixin, AutomationMixin, ScopesMixin, FormsMixin, InventoryMixin, QueueMixin, PagesMixin, ViewsMixin, InboxMixin, PolicyMixin, ActionsMixin, EditorMixin, MessengerMixin, PolicyDocsMixin, McpMixin, AgentsMixin, NewMemberMixin, BaseHandler):
     """The request handler: the plumbing in BaseHandler, the pages and actions in the mixins."""
 
 

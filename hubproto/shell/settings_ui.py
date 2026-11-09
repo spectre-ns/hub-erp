@@ -146,12 +146,72 @@ class SettingsMixin:
             top += (f"<div class='card warn' role='status'><b>The policy changed since you started.</b> Your {len(draft.get('edits') or [])} edit(s) are "
                     f"against an older version; discard them and start again from the policy in force. "
                     f"{self._discard_form()}</div>")
-        body = getattr(self, f"_settings_{section}")(rules, draft, released, check)
+        top += self._settings_co_banner()
+        body = self._settings_pending_html(section) + getattr(self, f"_settings_{section}")(rules, draft, released, check)
         page = (f"<h1>{icon('sliders')} Settings <span class='muted'>{esc(SECTION_NAMES[section])}</span></h1>{top}"
                 f"<div class='settings-layout'><nav class='settings-nav' aria-label='Settings sections'><ul>{nav}</ul></nav>"
                 f"<div class='settings-main'>{body}</div></div>")
         self._page(f"Settings: {SECTION_NAMES[section]}", page, status=status,
                    crumbs=[("Settings", href("/settings", user)), (SECTION_NAMES[section], None)])
+
+    # ------------------------------------------------------------ direct changes on change orders (change control v2)
+    def _settings_co(self) -> dict | None:
+        """The person's open settings change order: where their Settings edits land as direct changes."""
+        from .. import changecontrol as cc
+
+        return next((r for r in self.hub.kernel.query(type_="change-order") if r["state"] in ("open", "draft", "returned", "failed")
+                     and r["fields"].get("requested_by") == self.user and r["fields"].get("from_settings") and cc.stage_of(r) in cc.EDITABLE), None)
+
+    def _settings_co_banner(self) -> str:
+        if not self.hub.sop_source() or not self._settings_editor():
+            return ""
+        co = self._settings_co()
+        if co is None:
+            return ("<div class='card info' role='status' id='settings-co'>" + icon("layers") + " <b>Your edits become direct changes on a change order.</b> "
+                    "When you put your draft on it (Your changes), the hub starts your settings change order; nothing changes in force until it is "
+                    "reviewed, approved and released. The review round writes the prose for each change into its SOP.</div>")
+        from .. import changecontrol as cc
+
+        n = len(co["fields"].get("direct_changes") or [])
+        stage = cc.stage_of(co).replace("-", " ")
+        return (f"<div class='card info' role='status' id='settings-co'>{icon('layers')} <b>Your edits are direct changes on "
+                f"<a href='{self._co_href(co)}#co-carries'>{esc(co['number'])}</a></b> ({esc(stage)}): it carries {n} direct change(s). "
+                "Put more on it from Your changes. Nothing changes in force until it is reviewed, approved and released; its review round "
+                "writes the prose for each change into the SOP it belongs to.</div>")
+
+    SECTION_KINDS = {"people": ("role", "member", "folder"), "permissions": ("permission",), "limits": ("threshold", "sla"),
+                     "rails": ("approval_criteria", "cog"), "sod": ("sod",), "workflows": ("process", "routing")}
+
+    def _settings_pending_html(self, section: str) -> str:
+        """In each section: the direct changes open change orders carry for what it shows (not in force yet)."""
+        if not self.hub.sop_source():
+            return ""
+        from .. import changecontrol as cc
+
+        kinds = self.SECTION_KINDS.get(section)
+        rows = []
+        for co in self.hub.kernel.query(type_="change-order"):
+            if co["state"] not in ("open", "draft", "returned", "failed") and not co["state"].startswith("awaiting"):
+                continue
+            if not self._can_read(co["folder"])["allowed"]:
+                continue
+            for it in co["fields"].get("direct_changes") or []:
+                old, new = cc._old_new(it)
+                kind = (new or old or {}).get("kind")
+                if kinds is not None and kind not in kinds:
+                    continue
+                o = it.get("origin") or {}
+                words = (f"{sentence(old, self._processes())} → {sentence(new, self._processes())}" if old is not None and new is not None
+                         else (sentence(new, self._processes()) if new is not None else "remove: " + sentence(old, self._processes())))
+                rows.append([f"<a href='{self._co_href(co)}#co-carries'>{esc(co['number'])}</a>" + (" " + chip("yours", "info") if cc.requester(co) == self.user else ""),
+                             f"<span class='pre'>{esc(words)}</span>" + (" " + chip("widening", "warn") if it.get("widening") else ""),
+                             esc(o.get("by") or ""), esc(cc.stage_of(co).replace("-", " "))])
+        if not rows:
+            return ""
+        title = "Pending on change orders" if kinds is not None else "Every direct change pending on change orders"
+        return (f"<div class='card warn' id='pending'><h2 style='margin-top:0'>{icon('clock')}{title} <span class='muted'>{len(rows)}</span></h2>"
+                "<p class='why'>Not in force yet: each comes into force when its change order is released.</p>"
+                + table(["Change order", "Direct change", "Made by", "Stage"], rows) + "</div>")
 
     # ------------------------------------------------------------ overview
     def _discard_form(self) -> str:
@@ -181,9 +241,14 @@ class SettingsMixin:
             out += (f"<div class='actions'><form method='post' action='/settings-check' class='inline'>{hidden_as(user)}"
                     f"<button class='ghost'>{icon('check-circle')}Check</button></form>{self._discard_form()}</div>"
                     f"<form method='post' action='/settings-propose' class='card'>{hidden_as(user)}{self._once()}{err}"
-                    f"<label class='f'><span>Why (the policy owners read this)</span><textarea name='reason' rows='2'>{esc(self._val('reason'))}</textarea></label>"
-                    f"<div class='actions'><button>{icon('send')}Propose to the policy owners</button>"
-                    f"<span class='why'>A widening (more someone or a cog may do) needs both policy owners.</span></div></form>")
+                    + (f"<label class='f'><span>Why (the reviewers read this)</span><textarea name='reason' rows='2'>{esc(self._val('reason'))}</textarea></label>"
+                       f"<div class='actions'><button>{icon('send')}Put on my change order" + (f" ({esc(self._settings_co()['number'])})" if self._settings_co() else "") + "</button>"
+                       "<span class='why'>Each edit becomes a direct change on your settings change order. Request review there: the round writes "
+                       "the prose into the SOPs and asks the panel; a widening needs both policy owners.</span></div></form>"
+                       if self.hub.sop_source() else
+                       f"<label class='f'><span>Why (the policy owners read this)</span><textarea name='reason' rows='2'>{esc(self._val('reason'))}</textarea></label>"
+                       f"<div class='actions'><button>{icon('send')}Propose to the policy owners</button>"
+                       f"<span class='why'>A widening (more someone or a cog may do) needs both policy owners.</span></div></form>"))
         return out
 
     def _check_html(self, check: dict) -> str:
@@ -538,11 +603,11 @@ class SettingsMixin:
             raise ShellError(str(e)[:1].upper() + str(e)[1:] + ".", 400) from None
         if p.get("change_order"):
             bad = [r for r in p["report"] if not r["ok"]]
-            msg = (f"Written into the SOPs on {p['change_order']}: {len(p['report']) - len(bad)} sentence(s) changed"
-                   + (f"; {len(bad)} could not be placed, see the change order" if bad else "")
-                   + ". Get each revision approved, then send the change order for approval.")
+            msg = (f"Recorded on {p['change_order']} as {len(p['report']) - len(bad)} direct change(s)"
+                   + (f"; {len(bad)} could not be recorded, see the change order" if bad else "")
+                   + ". Request review there: the round writes the prose into the SOPs and asks the panel.")
             log_line(f"settings change order {p['change_order']} by={self.user} edits={len(p['report'])}")
-            return self._redirect(self._once_finish(href("/record/" + quote(p["change_order"]), self.user, done=msg)))
+            return self._redirect(self._once_finish(href("/record/" + quote(p.get("locator") or p["change_order"], safe=":"), self.user, done=msg) + "#co-carries"))
         errors = sum(1 for x in p["findings"] if x.get("severity") == "error")
         msg = f"Proposed as #{p['number']}: {len(p['changes'])} change(s); the policy owners review it." + (f" {errors} problem(s) stop a release until fixed." if errors else "")
         log_line(f"settings proposal #{p['number']} by={self.user} changes={len(p['changes'])}")

@@ -41,7 +41,7 @@ RAIL_MAIN = [("Home", "/", "home"), ("Inbox", "/inbox", "inbox"), ("Documents", 
 RAIL_POLICY = [("Runs", "/runs", "activity"), ("Policy versions", "/releases", "layers"), ("Policies", "/frames", "book"),
                ("Conformance", "/conformance", "check-circle"), ("People and roles", "/admin", "users")]
 # Routes the identity switcher may stay on (anything else goes home).
-STAY_ROUTES = ("/", "/inbox", "/files", "/documents", "/templates", "/change-orders", "/boards", "/runs", "/releases", "/frames", "/why", "/admin", "/conformance", "/people", "/suppliers",
+STAY_ROUTES = ("/", "/inbox", "/files", "/documents", "/templates", "/change-orders", "/record-types", "/boards", "/runs", "/releases", "/frames", "/why", "/admin", "/conformance", "/people", "/suppliers",
                "/settings", "/inventory", "/inventory/locations", "/workflows")
 STAY_PREFIXES = ("/record/", "/document/", "/run/", "/frame/", "/release/", "/items/", "/app/", "/user/", "/settings/", "/workflows/")
 # The small script: tabs show one panel at a time (every panel is visible without it) and the print button prints.
@@ -228,7 +228,7 @@ class BaseHandler(BaseHTTPRequestHandler):
                      "/start": self.page_start, "/people": self.page_people, "/suppliers": self.page_suppliers, "/settings": self.page_settings, "/templates": self.page_templates,
                      "/change-orders": self.page_change_orders, "/automation": self.page_automation,
                      "/automation-status": self.page_automation_status, "/scopes": self.page_scopes, "/forms": self.page_forms,
-                     "/workflows": self.page_workflows}
+                     "/workflows": self.page_workflows, "/record-types": self.page_record_types}
             if r in fixed:
                 return fixed[r]
             for prefix, fn in (("/record/", self.page_record), ("/document/", self.page_document), ("/doc/", self.page_document),
@@ -253,7 +253,12 @@ class BaseHandler(BaseHTTPRequestHandler):
                  "/agent-task": self.post_agent_task, "/settings-edit": self.post_settings_edit, "/settings-check": self.post_settings_check,
                  "/settings-propose": self.post_settings_propose, "/settings-discard": self.post_settings_discard, "/queue-withdraw": self.post_queue_withdraw, "/template-revise": self.post_template_revise,
                  "/co-new": self.post_co_new, "/co-add-sop": self.post_co_add_sop, "/co-remove-sop": self.post_co_remove_sop,
-                 "/co-implements": self.post_co_implements, "/co-send": self.post_co_send, "/co-review": self.post_co_review, "/sop-revise": self.post_sop_revise, "/assign": self.post_assign, "/agent-confirm": self.post_agent_confirm, "/new-person": self.post_new_person, "/new-cog": self.post_new_cog, "/cog-model": self.post_cog_model, "/restart": self.post_restart, "/mark-applied": self.post_mark_applied, "/verify-edit": self.post_verify_edit, "/editor-debug": self.post_editor_debug,
+                 "/co-implements": self.post_co_implements, "/co-send": self.post_co_send, "/co-review": self.post_co_review, "/sop-revise": self.post_sop_revise,
+                 "/co-reviewer-add": self.post_co_reviewer_add, "/co-reviewer-remove": self.post_co_reviewer_remove,
+                 "/co-submit-review": self.post_co_submit_review, "/co-suggestion": self.post_co_suggestion, "/co-answer": self.post_co_answer,
+                 "/co-decide": self.post_co_decide, "/co-accept-warning": self.post_co_accept_warning, "/co-state-map": self.post_co_state_map,
+                 "/co-dismiss-related": self.post_co_dismiss_related, "/co-direct-remove": self.post_co_direct_remove,
+                 "/co-rt-uncarry": self.post_co_rt_uncarry, "/record-types-carry": self.post_record_types_carry, "/assign": self.post_assign, "/agent-confirm": self.post_agent_confirm, "/new-person": self.post_new_person, "/new-cog": self.post_new_cog, "/cog-model": self.post_cog_model, "/restart": self.post_restart, "/mark-applied": self.post_mark_applied, "/verify-edit": self.post_verify_edit, "/editor-debug": self.post_editor_debug,
                  "/upload": self.post_upload, "/checkout": self.post_checkout, "/checkin": self.post_checkin, "/link": self.post_link,
                  "/snapshot": self.post_snapshot, "/hold": self.post_hold, "/resubmit": self.post_resubmit, "/retry": self.post_retry,
                  "/cancel": self.post_cancel, "/undo-checkout": self.post_undo_checkout, "/bulk-hold": self.post_bulk_hold}
@@ -422,6 +427,13 @@ class BaseHandler(BaseHTTPRequestHandler):
             if self.route in ("/checkout", "/checkin", "/undo-checkout"):
                 self.arg = self.form.get("doc", "")
                 return self.page_document(status=status)
+            if self.route == "/co-new":
+                return self.page_change_orders(status=status)
+            if self.route.startswith("/co-") and self.form.get("co"):  # a refused change-order action: its page, the form's values kept
+                self.arg = self.form.get("co", "")
+                return self.page_record(status=status)
+            if self.route == "/record-types-carry":
+                return self.page_record_types(status=status)
             if self.route.startswith("/settings-"):  # a refused settings change: the section it came from, values kept
                 self.arg = self.form.get("section", "") if self.route == "/settings-edit" else "overview"
                 return self.page_settings(status=status)

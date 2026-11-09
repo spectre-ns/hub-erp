@@ -80,7 +80,7 @@ MEANING_EXAMPLES = {
     "stock-release": ("certificate of conformance received; release", "re-inspected 20 of 200, all within drawing"),
     "part": ("approved: datasheet checked, two sources", "approved as a purchased component"),
 }
-NOTIFICATION_KINDS = ("escalation", "failure", "returned", "rejection", "auto-decided", "request", "review", "mention", "agent-run")
+NOTIFICATION_KINDS = ("escalation", "failure", "returned", "rejection", "auto-decided", "request", "review", "mention", "agent-run", "automation", "task")
 MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 _LOCATOR = re.compile(r"rec:[a-z-]+:([A-Z]+-[0-9A-Z-]+)")
 _TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:\+00:00|Z)?")
@@ -546,7 +546,9 @@ def notification_sentence(m: dict, link_number=None) -> str:
     lead = {"failure": "Stopped", "returned": "Returned to you", "rejection": "Rejected", "escalation": "Escalated",
             "auto-decided": "Decided by a cog", "approval": "Waiting for you", "request": "Asked of you", "review": "Review posted",
             "mention": "Mention", "agent-run": "A cog finished a task", "cog-task": "A cog could not do a task", "cog-done": "A cog finished",
-            "handed-back": "Handed back to you", "proposal": "Policy proposal"}.get(kind, kind.replace("-", " ").capitalize())
+            "handed-back": "Handed back to you", "proposal": "Policy proposal", "automation": "Change order", "task": "Task for you"}.get(kind, kind.replace("-", " ").capitalize())
+    if kind == "review" and str(m.get("subject", "")).startswith("Review "):
+        lead = "Asked to review"
     out = f"<b>{lead}:</b> {subj}" + (f" <span class='muted'>{body}</span>" if body and body != subj else "")
     if rest:
         out += f"<details class='more'><summary>more</summary><span class='muted'>{rest}</span></details>"
