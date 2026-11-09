@@ -359,3 +359,45 @@ def test_the_editor_offers_the_committees_of_the_release(shell):
     assert "compile-frame committee" in body and 'href="#wfc-i-committee"' in body, "the badge names the committee, with the group icon"
     assert "an objection has no way back" in body, "the committee needs a way back: the Reject goes to a done status"
 
+
+
+def test_a_carried_workflow_change_reads_as_its_changes_and_an_undone_delete_asks_nothing(shell):
+    """The direct change of the process is worded as the editor's change list (no ids, no whole process), and the state
+    map holds only the statuses the draft really removes: a delete put back by undo is no question at release."""
+    from hubproto import changecontrol
+
+    hub = shell["hub"]
+    co = new_co(shell)
+    for i in range(2):
+        r = hub.kernel.create("ncr", "Quality/Nonconformances", {"title": f"N{i}", "description": "x", "source": "inspection"}, by="carol")
+        hub.kernel.transition(r["locator"], "rejected", by="carol", reason="test")
+    jop(shell, "carol", {"op": "add_status", "name": "Awaiting verification", "id": "awaiting-verification", "at": [400, 400]})
+    jop(shell, "carol", {"op": "add_transition", "id": "verified", "name": "Verified", "from": ["awaiting-verification"], "to": "closed",
+                         "gate": {"kind": "person", "role": "quality-manager"}})
+    jop(shell, "carol", {"op": "reroute_transition", "id": "disposition-the-nonconformance", "to": "awaiting-verification"})
+    jop(shell, "carol", {"op": "delete_status", "id": "rejected", "move_to": "cancelled"})
+    post(shell, "/workflow-carry", {"as": "carol", "process": NCR, "co": co["locator"]})
+    co = hub.kernel.get(co["locator"])
+    assert co["fields"]["state_map"] == {NCR: {"rejected": "cancelled"}}
+    item = next(i for i in changecontrol._items(co) if (i.get("origin") or {}).get("process") == NCR)
+    assert "[" not in item["reason"] and "## Process" not in item["reason"] and len(item["reason"]) < 400, item["reason"]
+    assert item["reason"].startswith("the nonconformance workflow (") and "Status “Awaiting verification” added" in item["reason"]
+    page = main_of(get(shell, "/record/" + quote(co["locator"], safe=":"), **{"as": "carol"})[1])
+    outside = re.sub(r"<details><summary>As the SOP will say it</summary>.*?</details>", "", page, flags=re.S)
+    hits = [m.start() for m in re.finditer(r"\[create\]", outside)]
+    assert not hits, outside[max(0, hits[0] - 300):hits[0] + 100] if hits else ""
+    # Undo the delete and carry again: the answer for Rejected goes, so nothing asks where its items go.
+    jop(shell, "carol", {"op": "undo"})
+    assert "rejected" in wm.status_map(doc_of(shell)["graph"]) and doc_of(shell)["state_map"] == {}
+    post(shell, "/workflow-carry", {"as": "carol", "process": NCR, "co": co["locator"]})
+    co = hub.kernel.get(co["locator"])
+    assert NCR not in (co["fields"].get("state_map") or {})
+    rule = next(i for i in changecontrol._items(co) if (i.get("origin") or {}).get("process") == NCR)["rule"]
+    old = next(r for r in hub.settings_rules() if r.get("kind") == "process" and r["name"] == NCR)
+    assert changecontrol._states(old) - changecontrol._states(rule) == set(), "a status on both sides is not removed (the graph form counts)"
+
+
+def test_the_change_order_diff_opens_on_what_changed(shell):
+    from hubproto.shell.workflow_svg import DIFF_JS
+
+    assert "function frame(p)" in DIFF_JS and "scrollLeft" in DIFF_JS

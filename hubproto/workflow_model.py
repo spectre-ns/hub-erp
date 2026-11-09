@@ -1616,3 +1616,81 @@ def transition_geometry(g: dict, layout: dict, t: dict, *, bend: float = 0.0, k:
     if loops:
         parts.append(("loop", loop_geometry(dst, k)["d"], True))
     return {"kind": "shared", "parts": parts, "label": lbl}
+
+
+# ---------------------------------------------------------------- a process rule's change, in words (for the change order)
+def graph_of_rule(rule: dict) -> dict:
+    """The graph a process rule compiles to (``process_graph.build``), without the derived keys."""
+    from .process_graph import build, graph_only
+
+    return graph_only(build({k: v for k, v in rule.items() if k != "kind"}, {}, rule.get("record_type") or rule.get("object") or rule.get("name") or ""))
+
+
+def process_change_words(old_rule: dict | None, new_rule: dict | None) -> list[str]:
+    """A change of a process rule as the editor's change list, one line per change of meaning, never an id: "Status
+    “Awaiting verification” added (in progress)", "Transition “Verified” added: from ... to ..., the quality manager
+    decides". A process added or removed is one line."""
+    name = (new_rule or old_rule or {}).get("name") or "?"
+    try:
+        if old_rule is None:
+            g = graph_of_rule(new_rule)
+            return [f"The {name} workflow added: {plural(len(g['statuses']), 'status')}, {plural(len(g['transitions']), 'transition')}"]
+        if new_rule is None:
+            return [f"The {name} workflow removed"]
+        og, ng = _by_cog(graph_of_rule(old_rule), old_rule), _by_cog(graph_of_rule(new_rule), new_rule)
+        if not old_rule.get("statuses"):  # numbered steps keep their due dates in SLA sentences, which this change leaves alone
+            for s in ng["statuses"]:
+                o = status_map(og).get(s["id"])
+                if o is not None and not o.get("sla_days"):
+                    s.pop("sla_days", None)
+        return [i["text"] for i in diff(og, ng)]
+    except Exception:  # a rule that does not compile: the compile says why; the words stay short
+        return [f"The {name} workflow changed"]
+
+
+def _by_cog(g: dict, rule: dict) -> dict:
+    """The graph with each action named by the cog it runs (numbered steps name steps, the graph form names cogs), so
+    the same work reads the same on both sides."""
+    cogs = {s["id"]: s.get("cog") for s in rule.get("steps") or [] if s.get("cog")}
+    g = copy.deepcopy(g)
+    for t in g.get("transitions") or []:
+        acts = []
+        for a in t.get("actions") or []:
+            if isinstance(a, str):
+                a = cogs.get(a) or (a[: -len(t["id"]) - 1] if a.endswith("-" + t["id"]) else a)
+                if a.startswith("reach-"):
+                    continue
+            acts.append(a)
+        t["actions"] = acts
+    return g
+
+
+def process_change_reason(old_rule: dict | None, new_rule: dict | None, *, most: int = 3) -> str:
+    """One short line for a change of a process (the delta item's reason, the text of a warning on it)."""
+    name = (new_rule or old_rule or {}).get("name") or "?"
+    words = process_change_words(old_rule, new_rule)
+    if old_rule is not None and new_rule is not None:
+        if not words:
+            return f"the {name} workflow, restated (no change of meaning)"
+        shown = "; ".join(words[:most]) + (f"; and {len(words) - most} more" if len(words) > most else "")
+        return f"the {name} workflow ({plural(len(words), 'change')}): {shown}"
+    return words[0] if words else f"the {name} workflow"
+
+
+def responsibility_words(rule: dict, who: str) -> str:
+    """What a role, cog or group does in a process rule, as one short Roles and responsibilities cell: "Decides
+    “Verified” and “Return” in the nonconformance workflow" (``who``: "role:<r>", "cog:<c>" or "group:<g>")."""
+    kind, _, name = str(who).partition(":")
+    names = []
+    for t in rule.get("transitions") or []:
+        g = t.get("gate") or {}
+        hit = ((kind == "role" and name in (g.get("role"), g.get("fallback"))) or (kind == "cog" and g.get("kind") == "cog" and g.get("cog") == name)
+               or (kind == "group" and g.get("kind") == "committee"))
+        if hit and (t.get("name") or t.get("id")) not in names:
+            names.append(t.get("name") or t.get("id"))
+    for st in rule.get("steps") or []:
+        if (kind == "role" and st.get("role") == name) or (kind == "cog" and name in (st.get("swarm") or [])):
+            names.append(st.get("title") or st.get("id"))
+    quoted = [f"“{n}”" for n in names[:4]] + ([f"{len(names) - 4} more"] if len(names) > 4 else [])
+    what = (", ".join(quoted[:-1]) + " and " + quoted[-1]) if len(quoted) > 1 else (quoted[0] if quoted else "its part")
+    return f"Decides {what} in the {rule.get('name') or 'process'} workflow"

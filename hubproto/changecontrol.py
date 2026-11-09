@@ -143,6 +143,8 @@ def _person(hub, who: str) -> bool:
 def _sentence(rule: dict | None) -> str:
     if not rule:
         return ""
+    if rule.get("kind") == "process" and rule.get("statuses"):  # a workflow in words is its summary, not its whole text
+        return f"the {rule.get('name')} workflow ({len(rule.get('statuses') or [])} statuses, {len(rule.get('transitions') or [])} transitions)"
     from .settings import sentence
 
     try:
@@ -297,6 +299,10 @@ def _item_slot(it: dict) -> tuple:
 
 def _item_reason(it: dict) -> str:
     old, new = _old_new(it)
+    if (new or old or {}).get("kind") == "process":  # a workflow: its changes in words, never the whole process (workflow_model)
+        from .workflow_model import process_change_reason
+
+        return process_change_reason(old, new)
     if old is not None and new is not None:
         return f"change “{_sentence(old)}” to “{_sentence(new)}”"
     return f"add “{_sentence(new)}”" if new is not None else f"remove “{_sentence(old)}”"
@@ -1184,7 +1190,7 @@ def round_queue(hub, co_ref, n: int, by: str) -> str:
     now = utcnow()
     _update_round(hub, co, n, lambda r: r.update({"status": "reviewing" if asked else "reviewed",
                                                   "results": {**(r.get("results") or {}),
-                                                              **{e["who"]: {"status": "queued", "kind": e["kind"], "at": now} for e in asked}}}),
+                                                              **{e["who"]: {"status": "queued", "kind": e["kind"], "at": now, **_due_of(e)} for e in asked}}}),
                   **({} if asked else {"stage": "revising"}))
     for e in asked:
         _ask(hub, co, n, e, by)
@@ -1194,10 +1200,31 @@ def round_queue(hub, co_ref, n: int, by: str) -> str:
     return (f"asked {', '.join(e['who'] for e in asked)}" + (f"; {len(done)} reviewed already" if done else "")) if asked else "nobody to ask"
 
 
+COMMITTEE_REVIEW_DAYS = 5  # a committee member on a panel answers within this; then the chair intervenes
+
+
+def _due_of(e: dict) -> dict:
+    """A committee member's review is a vote with a due date (change control 11: the chair intervenes after it)."""
+    from datetime import date, timedelta
+
+    return {"due": (date.today() + timedelta(days=COMMITTEE_REVIEW_DAYS)).isoformat()} if e.get("committee") else {}
+
+
+def vote_words(name: str) -> str:
+    """What a committee member is told about their review on a panel: it is a vote under consensus."""
+    return (f"Your vote: the {name} committee decides by consensus; one reasoned objection sends it back. A blocking finding is "
+            "your objection (give your reason); a review without one is your agreement. There is no standing aside.")
+
+
 def _ask(hub, co: dict, n: int, e: dict, by: str) -> None:
     if e["kind"] == "cog":
         hub.queue.submit(e["who"], "co-review", by=by, title=f"Review round {n} of {co['number']}", record=co["locator"],
                          payload={"co": co["locator"], "round": n}, key=f"co-review:{co['locator']}:{n}:{e['who']}")
+    elif e.get("committee"):
+        due = _due_of(e)["due"]
+        hub.inbox.notify(e["who"], kind="review", subject=f"Your vote on {co['number']} (round {n}, {e['committee']} committee), due {due}",
+                         body=(f"{by} asks the {e['committee']} committee to review the configuration delta of {co['number']}. "
+                               f"{vote_words(e['committee'])} Due {due}; after that its chair intervenes."), record=co["locator"])
     else:
         hub.inbox.notify(e["who"], kind="review", subject=f"Review {co['number']} (round {n}): {co['fields'].get('title') or ''}",
                          body=f"{by} asks you to review the configuration delta of {co['number']}. Reason: {e.get('reason') or 'added to the panel'}. "
@@ -1234,7 +1261,7 @@ def add_reviewer(hub, co_ref, who: str, by: str, reason: str = "") -> dict:
     now = utcnow()
     _update_round(hub, co, rnd["n"], lambda r: r.update({"panel": (r.get("panel") or []) + new, "status": "reviewing",
                                                          "results": {**(r.get("results") or {}),
-                                                                     **{e["who"]: {"status": "queued", "kind": e["kind"], "at": now} for e in new}}}),
+                                                                     **{e["who"]: {"status": "queued", "kind": e["kind"], "at": now, **_due_of(e)} for e in new}}}),
                   stage="in-review")
     for e in new:
         _ask(hub, _co(hub, co["locator"]), rnd["n"], e, by)
@@ -1599,7 +1626,21 @@ def answer_question(hub, co_ref, qid: str, answer: str, by: str, line: int | Non
 
 # ---------------------------------------------------------------- state maps
 def _states(proc: dict | None) -> set[str]:
+    """The states items of a process can wait in: its statuses (a process written as a graph, as the workflow editor
+    carries it), or the awaiting state of each checkpoint (numbered steps). A status on both sides is not removed."""
+    if (proc or {}).get("statuses"):
+        return {s["id"] for s in proc["statuses"]}
     return {f"awaiting-{s['id']}" for s in (proc or {}).get("steps") or [] if s.get("kind") == "checkpoint"}
+
+
+def _state_names(hub, proc: dict | None, name: str) -> dict[str, str]:
+    """{state: its name in words} for the messages ("Awaiting disposition the nonconformance", never the id)."""
+    try:
+        from .workflow_model import graph_of_rule
+
+        return {s["id"]: s["name"] for s in graph_of_rule({"kind": "process", **(proc or {}), "name": name})["statuses"]}
+    except Exception:
+        return {}
 
 
 def state_questions(hub, co_ref) -> list[dict]:
@@ -1734,15 +1775,21 @@ def send_reasons(hub, co_ref) -> list[str]:
 
 
 # ---------------------------------------------------------------- committees on the panel (groups and committees)
-def committee_reviews(hub, co_ref) -> list[dict]:
+def committee_reviews(hub, co_ref, today: str | None = None) -> list[dict]:
     """Each committee on the current round's panel, by consensus (change control 11): ``agreed`` when every member has
     reviewed and none raised a blocking finding (an objection); ``objected`` when one did (it returns for revision: the
     author revises and requests review again); ``waiting`` while a member has not reviewed; ``paused`` when a member
     could not review (its model is not available) or the chair is asked to intervene. A committee on the panel must
     agree before the change order is sent for approval: nothing passes by default. Each: {"committee", "chair",
-    "members", "status", "objections": [{"member", "text"}], "waiting", "paused", "reason"}."""
+    "members", "status", "objections": [{"member", "text"}], "waiting", "paused", "reason", "due", "vote", "interveners"}.
+    A member who has not answered by the due date pauses it too (``kind`` late), as one whose review failed (unavailable):
+    the chair (or, when the chair is that member or contributed to the change order, the change-order overdue route)
+    intervenes with :func:`intervene_review`."""
+    from datetime import date
+
     from .groups import committee
 
+    today = today or date.today().isoformat()
     co = _co(hub, co_ref)
     rnd = current_round(co)
     if rnd is None or rnd.get("status") in ("compiling", "failed"):
@@ -1756,53 +1803,134 @@ def committee_reviews(hub, co_ref) -> list[dict]:
         res = rnd.get("results") or {}
         objections = [{"member": m, "text": f.get("text")} for m in members for f in (res.get(m) or {}).get("findings") or []
                       if f.get("severity") == "blocking" and (res.get(m) or {}).get("status") == "done"]
-        paused = [{"member": m, "why": (res.get(m) or {}).get("error") or "its review did not run"} for m in members
+        paused = [{"member": m, "why": (res.get(m) or {}).get("error") or "its review did not run", "kind": "unavailable"} for m in members
                   if (res.get(m) or {}).get("status") == "failed"]
         waiting = [m for m in members if (res.get(m) or {}).get("status") not in ("done", "failed")]
+        paused += [{"member": m, "why": f"has not responded by {(res.get(m) or {}).get('due')}", "kind": "late", "due": (res.get(m) or {}).get("due")}
+                   for m in waiting if (res.get(m) or {}).get("due") and res[m]["due"] < today]
+        waiting = [m for m in waiting if m not in {p["member"] for p in paused}]
+        dues = sorted(x for x in ((res.get(m) or {}).get("due") for m in members) if x)
         chair = c.get("chair") or ""
+        whom = {p["member"]: _panel_interveners(hub, co, c, p["member"]) for p in paused}
+        for p in paused:
+            p["interveners"], p["who"] = whom[p["member"]]
         if objections:
             status = "objected"
             reason = (f"the {name} committee does not agree: " + "; ".join(f"{o['member']} objects: {o['text']}" for o in objections)
                       + " (revise and request review again)")
         elif paused:
             status = "paused"
-            reason = (f"the {name} committee cannot agree: " + "; ".join(f"{p['member']}: {p['why']}" for p in paused)
-                      + f"; its chair{(', ' + chair + ',') if chair else ''} intervenes (decide in the member's place, or return it)")
+            people = sorted({x for p in paused for x in p["interveners"]})
+            reason = (f"the {name} committee cannot agree: " + "; ".join(f"{p['member']} {p['why']}" for p in paused)
+                      + (f"; its chair, {chair}, intervenes" if people == [chair] else f"; {', '.join(people) or 'nobody'} intervenes ({paused[0]['who']})")
+                      + " (decide in the member's place, extend the due date, or return it)")
         elif waiting:
             status = "waiting"
             reason = f"the {name} committee has not agreed yet: waiting for {', '.join(waiting)}"
         else:
             status, reason = "agreed", f"the {name} committee agrees ({', '.join(members)})"
         out.append({"committee": name, "chair": chair, "members": members, "status": status, "objections": objections,
-                    "waiting": waiting, "paused": paused, "reason": reason})
+                    "waiting": waiting, "paused": paused, "reason": reason, "due": dues[-1] if dues else None, "vote": vote_words(name),
+                    "interveners": sorted({x for p in paused for x in p["interveners"]})})
     return out
 
 
-def intervene_review(hub, co_ref, committee_name: str, member: str, by: str, meaning: str) -> dict:
-    """The chair of a committee on the panel reviews in the place of a member that could not (its model is not
-    available): the member's result is recorded as done, with no finding, as an intervention with its meaning. To return
-    the change order instead, the chair raises a blocking finding through their own review or the requester revises."""
+def _panel_interveners(hub, co: dict, c: dict, member: str) -> tuple[list[str], str]:
+    """Who intervenes for a member of a committee on the panel: its chair; when the chair is that member, contributed to
+    the change order (segregation of duties) or is not a person of the organization, the change-order process's overdue
+    route. Returns (people, why them)."""
+    from .routing import candidates, principals_for
+
+    b = _bundle(hub)
+    chair = c.get("chair") or ""
+    keep_out = set(contributors(hub, co)) | {member}
+    if chair and (b.get("members", {}).get(chair) or {}).get("type") == "person" and chair not in keep_out:
+        return [chair], "the chair"
+    why = (f"the chair, {chair}, is the member in question" if chair == member else
+           f"the chair, {chair}, contributed to {co['number']}" if chair in keep_out else "the chair is absent")
+    rules = [r for r in candidates(b, "change-order", "*", {"overdue": True}) if r["step"] == "*" and r.get("mode", "assign") == "assign"]
+    people = []
+    for r in rules:
+        people += [p for p in principals_for(b, r["assignee"]) if (b["members"].get(p) or {}).get("type") == "person"
+                   and p not in keep_out and p not in people]
+    return people, f"{why}: escalated under the overdue rule" + (f" ({rules[0]['source']['text']})" if rules else "")
+
+
+def tick_panels(hub, today: str | None = None) -> list[dict]:
+    """Tell whoever intervenes, once, when a committee member on an open change order's panel is late. Called by the
+    runner's tick."""
+    told = []
+    for co in open_change_orders(hub):
+        rnd = current_round(co)
+        if not rnd:
+            continue
+        for c in committee_reviews(hub, co, today=today):
+            for p in c["paused"]:
+                if p.get("kind") != "late" or ((rnd.get("results") or {}).get(p["member"]) or {}).get("late_told"):
+                    continue
+                for who in p["interveners"]:
+                    hub.inbox.notify(who, kind="intervention", subject=f"Intervene: {co['number']} ({c['committee']} committee): {p['member']} {p['why']}",
+                                     body=(f"The {c['committee']} committee decides by consensus, so {co['number']} cannot be sent for approval. "
+                                           f"You are asked as {p['who']}: decide in {p['member']}'s place (agree, or object with your reason), "
+                                           "extend the due date, or return the change for revision. Nothing passes by default."), record=co["locator"])
+                _update_round(hub, co, rnd["n"], lambda r, m=p["member"]: r["results"][m].update({"late_told": today or utcnow()[:10]}))
+                told.append({"co": co["number"], "member": p["member"], "to": p["interveners"]})
+    return told
+
+
+def intervene_review(hub, co_ref, committee_name: str, member: str, by: str, meaning: str, *, action: str = "decide",
+                     verdict: str = "agree", due: str | None = None, today: str | None = None) -> dict:
+    """Whoever intervenes for a paused member of a committee on the panel (its chair, or the overdue route when the chair
+    is that member or contributed): the member could not review (its model is not available) or has not responded by
+    the due date. ``action``: ``decide`` in the member's place (``verdict`` agree, or object: a blocking finding with the
+    meaning as its reason), ``extend`` (a new ``due`` date: the member is asked again) or ``return`` (the change goes back
+    for revision: an objection in the member's place). Every intervention is recorded with its meaning."""
+    from datetime import date
+
     from .groups import committee
 
+    today = today or date.today().isoformat()
     co = sync(hub, co_ref)
     rnd = current_round(co)
     c = committee(_bundle(hub), committee_name)
     if rnd is None or c is None:
         raise ValueError(f"the {committee_name} committee is not on the panel of {co['number']}")
-    if by != c.get("chair"):
-        raise ValueError(f"only the chair of the {committee_name} committee ({c.get('chair') or 'none'}) intervenes")
-    if not (meaning or "").strip():
-        raise ValueError("an intervention needs its meaning: say why you review in the member's place")
     entry = next((e for e in rnd.get("panel") or [] if e["who"] == member and e.get("committee") == committee_name), None)
     if entry is None:
         raise ValueError(f"{member} is not on the panel for the {committee_name} committee")
-    if ((rnd.get("results") or {}).get(member) or {}).get("status") == "done":
+    cur = (rnd.get("results") or {}).get(member) or {}
+    if cur.get("status") == "done":
         raise ValueError(f"{member} has reviewed already")
-    result = {"status": "done", "kind": entry["kind"], "at": utcnow(), "findings": [], "questions": [], "suggestions": [],
-              "summary": f"reviewed by {by}, chair of the {committee_name} committee, in {member}'s place: {meaning.strip()}",
-              "intervention": {"by": by, "meaning": meaning.strip(), "for": member, "at": utcnow(),
-                               "was": ((rnd.get("results") or {}).get(member) or {}).get("error")},
-              "reviewed": _snapshot(_proposal(hub, co))}
+    people, who = _panel_interveners(hub, co, c, member)
+    if by not in people:
+        raise ValueError(f"only the chair of the {committee_name} committee ({c.get('chair') or 'none'}) intervenes"
+                         + (f"; here {who}, so {', '.join(people) or 'nobody'}" if people != [c.get("chair")] else ""))
+    late = bool(cur.get("due")) and cur["due"] < today and cur.get("status") != "failed"
+    if cur.get("status") != "failed" and not late:
+        raise ValueError(f"{member} has until {cur.get('due') or 'the end of the round'} to answer: nothing to intervene in yet")
+    if not (meaning or "").strip():
+        raise ValueError("an intervention needs its meaning: say why you intervene")
+    meaning = meaning.strip()
+    note = {"by": by, "meaning": meaning, "for": member, "at": utcnow(), "action": action, "who": who,
+            "was": cur.get("error") or (f"has not responded by {cur.get('due')}" if late else None)}
+    if action == "extend":
+        if not due or due <= today:
+            raise ValueError("say the new due date (YYYY-MM-DD), after today")
+        _update_round(hub, co, rnd["n"], lambda r: r["results"][member].update({"due": due, "late_told": None,
+                                                                                 "extended": (r["results"][member].get("extended") or []) + [note]}))
+        if entry["kind"] == "person":
+            hub.inbox.notify(member, kind="review", subject=f"Your vote on {co['number']} ({committee_name} committee) is now due {due}",
+                             body=f"{by} extended the due date: {meaning}. {vote_words(committee_name)}", record=co["locator"])
+        return current_round(_co(hub, co["locator"]))["results"][member]
+    if action not in ("decide", "return"):
+        raise ValueError(f"{action!r} is not an intervention (decide, extend or return)")
+    objects = action == "return" or verdict in ("object", "reject")
+    findings = [{"id": f"R{rnd['n']}.{member}.F1", "severity": "blocking", "about": {},
+                 "text": f"{by} ({who}) objects in {member}'s place: {meaning}"}] if objects else []
+    result = {"status": "done", "kind": entry["kind"], "at": utcnow(), "findings": findings, "questions": [], "suggestions": [],
+              "summary": (f"{'returned' if action == 'return' else 'decided'} by {by}, {who} of the {committee_name} committee, in {member}'s place: "
+                          f"{'objects' if objects else 'agrees'}: {meaning}"),
+              "intervention": note, "reviewed": _snapshot(_proposal(hub, co))}
     _record_result(hub, co, rnd["n"], member, result)
     return result
 
@@ -1838,9 +1966,11 @@ def approval_reasons(hub, co_ref) -> list[str]:
         for w in p.get("warnings") or []:
             if not w.get("accepted"):
                 reasons.append(f"accept the warning: [{w['code']}] {w['text']}")
+    in_force = {r["name"]: r for r in hub.settings_rules() if r.get("kind") == "process"}
     for q in state_questions(hub, co):
         if not q.get("answer"):
-            reasons.append(f"{q['count']} {q['record_type']} item(s) are in {q['state']}, which this change removes from {q['process']}: "
+            sname = _state_names(hub, in_force.get(q["process"]), q["process"]).get(q["state"], q["state"])
+            reasons.append(f"{q['count']} {q['record_type']} item(s) are in {sname}, which this change removes from {q['process']}: "
                            "say where they go (state map)")
     return reasons
 
