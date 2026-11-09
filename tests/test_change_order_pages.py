@@ -647,3 +647,55 @@ def test_the_author_withdraws_a_draft_nothing_carries_from_the_document_page(she
     refused(post(shell, "/withdraw-record", {"as": "alice", "record": draft["locator"], "reason": ""}))
     ok(post(shell, "/withdraw-record", {"as": "alice", "record": draft["locator"], "reason": "starting over"}))
     assert hub.kernel.get(draft["locator"])["state"] == "withdrawn"
+
+
+def test_a_change_order_begun_from_a_policy_is_described_on_its_page_before_it_is_sent(shell):
+    """"Revise on a change order" makes the change order from the policy's page, without a description; the change order
+    page asks for it (title and what it changes and why) and sending says it is missing, instead of the change-order
+    process stopping on a required field."""
+    from hubproto import sopdocs
+
+    hub = shell["hub"]
+    policy = sopdocs.in_force(hub.kernel, "finance-policy")
+    ok(post(shell, "/sop-revise", {"as": "alice", "doc": policy["locator"], "co": ""}))
+    co = next(r for r in hub.kernel.query(type_="change-order") if r["fields"]["title"].startswith("Revise"))
+    draft = next(c["draft"] for c in eco.carried(hub, co))
+    write(hub, draft, OLD, NEW, "alice")
+    ok(post(shell, "/co-review", {"as": "alice", "co": co["locator"], "choose": "own", "panel": ["management"]}))
+    html = co_page(shell, co, "alice")
+    assert "Title and description: say what it changes and why" in html and "action='/co-details'" in html
+    assert any("say what it changes and why" in r for r in cc.send_reasons(hub, co["number"]))
+    page = refused(post(shell, "/co-send", {"as": "alice", "co": co["locator"]}))
+    assert "say what it changes and why" in page and "required-fields" not in page
+    refused(post(shell, "/co-details", {"as": "alice", "co": co["locator"], "form": "details", "title": "Lower the AP cog limit", "description": ""}))
+    refused(post(shell, "/co-details", {"as": "dave", "co": co["locator"], "form": "details", "title": "x", "description": "y"}), 400)
+    ok(post(shell, "/co-details", {"as": "alice", "co": co["locator"], "form": "details", "title": "Lower the AP cog limit",
+                                   "description": "fewer cog approvals: the limit goes to 1,500 USD"}))
+    co = hub.kernel.get(co["locator"])
+    assert co["fields"]["title"] == "Lower the AP cog limit" and "1,500 USD" in co["fields"]["description"]
+    assert not any("say what it changes" in r for r in cc.send_reasons(hub, co["number"]))
+    ok(post(shell, "/co-send", {"as": "alice", "co": co["locator"]}))
+    assert cc.stage_of(hub.kernel.get(co["locator"])) == "awaiting-approval"
+
+
+def test_an_advisory_finding_is_named_advisory_where_it_is_a_warning(shell):
+    hub = shell["hub"]
+    co = new_co(shell)
+    carry_revision(shell, co)
+    ok(post(shell, "/co-review", {"as": "alice", "co": co["locator"], "choose": "own", "panel": ["management", "bob"]}))
+    [it] = [i for i in items(hub, co) if i["op"] == "add"]
+    ok(post(shell, "/co-submit-review", {"as": "bob", "co": co["locator"], "form": "review", "sev1": "advisory", "fabout1": it["id"],
+                                         "ftext1": "mind the queue at month end", "summary": "fine"}))
+    html = co_page(shell, co, "alice")
+    assert "advisory finding:</b> bob: mind the queue at month end" in html
+    assert "blocking finding:</b> bob: mind the queue" not in html
+
+
+def test_the_same_task_for_different_people_is_not_flagged_as_a_duplicate():
+    from hubproto.shell.inbox import InboxMixin
+
+    def rec(person):
+        return {"type": "training", "fields": {"title": "Read WI-17 rev A", "person": person}}
+    key = lambda r: InboxMixin._dup_key(None, r)
+    assert key(rec("bob")) != key(rec("carol")), "each person's own training"
+    assert key(rec("bob")) == key(rec("bob"))

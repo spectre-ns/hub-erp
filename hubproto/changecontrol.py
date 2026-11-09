@@ -203,6 +203,29 @@ def _may_decide(hub, co: dict, by: str) -> str:
 
 
 # ---------------------------------------------------------------- public names for the shell
+def set_details(hub, co_ref, by: str, *, title: str | None = None, description: str | None = None) -> dict:
+    """The change order's title and what it changes and why, set while it is prepared or revised by whoever may change it
+    (``may_edit``). The change-order process needs the description before approval."""
+    co = _co(hub, co_ref)
+    why = may_edit(hub, co, by)
+    if why:
+        raise ValueError(why)
+    if stage_of(co) not in EDITABLE:
+        raise ValueError(f"{co['number']} is {stage_of(co).replace('-', ' ')}: its title and description are fixed now")
+    fields = {}
+    if title is not None:
+        if not title.strip():
+            raise ValueError("a change order needs a title")
+        fields["title"] = title.strip()
+    if description is not None:
+        if not description.strip():
+            raise ValueError("say what it changes and why")
+        fields["description"] = description.strip()
+    if fields:
+        hub.kernel.set_fields(co["locator"], fields, by=by)
+    return _co(hub, co["locator"])
+
+
 def may_edit(hub, co: dict, by: str) -> str:
     """Empty when ``by`` may change the change order (its requester, who prepared it, or a document controller);
     otherwise why not."""
@@ -2418,6 +2441,8 @@ def send_reasons(hub, co_ref) -> list[str]:
     if not (carried or eco.retirements(co) or items or f.get("form_changes") or f.get("record_type_changes") or f.get("workflow_changes")):
         return ["it changes nothing yet: carry an SOP or policy revision, make a direct change or carry a form"]
     reasons = []
+    if not str(f.get("description") or "").strip():
+        reasons.append("say what it changes and why (Title and description, at the top of the change order)")
     last = current_round(co)
     if last is None:
         reasons.append("no review round has run yet: request review")

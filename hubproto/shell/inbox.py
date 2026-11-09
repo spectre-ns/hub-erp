@@ -95,7 +95,9 @@ class InboxMixin:
             except (TypeError, ValueError):
                 return None
         title = text(f.get("title") or f.get("statement")).strip().lower()
-        return (rec["type"], title, text(f.get("lot"))) if title else None
+        # The same task for different people (each person's training on one document) is not a duplicate.
+        who = text(f.get("person") or f.get("trainee"))
+        return (rec["type"], title, text(f.get("lot")), who) if title else None
 
     def _duplicates(self, waiting: list[dict]) -> dict[str, list[str]]:
         """Run id -> numbers of other waiting items with the same type, supplier and amount (or title)."""
