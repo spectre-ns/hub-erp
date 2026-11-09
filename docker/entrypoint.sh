@@ -26,10 +26,10 @@ if [ ! -f state/.bootstrapped ]; then
 else
   # Seed what a newer version needs and the state lacks (stock locations, part categories); idempotent.
   hubproto init || echo "hubproto init failed (see above); the shell starts anyway"
-  # Exit 1 means the Frames on disk differ from the release in force (or no release is in effect);
-  # the output carries the exact commands to compile, review and release them.
+  # Exit 1 means the Frames or configuration files on disk differ from the release in force (or no release is in
+  # effect); the output says how to bring them into force (once the SOPs are documents: on a change order).
   if ! hubproto status --check; then
-    echo "the shell serves the release in force, not the Frames above, until they are compiled and released"
+    echo "the shell serves the release in force, not the files above, until they are brought into force as status says"
   fi
 fi
 case "$1" in

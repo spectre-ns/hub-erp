@@ -86,12 +86,25 @@ class Kernel:
         self.db.commit()
         cfg = Path(config_dir) if config_dir else CONFIG_DIR
         self.config_dir = cfg
-        self.types: dict[str, dict] = _load(cfg / "record-types.json")
+        # The record types: the file, until the hub keeps the record types in force under change control
+        # (hubproto.recordtypes); then the hub installs those and ``types_hook`` picks up a newer version.
+        self.types_hook = None
+        self.types = _load(cfg / "record-types.json")
         self.link_vocab: dict[str, str] = _load(cfg / "links.json")
         self.retention: dict[str, dict] = _load(cfg / "retention.json")
         self.config_digests = {p.name: sha256_of(_load(p)) for p in sorted(cfg.glob("*.json"))}
         self._cache: dict[str, dict] | None = None
         self._cache_version: tuple | None = None
+
+    @property
+    def types(self) -> dict[str, dict]:
+        if self.types_hook is not None:
+            self.types_hook()
+        return self._types
+
+    @types.setter
+    def types(self, value: dict[str, dict]) -> None:
+        self._types = value
 
     def _data_version(self) -> tuple:
         """Changes whenever any connection (this or another process) commits to the file."""

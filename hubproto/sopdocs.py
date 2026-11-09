@@ -201,6 +201,10 @@ def convert(hub, *, by: str, frames=None) -> list[dict]:
         rec = hub.kernel.transition(doc["locator"], "effective", by=by,
                                     reason=f"converted from the {name} Frame (version {frame.version}), in force under the release in effect")
         made.append(rec)
+    if made:  # from now on configuration changes only through change orders (hubproto.closure)
+        from . import closure
+
+        closure.on_conversion(hub)
     return made
 
 
