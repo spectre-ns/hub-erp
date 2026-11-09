@@ -790,8 +790,8 @@ def review(hub, args, log: Log, co: dict) -> dict:
         else:
             raise NeedsCode(f"nobody may answer the {q.get('code')} question {q['id']} ({'; '.join(refusals) or 'no candidate'}): under the "
                             "release in force the compile-frame committee has no chair and nobody holds system-administrator (both come with "
-                            "the organization model this change order carries), and hubproto/changecontrol.py:1876-1877 lets only them answer; "
-                            f"a blocking question stops approval (changecontrol.py:2585-2587). The question: {q.get('text')}")
+                            "the organization model this change order carries), and hubproto/changecontrol.py:1878-1879 lets only them answer; "
+                            f"a blocking question stops approval (changecontrol.py:2589-2591). The question: {q.get('text')}")
     return hub.kernel.get(co["locator"])
 
 

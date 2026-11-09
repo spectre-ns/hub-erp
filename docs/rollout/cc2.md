@@ -24,8 +24,8 @@ nothing when it stops there. Each was found by rehearsing on fresh restores of t
    Frame, make the document obsolete at release, and drop the Frame from the release.
 3. **Nobody may answer the compile committee's blocking questions under v9.** The round raises 19 blocking
    `unread-rule` questions, one for each prose paragraph of the new texts. Only the committee's chair or a system
-   administrator may answer one (changecontrol.py:1876-1877), and an open one stops approval
-   (changecontrol.py:2585-2587). Under v9 the committee has no chair and nobody holds `system-administrator`; both
+   administrator may answer one (changecontrol.py:1878-1879), and an open one stops approval
+   (changecontrol.py:2589-2591). Under v9 the committee has no chair and nobody holds `system-administrator`; both
    arrive with this change order. One possible fix is that a policy owner who contributed nothing may answer when the
    release in force names neither. That is a governance decision for the product owner.
 4. **After the merge, the Frame files on disk decide which Frames are compiled.** `Hub.released_frames` takes the
