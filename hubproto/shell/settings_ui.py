@@ -401,7 +401,8 @@ class SettingsMixin:
     def _settings_rails(self, rules, draft, released, check) -> str:
         procs = self._processes()
         roles = sorted(r["name"] for r in rules if r["kind"] == "role")
-        cogs = sorted(r["principal"] for r in rules if r["kind"] == "member" and r["principal_type"] == "cog")
+        # A cog may be a member in several SOPs (each naming its roles there): one section per cog.
+        cogs = sorted({r["principal"] for r in rules if r["kind"] == "member" and r["principal_type"] == "cog"})
         profiles = {r["name"]: r for r in rules if r["kind"] == "cog"}
         personas = sorted(r["name"] for r in rules if r["kind"] == "persona")
         from ..model import available_models

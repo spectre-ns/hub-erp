@@ -111,3 +111,11 @@ def test_approval_criteria_read_a_list_of_conditions():
         text = head + f"The purchasing-assistant cog may approve purchase-request purchase requests under 2,000 USD when {when}.\n"
         [r] = ConventionExtractor().extract(load_frame_text(text, Path("x.frame.md"))).rules
         assert r["conditions"] == ["supplier_approved", "part_active", "review_passes"] and r["max_amount"] == 2000.0, r
+
+
+def test_cog_rails_list_each_cog_once_though_several_sops_name_it(shell):
+    import re
+
+    status, text = get(shell, "/settings/rails", **{"as": "bob"})
+    names = re.findall(r"<section class='cog-rails'><h2>.*?</span> ([a-z0-9-]+) <span class='muted'>", text)
+    assert status == 200 and names and len(names) == len(set(names)), names
