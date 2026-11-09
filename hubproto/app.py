@@ -81,6 +81,11 @@ class Hub:
 
         self.releases.extra_folders = self.library.paths
         self.releases.extra_rights = self.library.rights
+        from . import recordtypes as _recordtypes
+
+        # Once the SOPs are documents the record types in force are the hub's (state/record-types), not the file.
+        _recordtypes.install(self)
+        self.kernel.types_hook = lambda: _recordtypes.refresh(self)
         _formlayout.apply_custom_fields(self)  # released custom fields are fields of their record types
         self.runner.on_completed = [lambda state, rec: _automation.on_run_completed(self, state, rec)]
         self.runner.frames_store = lambda: self.released_frames()  # cogs read the SOPs as released, not the files on disk
@@ -125,18 +130,25 @@ class Hub:
     def extractor(self, calls: bool = False):
         """How this hub reads SOPs (hubproto.extract.get_extractor), with its cache and the names a model may use.
         ``calls``: may ask the local model (background jobs, the command line); a page uses only what was read before."""
-        from .llm_extract import context_for
+        from .llm_extract import baseline_for, context_for, hosted_reader
 
         ex = get_extractor(cache_dir=Path(self.root) / "state" / "extract-cache", context=context_for(self), gateway=self.model, calls=calls)
         if getattr(ex, "name", "") != "hybrid":
             return ex
+        # Diff-based reading against the release in force; Claude Opus reads only when switched on for compilation.
+        baseline, hosted = (lambda: baseline_for(self)), hosted_reader()
         committee = self.compile_committee()
         if committee:
             from .llm_extract import CommitteeExtractor
 
-            return CommitteeExtractor(committee["members"], committee["quorum"], cache_dir=Path(self.root) / "state" / "extract-cache",
-                                      context=context_for(self), gateway=self.model, calls=calls)
-        if not __import__("os").environ.get("HUBPROTO_EXTRACTOR_MODEL"):
+            members = [(n, hosted["model"]) for n, _ in committee["members"]] if hosted else committee["members"]
+            return CommitteeExtractor(members, committee["quorum"], cache_dir=Path(self.root) / "state" / "extract-cache",
+                                      context=context_for(self), gateway=self.model, calls=calls, baseline=baseline,
+                                      **({"call": hosted["call"], "budget": hosted["budget"]} if hosted else {}))
+        ex.baseline = baseline
+        if hosted:
+            ex.model, ex.call, ex.budget = hosted["model"], hosted["call"], hosted["budget"]
+        elif not __import__("os").environ.get("HUBPROTO_EXTRACTOR_MODEL"):
             ex.model = self.compiler_model() or ex.model
         return ex
 
@@ -225,6 +237,9 @@ class Hub:
         changes = drift_guard(old_rules, rules)
         for c in changes:
             c["decisions"] = []
+        from .compile import stamp_origins
+
+        stamp_origins(changes, kind="direct", by=by)  # made in Settings, not read from prose
         meta = self.releases.current() or {}
         return {"id": uuid.uuid4().hex[:12], "created_at": utcnow(), "extractor": "settings", "source": "settings",
                 "proposed_by": by, "reason": reason, "scopes": [], "frames": meta.get("frames") or [],
@@ -265,8 +280,13 @@ class Hub:
                 by: str | None = None, sop_drafts: dict[str, str] | None = None, from_release: bool = False) -> dict:
         """Compile the Frames into a proposal. ``overrides`` are drafts of Frames (name -> text) compiled in place of the
         files, written only when the proposal is released; ``drafts`` names the draft document of each. Drafts already in
-        an open proposal on the same base carry forward, so a recompile never drops someone's pending policy change."""
-        if self.settings_source():
+        an open proposal on the same base carry forward, so a recompile never drops someone's pending policy change.
+        Once the SOPs are documents a compile saved for release compiles the drafts a change order carries
+        (``sop_drafts``) and nothing else (hubproto.closure)."""
+        from . import closure
+
+        closure.check_compile(self, save=save, sop_drafts=sop_drafts)
+        if not self.sop_source() and self.settings_source():
             raise CompileError("the rules are edited in Settings since the release in force came from there; the Frames are the SOPs "
                                "people and cogs read. Change a rule in Settings (or with a cog's propose tools), not by compiling the Frames.")
         frames = self.frames
@@ -340,6 +360,12 @@ class Hub:
             if o.get("draft") and self.kernel.get(o["draft"]):
                 authors[n] = sorted({v.get("by") for v in self.dms.versions(o["draft"]) if v.get("by")})
         proposal["draft_authors"] = authors
+        writers = {n: ((self.kernel.get(o["draft"]) or {}).get("fields") or {}).get("author") or (authors.get(n) or [None])[-1]
+                   for n, o in proposal["overrides"].items() if o.get("draft")}
+        for c in proposal["changes"]:  # a change read from a draft's prose came from that draft's author
+            o = c.get("origin") or {}
+            if o.get("kind") == "prose" and not o.get("by") and writers.get(o.get("frame")):
+                o["by"] = writers[o["frame"]]
         from .model import resolve_model
 
         for r in proposal["rules"]:  # a cog is bundled with its model: say now if this hub cannot reach it
@@ -366,6 +392,10 @@ class Hub:
                 prior = by_id.get(c["id"])
                 if prior and prior.get("rule") == c["rule"] and prior.get("decisions"):
                     c["decisions"] = [dict(d, carried_from=old["id"]) for d in prior["decisions"]]
+            from .compile import carry_questions
+
+            # A question the recompile no longer raises is closed; one asked again keeps its answer.
+            proposal["questions"] = carry_questions(old.get("questions") or [], proposal.get("questions") or [])
             old["status"] = "superseded"
             old["superseded_by"] = proposal["id"]
             old["superseded_by_number"] = proposal["number"]
@@ -467,11 +497,9 @@ class Hub:
         """A working draft of a Frame: the current text, edited in the hub and proposed for release. One per person.
         Once the SOPs are documents the Frame is derived from them: it changes through a change order instead."""
         if self.sop_source():
-            from . import sopdocs
+            from . import closure, sopdocs
 
-            doc = sopdocs.in_force(self.kernel, name)
-            raise ValueError(f"the {name} Frame is compiled from " + (f"{doc['number']}" if doc else "its SOP document")
-                             + ": change that document on a change order")
+            raise closure.frame_draft_refusal(name, sopdocs.in_force(self.kernel, name))
         doc = self.frame_document(name)  # None for a Frame not yet released
         for d in self.kernel.query(type_="document"):
             f = d["fields"]
@@ -631,6 +659,9 @@ class Hub:
                                   else f": {proposal['stale_reason']}" if proposal.get("stale_reason") else ""))
         if by not in proposal["reviewers"]:
             raise CompileError(f"{by} is not a policy owner and cannot review changes (policy owners: {', '.join(proposal['reviewers']) or 'none'})")
+        from . import closure
+
+        closure.check_review(self, proposal, by)
         if approve_all:
             decisions = {c["id"]: "approve" for c in proposal["changes"]}
         for change_id, verdict in (decisions or {}).items():
@@ -639,9 +670,11 @@ class Hub:
         return proposal
 
     def release(self, proposal_id: str, by: str, effective_from: str | None = None, now: str | None = None) -> dict:
+        from . import closure
         from .compile import change_state
 
         proposal = self.proposals.load(proposal_id)
+        closure.check_release(self, proposal, by)  # once the SOPs are documents: only an approved change order's release
         base = proposal.get("base")
         rejected_text = {c["frame"] for c in proposal.get("changes") or [] if c.get("op") == "text" and change_state(c) == "rejected"}
         overrides = {n: o for n, o in (proposal.get("overrides") or {}).items() if n not in rejected_text}
@@ -741,6 +774,9 @@ class Hub:
             prior = by_id.get(c["id"])
             if prior and prior.get("rule") == c["rule"] and prior.get("decisions") and not c.get("decisions"):
                 c["decisions"] = [dict(d, carried_from=old["id"]) for d in prior["decisions"]]
+        from .compile import carry_questions
+
+        new["questions"] = carry_questions(old.get("questions") or [], new.get("questions") or [])
         new["proposed_by"] = old.get("proposed_by")
         new["recompiled_from"] = {"id": old["id"], "number": old.get("number"), "note": note}
         self.proposals.save(new)
@@ -755,8 +791,17 @@ class Hub:
         be released on its own. A draft of a Frame the release just changed cannot be rebased silently: its owner
         redoes it on the new text."""
         changed = set((released.get("overrides") or {}).keys())
+        closed = self.sop_source()
         for p in self.proposals.list():
             if p.get("status") != "open" or p["id"] == released["id"] or p.get("base") == released.get("release"):
+                continue
+            if closed:
+                # Once the SOPs are documents a change order compiles its own proposal again (the release automation
+                # restages every open change order); any other proposal can never be released.
+                if not p.get("eco"):
+                    from . import closure
+
+                    self._mark_stale(p, closure.stale_reason(released))
                 continue
             if p.get("base") != old_base:
                 # Compiled against a release that was already replaced before this one: it can never be released.

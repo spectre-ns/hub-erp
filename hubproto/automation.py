@@ -11,13 +11,14 @@ An automation never decides anything a person has not: it acts only on what was 
 its approver, every item of its delta decided by the approvers, widenings signed by both policy owners), and it
 refuses when that approval is missing or out of date.
 
-Three automations come with the hub (change control v2, docs/design/change-control.md; hubproto.changecontrol):
+Two automations come with the hub (change control v2, docs/design/change-control.md; hubproto.changecontrol):
 
-* ``review-round``: a review round of a change order: compiles the delta from the drafts as they stand, drafts the
-  prose for its direct changes, checks the guards and the round trip, suggests the panel and queues its reviews.
-  Triggered when the requester (or a document controller) requests review.
-* ``compile-frame``: compiles a change order's delta again against the release in force (no review): triggered when
-  another release comes into force (every open change order), or by a person asking to compile it again.
+* ``compile-frame``: the Op that compiles a change order's delta. When review is requested it carries the review
+  round: collects the carried drafts and direct changes, compiles the Frame from the drafts as they stand (the
+  compile-frame committee's cogs read the diff, each with its own bundled model), drafts the prose for direct changes
+  (the qa-manager cog) and checks their round trip, checks the guards, stages the delta on the change order, suggests
+  the panel (the quality-assistant cog) and queues the panel's reviews. When another release comes into force it
+  compiles every open change order again (no round: no prose drafted, no panel).
 * ``release-change-order``: brings an approved change order into force: the revisions it carries are approved with
   it, the decided delta comes into force with the revisions, forms and record types; training is assigned;
   divergences are recorded (a change request for each new one); related change orders and change requests are sent
@@ -38,19 +39,12 @@ LOOP_LIMIT, LOOP_WINDOW_NS = 10, 10 * 60 * 10**9  # the same automation on the s
 FINAL = ("success", "some-errors", "no-actions", "failed")
 
 AUTOMATIONS = {
-    "review-round": {
-        "title": "Run a review round",
-        "committee": "compile-frame",  # its member cogs read the SOPs' prose into rules, each on its own; the quorum decides
-        "trigger": "the requester (or a document controller) requests review of a change order",
-        "steps": ["Compile the delta", "Draft prose for direct changes", "Check the guards and the round trip", "Suggest the panel",
-                  "Queue the panel reviews", "Tell the people involved"],
-    },
     "compile-frame": {
         "title": "Compile the Frame",
-        "committee": "compile-frame",
-        "trigger": "another release comes into force (every open change order), or someone asks to compile it again",
-        "steps": ["Collect what it carries", "Compile the Frame", "Check the guards", "Stage it on the change order",
-                  "Tell the people involved"],
+        "committee": "compile-frame",  # its member cogs read the SOPs' prose into rules, each on its own; the quorum decides
+        "trigger": "review requested on a change order (a review round), or another release came into force (every open change order)",
+        "steps": ["Collect the carried drafts and direct changes", "Compile the Frame", "Draft prose for direct changes", "Check the guards",
+                  "Stage it on the change order", "Suggest the panel", "Queue the panel's reviews", "Tell the people involved"],
     },
     "release-change-order": {
         "title": "Release the change order",
@@ -204,69 +198,33 @@ def _tell_failure(hub, job: dict) -> None:
                          body=f"{job.get('outcome') or 'it stopped'}. See the automation job; retry it once that is fixed.", record=job["subject"])
 
 
-# ---------------------------------------------------------------- review-round (hubproto.changecontrol)
-def _round(hub, job) -> int:
-    from . import changecontrol
-
-    rnd = changecontrol.current_round(hub.kernel.get(job["subject"]) or {"fields": {}})
-    if rnd is None:
-        raise StepError("the change order has no review round")
-    return rnd["n"]
-
-
+# ---------------------------------------------------------------- compile-frame (hubproto.changecontrol carries the round)
 def _cc(fn):
-    """A review-round step: a refusal (ValueError) stops the job with its sentence."""
+    """A compile-frame step. A refusal (ValueError) stops the job with its sentence; whatever stops it, the review
+    round it carries is marked as stopped (the job can be retried, or review requested again)."""
     def step(hub, job, memo):
+        from . import changecontrol
+
+        n = memo.get("round")
+        if n:  # a retry picks the round up again
+            co = hub.kernel.get(job["subject"])
+            rnd = next((r for r in changecontrol.rounds(co) if r["n"] == n), None) if co else None
+            if rnd and rnd.get("status") == "failed" and rnd.get("job") == job["id"]:
+                changecontrol._update_round(hub, co, n, lambda r: r.update({"status": "compiling", "error": None}), stage="in-review")
         try:
             return fn(hub, job, memo)
-        except ValueError as e:
-            raise StepError(str(e)) from None
+        except (StepError, NoActions):
+            raise
+        except Exception as e:
+            co = hub.kernel.get(job["subject"])
+            if n and co:
+                rnd = next((r for r in changecontrol.rounds(co) if r["n"] == n), None)
+                if rnd and rnd.get("status") == "compiling":
+                    changecontrol._round_failed(hub, co, n, str(e))
+            if isinstance(e, ValueError):
+                raise StepError(str(e)) from None
+            raise
     return step
-
-
-@_cc
-def rr_compile(hub, job, memo):
-    from . import changecontrol
-
-    n = _round(hub, job)
-    detail = changecontrol.round_compile(hub, job["subject"], n, extractor=hub.extractor(calls=True))
-    return detail + _readers(hub), {"round": n}
-
-
-@_cc
-def rr_draft(hub, job, memo):
-    from . import changecontrol
-
-    by = job.get("started_by") or "hub"
-    return changecontrol.round_draft(hub, job["subject"], memo["round"], by, extractor=hub.extractor(calls=True)), {}
-
-
-@_cc
-def rr_check(hub, job, memo):
-    from . import changecontrol
-
-    return changecontrol.round_check(hub, job["subject"], memo["round"]), {}
-
-
-@_cc
-def rr_panel(hub, job, memo):
-    from . import changecontrol
-
-    return changecontrol.round_panel(hub, job["subject"], memo["round"]), {}
-
-
-@_cc
-def rr_queue(hub, job, memo):
-    from . import changecontrol
-
-    return changecontrol.round_queue(hub, job["subject"], memo["round"], job.get("started_by") or "hub"), {}
-
-
-@_cc
-def rr_tell(hub, job, memo):
-    from . import changecontrol
-
-    return changecontrol.round_tell(hub, job["subject"], memo["round"]), {}
 
 
 def _readers(hub) -> str:
@@ -279,28 +237,37 @@ def _readers(hub) -> str:
     return f"; prose read by the organization cog ({model})" if model else "; sentence shapes only (no local model)"
 
 
-# ---------------------------------------------------------------- compile-frame
+@_cc
 def c_collect(hub, job, memo):
-    from . import eco, sopdocs
+    from . import changecontrol, eco
 
     co = hub.kernel.get(job["subject"])
     if co is None:
         raise StepError("the change order is gone")
     carried = eco.carried(hub, co)
     items = co["fields"].get("direct_changes") or []
+    what = ((f"{len(carried)} revision(s) as they stand ({', '.join(c['draft']['number'] + ' (' + c['name'] + ')' for c in carried)})" if carried
+             else "no revision") + (f"; {len(items)} direct change(s)" if items else ""))
+    rnd = changecontrol.current_round(co)
+    if rnd and rnd.get("status") == "compiling" and rnd.get("job") in (None, job["id"]):
+        # This job carries the review round the requester asked for.
+        changecontrol._update_round(hub, co, rnd["n"], lambda r: r.update({"job": job["id"]}))
+        return f"review round {rnd['n']}: {what}", {"round": rnd["n"]}
     changed = [c for c in carried if c["in_force"] is None
                or str(c["draft"]["fields"].get("content_sha") or "") != str(c["in_force"]["fields"].get("content_sha") or "")]
     if not changed and not items:
         raise NoActions("nothing to compile: it carries no changed revision and no direct change" if not carried
                         else "nothing changed: the drafts it carries are the SOPs in force")
-    return (f"{len(carried)} revision(s) as they stand" + (f" ({', '.join(c['draft']['number'] + ' (' + c['name'] + ')' for c in carried)})" if carried else "")
-            + (f"; {len(items)} direct change(s)" if items else "")), {}
+    return f"compiled again, no review round: {what}", {"round": None}
 
 
+@_cc
 def c_compile(hub, job, memo):
     from . import changecontrol
 
-    # The background job may ask the local model to read the SOPs' prose (pages never wait on it).
+    # The background job may ask the committee's models to read the SOPs' prose (pages never wait on it).
+    if memo.get("round"):
+        return changecontrol.round_compile(hub, job["subject"], memo["round"], extractor=hub.extractor(calls=True)) + _readers(hub), {}
     out = changecontrol.compile_delta(hub, job["subject"], extractor=hub.extractor(calls=True))
     if out["proposal"] is None:
         if out["errors"]:
@@ -312,7 +279,22 @@ def c_compile(hub, job, memo):
             + _readers(hub)), {"proposal": p["id"]}
 
 
+@_cc
+def c_draft(hub, job, memo):
+    from . import changecontrol
+
+    if not memo.get("round"):
+        return "not a review round: prose for direct changes is drafted when review is requested", {}
+    by = job.get("started_by") or "hub"
+    return changecontrol.round_draft(hub, job["subject"], memo["round"], by, extractor=hub.extractor(calls=True)), {}
+
+
+@_cc
 def c_guards(hub, job, memo):
+    from . import changecontrol
+
+    if memo.get("round"):
+        return changecontrol.round_check(hub, job["subject"], memo["round"]), {}
     co = hub.kernel.get(job["subject"])
     errors = co["fields"].get("staged_errors") or []
     if errors:
@@ -321,12 +303,38 @@ def c_guards(hub, job, memo):
     return ("no guard stops it" + (f"; {w} widening(s) need both policy owners" if w else "")), {}
 
 
+@_cc
 def c_stage(hub, job, memo):
     co = hub.kernel.get(job["subject"])
+    if not co["fields"].get("staged_proposal"):
+        return f"nothing staged on {co['number']}: it carries forms or record types only", {}
     return f"staged on {co['number']} against release {str(co['fields'].get('staged_base') or '')[:12]}", {}
 
 
+@_cc
+def c_panel(hub, job, memo):
+    from . import changecontrol
+
+    if not memo.get("round"):
+        return "not a review round: no panel", {}
+    return changecontrol.round_panel(hub, job["subject"], memo["round"]), {}
+
+
+@_cc
+def c_queue(hub, job, memo):
+    from . import changecontrol
+
+    if not memo.get("round"):
+        return "not a review round: nobody asked", {}
+    return changecontrol.round_queue(hub, job["subject"], memo["round"], job.get("started_by") or "hub"), {}
+
+
+@_cc
 def c_tell(hub, job, memo):
+    from . import changecontrol
+
+    if memo.get("round"):
+        return changecontrol.round_tell(hub, job["subject"], memo["round"]), {}
     co = hub.kernel.get(job["subject"])
     f = co["fields"]
     who = f.get("requested_by")
@@ -389,14 +397,12 @@ def r_forms(hub, job, memo):
 
 
 def r_record_types(hub, job, memo):
-    co = hub.kernel.get(job["subject"])
-    if not co["fields"].get("record_type_changes"):
-        return "no record-type change", {}
+    from . import recordtypes
+
     try:
-        from . import recordtypes  # workstream 4: record-type changes carried on change orders
-    except ImportError:
-        raise StepError("it carries record-type changes but this hub has no record-type module to apply them") from None
-    done = recordtypes.activate(hub, co, memo["release"])
+        done = recordtypes.activate(hub, hub.kernel.get(job["subject"]), memo["release"])
+    except ValueError as e:
+        raise StepError(str(e)) from None
     return ("in force: " + ", ".join(done)) if done else "no record-type change", {}
 
 
@@ -449,8 +455,7 @@ def r_tell(hub, job, memo):
     return f"{co['number']} released" + (f"; told {who}" if who else ""), {}
 
 
-STEPS = {"review-round": [rr_compile, rr_draft, rr_check, rr_panel, rr_queue, rr_tell],
-         "compile-frame": [c_collect, c_compile, c_guards, c_stage, c_tell],
+STEPS = {"compile-frame": [c_collect, c_compile, c_draft, c_guards, c_stage, c_panel, c_queue, c_tell],
          "release-change-order": [r_check, r_revisions, r_frame, r_publish, r_forms, r_record_types, r_training, r_divergences, r_related,
                                   r_restage, r_tell]}
 

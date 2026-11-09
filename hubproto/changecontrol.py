@@ -10,7 +10,7 @@ The CO's ``stage`` field tracks the loop (its record state follows the change-or
 
     preparing -> in-review -> revising -> (in-review ...) -> awaiting-approval -> approved -> released
 
-* **Request review** starts a round (the ``review-round`` automation, so a page never waits on a model): compile the
+* **Request review** starts a round (the ``compile-frame`` Op, so a page never waits on a model): compile the
   delta from the carried drafts *as they stand* (later rounds recompile only what changed), draft the prose for
   direct changes not yet stated (``hubproto.prose_drafting`` when it exists, else the deterministic sentence writer
   of ``hubproto.sop_settings``) and check the round trip, suggest the panel (the quality-assistant cog reads the
@@ -230,41 +230,80 @@ def _update_round(hub, co_ref, n: int, fn, by: str = "hub", **more) -> dict:
 
 
 # ---------------------------------------------------------------- direct changes (delta items made by people)
+# A direct change is kept on the change order (``direct_changes``) in the shape hubproto.prose_drafting reads: {"id",
+# "op": "add"|"remove"|"change", "rule", "was"?, "origin": {"kind": "direct"|"suggested", "by", "at", "frame", ...},
+# "warnings", "stale"}, plus "reason" and "widening" (this module) and "stated"/"round_trip" (written by the drafter).
 def _items(co: dict) -> list[dict]:
     return copy.deepcopy(list(co["fields"].get("direct_changes") or []))
 
 
+def _strip(rule: dict | None) -> dict:
+    return {k: v for k, v in (rule or {}).items() if k not in ("source", "key")}
+
+
+def _direct_item(rule: dict, *, by: str, op: str = "add", was: dict | None = None, at: str | None = None) -> dict:
+    try:
+        from .prose_drafting import direct_item
+    except ImportError:  # the same shape, without the drafting module
+        ident = sha256_of({"op": op, "rule": _strip(rule), "was": _strip(was) if was else None})[:12]
+        item = {"id": f"direct:{ident}", "op": op, "rule": _strip(rule), "warnings": [], "stale": False,
+                "origin": {"kind": "direct", "by": by, "frame": None, "line": None, "quote": None, "read_by": None, "at": at or utcnow()}}
+        if was is not None:
+            item["was"] = _strip(was)
+        return item
+    return direct_item(rule, by=by, op=op, was=was, at=at)
+
+
+def _old_new(it: dict) -> tuple[dict | None, dict | None]:
+    """(the rule an item takes out or changes, the rule it puts in)."""
+    op = it.get("op") or "add"
+    was = it.get("was") or it.get("changes_from")
+    if op == "remove":
+        return (was or it.get("rule")), None
+    return was, it.get("rule")
+
+
+def _same(a: dict | None, b: dict | None) -> bool:
+    if not a or not b:
+        return False
+    try:
+        from .prose_drafting import same_rule
+    except ImportError:
+        return rule_key(_strip(a)) == rule_key(_strip(b))
+    return same_rule(a, b)
+
+
+def _with(rules: dict[str, dict], old: dict | None, new: dict | None) -> None:
+    if old is not None:
+        rules.pop(rule_key(old), None)
+    if new is not None:
+        rules[rule_key(new)] = new
+
+
 def _apply(rules: list[dict], items: list[dict]) -> list[dict]:
-    """``rules`` with the items applied: a removal drops the rule, an addition puts it in (replacing the rule it
-    changes and, for a change, whatever holds its slot)."""
+    """``rules`` with the items applied (each takes out what it changes or removes and puts in its rule)."""
     out = {rule_key(r): r for r in rules}
     for it in items:
-        if it["op"] == "remove":
-            out.pop(rule_key(it["rule"]), None)
-    for it in items:
-        if it["op"] == "add":
-            if it.get("changes_from"):
-                out.pop(rule_key(it["changes_from"]), None)
-                s = _slot(it["rule"])
-                out = {k: r for k, r in out.items() if _slot(r) != s}
-            out[rule_key(it["rule"])] = it["rule"]
+        _with(out, *_old_new(it))
     return list(out.values())
 
 
-def _diff_items(base: list[dict], target: list[dict], keep: dict) -> list[dict]:
+def _item_slot(it: dict) -> tuple:
+    old, new = _old_new(it)
+    return _slot(new or old)
+
+
+def _item_reason(it: dict) -> str:
+    old, new = _old_new(it)
+    if old is not None and new is not None:
+        return f"change “{_sentence(old)}” to “{_sentence(new)}”"
+    return f"add “{_sentence(new)}”" if new is not None else f"remove “{_sentence(old)}”"
+
+
+def _item_widening(base: list[dict], it: dict) -> bool:
     from .guards import drift_guard
 
-    out = []
-    for c in drift_guard(base, target):
-        it = {k: c[k] for k in ("id", "op", "rule", "widening", "reason")}
-        for k in ("changes_from", "changed_to"):
-            if c.get(k):
-                it[k] = c[k]
-        prior = keep.get(c["id"]) or {}
-        it["origin"] = prior.get("origin")
-        it["stated"] = prior.get("stated")
-        out.append(it)
-    return out
+    return any(c.get("widening") for c in drift_guard(base, _apply(base, [it])))
 
 
 def _sig(items: list[dict]) -> str:
@@ -273,7 +312,10 @@ def _sig(items: list[dict]) -> str:
 
 def _rebased(hub, co: dict) -> tuple[list[dict], list[dict]]:
     """The CO's direct and accepted items against the release in force: unchanged when it is the release they were
-    made against; otherwise applied again, and an item that no longer applies becomes a question."""
+    made against; otherwise each is kept (a change re-pointed at what now holds its slot) unless the release already
+    does it or no longer has what it removes: then it becomes a question."""
+    from .compile import question
+
     items = _items(co)
     digest = _digest(hub)
     base_at = co["fields"].get("direct_base")
@@ -281,29 +323,35 @@ def _rebased(hub, co: dict) -> tuple[list[dict], list[dict]]:
     if not items or not base_at or base_at == digest:
         return items, questions
     base = hub.settings_rules()
-    new = _diff_items(base, _apply(base, items), {it["id"]: it for it in items})
-    kept = {it["id"] for it in new}
-    for it in new:
-        if not it.get("origin"):  # a change re-paired against the new release: it keeps its maker
-            src = next((x for x in items if _slot(x["rule"]) == _slot(it["rule"])), None)
-            it["origin"] = dict((src or {}).get("origin") or {"kind": "direct", "by": requester(co), "at": utcnow()})
+    keys = {rule_key(r) for r in base}
+    out = []
     for it in items:
-        if it["id"] not in kept and not any(_slot(x["rule"]) == _slot(it["rule"]) for x in new):
-            questions.append({"id": f"rebase:{it['id']}", "text": f"{it['reason']}: the release in force already does this or no longer has what it "
-                              "changes, so it is no longer part of the delta. Is anything still to change here?",
-                              "frame": (it.get("origin") or {}).get("frame"), "line": None, "raised_by": "hub", "status": "open", "answer": None,
-                              "by": None, "item": None, "kind": "rebase", "hub": True})
-    return new, questions
+        old, new = _old_new(it)
+        done = (new is not None and rule_key(new) in keys and (old is None or rule_key(old) not in keys)) or \
+               (new is None and old is not None and rule_key(old) not in keys)
+        if done:
+            questions.append(question((it.get("origin") or {}).get("frame") or "", None,
+                                      f"{it.get('reason') or _item_reason(it)}: the release in force already does this (or no longer has what it "
+                                      "changes), so it is no longer part of the delta. Is anything still to change here?",
+                                      raised_by="hub", code="rebase", item=None))
+            continue
+        if it.get("op") == "change" and old is not None and rule_key(old) not in keys:
+            now = next((r for r in base if _slot(r) == _slot(new)), None)
+            it = {**it, "was": _strip(now)} if now else {**{k: v for k, v in it.items() if k != "was"}, "op": "add"}
+        it["widening"] = _item_widening(base, it)
+        out.append(it)
+    return out, questions
 
 
 def add_direct_change(hub, co_ref, rule_or_change, by: str, *, origin: dict | None = None) -> list[dict]:
-    """A direct change on the change order: an edit made in Settings or an editor, kept as delta items with origin
+    """A direct change on the change order: an edit made in Settings or an editor, kept as a delta item with origin
     ``direct`` (who, when, what). It is not written into the prose here: the next review round drafts the prose.
 
-    ``rule_or_change`` is a rule (it replaces the rule in force that holds the same slot, or is added), a change
-    ``{"op": "add"|"remove", "rule": {...}, "changes_from": {...}?}``, or a list of either. ``origin`` adds to the
-    items' origin (an accepted suggestion passes ``{"kind": "suggested", "by": <suggester>, "accepted_by": by}``).
-    Returns the change order's direct changes (all of them, recomputed against the release in force)."""
+    ``rule_or_change`` is a rule (it changes the rule in force that holds the same slot, or is added), a change
+    ``{"op": "add"|"remove"|"change", "rule": {...}, "was"|"changes_from": {...}}``, or a list of these. A later edit
+    of the same slot replaces the earlier one; one that puts back the rule in force drops it. ``origin`` adds to the
+    item's origin (an accepted suggestion passes ``{"kind": "suggested", "by": <suggester>, "accepted_by": by}``).
+    Returns the change order's direct changes."""
     from .settings import stamp
     from .sop_settings import home_frame
 
@@ -316,38 +364,50 @@ def add_direct_change(hub, co_ref, rule_or_change, by: str, *, origin: dict | No
         raise ValueError(f"{co['number']} is {st.replace('-', ' ')}: its changes are fixed now")
     base = hub.settings_rules()
     items, questions = _rebased(hub, co)
-    target = _apply(base, items)
     processes = _bundle(hub).get("processes") or {}
+    now = utcnow()
     for ch in rule_or_change if isinstance(rule_or_change, list) else [rule_or_change]:
         if "op" in ch and "rule" in ch:
-            rule = dict(ch["rule"])
-            if ch["op"] == "remove":
-                target = [r for r in target if rule_key(r) != rule_key(rule)]
-                continue
-            if ch.get("changes_from"):
-                target = [r for r in target if rule_key(r) != rule_key(ch["changes_from"])]
+            op, rule, was = ch["op"], dict(ch["rule"]), ch.get("was") or ch.get("changes_from")
+            if op == "add" and was:
+                op = "change"
+            if op not in ("add", "remove", "change"):
+                raise ValueError("a direct change adds, removes or changes a rule")
         else:
             rule = dict(ch)
-            target = [r for r in target if _slot(r) != _slot(rule)]
-        if not rule.get("source"):
-            rule = stamp(rule, by, processes)
-        problems = validate_rule(rule)
-        if problems:
-            raise ValueError("; ".join(problems))
-        target = [r for r in target if rule_key(r) != rule_key(rule)] + [rule]
-    new = _diff_items(base, target, {it["id"]: it for it in items})
-    now = utcnow()
-    for it in new:
-        if not it.get("origin"):
-            it["origin"] = {"kind": "direct", "by": by, "at": now, "frame": home_frame(it["rule"], base), "line": None, "quote": None,
-                            "read_by": None, **(origin or {})}
-    _set(hub, co, by=by, direct_changes=new, direct_base=_digest(hub), rebase_questions=questions)
+            was = next((r for r in base if _slot(r) == _slot(rule)), None)
+            op = "change" if was else "add"
+        if op != "remove":
+            if not rule.get("source"):
+                rule = stamp(rule, by, processes)
+            problems = validate_rule(rule)
+            if problems:
+                raise ValueError("; ".join(problems))
+        item = _direct_item(rule if op != "remove" else (was or rule), by=by, op=op, was=was if op == "change" else None, at=now)
+        prior = next((x for x in items if _item_slot(x) == _item_slot(item)), None)
+        if prior is not None:
+            items.remove(prior)
+            p_old, _ = _old_new(prior)
+            if op in ("add", "change") and p_old is not None and not _same(p_old, (_old_new(item))[0]):
+                item = _direct_item(rule, by=by, op="change", was=p_old, at=now)
+        old, new = _old_new(item)
+        if old is not None and new is not None and _same(old, new):
+            continue  # it puts back the rule in force: nothing to change
+        if (new is not None and old is None and any(_same(new, r) for r in base)) or \
+                (new is None and not any(_same(old, r) for r in base)):
+            continue  # the release in force already says so
+        live = next((r for r in base if old is not None and _same(r, old)), None)  # the SOP that states the rule in force
+        frame = ((live or {}).get("source") or {}).get("frame")
+        item["origin"] = {**item["origin"], "frame": frame if frame not in (None, "", "settings") else home_frame(new or old, base), **(origin or {})}
+        item["reason"], item["widening"] = _item_reason(item), _item_widening(base, item)
+        items.append(item)
+    _set(hub, co, by=by, direct_changes=items, direct_base=_digest(hub), rebase_questions=questions)
     _set(hub, _co(hub, co["locator"]), contributor=contributors(hub, co["locator"]))
-    return new
+    return items
 
 
 def remove_direct_change(hub, co_ref, item_id: str, by: str) -> list[dict]:
-    """Take a direct change (and the other half of a change: its add or remove) off the change order."""
+    """Take a direct change off the change order (the prose already drafted for it stays in the revision: edit it)."""
     co = sync(hub, co_ref)
     why = _may_edit(hub, co, by)
     if why:
@@ -355,11 +415,9 @@ def remove_direct_change(hub, co_ref, item_id: str, by: str) -> list[dict]:
     if stage_of(co) not in EDITABLE:
         raise ValueError(f"{co['number']} is {stage_of(co).replace('-', ' ')}: its changes are fixed now")
     items = _items(co)
-    it = next((x for x in items if x["id"] == item_id), None)
-    if it is None:
+    if not any(x["id"] == item_id for x in items):
         raise ValueError(f"{co['number']} has no direct change {item_id}")
-    pair = {rule_key(r) for r in (it.get("changes_from"), it.get("changed_to")) if r}
-    rest = [x for x in items if x["id"] != item_id and rule_key(x["rule"]) not in pair]
+    rest = [x for x in items if x["id"] != item_id]
     _set(hub, co, by=by, direct_changes=rest)
     return rest
 
@@ -367,8 +425,8 @@ def remove_direct_change(hub, co_ref, item_id: str, by: str) -> list[dict]:
 def rules_to_change_order(hub, user: str, new_rules: list[dict], reason: str = "") -> dict:
     """Settings as direct changes (change control v2): the difference between the rules in force and ``new_rules`` is
     recorded on the person's open settings change order (one is started when they have none). Settings no longer
-    writes sentences into the SOPs: the first review round drafts the prose. Returns {"change_order", "locator",
-    "report"}; each report line says what was recorded."""
+    writes sentences into the SOPs: the review round drafts the prose (the qa-manager cog). Returns {"change_order",
+    "locator", "report"}; each report line says what was recorded."""
     from .guards import drift_guard
 
     base = hub.settings_rules()
@@ -381,16 +439,17 @@ def rules_to_change_order(hub, user: str, new_rules: list[dict], reason: str = "
         co = hub.kernel.create("change-order", "Quality/Changes", {"title": f"Policy changes by {user}", "description": reason or "Changes to the policy.",
                                                                    "requested_by": user, "from_settings": True, "stage": "preparing"}, by=user)
     before = {it["id"] for it in _items(co)}
-    items = add_direct_change(hub, co, [{"op": c["op"], "rule": c["rule"], **({"changes_from": c["changes_from"]} if c.get("changes_from") else {})}
-                                        for c in changes], by=user)
+    wanted = [{"op": "change" if c.get("changes_from") else c["op"], "rule": c["rule"], **({"was": c["changes_from"]} if c.get("changes_from") else {})}
+              for c in changes if not (c["op"] == "remove" and c.get("changed_to"))]
+    items = add_direct_change(hub, co, wanted, by=user)
     report = []
     for it in items:
-        if it["id"] in before or (it["op"] == "remove" and it.get("changed_to")):
+        if it["id"] in before:
             continue
+        old, new = _old_new(it)
         report.append({"sop": (it.get("origin") or {}).get("frame"), "draft": None, "ok": True, "item": it["id"],
                        "detail": "recorded on the change order as a direct change; its review round writes it into the SOP",
-                       "says": "(removed)" if it["op"] == "remove" else _sentence(it["rule"]),
-                       "was": _sentence(it.get("changes_from")) or (_sentence(it["rule"]) if it["op"] == "remove" else None)})
+                       "says": _sentence(new) if new is not None else "(removed)", "was": _sentence(old) if old is not None else None})
     return {"change_order": co["number"], "locator": co["locator"], "report": report}
 
 
@@ -415,7 +474,8 @@ def contributors(hub, co_ref) -> list[str]:
         o = it.get("origin") or {}
         out += [o.get("by"), o.get("accepted_by")] if o.get("kind") == "suggested" else [o.get("by")]
     for kind in ("form_changes", "record_type_changes"):
-        out += [(v or {}).get("by") for v in (co["fields"].get(kind) or {}).values()]
+        carried = co["fields"].get(kind) or {}
+        out += [(v or {}).get("by") for v in (carried.values() if isinstance(carried, dict) else carried)]
     return sorted({w for w in out if w and w not in MACHINES})
 
 
@@ -452,11 +512,12 @@ def compile_delta(hub, co_ref, *, extractor=None, n: int | None = None) -> dict:
     """Compile the change order's delta against the release in force and stage it (the staged proposal): the carried
     drafts as they stand (nothing is recompiled when neither they, the direct changes nor the release changed since
     the last compile), then its items annotated: each with ``origin``, ``warnings`` and ``stale``, direct changes the
-    prose does not state yet added as items of their own (a round-trip question each), decisions carried from the
-    last compile for every item that is the same. Returns {"proposal", "errors", "recompiled"}."""
+    prose does not state yet added as items of their own (with a round-trip warning), decisions carried from the last
+    compile for every item that is the same. Returns {"proposal", "errors", "recompiled"}."""
     co = _co(hub, co_ref)
     items, rebase_qs = _rebased(hub, co)
-    if items != _items(co) or rebase_qs != list(co["fields"].get("rebase_questions") or []):
+    if items != _items(co) or rebase_qs != list(co["fields"].get("rebase_questions") or []) or \
+            (items and co["fields"].get("direct_base") != _digest(hub)):
         co = _set(hub, co, direct_changes=items, direct_base=_digest(hub), rebase_questions=rebase_qs)
     prev = _proposal(hub, co)
     drafts = eco.drafts_of(hub, co)
@@ -493,64 +554,61 @@ def _draft_authors(hub, co: dict) -> dict[str, list[str]]:
 
 
 def _annotate(hub, co: dict, p: dict, prev: dict | None, n: int | None) -> dict:
+    """The staged proposal as the delta: each compiled change with its origin (a direct change the prose now states keeps
+    its maker: origin ``direct`` or ``suggested``, with the SOP line that states it), every direct change the prose does
+    not state (yet) as an item of its own (``unstated``), decisions and overrides carried from the last compile for an
+    item that is the same, questions carried (a rebase question for each item a release made moot)."""
     old = {c["id"]: c for c in ((prev or p).get("changes") or [])}
     p["changes"] = [c for c in p.get("changes") or [] if not c.get("unstated")]
     items = _items(co)
-    by_id = {it["id"]: it for it in items}
+    base = hub.settings_rules()
     authors = _draft_authors(hub, co)
-    stated: dict[str, dict] = {}
+    covered: dict[str, set] = {}
     for c in p["changes"]:
         if c.get("op") == "text":
-            c["origin"] = {"kind": "prose", "by": ", ".join(authors.get(c["frame"]) or []) or None, "frame": c["frame"], "line": None,
-                           "quote": None, "read_by": None, "at": p.get("created_at")}
+            c.setdefault("origin", {"kind": "prose", "frame": c.get("frame"), "line": None, "quote": None, "read_by": None,
+                                    "at": p.get("created_at")})
+            c["origin"]["by"] = c["origin"].get("by") or ", ".join(authors.get(c.get("frame")) or []) or None
         else:
             src = (c.get("rule") or {}).get("source") or {}
-            frame = src.get("frame")
-            where = {"frame": frame, "line": src.get("line"), "quote": src.get("text"), "read_by": src.get("read_by")}
-            it = by_id.get(c["id"])
+            where = {"frame": src.get("frame"), "line": src.get("line"), "quote": src.get("text"), "read_by": src.get("read_by") or None}
+            it = next((x for x in items if (c.get("op") == "add" and _same(_old_new(x)[1], c["rule"]))
+                       or (c.get("op") == "remove" and _same(_old_new(x)[0], c["rule"]))), None)
             if it is not None:
                 c["origin"] = {**(it.get("origin") or {}), **where}
-                stated[c["id"]] = {k: where[k] for k in ("frame", "line", "quote")}
+                c["direct"] = it["id"]
+                covered.setdefault(it["id"], set()).add(c["op"])
             else:
-                c["origin"] = {"kind": "prose", "by": ", ".join(authors.get(frame) or []) or None, **where, "at": p.get("created_at")}
-        prior = old.get(c["id"])
-        if c.get("op") != "text":
+                o = c.get("origin") or {}
+                c["origin"] = {"kind": "prose", **o, **where, "by": o.get("by") or ", ".join(authors.get(where["frame"]) or []) or None,
+                               "at": o.get("at") or p.get("created_at")}
+            prior = old.get(c["id"])
             c["decisions"] = [dict(d) for d in (prior or {}).get("decisions") or []]
             if prior and prior.get("override"):
                 c["override"] = prior["override"]
         c.setdefault("warnings", [])
+        c.setdefault("stale", False)
     for it in items:
-        it["stated"] = stated.get(it["id"])
-        if it["id"] in stated:
+        o, nw = _old_new(it)
+        need = ({"add"} if nw is not None else set()) | ({"remove"} if o is not None and not _same(o, nw) else set())
+        stated = need <= covered.get(it["id"], set())
+        it["prose"] = next(({k: c["origin"].get(k) for k in ("frame", "line", "quote")} for c in p["changes"] if c.get("direct") == it["id"]), None) \
+            if stated else None
+        if stated:
             continue
         prior = old.get(it["id"]) or {}
-        c = {"id": it["id"], "op": it["op"], "rule": it["rule"], "widening": bool(it.get("widening")), "reason": it.get("reason") or "",
-             "origin": it.get("origin"), "unstated": True, "decisions": [dict(d) for d in prior.get("decisions") or []], "warnings": []}
-        for k in ("changes_from", "changed_to"):
-            if it.get(k):
-                c[k] = it[k]
+        c = {"id": it["id"], "op": it.get("op") or "add", "rule": it["rule"], "widening": _item_widening(base, it),
+             "reason": it.get("reason") or _item_reason(it), "origin": it.get("origin"), "unstated": True, "direct": it["id"],
+             "decisions": [dict(d) for d in prior.get("decisions") or []], "warnings": [], "stale": False}
+        if o is not None and nw is not None:
+            c["was"] = o
         if prior.get("override"):
             c["override"] = prior["override"]
         p["changes"].append(c)
     _set(hub, co, direct_changes=items)
-    # Questions: the compiler's own (kept as they are), a round-trip question for each direct change the prose does not
-    # state, and the questions a release left (rebase). An answered question keeps its answer while it still arises.
-    qs = {q["id"]: q for q in p.get("questions") or [] if not q.get("hub")}
-    for it in items:
-        if it["id"] in stated:
-            continue
-        qid = f"rt:{it['id']}"
-        qs[qid] = {"id": qid, "text": f"The prose does not state this direct change: {it.get('reason')}. Say it in "
-                   f"{(it.get('origin') or {}).get('frame') or 'its SOP'}, or keep it as a direct change (once released, a divergence).",
-                   "frame": (it.get("origin") or {}).get("frame"), "line": None, "raised_by": "hub", "status": "open", "answer": None, "by": None,
-                   "item": it["id"], "kind": "round-trip", "hub": True}
+    qs = {q["id"]: q for q in p.get("questions") or []}
     for q in co["fields"].get("rebase_questions") or []:
-        qs[q["id"]] = dict(q)
-    before = {q["id"]: q for q in (prev or {}).get("questions") or []}
-    for qid, q in qs.items():
-        b = before.get(qid)
-        if b and b.get("status") in ("answered", "overridden"):
-            q.update({k: b.get(k) for k in ("status", "answer", "by", "at", "answer_line")})
+        qs.setdefault(q["id"], dict(q))
     p["questions"] = list(qs.values())
     p["eco"] = p["co"] = co["number"]
     p["source"] = "eco"
@@ -635,12 +693,17 @@ def _warnings(hub, co: dict, p: dict) -> tuple[dict[str, list[dict]], list[dict]
             general.append(w)
 
     div_slots = {d.get("slot"): d for d in open_divergences(hub)}
+    direct = {it["id"]: it for it in _items(co)}
+    qtext = {q["id"]: q for q in p.get("questions") or []}
     for c in p.get("changes") or []:
         if c.get("op") == "text":
             continue
-        if c.get("unstated"):
-            items[c["id"]].append({"code": "round-trip", "ref": f"rt:{c['id']}",
-                                   "text": f"the prose does not state this change: once approved it is in force while the SOP says otherwise"})
+        rt = (direct.get(c.get("direct") or "") or {}).get("round_trip") or {}
+        if c.get("unstated") or rt.get("ok") is False:
+            q = qtext.get(rt.get("question") or "") or {}
+            items[c["id"]].append({"code": "round-trip", "ref": rt.get("question") or f"rt:{c['id']}",
+                                   "text": (q.get("text") or "the prose does not state this direct change")
+                                   + ("; once approved it is in force while the SOP says otherwise" if c.get("unstated") else "")})
         if c.get("override"):
             o = c["override"]
             items[c["id"]].append({"code": "override", "ref": f"ov:{c['id']}",
@@ -653,7 +716,7 @@ def _warnings(hub, co: dict, p: dict) -> tuple[dict[str, list[dict]], list[dict]
         if f.get("guard") == "divergence":
             general.append({"code": "divergence", "ref": str(f.get("rule_key") or "").split(":", 1)[-1], "text": f["detail"]})
     for q in questions(hub, co):
-        if q.get("status", "open") != "open" or q.get("kind") == "round-trip":
+        if q.get("status", "open") != "open" or "round-trip" in (q.get("kind"), q.get("code")):
             continue  # a round-trip question is the item's round-trip warning
         attach({"item": q.get("item"), "frame": q.get("frame"), "line": q.get("line")}, {"code": "question", "ref": q["id"], "text": q["text"]})
     for f in findings(hub, co):
@@ -748,7 +811,7 @@ def touches(hub, co_ref, p: dict | None = None) -> dict[str, set]:
             out["sop"].add(c["frame"])
             out["kind"].add("text")
             continue
-        for r in [_effective(c)] + ([c["changes_from"]] if c.get("changes_from") else []):
+        for r in [_effective(c)] + [c[k] for k in ("changes_from", "was") if c.get(k)]:
             out["kind"].add(r.get("kind"))
             frame = (c.get("origin") or {}).get("frame") or (r.get("source") or {}).get("frame")
             if frame and frame != "settings":
@@ -759,7 +822,8 @@ def touches(hub, co_ref, p: dict | None = None) -> dict[str, set]:
             out["slot"].add(_slot_key(r))
             out["role"] |= _roles_named(r)
     out["form"] = set(f.get("form_changes") or {})
-    out["record_type"] = set(f.get("record_type_changes") or {})
+    rtc = f.get("record_type_changes") or []
+    out["record_type"] = {x.get("type") for x in (rtc if isinstance(rtc, list) else [{"type": k} for k in rtc])}
     for k in out:
         out[k].discard(None)
         out[k].discard("")
@@ -938,10 +1002,11 @@ def _panel_entry(hub, raw, by: str, suggested: list[dict]) -> list[dict]:
 
 # ---------------------------------------------------------------- a round
 def request_review(hub, co_ref, by: str, panel=None) -> dict:
-    """Start a review round: the review-round automation compiles the delta from the drafts as they stand, drafts
-    the prose for direct changes, suggests the panel (or takes ``panel``: member names or {"who", "reason"}, which
-    replaces the suggestion; the suggestion is still recorded) and queues the panel's reviews. The requester or a
-    document controller asks. A new round clears a "baseline changed" flag. Returns the round."""
+    """Start a review round: the compile-frame Op (hubproto.automation, queued in the hub-automation lane, every step
+    recorded) compiles the delta from the drafts as they stand, drafts the prose for direct changes, checks the
+    guards, stages it, suggests the panel (or takes ``panel``: member names or {"who", "reason"}, which replaces the
+    suggestion; the suggestion is still recorded) and queues the panel's reviews. The requester or a document
+    controller asks. A new round clears a "baseline changed" flag. Returns the round (``job``: the Op's job id)."""
     co = sync(hub, co_ref)
     why = _may_edit(hub, co, by)
     if why:
@@ -954,7 +1019,7 @@ def request_review(hub, co_ref, by: str, panel=None) -> dict:
         raise ValueError(f"{co['number']} changes nothing yet: carry an SOP or policy revision, make a direct change or carry a form first")
     last = current_round(co)
     if last and last.get("status") == "compiling":
-        jobs = [j for j in hub.automation.of(co["locator"]) if j["automation"] == "review-round" and j["status"] in ("queued", "running")]
+        jobs = [j for j in hub.automation.of(co["locator"]) if j["automation"] == "compile-frame" and j["status"] in ("queued", "running")]
         if jobs:
             return last
     rs = rounds(co)
@@ -965,9 +1030,12 @@ def request_review(hub, co_ref, by: str, panel=None) -> dict:
     _set(hub, co, by=by, rounds=rs, stage="in-review", baseline_changed=None, rejected=None)
     from . import automation
 
-    automation.start(hub, "review-round", subject=co["locator"], trigger=f"{by} requested review (round {n})", by=by,
-                     acting_on=f"round {n} of {co['number']}")
-    return current_round(_co(hub, co["locator"]))
+    job = automation.start(hub, "compile-frame", subject=co["locator"], trigger=f"{by} requested review (round {n})", by=by,
+                           acting_on=f"round {n} of {co['number']}")
+    co = _co(hub, co["locator"])
+    if not (current_round(co) or {}).get("job"):  # queued, not worked yet: the round is that job's
+        co = _update_round(hub, co, n, lambda r: r.update({"job": job["id"]}))
+    return current_round(co)
 
 
 def _round_failed(hub, co: dict, n: int, why: str) -> None:
@@ -991,59 +1059,70 @@ def round_compile(hub, co_ref, n: int, *, extractor=None) -> str:
 
 
 def round_draft(hub, co_ref, n: int, by: str, *, extractor=None) -> str:
-    """Round step 2: the prose for each direct change the drafts do not state yet. hubproto.prose_drafting (the
-    qa-manager cog) when it exists; else the deterministic sentence writer (hubproto.sop_settings). What changed is
-    compiled again, and the round trip is checked (an item still not stated keeps a round-trip question)."""
+    """Round step 2: the prose for each direct change not stated yet, by the qa-manager cog
+    (hubproto.prose_drafting.draft_direct_changes, which also checks the round trip of every stated item and returns a
+    round-trip question for each that does not read back); without that module, the deterministic sentence writer
+    (hubproto.sop_settings). What changed is compiled again; the round-trip questions go on the staged proposal."""
+    from .compile import carry_questions
+
     co = _co(hub, co_ref)
-    unstated = [it for it in _items(co) if not it.get("stated")]
-    if not unstated:
-        return "every direct change is stated in the prose" if _items(co) else "no direct change to write up"
+    items = [it for it in _items(co) if not it.get("stale")]
+    if not items:
+        return "no direct change to write up"
+    todo = [it for it in items if not it.get("stated")]
     try:
         from . import prose_drafting  # workstream 2: the qa-manager cog drafts the prose
     except ImportError:
         prose_drafting = None
-    if prose_drafting is not None and hasattr(prose_drafting, "draft_direct_changes"):
-        report = prose_drafting.draft_direct_changes(hub, co["locator"], by)
-        who = "the qa-manager cog"
-    else:
-        report = _draft_fallback(hub, co, unstated)
-        who = "the hub (sentence grammar)"
-    _update_round(hub, co, n, lambda r: r.update({"drafted": {"by": who, "report": report if isinstance(report, (list, dict)) else str(report)}}))
-    out = compile_delta(hub, co, extractor=extractor, n=n)
+    try:
+        if prose_drafting is not None and hasattr(prose_drafting, "draft_direct_changes"):
+            qs = prose_drafting.draft_direct_changes(hub, co["locator"], by, extractor=extractor) or []
+            who = "the qa-manager cog"
+        else:
+            qs = _draft_fallback(hub, co, todo)
+            who = "the hub (sentence grammar)"
+        out = compile_delta(hub, co, extractor=extractor, n=n)
+    except ValueError as e:
+        _round_failed(hub, co, n, str(e))
+        raise
     if out["proposal"] is None and out["errors"]:
-        _round_failed(hub, co, n, "the drafts do not compile after the prose was written: " + "; ".join(out["errors"][:3]))
-        raise ValueError("the drafts do not compile after the prose was written: " + "; ".join(out["errors"][:3]))
-    left = [it for it in _items(_co(hub, co["locator"])) if not it.get("stated")]
-    return (f"{who} wrote the prose for {len(unstated)} direct change(s); {len(unstated) - len(left)} read back as the same item"
-            + (f"; {len(left)} did not (a round-trip question each)" if left else ""))
+        why = "the drafts do not compile after the prose was written: " + "; ".join(out["errors"][:3])
+        _round_failed(hub, co, n, why)
+        raise ValueError(why)
+    p = out["proposal"]
+    if p is not None:
+        co = _co(hub, co["locator"])
+        p["questions"] = carry_questions(p.get("questions") or [], qs, codes=("round-trip",))
+        _refresh(hub, co, p)
+        hub.proposals.save(p)
+    _update_round(hub, co, n, lambda r: r.update({"drafted": {"by": who, "questions": [q.get("id") for q in qs]}}))
+    left = [c for c in (p or {}).get("changes") or [] if c.get("unstated")]
+    return (f"{who} wrote the prose for {len(todo)} direct change(s)" if todo else f"{len(items)} direct change(s) already stated") + \
+        (f"; {len(left)} not stated as it stands ({len(qs)} round-trip question(s))" if left or qs else "; each reads back as itself")
 
 
-def _draft_fallback(hub, co: dict, unstated: list[dict]) -> list[dict]:
-    """The prose for direct changes, written by the sentence grammar into the carried revisions (as their makers)."""
+def _draft_fallback(hub, co: dict, todo: list[dict]) -> list[dict]:
+    """The prose for direct changes written by the sentence grammar into the carried revisions, in their makers' names
+    (used only when hubproto.prose_drafting is missing). Returns no question: an item that is not stated after the
+    compile is shown with a round-trip warning."""
     from . import sop_settings
 
-    p = _proposal(hub, co)
-    compiled = list((p or {}).get("rules") or hub.settings_rules())
+    base = hub.settings_rules()
     processes = _bundle(hub).get("processes") or {}
-    report = []
-    makers: dict[str, list[dict]] = {}
-    for it in unstated:
-        o = it.get("origin") or {}
-        makers.setdefault(o.get("accepted_by") or o.get("by") or requester(co), []).append(it)
-    for maker, its in makers.items():
-        target = list(compiled)
-        for it in its:
-            if it["op"] == "add":
-                s, cf = _slot(it["rule"]), it.get("changes_from")
-                target = [r for r in target if _slot(r) != s and not (cf and rule_key(r) == rule_key(cf))] + [it["rule"]]
-            else:
-                target = [r for r in target if rule_key(r) != rule_key(it["rule"])]
-        planned = sop_settings.plan(compiled, target, processes)
+    items = _items(co)
+    for it in todo:
+        maker = (it.get("origin") or {}).get("accepted_by") or (it.get("origin") or {}).get("by") or requester(co)
+        planned = sop_settings.plan(base, _apply(base, [it]), processes)
         try:
-            report += sop_settings.apply_plan(hub, co["locator"], planned, by=maker)
-        except ValueError as e:
-            report.append({"ok": False, "detail": str(e), "by": maker, "items": [it["id"] for it in its]})
-    return report
+            rep = sop_settings.apply_plan(hub, co["locator"], planned, by=maker)
+        except ValueError:
+            continue
+        if rep and all(r.get("ok") for r in rep):
+            for x in items:
+                if x["id"] == it["id"]:
+                    x["stated"] = {"sop": rep[0].get("sop"), "draft": rep[0].get("draft"), "by": maker, "how": "sentence", "at": utcnow()}
+    _set(hub, co, direct_changes=items)
+    return []
 
 
 def round_check(hub, co_ref, n: int) -> str:
@@ -1267,10 +1346,10 @@ def _parse_review(hub, co: dict, text: str, prefix: str, ids: set[str]) -> tuple
             raw = {"frame": parts[0], "section": parts[1], "sentence": parts[2]} if len(parts) >= 3 else {"sentence": body}
             ss.append(_suggestion(hub, co, raw, f"{prefix}S{len(ss) + 1}"))
             continue
-        target, _, rest = body.partition(":")
-        target = target.strip()
+        m2 = re.match(r"^(\S+):\s+(.*)$", body)  # "<item id>: text" (ids hold colons) or "general: text"
+        target, rest = (m2.group(1), m2.group(2)) if m2 else ("", body)
         about = {"item": target} if target in ids else {}
-        txt = (rest.strip() or body) if (target in ids or target.lower() == "general") else body
+        txt = rest.strip() if (target in ids or target.lower() == "general") else body
         if kind == "question":
             qs.append({"id": f"{prefix}Q{len(qs) + 1}", "text": txt, "item": about.get("item"), "status": "open", "answer": None, "by": None})
         else:
@@ -1520,7 +1599,7 @@ def state_questions(hub, co_ref) -> list[dict]:
             if count:
                 out.append({"process": name, "state": s, "count": count, "record_type": rtype, "answer": (smap.get(name) or {}).get(s)})
     for q in p.get("questions") or []:
-        if q.get("kind") == "state-map" and q.get("process") and q.get("state") and (q["process"], q["state"]) not in {(x["process"], x["state"]) for x in out}:
+        if "state-map" in (q.get("kind"), q.get("code")) and q.get("process") and q.get("state") and (q["process"], q["state"]) not in {(x["process"], x["state"]) for x in out}:
             out.append({"process": q.get("process"), "state": q.get("state"), "count": q.get("count") or 0, "record_type": q.get("record_type"),
                         "answer": (smap.get(q["process"]) or {}).get(q["state"])})
     return out
@@ -1613,6 +1692,12 @@ def send_reasons(hub, co_ref) -> list[str]:
         reasons.append(f"the baseline changed: {bc.get('by')} was released ({'; '.join(bc.get('reasons') or [])}): run another review round")
     reasons += list(f.get("staged_errors") or [])
     reasons += formlayout.carried_reasons(hub, co)
+    try:
+        from . import recordtypes  # workstream 4: record-type changes carried on change orders
+    except ImportError:
+        recordtypes = None
+    if recordtypes is not None:
+        reasons += recordtypes.carried_reasons(hub, co)
     reasons += _cr_reasons(hub, co)
     return reasons
 
@@ -1847,15 +1932,8 @@ def apply_delta(hub, co_ref) -> dict:
         st = item_state(c, owners)
         if c.get("unstated"):
             if st == "approved":
-                r = _effective(c)
-                if c["op"] == "remove" and not c.get("override"):
-                    rules.pop(rule_key(c["rule"]), None)
-                else:
-                    if c.get("changes_from"):
-                        rules.pop(rule_key(c["changes_from"]), None)
-                    if c["op"] == "remove":
-                        rules.pop(rule_key(c["rule"]), None)
-                    rules[rule_key(r)] = r
+                old, new = _old_new(c)
+                _with(rules, old, (c.get("override") or {}).get("rule") or new)
                 n_direct += 1
             applied.append({**c, "state": st})
             continue

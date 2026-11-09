@@ -33,6 +33,58 @@ def _reviewers(rules: list[dict]) -> set[str]:
     return {r["principal"] for r in rules if r["kind"] == "member" and POLICY_OWNER_ROLE in r["roles"]}
 
 
+# ---------------------------------------------------------------- questions (change control v2, section 8)
+COMPILE_QUESTION_CODES = ("ambiguous", "unread")  # raised by compiling: a recompile that no longer raises one closes it
+
+
+def question(frame: str, line: int | None, text: str, *, raised_by: str, code: str = "ambiguous", **extra) -> dict:
+    """A question on a proposal: where the prose is ambiguous ("ambiguous", a reader's), where a reading in force lost its
+    line ("unread", the hub's), or where drafted prose does not read back as its direct change ("round-trip"). Its id is
+    the same for the same SOP, line and words, so a recompile finds it again."""
+    from .rules import sha256_of
+
+    line = int(line or 0)
+    return {"id": "q-" + sha256_of({"frame": frame, "line": line, "text": text})[:12], "text": text, "frame": frame, "line": line,
+            "raised_by": raised_by, "status": "open", "answer": None, "by": None, "code": code, **extra}
+
+
+def carry_questions(previous: list[dict], current: list[dict], codes=COMPILE_QUESTION_CODES) -> list[dict]:
+    """The questions of a recompile, given the earlier proposal's. A question asked again keeps a person's answer; an open
+    one of ``codes`` that is not asked again is closed ("no longer arises at line n"), and comes back open if it is asked
+    again later; questions of other codes, and closed ones, are carried as they were. Idempotent."""
+    prev = {q.get("id"): q for q in previous or []}
+    now = {q.get("id") for q in current or []}
+    out = []
+    for q in current or []:
+        old = prev.get(q.get("id"))
+        if old and old.get("status") in ("answered", "overridden") and old.get("by") not in (None, "", "hub"):
+            q = {**q, "status": old["status"], "answer": old.get("answer"), "by": old.get("by")}
+        out.append(q)
+    for old in previous or []:
+        if old.get("id") in now:
+            continue
+        if old.get("status") == "open" and (codes is None or old.get("code", "ambiguous") in codes):
+            old = {**old, "status": "answered", "answer": f"no longer arises at line {old.get('line')}", "by": "hub"}
+        out.append(old)
+    return out
+
+
+def stamp_origins(changes: list[dict], *, kind: str = "prose", by: str | None = None, at: str | None = None) -> list[dict]:
+    """Each change (delta item) says where it came from (section 8): ``origin`` (for prose, the SOP, line and words it was
+    read from and who read them: ``read_by`` for a model's reading), an empty ``warnings`` list and ``stale: False``.
+    A change that already has an origin (direct, suggested, override: change-order core) keeps it."""
+    for c in changes:
+        src = (c.get("rule") or {}).get("source") or {}
+        if c.get("op") == "text":
+            where = {"frame": c.get("frame"), "line": None, "quote": None, "read_by": None}
+        else:
+            where = {"frame": src.get("frame"), "line": src.get("line"), "quote": src.get("text"), "read_by": src.get("read_by") or None}
+        c.setdefault("origin", {"kind": kind, "by": by if by is not None else src.get("by"), **where, "at": at or src.get("at")})
+        c.setdefault("warnings", [])
+        c.setdefault("stale", False)
+    return changes
+
+
 def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], releases: ReleaseStore,
                      extractor=None, now: str | None = None, record_types: dict | None = None,
                      config_digests: dict | None = None, resolve_document=None) -> dict:
@@ -40,10 +92,13 @@ def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], re
     frames = store.resolve(scopes)
     rules: list[dict] = []
     notes: list[dict] = []
+    questions: dict[str, dict] = {}
     for frame in frames:
         ex = extractor.extract(frame)
         rules.extend(ex.rules)
         notes.extend(ex.notes)
+        for q in getattr(ex, "questions", None) or []:  # where the prose is ambiguous (a diff reading, hubproto.llm_extract)
+            questions.setdefault(q["id"], q)
     # A cog's linked documents (its prompt, its references) are pinned to the version current at compile time, so a
     # release says exactly what each cog read; a newer version of the document is a change the policy owners review.
     doc_findings = []
@@ -101,9 +156,11 @@ def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], re
         if src.get("read_by"):
             c["read_by"] = src["read_by"]
             c["reason"] = f"{c['reason']} (read by {src['read_by']} from “{src.get('text')}”)"
+    created = now or utcnow()
+    stamp_origins(changes, at=created)
     proposal = {
         "id": uuid.uuid4().hex[:12],
-        "created_at": now or utcnow(),
+        "created_at": created,
         "extractor": extractor.name,
         "scopes": scopes,
         "frames": store.bill_of_materials(frames),
@@ -114,6 +171,7 @@ def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], re
         "notes": notes,
         "findings": [f.as_dict() for f in findings],
         "changes": changes,
+        "questions": list(questions.values()),
         "base": base["digest"] if base else None,
         # Policy owners are those of the release in force; a proposal cannot appoint its own reviewers.
         "reviewers": sorted(_reviewers(old_rules) if old_rules else _reviewers(rules)),

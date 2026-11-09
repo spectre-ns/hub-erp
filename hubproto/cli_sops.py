@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from .cli import _hub, require_member
+from .cli import _hub, fail, require_member
 
 
 def cmd_convert(args) -> int:
@@ -20,6 +20,12 @@ def cmd_convert(args) -> int:
     if not {"policy-owner", "document-controller"} & set(authz.roles_of(bundle, args.as_user)):
         print(f"{args.as_user} is neither a policy owner nor a document controller: they do not convert the policy")
         return 2
+    if hub.sop_source():
+        print("the SOPs are documents already; nothing to do (`hubproto sops status`)")
+        return 0
+    blockers = sopdocs.conversion_blockers(hub)
+    if blockers:  # converting must change no rule, and leave a way (the change-order process) to change them after
+        fail("not converted: " + "; ".join(blockers), 1)
     made = sopdocs.convert(hub, by=args.as_user)
     for r in made:
         print(f"{r['number']:10s} {r['fields']['doc_type']:7s} {r['folder']:30s} {r['fields']['sop_name']}")
