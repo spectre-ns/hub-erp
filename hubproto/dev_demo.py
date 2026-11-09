@@ -7,8 +7,9 @@ skipped; the exit code is 1 when nothing could be made.
 
 * an open nonconformance waiting for carol (the quality manager dispositions it);
 * a bill under the ap-reviewer cog's limit (the cog approves it within its criteria and the ledger posts it);
-* an open change order prepared by alice, carrying one revision of the finance policy (drafted by carol, a document
-  controller: alice owns no SOP, so she may not start a revision herself) that lowers the ap-reviewer limit.
+* an open change order prepared by alice, carrying one revision of the finance policy that lowers the ap-reviewer limit
+  (started by carol, a document controller, since alice owns no SOP; written by bob, a policy owner, so carol, the
+  quality manager, did not write it and may sign the change order).
 """
 
 from __future__ import annotations
@@ -49,12 +50,15 @@ def change_order(hub) -> str:
     co = hub.kernel.create("change-order", "Quality/Changes", {
         "title": "Lower the AP cog limit", "description": "Bills from 1,500 USD up should get a person's review.",
         "requested_by": "alice"}, by="alice")
-    draft = eco.add_sop(hub, co["number"], "finance-policy", by="carol")
+    try:
+        draft = eco.add_sop(hub, co["number"], "finance-policy", by="carol", author="bob")  # bob writes it; carol may then sign
+    except TypeError:  # a branch whose add_sop has no author yet
+        draft = eco.add_sop(hub, co["number"], "finance-policy", by="carol")
     text = sopdocs.frame_text(hub, draft)
     _, body = text.split("\n---\n", 1)
     if AP_OLD not in body:
         raise ValueError("the finance policy no longer states the ap-reviewer limit this demo lowers")
-    hub.dms.add_version(draft["locator"], sopdocs.to_docx(body.replace(AP_OLD, AP_NEW)), by="carol",
+    hub.dms.add_version(draft["locator"], sopdocs.to_docx(body.replace(AP_OLD, AP_NEW)), by=draft["fields"].get("author") or "carol",
                         filename=f"{draft['fields']['sop_name']}.docx", note="lower the ap-reviewer limit to 1,500 USD",
                         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
     print(f"change order {co['number']} prepared by alice, carrying {draft['number']} (finance-policy rev "
