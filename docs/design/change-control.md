@@ -417,3 +417,13 @@ each answer stays visible as an accepted warning on the items it concerns.
 A policy owner who made or contributed to a widening may be one of its two approving policy owners,
 provided the other owner contributed nothing to the change order. A maker is never the only approver
 of anything, and never decides a non-widening item of their own change.
+
+## 16. Opening drafts; procedural prose (decided 2026-11-09)
+
+- A **policy owner** may open a draft revision of any SOP or policy on a change order, and may add new
+  documents and retirements to it; doing so counts as contributing. Requesters and document controllers
+  keep their rights.
+- A sentence that states an obligation people carry out and the hub does not configure (an access review,
+  backup and restore, incidents) is answered as **a procedure people follow; the hub does not enforce it**:
+  not a divergence. Where the hub could configure it (a duty for the it-admin cog, a segregation-of-duties
+  rule), that is backlog for a later change order.
