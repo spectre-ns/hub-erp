@@ -74,7 +74,11 @@ fit the model's window. Every change on a proposal says where it came from (`ori
 reader) and, for a rule a model read, what it means in the hub's own words (`origin.explained`); a reading that drops
 or adds a "not" carries a `negation` warning. A rule that only moved in its file (a process below inserted lines) is
 listed as moved, not as a change to decide. Direct changes on a change order are put into prose by the qa-manager cog
-and compiled back to check they give the same rule (`hubproto/prose_drafting.py`).
+and compiled back to check they give exactly that rule and nothing else (`hubproto/prose_drafting.py`); the lines it
+drafts are credited to it. A reading may touch only the lines that changed: anything else is refused as an `outside-diff`
+question (the SOP text is fenced as data in the readers' prompts, so words aimed at the readers are ignored and reported).
+A changed sentence that reads like a rule and from which nothing was read, by the grammar or the committee, is a
+blocking `unread-rule` question for the committee's chair, also when no model reads here (`convention`).
 
 **The committee reads by consensus.** It is defined on the `senior-cogs` group (organization model, `## Groups`):
 the **senior** cogs `senior-organization` and `senior-qa-manager`, bundled with Claude Opus (`claude-opus-5-5`); the
@@ -99,7 +103,7 @@ review sentence may name a committee as reviewers. See DEV-NOTES.md, "Groups and
 
 | Compiler setting | Default | Effect |
 |---|---|---|
-| `HUBPROTO_EXTRACTOR` | `hybrid` with an Ollama (or with hosted models on and a key), else `convention` | `convention` reads the sentence shapes only; `hybrid` has the committee read the prose too |
+| `HUBPROTO_EXTRACTOR` | `hybrid` with an Ollama (or with hosted models on and a key), else `convention` | `convention` reads the sentence shapes only (tests, offline use); `hybrid` has the compile-frame committee's cogs read the prose, each with its bundled model. There is no global model override (the old `claude` value is gone and is read as unset) |
 | `HUBPROTO_MODEL_MAX_CHARS` | the model's window | the most characters one reading may send; a larger diff is read in parts |
 
 ## Once the SOPs are documents: change orders only

@@ -564,8 +564,9 @@ def test_the_compile_frame_committee_is_the_senior_cogs_each_reading_with_its_ow
         reader.call = fake(name)
     asked.clear()
     out = ex.extract(frame)
-    [q] = out.questions
-    assert asked == [] and q["code"] == "member-unavailable" and q["member"] == "senior-qa-manager" and q["chair"] == "carol"
+    [q] = [q for q in out.questions if q["code"] == "member-unavailable"]
+    assert asked == [] and q["member"] == "senior-qa-manager" and q["chair"] == "carol"
+    assert {x["code"] for x in out.questions} == {"member-unavailable", "unread-rule"}, "and the sentence nobody read is the chair's too"
     assert not [r for r in out.rules if (r.get("source") or {}).get("read_by")], "nothing read without consensus"
 
 

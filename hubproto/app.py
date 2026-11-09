@@ -135,9 +135,10 @@ class Hub:
         from .llm_extract import baseline_for, context_for
 
         ex = get_extractor(cache_dir=Path(self.root) / "state" / "extract-cache", context=context_for(self), gateway=self.model, calls=calls)
-        if getattr(ex, "name", "") != "hybrid":
-            return ex
         baseline = lambda: baseline_for(self)  # noqa: E731  diff-based reading against the release in force
+        if getattr(ex, "name", "") != "hybrid":
+            ex.baseline = baseline  # the grammar alone still asks about changed prose it cannot read (unread-rule)
+            return ex
         committee = self.compile_committee()
         if committee:
             from .llm_extract import CommitteeExtractor
@@ -388,10 +389,17 @@ class Hub:
         proposal["draft_authors"] = authors
         writers = {n: ((self.kernel.get(o["draft"]) or {}).get("fields") or {}).get("author") or (authors.get(n) or [None])[-1]
                    for n, o in proposal["overrides"].items() if o.get("draft")}
+        # Lines a cog drafted into a revision (the qa-manager stating a direct change: hubproto.prose_drafting) are the cog's.
+        drafted = {n: {str(x.get("text") or "").strip(): x.get("by") for x in
+                       (((self.kernel.get(o["draft"]) or {}).get("fields") or {}).get("drafted_lines") or [])}
+                   for n, o in proposal["overrides"].items() if o.get("draft")}
         for c in proposal["changes"]:  # a change read from a draft's prose came from that draft's author
             o = c.get("origin") or {}
-            if o.get("kind") == "prose" and not o.get("by") and writers.get(o.get("frame")):
-                o["by"] = writers[o["frame"]]
+            cog = (drafted.get(o.get("frame")) or {}).get(str(o.get("quote") or "").strip())
+            if o.get("kind") == "prose" and not o.get("by") and (cog or writers.get(o.get("frame"))):
+                o["by"] = cog or writers[o["frame"]]
+                if cog:
+                    o["drafted_by"] = cog
         from .model import resolve_model
 
         for r in proposal["rules"]:  # a cog is bundled with its model: say now if this hub cannot reach it
