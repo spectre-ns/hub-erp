@@ -35,9 +35,9 @@ EDITOR_CSS = """
 .wf-ed{--wf-h:clamp(420px,66vh,920px)}.wf-tools{position:sticky;top:0;z-index:3;background:var(--bg);padding:var(--sp-1) 0;gap:var(--sp-1)}
 .wf-tools form{display:inline}.wf-tools .sep{width:1px;align-self:stretch;background:var(--line);margin:0 var(--sp-1)}.wf-tools .saved{margin-left:auto;font-size:var(--fs-s);color:var(--muted)}
 body:has(.wf-ed) .layout{grid-template-columns:minmax(0,1fr)}body:has(.wf-ed) nav.rail{display:none}body:has(.wf-ed) main{max-width:none}
-.wf-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(17rem,22rem);gap:var(--sp-3);align-items:start}
+.wf-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(16rem,20rem);gap:var(--sp-3);align-items:start}
 .wf-canvas{position:relative;height:var(--wf-h);border:1px solid var(--line);border-radius:var(--r-lg);background:var(--bg);background-image:radial-gradient(var(--line) 1px,transparent 1px);background-size:16px 16px;overflow:hidden;touch-action:none}
-.wf-canvas svg.wf{width:100%;height:100%;max-height:none}.wf-canvas:focus-within{border-color:var(--focus)}
+.wf-canvas svg.wf{width:100%;height:100%;max-height:none}.wf-pan-hint{position:absolute;right:8px;bottom:8px;margin:0;padding:2px 8px;border-radius:999px;background:var(--panel);border:1px solid var(--line);font-size:var(--fs-s);color:var(--muted);pointer-events:none}.wf-canvas:focus-within{border-color:var(--focus)}
 .wf-side{max-height:calc(var(--wf-h) + 60px);overflow:auto;padding-right:2px}.wf-side h2{font-size:var(--fs-m);margin:var(--sp-3) 0 var(--sp-1)}
 .wf-panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--sp-3)}.wf-panel h2{margin-top:0;font-size:var(--fs-l)}
 .wf-panel .fields,.wf-text .fields{display:grid;gap:var(--sp-2)}.wf-panel form{margin:0 0 var(--sp-3)}.wf-panel fieldset,.wf-text fieldset{border:1px solid var(--line);border-radius:var(--r);padding:var(--sp-2);margin:0}
@@ -64,14 +64,16 @@ function saved(t){var s=document.getElementById('wf-saved');if(s)s.textContent=t
 function esc(s){return CSS.escape(s)}
 function n1(v){return Math.round(v*10)/10}
 function snap(v){return Math.round(v/G.GRID)*G.GRID}
-function setVB(){svg.setAttribute('viewBox',vb.map(n1).join(' '))}
+var VKEY='hub.wf.view.'+D.as+'.'+D.process,saveT=null;
+function setVB(){svg.setAttribute('viewBox',vb.map(n1).join(' '));clearTimeout(saveT);saveT=setTimeout(function(){try{localStorage.setItem(VKEY,JSON.stringify(vb))}catch(e){}},150);
+ var hint=document.getElementById('wf-pan-hint');if(hint)hint.hidden=!(content[0]<vb[0]-1||content[1]<vb[1]-1||content[0]+content[2]>vb[0]+vb[2]+1||content[1]+content[3]>vb[1]+vb[3]+1)}
 function pt(ev){var p=svg.createSVGPoint();p.x=ev.clientX;p.y=ev.clientY;return p.matrixTransform(svg.getScreenCTM().inverse())}
 function scale(){var r=svg.getBoundingClientRect();return Math.max(vb[2]/r.width,vb[3]/r.height)}
 function node(id){return svg.querySelector('.wf-s[data-id="'+esc(id)+'"]')}
 function lbl(id){return svg.querySelector('.wf-l[data-id="'+esc(id)+'"]')}
 function pos(g){var m=/translate\(([-\d.]+),([-\d.]+)\)/.exec(g.getAttribute('transform')||'');return m?[+m[1],+m[2]]:[0,0]}
 function setPos(g,x,y){g.setAttribute('transform','translate('+n1(x)+','+n1(y)+')')}
-function boxOf(id){var g=node(id);if(!g)return null;var p=pos(g);return [p[0],p[1],G.W,G.H]}
+function boxOf(id){var g=node(id);if(!g)return null;var p=pos(g);return [p[0],p[1],+g.dataset.w||G.W,+g.dataset.h||G.H]}
 function center(b){return [b[0]+b[2]/2,b[1]+b[3]/2]}
 // The geometry of hubproto.workflow_model, recomputed while something is dragged.
 function port(b,t){var c=center(b),dx=t[0]-c[0],dy=t[1]-c[1];if(Math.abs(dx)*b[3]>=Math.abs(dy)*b[2])return dx>0?[b[0]+b[2],c[1]]:[b[0],c[1]];return dy>0?[c[0],b[1]+b[3]]:[c[0],b[1]]}
@@ -81,7 +83,7 @@ function loopG(b,k){var cx=b[0]+b[2]/2,base=b[1]+b[3],hh=G.LOOP_H+G.LOOP_STEP*k,
 function stemD(l,b){var p=port(b,l);return 'M'+n1(l[0])+','+n1(l[1])+' L'+n1(p[0])+','+n1(p[1])}
 function geo(L){var ds=L.dataset,dst=boxOf(ds.dst);if(!dst)return null;var off=[+ds.dx||0,+ds.dy||0],k=+ds.k||0,n=+ds.n||1,bend=+ds.bend||0,src=(ds.src||'').split(',').filter(Boolean);
  if(ds.kind==='initial'){var sp=[dst[0]-G.START_DX,dst[1]+dst[3]/2];return {parts:{line:'M'+n1(sp[0])+','+n1(sp[1])+' L'+n1(dst[0])+','+n1(sp[1])},start:sp,label:[sp[0]+off[0],sp[1]-G.H/2-26+off[1]]}}
- if(ds.kind==='global'){var l=[dst[0]+dst[2]/2+(k-(n-1)/2)*G.GLOBAL_PITCH+off[0],dst[1]-G.GLOBAL_DY+off[1]];return {parts:{line:stemD([l[0],l[1]+18],dst)},label:l}}
+ if(ds.kind==='global'){var lw=+ds.lw||0,l=[dst[0]-G.GLOBAL_DX-lw/2+off[0],dst[1]+dst[3]/2+(k-(n-1)/2)*G.GLOBAL_PITCH+off[1]];return {parts:{line:stemD([l[0]+lw/2,l[1]],dst)},label:l}}
  if(ds.kind==='loop'){var lg=loopG(dst,k);return {parts:{line:lg.d},label:[lg.label[0]+off[0],lg.label[1]+off[1]]}}
  if(ds.kind==='edge'){var a=boxOf(src[0]);if(!a)return null;var c=curve(port(a,center(dst)),port(dst,center(a)),bend);return {parts:{line:c.d},label:[c.label[0]+off[0],c.label[1]+off[1]]}}
  var others=src.filter(function(s){return s!==ds.dst}),boxes=others.map(boxOf).filter(Boolean);if(!boxes.length)boxes=[dst];var sx=0,sy=0;
@@ -90,9 +92,10 @@ function geo(L){var ds=L.dataset,dst=boxOf(ds.dst);if(!dst)return null;var off=[
 function route(L){var g=geo(L);if(!g)return;var id=L.dataset.id;svg.querySelectorAll('.wf-e[data-t="'+esc(id)+'"] path').forEach(function(p){var d=g.parts[p.getAttribute('data-part')];if(d)p.setAttribute('d',d)});
  if(g.start){var c=svg.querySelector('.wf-e[data-t="'+esc(id)+'"] .wf-start');if(c){c.setAttribute('cx',n1(g.start[0]));c.setAttribute('cy',n1(g.start[1]))}}setPos(L,g.label[0],g.label[1])}
 function routeAround(sid){svg.querySelectorAll('.wf-l').forEach(function(L){if(L.dataset.dst===sid||(','+L.dataset.src+',').indexOf(','+sid+',')>=0)route(L)})}
-function fitLabels(){svg.querySelectorAll('.wf-l').forEach(function(L){var a=L.querySelector('.wf-lname'),b=L.querySelector('.wf-lbadge');if(!a||!b||!a.getComputedTextLength)return;
- var w=Math.ceil(Math.max(a.getComputedTextLength(),b.getComputedTextLength()+15)+20);var r=L.querySelector('.wf-lbox');r.setAttribute('x',-w/2);r.setAttribute('width',w);
- a.setAttribute('x',-w/2+10);b.setAttribute('x',-w/2+25);var u=L.querySelector('use');if(u)u.setAttribute('x',-w/2+9);
+function fitLabels(){svg.querySelectorAll('.wf-l').forEach(function(L){if(L.dataset.kind==='global')return;var ts=L.querySelectorAll('text.wf-lname,text.wf-lbadge');if(!ts.length||!ts[0].getComputedTextLength)return;
+ var w=0;ts.forEach(function(t){w=Math.max(w,t.getComputedTextLength()+(t.classList.contains('wf-lbadge')?15:0))});w=Math.ceil(w+20);var r=L.querySelector('.wf-lbox');
+ if(w<=+r.getAttribute('width'))return;r.setAttribute('x',-w/2);r.setAttribute('width',w);
+ ts.forEach(function(t){t.setAttribute('x',-w/2+(t.classList.contains('wf-lbadge')?25:10))});var u=L.querySelector('use');if(u)u.setAttribute('x',-w/2+9);
  L.querySelectorAll('.wf-mk circle').forEach(function(c){c.setAttribute('cx',w/2)});L.querySelectorAll('.wf-mk text').forEach(function(t){t.setAttribute('x',w/2)});
  L.querySelectorAll('.wf-flag circle').forEach(function(c){c.setAttribute('cx',-w/2)});L.querySelectorAll('.wf-flag text').forEach(function(t){t.setAttribute('x',-w/2)})})}
 // --- selection and the panel
@@ -138,7 +141,7 @@ function swap(j){if(drag){pending=j;return}var f=document.activeElement,fid=(f&&
 function reveal(el){if(!el)return;var b=el.getBBox(),p=el.transform&&el.transform.baseVal.consolidate();var x=b.x+(p?p.matrix.e:0),y=b.y+(p?p.matrix.f:0);
  if(x<vb[0]||y<vb[1]||x+b.width>vb[0]+vb[2]||y+b.height>vb[1]+vb[3]){vb[0]=x+b.width/2-vb[2]/2;vb[1]=y+b.height/2-vb[3]/2;setVB()}}
 // --- zoom and pan through the viewBox
-function zoom(f,cx,cy){var w=vb[2]*f,h=vb[3]*f;if(w<content[2]/6||w>content[2]*4)return;if(cx==null){cx=vb[0]+vb[2]/2;cy=vb[1]+vb[3]/2}
+function zoom(f,cx,cy){var w=vb[2]*f,h=vb[3]*f,r=svg.getBoundingClientRect(),k=Math.max(w/r.width,h/r.height);if(k<0.3||k>Math.max(4,1.2*Math.max(content[2]/r.width,content[3]/r.height)))return;if(cx==null){cx=vb[0]+vb[2]/2;cy=vb[1]+vb[3]/2}
  vb=[cx-(cx-vb[0])*f,cy-(cy-vb[1])*f,w,h];setVB()}
 function fit(){vb=content.slice();setVB()}
 svg.addEventListener('wheel',function(e){e.preventDefault();if(e.ctrlKey||e.metaKey){var p=pt(e);zoom(Math.exp(e.deltaY*0.002),p.x,p.y)}else{var k=scale();vb[0]+=(e.shiftKey?e.deltaY:e.deltaX)*k;vb[1]+=(e.shiftKey?0:e.deltaY)*k;setVB()}},{passive:false});
@@ -194,8 +197,17 @@ root.addEventListener('click',function(e){var a=e.target.closest('[data-sel]');i
  var z=e.target.closest('[data-wf-zoom]');if(z){var v=z.getAttribute('data-wf-zoom');if(v==='in')zoom(1/1.25);else if(v==='out')zoom(1.25);else fit()}});
 addEventListener('beforeunload',function(e){if(busy>0){e.preventDefault();e.returnValue=''}});
 fitLabels();mark();wire(root);svg.setAttribute('tabindex','-1');
-(function(){var r=svg.getBoundingClientRect();if(!r.width)return;var k=Math.max(content[2]/r.width,content[3]/r.height),most=1.3;
- if(k>most){vb=[content[0],content[1],r.width*1.15,r.height*1.15];setVB()}})();
+// The first view: readable (a status name at 13 px or more: no smaller than 1 px a unit), the canvas as tall as the
+// graph needs, the graph centred; a graph wider than the canvas is panned (drag the background, or scroll), not
+// shrunk. Fit goes smaller only when asked. The view is remembered per person and process.
+function firstView(){var wrap=svg.closest('.wf-canvas'),r=svg.getBoundingClientRect();if(!r.width)return;
+ var k=Math.min(1,Math.max(content[2]/r.width,0.8)),h=Math.round(content[3]/k)+16,max=Math.round(innerHeight*0.72);
+ wrap.style.height=Math.max(320,Math.min(h,max))+'px';r=svg.getBoundingClientRect();
+ var saved=null;try{saved=JSON.parse(localStorage.getItem(VKEY)||'null')}catch(e){}
+ if(saved&&saved.length===4&&saved.every(isFinite)){vb=saved;setVB();return}
+ var w=r.width*k,hh=r.height*k,x=content[2]>w?content[0]:content[0]+content[2]/2-w/2,y=content[3]>hh?content[1]:content[1]+content[3]/2-hh/2;
+ vb=[x,y,w,hh];setVB()}
+firstView();
 })();"""
 
 
@@ -382,7 +394,8 @@ class WorkflowsMixin:
         if st["editable"]:
             out += ("<p class='wf-help'>Select a status or a transition to change it (click it, or Tab to it and press Enter). Drag a status "
                     "to move it; drag from its round handle to another status to connect them.</p>")
-        out += "<h3>Items in each status</h3>" + table(["Status", "Items"], rows)
+        total = sum(int(v or 0) for v in items.values())
+        out += f"<details class='wf-items'><summary>Items in each status <span class='muted'>({total})</span></summary>" + table(["Status", "Items"], rows) + "</details>"
         if routes:
             out += "<h3>Routing and due dates</h3><ul>" + "".join(f"<li>{self._rule_html(r.get('source'))}</li>" for r in routes[:12]) + "</ul>"
         if cos:
@@ -645,7 +658,7 @@ class WorkflowsMixin:
         names = {s["id"]: s["name"] for s in st["doc"]["graph"]["statuses"]}
         data = {"process": process, "as": user, "editable": st["editable"], "vb": vb, "names": names, "items": st["items"], "sel": None,
                 "urls": {"op": "/workflow-op", "panel": href("/workflow-panel/" + process, user)},
-                "geo": {"W": wm.W, "H": wm.H, "GRID": wm.GRID, "LOOP_H": wm.LOOP_H, "LOOP_STEP": wm.LOOP_STEP, "GLOBAL_DY": wm.GLOBAL_DY,
+                "geo": {"W": wm.W, "H": wm.H, "GRID": wm.GRID, "LOOP_H": wm.LOOP_H, "LOOP_STEP": wm.LOOP_STEP, "GLOBAL_DX": wm.GLOBAL_DX,
                         "GLOBAL_PITCH": wm.GLOBAL_PITCH, "START_DX": wm.START_DX}}
         keys = ("<details class='wf-help'><summary>Keyboard</summary><p>Tab reaches each status and transition. Arrows move a status one grid step "
                 "(Shift: five); Enter opens it here; C connects from it; Delete deletes it; Escape deselects. Ctrl+Z undoes, Ctrl+Shift+Z redoes; "
@@ -658,7 +671,8 @@ class WorkflowsMixin:
         nojs = (f"<p class='why wf-nojs'>Without JavaScript the drawing is a picture: use the <a href='{esc(self._wf_url(process, 'text'))}'>Text view</a> "
                 "to read and change every status and transition.</p>")
         return (f"<style>{WF_CSS}{EDITOR_CSS}</style><div id='wf' class='wf-ed'>{self._wf_toolbar(process, st)}{nojs}<div class='wf-grid'>"
-                f"<div class='wf-canvas'>{svg}</div>{side}</div>"
+                f"<div class='wf-canvas'>{svg}<p id='wf-pan-hint' class='wf-pan-hint wf-jsonly' hidden>More of the workflow: drag the background "
+                f"or scroll; Fit shows it all</p></div>{side}</div>"
                 f"<dialog id='wf-dlg' class='wf-dlg' aria-labelledby='wf-dlg-h'><div id='wf-dlg-body'></div></dialog>"
                 f"<span id='live-say' class='vh' role='status' aria-live='polite'></span></div>"
                 f"<script type='application/json' id='wf-data'>{_json_in_script(data)}</script><script>{WF_JS}</script>")
