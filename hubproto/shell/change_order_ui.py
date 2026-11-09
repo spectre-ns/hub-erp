@@ -1089,9 +1089,15 @@ class ChangeOrderMixin:
                 body += (f"<p style='margin:var(--sp-1) 0 0'>Answer by {esc(q.get('by'))}: “{esc(q.get('answer'))}”"
                          + (f" ({self._co_frame_line(q.get('frame') or next(iter(sorted(cc.touches(self.hub, co).get('sop') or [])), None), q.get('answer_line'))})"
                             if q.get("answer_line") else "") + "</p>")
-            if status == "open" and ctx["answerer"]:
+            committee_q = q.get("code") in cc.COMMITTEE_CODES
+            may_answer = self._co_committee_answerer(q, ctx) if committee_q else ctx["answerer"]
+            if committee_q and status == "open" and not may_answer:
+                body += (f"<p class='why' style='margin:0'>The committee's chair ({esc(q.get('chair') or self._co_compile_chair() or '-')}) or a system "
+                         "administrator answers it.</p>")
+            if status == "open" and may_answer:
                 fid = f"answer-{anchor(q['id'])}"
-                inner = (f"<input type='hidden' name='qid' value='{esc(q['id'])}'><div class='fields'>"
+                div = (f"<label class='check'><input type='checkbox' name='record_divergence' value='1'{' checked' if self._co_cv('/co-answer', fid, 'record_divergence') else ''}> Record this as a divergence: the configuration in force will differ from the prose until a change order resolves it</label>") if committee_q else ""
+                inner = (f"<input type='hidden' name='qid' value='{esc(q['id'])}'>{div}<div class='fields'>"
                          f"<label class='f'><span>Your answer <b aria-hidden='true'>*</b></span><textarea name='answer' rows='2' required>{esc(self._co_cv('/co-answer', fid, 'answer'))}</textarea></label>"
                          f"<label class='f'><span>The line of the prose that says it</span><input name='line' inputmode='numeric' size='6' value='{esc(self._co_cv('/co-answer', fid, 'line'))}'></label></div>"
                          f"<div class='actions'><button class='secondary'>{icon('check')}Mark answered</button></div>")
@@ -1117,10 +1123,11 @@ class ChangeOrderMixin:
                "<p>It reads by consensus, so the prose it could not read is not in the delta until it can: "
                + "; ".join(f"<b>{esc(m)}</b> ({esc(why.get(m) or 'not available')})" for m in members)
                + (f". Its chair is {esc(chair)}." if chair else ".") + "</p>" + self._co_fix_unavailable_html(ctx))
-        if open_ and ctx["answerer"] and ctx["editable"] and not self._viewing_cog():
+        if open_ and self._co_committee_answerer(open_[0], ctx) and ctx["editable"] and not self._viewing_cog():
             fid = "answer-unavailable"
             act = "/co-answer-all"
-            inner = (f"<label class='f'><span>One answer for the {len(open_)} open question(s) <b aria-hidden='true'>*</b> "
+            inner = (f"<label class='check'><input type='checkbox' name='record_divergence' value='1'{' checked' if self._co_cv(act, fid, 'record_divergence') else ''}> Record this as a divergence: the configuration in force will differ from the prose until a change order resolves it</label>"
+                     + f"<label class='f'><span>One answer for the {len(open_)} open question(s) <b aria-hidden='true'>*</b> "
                      "<i>(for example: what was read, and how it was checked)</i></span>"
                      f"<textarea name='answer' rows='2' required>{esc(self._co_cv(act, fid, 'answer'))}</textarea></label>"
                      f"<div class='actions'><button class='secondary'>{icon('check')}Mark them answered</button>"
@@ -1130,6 +1137,19 @@ class ChangeOrderMixin:
         lis = "".join(f"<li>{esc(q.get('frame') or '')}: {esc(q.get('member') or '')} {chip(q.get('status', 'open'), 'warn' if q.get('status', 'open') == 'open' else 'ok')}"
                       + (f" <span class='why'>answered by {esc(q.get('by'))}: “{esc(q.get('answer'))}”</span>" if q.get("answer") else "") + "</li>" for q in unav)
         return out + details("Each question", f"<ul>{lis}</ul>") + "</div>"
+
+    def _co_compile_chair(self) -> str:
+        try:
+            return (self.hub.compile_committee() or {}).get("chair") or ""
+        except Exception:
+            return ""
+
+    def _co_committee_answerer(self, q: dict, ctx: dict) -> bool:
+        """A committee question is answered by its chair or a system administrator who did not contribute to the change."""
+        if self._viewing_cog() or eco.finished(ctx["co"]) or self.user in ctx["ov"]["contributors"]:
+            return False
+        chair = q.get("chair") or self._co_compile_chair()
+        return self.user == chair or self.user in self._co_sysadmins()
 
     def _co_findings_html(self, ctx: dict) -> str:
         fs = ctx["ov"]["findings"]
