@@ -97,13 +97,19 @@ def sentence(rule: dict, processes: dict | None = None) -> str:
     if k == "folder":
         return f"- {rule['path']}"
     if k == "permission":
-        subject = plural(rule["subject"].partition(":")[2]).capitalize()
+        kind_, _, name_ = rule["subject"].partition(":")
+        subject = f"The {name_} cog" if kind_ == "cog" else plural(name_).capitalize()
         neg = "not " if rule.get("effect") == "deny" else ""
         folder = rule["resource"].partition(":")[2]
         if rule["action"] == "read" and rule["object"] == "*":
             return f"{subject} may {neg}read {folder}."
         obj = "anything" if rule["object"] == "*" else plural(rule["object"])
-        return f"{subject} may {neg}{rule['action']} {obj} in {folder}."
+        on = " on" if rule["action"] == "comment" else ""
+        confirm = ""
+        if rule.get("effect") == "propose":
+            cf = rule.get("confirmer") or "person"
+            confirm = f" when {'an' if cf[:1] in 'aeiou' else 'a'} {_words(cf)} confirms"
+        return f"{subject} may {neg}{rule['action']}{on} {obj} in {folder}{confirm}."
     if k == "threshold":
         return f"The {_words(rule['name'])} is {money(rule['value'])} {rule['unit']}."
     if k == "routing":
@@ -138,24 +144,38 @@ def sentence(rule: dict, processes: dict | None = None) -> str:
     if k == "sod":
         # Written as the grammar reads them: the roles and the object keep their hyphens ("received-by", "stock-adjustment").
         a, b = rule["roles"]
+        if rule.get("only"):
+            return f"Whoever {_words(a)} on a {rule['object']} is not its only approver."
         return f"The {a} and the {b} of a {rule['object']} must be different people."
+    if k == "duty":
+        return f"Every {rule.get('every') or 'day'} the {rule['cog']} cog {rule['task']}"
+    if k == "audience":
+        return "For: " + " and ".join(f"`{r}`" for r in rule.get("roles") or []) + "."
     if k == "cog":
-        lines = [f"## Cog: {rule['name']}", f"Model: {rule.get('model') or ''}"]
+        lines = [f"## Cog: {rule['name']}"]
+        if rule.get("about"):
+            lines.append(f"About: {rule['about']}")
+        lines.append(f"Model: {rule.get('model') or ''}")
+        if rule.get("persona"):
+            lines.append(f"Persona: {rule['persona']}")
         if rule.get("prompt_from"):
             lines.append(f"Prompt from: {rule['prompt_from']}")
-        if rule.get("prompt"):
-            lines.append(f"Prompt: {rule['prompt']}")
-        if rule.get("follows"):
-            lines.append("Follows: " + ", ".join(rule["follows"]))
-        if rule.get("reviews"):
-            lines.append("Reviews: " + ", ".join(rule["reviews"]))
         if rule.get("references"):
             lines.append("References: " + ", ".join(rule["references"]))
-        if rule.get("autonomy"):
-            lines.append(f"Autonomy: {rule['autonomy']}")
+        return "\n".join(lines)
+    if k == "persona":
+        lines = [f"## Persona: {rule['name']}"]
+        for key in ("tone", "stance"):
+            if rule.get(key):
+                lines.append(f"{key.capitalize()}: {rule[key]}")
         if rule.get("lenses"):
             lines.append("Lenses: " + ", ".join(rule["lenses"]))
-        lines += [f"Duty: {d}" for d in rule.get("duties") or []]
+        if rule.get("passes"):
+            lines.append(f"Reviews: {int(rule['passes'])} adversarial pass{'es' if int(rule['passes']) != 1 else ''}")
+        if rule.get("escalates"):
+            lines.append(f"Escalates: {rule['escalates']}")
+        if rule.get("behaviour"):
+            lines.append(f"Behaviour: {rule['behaviour']}")
         return "\n".join(lines)
     if k == "process":
         lines = [f"## Process: {rule['name']}", f"Records are filed in {rule['folder']}."]

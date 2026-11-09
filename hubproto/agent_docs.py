@@ -8,7 +8,7 @@ import difflib
 import re
 
 from . import authz, edits, office, wopi
-from .agent import register
+from .agent import intent_new_document, intent_on_document, register
 
 DOC_EXTS = ("docx", "md", "xlsx", "odt", "ods")
 LIVE_STATES = ("open", "draft", "returned", "failed")
@@ -60,7 +60,7 @@ register({"name": "create_document",
               "format": {"type": "string", "enum": list(DOC_EXTS)},
               "text": {"type": "string", "description": "starting content: lines in the writing markup, or '| a | b |' rows for a sheet"}},
               "required": ["title"]}},
-         create_document, write=True)
+         create_document, write=True, intent=intent_new_document)
 
 
 # ---------------------------------------------------------------- apply_document_ops
@@ -106,7 +106,7 @@ register({"name": "apply_document_ops",
                          "(e.g. '@@ replace: shall' then '@@ with: must'; '@@ delete section: Records'; '@@ insert after: <text>' then "
                          "the lines). You get a report per operation.",
           "parameters": {"type": "object", "properties": {"number": {"type": "string"}, "ops": {"type": "string"}}, "required": ["number", "ops"]}},
-         apply_document_ops, write=True)
+         apply_document_ops, write=True, intent=intent_on_document)
 
 
 # ---------------------------------------------------------------- document_versions
@@ -204,6 +204,49 @@ register({"name": "read_procedure",
                                                           "from_line": {"type": "integer"}, "to_line": {"type": "integer"}},
                          "required": ["name"]}},
          read_procedure, write=False)
+
+
+def read_sop_section(tools, a: dict) -> dict:
+    """One section of an SOP the cog follows, as released, with file line numbers; without a heading, the list of its
+    sections. A cog's context holds its process, not whole SOPs: this is how it reads the rest."""
+    name = str(a.get("name") or "").strip()
+    heading = str(a.get("heading") or "").strip().lstrip("#").strip()
+    prof = (tools.bundle.get("cogs") or {}).get(getattr(tools, "cog", "")) or {}
+    follows = prof.get("follows")
+    if follows is not None and name not in follows:
+        return {"error": f"you do not follow {name!r}; the SOPs you follow are: {', '.join(follows) or 'none'}"}
+    frames = {f.name: f for f in _released_frames(tools)}
+    frame = frames.get(name)
+    if frame is None:
+        return {"error": f"no SOP named {name!r} in the release"}
+    lines = frame.file_lines
+    heads = [(i, ln.lstrip("#").strip()) for i, ln in enumerate(lines, 1) if i >= frame.body_start and ln.startswith("## ")]
+    if not heading:
+        return {"sop": name, "version": frame.version, "description": frame.description, "sections": [h for _, h in heads]}
+    want = heading.lower()
+    at = next((i for i, h in heads if h.lower() == want), None) or next((i for i, h in heads if h.lower().startswith(want)), None) \
+        or next((i for i, h in heads if want in h.lower()), None)
+    if at is None:
+        return {"error": f"{name} has no section {heading!r}", "sections": [h for _, h in heads]}
+    end = next((i for i, _ in heads if i > at), len(lines) + 1)
+    text, size = [], 0
+    for n in range(at, end):
+        row = f"{n:4d}: {lines[n - 1]}"
+        if size + len(row) > 12000:
+            text.append(f"[... cut at line {n - 1}; read_procedure({name!r}, from_line={n}) reads on]")
+            break
+        text.append(row)
+        size += len(row) + 1
+    return {"sop": name, "version": frame.version, "section": lines[at - 1].lstrip("#").strip(), "lines": f"{at}-{end - 1}", "text": "\n".join(text)}
+
+
+register({"name": "read_sop_section",
+          "description": "Read one section of an SOP you follow (as released, with line numbers to cite), e.g. name='ncr-sop', "
+                         "heading='Routing'; without a heading it lists the SOP's sections.",
+          "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "the SOP, e.g. document-control-sop"},
+                                                          "heading": {"type": "string", "description": "the section heading, e.g. Permissions or Process: nonconformance"}},
+                         "required": ["name"]}},
+         read_sop_section, write=False)
 
 
 _STOP = {"the", "and", "for", "who", "what", "which", "when", "where", "how", "does", "are", "with", "that", "this", "from", "into",

@@ -561,18 +561,19 @@ class Hub:
         people come from the identity provider; their roles still come from this Frame.)"""
         return self.propose_new_member(kind="person", name=name, roles=roles, by=by)
 
-    def propose_new_cog(self, *, name: str, roles: list[str], model: str, prompt: str, follows: list[str], autonomy: str,
-                        duties: list[str], by: str) -> dict:
-        """A new cog as one policy proposal: the member in the organization model and its profile, drafted as changes
-        to those two Frames. The policy owners review and release it; on release the hub installs it."""
-        return self.propose_new_member(kind="cog", name=name, roles=roles, model=model, prompt=prompt, follows=follows,
-                                       autonomy=autonomy, duties=duties, by=by)
+    def propose_new_cog(self, *, name: str, roles: list[str], model: str, about: str, persona: str, by: str) -> dict:
+        """A new cog as one policy proposal: the member and its roles in the organization model and its identity (what it
+        does, its model, its persona) in the cog profiles, drafted as changes to those two Frames. What it follows, what
+        it may do and its duties come from the SOPs that name it or its roles. The policy owners review and release it;
+        on release the hub installs it."""
+        return self.propose_new_member(kind="cog", name=name, roles=roles, model=model, about=about, persona=persona, by=by)
 
-    def propose_new_member(self, *, kind: str, name: str, roles: list[str], by: str, model: str = "", prompt: str = "",
-                           follows: list[str] | None = None, autonomy: str = "propose", duties: list[str] | None = None) -> dict:
+    def propose_new_member(self, *, kind: str, name: str, roles: list[str], by: str, model: str = "", about: str = "",
+                           persona: str = "") -> dict:
         import re as _re
 
-        follows, duties = list(follows or []), list(duties or [])
+        about = " ".join((about or "").split())
+        persona = (persona or "").strip().removeprefix("persona-")
         if self.sop_source():
             # The Frame is derived from the SOPs: the member goes into the organization model, a cog's profile into
             # the cog profiles, both as revisions on a change order.
@@ -581,8 +582,7 @@ class Hub:
                 raise ValueError(f"{name} is already a member")
             new = rules + [{"kind": "member", "principal": name, "principal_type": kind, "roles": list(roles)}]
             if kind == "cog":
-                new.append({"kind": "cog", "name": name, "model": model, "prompt": prompt, "prompt_from": "", "follows": follows,
-                            "reviews": [], "references": [], "autonomy": autonomy, "duties": duties})
+                new.append({"kind": "cog", "name": name, "about": about, "model": model, "persona": persona, "prompt_from": "", "references": []})
             return self.rules_to_change_order(by, new, reason=f"add {name} ({kind})")
         meta = self.releases.current()
         bundle = self.releases.bundle(meta["digest"]) if meta else {}
@@ -594,11 +594,13 @@ class Hub:
         unknown = [r for r in roles if r not in (bundle.get("roles") or [])]
         if unknown or not roles:
             raise ValueError("choose at least one role" if not roles else f"no such role: {', '.join(unknown)}")
-        bad = [f for f in follows if f not in self.frames.frames]
-        if bad:
-            raise ValueError(f"no such Frame: {', '.join(bad)}")
-        if kind == "cog" and autonomy not in ("read", "propose", "act"):
-            raise ValueError("autonomy is read, propose or act")
+        personas = sorted((bundle.get("personas") or {}))
+        if kind == "cog" and not about:
+            raise ValueError("say in one paragraph what the cog does (about)")
+        if kind == "cog" and persona and personas and persona not in personas:
+            raise ValueError(f"no such persona: {persona}; the personas are: {', '.join(personas)}")
+        if kind == "cog" and not persona:
+            persona = "reviewer" if "reviewer" in personas else (personas[0] if personas else "")
         org = self.frames.get("org-model")
         cogs_frame = next((f for f in self.frames.frames.values() if "## Cog:" in f.text), None) if kind == "cog" else None
         if kind == "cog" and cogs_frame is None:
@@ -620,9 +622,12 @@ class Hub:
         org_text = "\n".join(lines) + ("\n" if org.text.endswith("\n") else "")
         texts = {"org-model": org_text}
         if kind == "cog":
-            prof = [f"## Cog: {name}", f"Model: {model or 'claude-sonnet-5-5'}", f"Prompt: {' '.join((prompt or '').split()) or f'You are {name}.'}",
-                    f"Follows: {', '.join(follows)}" if follows else "Follows:", f"Autonomy: {autonomy}"] + [f"Duty: {d.strip()}" for d in duties if d.strip()]
-            texts[cogs_frame.name] = cogs_frame.text.rstrip("\n") + "\n\n" + "\n".join(prof) + "\n"
+            prof = [f"## Cog: {name}", f"About: {about}", f"Model: {model or 'claude-sonnet-5-5'}"] + ([f"Persona: {persona}"] if persona else [])
+            text = cogs_frame.text.rstrip("\n")
+            # The profile goes before the committees, with the other profiles.
+            at = text.find("\n## Committee:")
+            texts[cogs_frame.name] = (text[:at].rstrip("\n") + "\n\n" + "\n".join(prof) + "\n" + text[at:] + "\n") if at >= 0 else \
+                (text + "\n\n" + "\n".join(prof) + "\n")
         drafts = {}
         for frame_name, text in texts.items():
             d = self.frame_draft(frame_name, by=by)
@@ -949,15 +954,13 @@ class Hub:
 
     def chat_tools(self, cog: str, sender: str, run_id: str, text: str, about: str | None = None):
         """The cog's governed tools for one chat turn, recorded as an agent run (so /agent-run shows what it did and a
-        person confirms what it proposed): the look tools and, within its Autonomy, the write tools. Every write goes
-        through the same checks as anywhere else: what the cog may do and what the person asking may do."""
+        person confirms what it proposed): the look tools and the write tools, each write decided from the SOPs (act,
+        propose or refuse). Every write goes through the same checks as anywhere else: what the cog may do and what the
+        person asking may do."""
         from .agent import AgentStore, AgentTools, act_specs, agents_enabled, look_specs
 
         meta = self.releases.current()
-        bundle = self.releases.bundle(meta["digest"]) if meta else {}
-        mode = ((bundle.get("cogs") or {}).get(cog) or {}).get("autonomy") or "propose"
-        if not agents_enabled():
-            mode = "read"
+        mode = "derived" if agents_enabled() else "read"  # each write is decided from the SOPs (hubproto.agent)
         actions = int(os.environ.get("HUBPROTO_CHAT_ACTIONS") or 5)
         store = AgentStore(self.root / "state" / "agents")
         store.append(run_id, {"type": "started", "cog": cog, "goal": text, "by": sender, "trigger": "chat", "mode": mode, "about": about,

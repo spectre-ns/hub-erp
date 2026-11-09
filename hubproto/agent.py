@@ -7,9 +7,12 @@ through tools until it finishes or runs out of budget. Autonomy never bypasses p
   a comment on an item, a message to a person, starting a process (the runner checks its permission and role),
   taking its own turn at a Gate assigned to it (bound by its approval criteria), reviewing a document (filed as
   evidence) or editing a working document. Nothing writes record fields directly.
-- **Autonomy is policy**: the cog's Frame profile says ``Autonomy: read``, ``propose`` (actions wait for a person
-  to confirm them) or ``act``; changing it is a widening that two policy owners sign. ``Duty:`` lines are standing
-  goals the duty runner takes on a schedule.
+- **Autonomy is derived per action** from the SOPs (``decide``): for each write it would make (an action on a kind
+  of record in a folder) the cog **acts** where a permission for it or its roles allows it (or the step is its own:
+  its turn at a Gate, a step assigned to it); **proposes** where an SOP says a person confirms ("The stores cog may
+  move stock items in Inventory/Stock when a storekeeper confirms."): the action waits for that person; and is
+  **refused** otherwise, with the reason, and describes what should be done instead. Duties are sentences in the SOP
+  that owns the work ("Every day the quality-assistant cog finds ..."); the duty runner takes them up.
 - **Budgets and audit**: each run has a limit on model rounds and on actions; every tool call is on the run's Track
   (state/agents/<run>.jsonl); the person who handed over the task is told what was done.
 - **Kill switch**: ``HUBPROTO_AGENTS=off`` stops every run before it starts.
@@ -59,29 +62,120 @@ ACTION_TOOLS = [
      "parameters": {"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}},
 ]
 WRITE_TOOLS = {"comment", "message", "start_process", "take_turn", "review_document", "edit_document", "complete_step", "hand_back", "draft_document"}
-AUTONOMY = ("read", "propose", "act")
+# The modes a tool runner works in: "derived" (each write is decided from the SOPs: act, propose or refuse), "confirmed"
+# (a person confirmed the proposed actions: the cog's "when a person confirms" sentences hold for that person) and "read"
+# (agent runs are switched off: it only looks). "act" and "propose" are the old names; both mean "derived" now.
+MODES = ("derived", "confirmed", "read")
+# Its own step: the turn at a Gate routed to it (bound by its approval criteria), a step assigned to it.
+STEP_TOOLS = {"take_turn", "complete_step", "hand_back"}
 
-# More tools plug in here (hubproto/agent_*.py): register(spec, fn, write=...). fn(tools: AgentTools, args) -> dict.
-# A write tool counts against the run's budget and follows the cog's autonomy (proposed in 'propose', refused in 'read');
-# a look tool is free. Tools that change configuration only ever create proposals for the policy owners.
+# More tools plug in here (hubproto/agent_*.py): register(spec, fn, write=..., intent=...). fn(tools: AgentTools, args) -> dict.
+# A write tool counts against the run's budget and is decided per call from the SOPs (``intent`` says what it would do: an
+# action on a kind of record in a folder); a look tool is free. Tools that change configuration only ever create
+# proposals for the policy owners (a change order).
 EXTRA_LOOKS: dict[str, tuple[dict, object]] = {}
 EXTRA_ACTS: dict[str, tuple[dict, object]] = {}
+INTENTS: dict[str, object] = {}
 
 
-def register(spec: dict, fn, *, write: bool) -> None:
+def register(spec: dict, fn, *, write: bool, intent=None) -> None:
+    """``intent(tools, args)`` -> {"action", "object", "folder", "checked"} or {"error"}: what the write would do, so
+    the harness can decide it. ``checked``: the tool applies its own rule as well (the author of a draft, the person
+    the cog works for), so with no permission sentence either way the tool decides."""
     (EXTRA_ACTS if write else EXTRA_LOOKS)[spec["name"]] = (spec, fn)
+    if intent is not None:
+        INTENTS[spec["name"]] = intent
 
 
 def look_specs() -> list[dict]:
     return tool_specs() + [spec for spec, _ in EXTRA_LOOKS.values()]
 
 
-def act_specs(mode: str = "act") -> list[dict]:
-    """The write tools a cog has in a mode ('read' keeps only finish); finish stays last."""
+def act_specs(mode: str = "derived") -> list[dict]:
+    """The write tools a cog has ('read' keeps only finish); finish stays last. Which of them it may use on what is
+    decided per call from the SOPs."""
     if mode == "read":
         return [t for t in ACTION_TOOLS if t["name"] == "finish"]
     core = [t for t in ACTION_TOOLS if t["name"] != "finish"]
     return core + [spec for spec, _ in EXTRA_ACTS.values()] + [t for t in ACTION_TOOLS if t["name"] == "finish"]
+
+
+def normal_mode(mode: str) -> str:
+    return {"act": "derived", "propose": "derived"}.get(mode or "derived", mode or "derived")
+
+
+# ---------------------------------------------------------------- what a write would do (for the decision)
+def record_object(hub, rec: dict) -> str:
+    td = hub.kernel.types.get(rec.get("type")) or {}
+    return td.get("object") or rec.get("type") or "*"
+
+
+def intent_on_record(action: str, *, checked: bool = False, key: str = "number"):
+    def intent(t, a: dict) -> dict:
+        rec = t._find(str(a.get(key) or ""))
+        if rec is None:
+            return {"error": f"no record {a.get(key)!r} that {t.cog} may read"}
+        return {"action": action, "object": record_object(t.hub, rec), "folder": rec["folder"], "checked": checked}
+    return intent
+
+
+def intent_on_document(t, a: dict) -> dict:
+    """Changing a working document is authoring it: 'create documents' in its folder, or its own draft."""
+    from .tools import may_edit_document
+
+    rec = t._find(str(a.get("number") or ""))
+    if rec is None:
+        return {"error": f"no document {a.get('number')!r} that {t.cog} may read"}
+    ok, _ = may_edit_document(t.bundle, t.cog, rec)
+    return {"action": "create", "object": "document", "folder": rec["folder"], "checked": True,
+            "also": "it may change this document (its author, owner or filer, or a document controller)" if ok else ""}
+
+
+def intent_new_document(t, a: dict) -> dict:
+    return {"action": "create", "object": "document", "folder": str(a.get("folder") or "Quality/Controlled Documents"), "checked": True}
+
+
+def intent_start_process(t, a: dict) -> dict:
+    process = str(a.get("process") or "")
+    proc = (t.bundle.get("processes") or {}).get(process)
+    if proc is None:
+        return {"error": f"there is no process {process!r} in the policy release; the processes are: {', '.join(sorted(t.bundle.get('processes') or {}))}"}
+    return {"action": "create", "object": proc.get("object") or "*", "folder": proc.get("folder") or "", "checked": True}
+
+
+def intent_message(t, a: dict) -> dict:
+    """A message to a person is a comment addressed to them: decided like a comment in Tasks (the general channel,
+    readable by everyone) or on one of the records this run worked on, whichever the SOPs let the cog do most freely.
+    Who it may write to, and what it may pass on, is checked by the tool."""
+    from . import authz
+
+    order = ["refuse", "propose", "act"]
+    best = None
+    cands = [{"action": "comment", "object": "*", "folder": "Tasks"}]
+    for loc in sorted(t.touched):
+        rec = t.hub.kernel.get(loc)
+        if rec is not None:
+            cands.append({"action": "comment", "object": record_object(t.hub, rec), "folder": rec["folder"]})
+    for cand in cands:
+        d = authz.autonomy(t.bundle, t.cog, cand["action"], cand["object"], cand["folder"])
+        if best is None or order.index(d["mode"]) > order.index(best[1]):
+            best = (cand, d["mode"])
+    return best[0]
+
+
+def intent_change_order(t, a: dict) -> dict:
+    """A configuration change is only ever a change order (a proposal the policy owners review): raising one."""
+    return {"action": "create", "object": "change-order", "folder": "Quality/Changes"}
+
+
+CORE_INTENTS = {
+    "comment": intent_on_record("comment"),
+    "review_document": intent_on_record("comment"),  # a review is a comment filed as evidence
+    "message": intent_message,
+    "start_process": intent_start_process,
+    "draft_document": intent_new_document,
+    "edit_document": intent_on_document,
+}
 
 
 def agents_enabled() -> bool:
@@ -143,12 +237,21 @@ def may_ask_step_in(bundle: dict, run: dict, rec: dict | None, asker: str) -> st
 
 
 class AgentTools(RecordTools):
-    """The cog's tools for one run: read as the cog; write through governed paths, within the run's budget and mode."""
+    """The cog's tools for one run: read as the cog; write through governed paths, within the run's budget, each write
+    decided from the SOPs (act, propose or refuse)."""
 
-    def __init__(self, hub, cog: str, run_id: str, mode: str, max_actions: int, store: AgentStore, requester: str = "", goal: str = ""):
+    def __init__(self, hub, cog: str, run_id: str, mode: str, max_actions: int, store: AgentStore, requester: str = "", goal: str = "",
+                 confirmed_by: str = ""):
         super().__init__(hub, cog)
+        mode = normal_mode(mode)
         self.cog, self.run_id, self.mode, self.max_actions, self.store, self.requester = cog, run_id, mode, max_actions, store, requester
         self.goal = goal
+        self.confirmed_by = confirmed_by
+        if mode == "confirmed" and confirmed_by:
+            from . import authz
+
+            # The person confirmed: the cog's "when a person confirms" sentences hold for them, for this run only.
+            self.bundle = authz.confirmed_view(self.bundle, cog, confirmed_by, requester=requester)
         self.actions = 0
         self.finished_summary: str | None = None
         self.proposed: list[dict] = []
@@ -216,28 +319,66 @@ class AgentTools(RecordTools):
             return {"allowed": False, "why": f"{self.for_whom}, for whom you work, may not {action} {obj} in {folder}: {theirs['why']}"}
         return mine
 
+    def decide(self, name: str, args: dict) -> dict:
+        """Whether the cog may make this write on its own, derived from the SOPs: {"mode": "act"|"propose"|"refuse", "why",
+        "confirmer", "intent"}. Its own step (a turn at a Gate routed to it, a step assigned to it) it acts on: the runner
+        and its approval criteria decide the rest. Anything else: what the write would do (an action on a kind of record
+        in a folder) against the permissions for the cog and its roles: a deny refuses, a "when a person confirms"
+        sentence proposes, an allow acts; with none, a tool that applies its own rule (the author of a draft, the person
+        the cog works for) decides, and any other write is refused."""
+        from . import authz
+
+        if self.mode == "read":
+            return {"mode": "refuse", "confirmer": None, "intent": None,
+                    "why": "agent runs are switched off in this hub (HUBPROTO_AGENTS=off): you may only look"}
+        if name in STEP_TOOLS:
+            return {"mode": "act", "confirmer": None, "intent": None, "why": "its own step (the runner and its approval criteria decide)"}
+        fn = CORE_INTENTS.get(name) or INTENTS.get(name)
+        if fn is None:
+            return {"mode": "refuse", "confirmer": None, "intent": None,
+                    "why": f"the hub cannot tell what {name} would change, so no SOP can allow it"}
+        intent = fn(self, args)
+        if intent.get("error"):
+            return {"mode": "refuse", "confirmer": None, "intent": None, "why": intent["error"], "plain": True}
+        also = intent.get("also") or ("the tool's own rule decides" if intent.get("checked") else "")
+        # An action and the wider words the SOPs use for it ("move" stock is "update" stock): the most restrictive
+        # sentence about any of them decides, as for one action.
+        found = [authz.autonomy(self.bundle, self.cog, act, intent["object"], intent["folder"])
+                 for act in [intent["action"]] + list(intent.get("aliases") or [])]
+        d = next((x for x in found if x["mode"] == "refuse" and x["rule"]), None) or next((x for x in found if x["mode"] == "propose"), None) \
+            or next((x for x in found if x["mode"] == "act"), None)
+        if d is None:
+            d = authz.autonomy(self.bundle, self.cog, intent["action"], intent["object"], intent["folder"], also_allowed=also)
+        return {**d, "intent": {k: intent[k] for k in ("action", "object", "folder")}}
+
     def execute(self, name: str, args: dict) -> dict:
         args = args if isinstance(args, dict) else {}
         write = name in WRITE_TOOLS or name in EXTRA_ACTS
+        decision = None
         if name == "finish":
             if self.finished_summary is None:
                 self.finished_summary = str(args.get("summary") or "").strip() or "finished"
                 res = {"ok": True}
             else:
                 res = {"ok": True, "note": "the run is already finished; stop now"}
-        elif write and self.mode == "read":
-            res = {"error": f"{self.cog} may only read (Autonomy: read in its profile); describe what should be done instead"}
         elif write and self.actions >= self.max_actions:
             res = {"error": f"the run's budget of {self.max_actions} actions is used up; finish and report what is left"}
-        elif write and self.mode == "propose" and args.get("number") and self._find(str(args.get("number"))) is None:
-            res = {"error": f"no record {args.get('number')!r} that {self.cog} may read; nothing to propose there"}
-        elif write and self.mode == "propose":
-            self.proposed.append({"tool": name, "arguments": args})
+        elif write and (decision := self.decide(name, args))["mode"] == "refuse":
+            res = {"error": decision["why"] if decision.get("plain") else
+                   f"{self.cog} may not do this on its own: {decision['why']}; describe what should be done instead, and who may do it"}
+        elif write and decision["mode"] == "propose":
+            self.proposed.append({"tool": name, "arguments": args, "confirmer": decision.get("confirmer") or "person",
+                                  "rule": ((decision.get("rule") or {}).get("source") or {}).get("text")})
             self.actions += 1
-            res = {"proposed": True, "note": "recorded as a proposal; a person confirms it before it happens"}
+            who = decision.get("confirmer") or "person"
+            res = {"proposed": True, "note": f"recorded as a proposal; {'a person' if who == 'person' else 'a ' + who.replace('-', ' ')} "
+                                             f"confirms it before it happens ({decision['why']})"}
         elif write:
             self.actions += 1
             res = self.act(name, args)
+            if "error" in res and decision.get("rule") is None and name not in STEP_TOOLS and "describe what should be done" not in str(res["error"]):
+                # No SOP sentence gave it this; the tool's own rule refused it too: it reports instead of acting.
+                res = {**res, "error": f"{res['error']}; describe what should be done instead, and who may do it"}
         elif name in EXTRA_LOOKS:
             try:
                 res = EXTRA_LOOKS[name][1](self, args)
@@ -245,8 +386,10 @@ class AgentTools(RecordTools):
                 res = {"error": f"{type(e).__name__}: {e}"}
         else:
             res = self.call(name, args)
-        self.store.append(self.run_id, {"type": "tool", "tool": name, "arguments": args, "write": write, "ok": "error" not in res,
-                                        "result": as_text(res, 1500)})
+        ev = {"type": "tool", "tool": name, "arguments": args, "write": write, "ok": "error" not in res, "result": as_text(res, 1500)}
+        if decision is not None:
+            ev["decided"] = {"mode": decision["mode"], "why": decision["why"][:300], "intent": decision.get("intent")}
+        self.store.append(self.run_id, ev)
         return res
 
     # --- the governed writes
@@ -404,8 +547,12 @@ class AgentTools(RecordTools):
                           extras={"cog_profile": (self.bundle.get("cogs") or {}).get(self.cog) or {}})
 
 
+MODE_WORDS = {"derived": "each write is decided from the SOPs: you act where they let you (or your roles), a person confirms where they "
+                         "say so (your action is recorded as a proposal), and anything else is refused: then say what should be done",
+              "confirmed": "a person confirmed these actions", "read": "agent runs are switched off: you may only look and report"}
+
 AGENT_RULES = """YOU ARE WORKING ON YOUR OWN in the hub, as {cog}, on this goal: {goal}
-Mode: {mode}. Budget: at most {actions} actions and {rounds} steps.
+What you may do: {mode}. Budget: at most {actions} actions and {rounds} steps.
 - Look first (search_records, get_record, read_document, waiting_for, record_history, overview), then act with the action tools.
 - You act only through the tools. The system enforces permissions, your approval criteria and segregation of duties: if a tool refuses,
   say so in your summary and move on; do not try another way around it.
@@ -444,7 +591,7 @@ class Agent:
         if not ok:
             raise ValueError(why)
         prof = (bundle.get("cogs") or {}).get(self.cog) or {}
-        mode = prof.get("autonomy") or "propose"
+        mode = "derived"
         actions = int(max_actions or os.environ.get("HUBPROTO_AGENT_ACTIONS") or 5)
         rounds = int(max_rounds or os.environ.get("HUBPROTO_AGENT_ROUNDS") or 10)
         run_id = run_id or uuid.uuid4().hex[:10]
@@ -454,10 +601,9 @@ class Agent:
         from .cogs import cog_context
 
         specs = look_specs() + act_specs(mode)
-        system = cog_context(tools._ctx(None), None, tools_now=specs) + "\n\n" + AGENT_RULES.format(cog=self.cog, goal=goal, mode={
-            "act": "act: you may act on your own", "propose": "propose: your actions are recorded as proposals a person confirms",
-            "read": "read: you may only look and report"}[mode], actions=actions, rounds=rounds,
-            for_whom=tools.for_whom or "yourself (a standing duty)")
+        system = cog_context(tools._ctx(None), None, tools_now=specs) + "\n\n" + AGENT_RULES.format(cog=self.cog, goal=goal, mode=MODE_WORDS[mode],
+                                                                                                actions=actions, rounds=rounds,
+                                                                                                for_whom=tools.for_whom or "yourself (a standing duty)")
         return {"run": run_id, "tools": tools, "system": system, "specs": specs, "model": prof.get("model") or "stand-in", "mode": mode,
                 "goal": goal, "by": by, "rounds": rounds}
 
@@ -509,10 +655,15 @@ class Agent:
         bundle = self.hub.releases.bundle(meta["digest"]) if meta else {"members": {}}
         from . import authz
 
-        if by != start.get("by") and "policy-owner" not in authz.roles_of(bundle, by):
-            raise ValueError(f"only {start.get('by')}, who gave the task, or a policy owner confirms its actions")
-        tools = AgentTools(self.hub, cog, run_id, "act", len(end["proposed"]), self.store, requester=start.get("by") or by,
-                           goal=start.get("goal") or "")
+        requester = start.get("by") or ""
+        for p in end["proposed"]:
+            # Who confirms is what the SOP sentence says: a person in that role; "a person": whoever gave the task, or a policy owner.
+            who = p.get("confirmer") or "person"
+            if not authz.may_confirm(bundle, by, who, requester=requester):
+                raise ValueError(f"only {requester}, who gave the task, or a policy owner confirms its actions" if who == "person"
+                                 else f"only a {who.replace('-', ' ')} confirms {p['tool']} ({p.get('rule') or 'the SOP says so'})")
+        tools = AgentTools(self.hub, cog, run_id, "confirmed", len(end["proposed"]), self.store, requester=requester or by,
+                           goal=start.get("goal") or "", confirmed_by=by)
         results = []
         for p in end["proposed"]:
             results.append({"tool": p["tool"], "result": tools.execute(p["tool"], p["arguments"])})
@@ -541,8 +692,12 @@ class Agent:
         return list(self.profile().get("duties") or [])
 
 
+DUTY_DAYS = {"day": 1, "week": 7, "month": 30}
+
+
 def due_duties(hub, cog: str | None = None, today: str | None = None) -> list[tuple[str, str]]:
-    """(cog, duty) pairs not yet run today."""
+    """(cog, duty) pairs that are due: a duty sentence in an SOP ("Every day|week|month the <cog> cog ...") not taken up
+    within its period. The duty is the sentence itself, which the cog works from."""
     from datetime import date
 
     today = today or date.today().isoformat()
@@ -550,12 +705,22 @@ def due_duties(hub, cog: str | None = None, today: str | None = None) -> list[tu
     bundle = hub.releases.bundle(meta["digest"]) if meta else {}
     done = _duty_log(hub)
     out = []
-    for name, prof in sorted((bundle.get("cogs") or {}).items()):
+    duties = bundle.get("duties")
+    if duties is None:  # a release made before duties were SOP sentences: the profiles' Duty: lines, daily
+        duties = [{"cog": n, "every": "day", "source": {"text": d}} for n, prof in (bundle.get("cogs") or {}).items() for d in prof.get("duties") or []]
+    for d in sorted(duties, key=lambda x: x["cog"]):
+        name, duty = d["cog"], (d.get("source") or {}).get("text") or d.get("task") or ""
         if cog and name != cog:
             continue
-        for duty in prof.get("duties") or []:
-            if done.get(f"{name}|{sha256_of(duty)[:12]}") != today:
-                out.append((name, duty))
+        if (bundle.get("members") or {}).get(name, {}).get("type") != "cog":
+            continue
+        last = done.get(f"{name}|{sha256_of(duty)[:12]}")
+        try:
+            due = last is None or (date.fromisoformat(today) - date.fromisoformat(last)).days >= DUTY_DAYS.get(d.get("every") or "day", 1)
+        except ValueError:
+            due = last != today
+        if due:
+            out.append((name, duty))
     return out
 
 

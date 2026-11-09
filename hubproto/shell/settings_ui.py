@@ -329,7 +329,7 @@ class SettingsMixin:
         roles = sorted(r["name"] for r in rules if r["kind"] == "role")
         cogs = sorted(r["principal"] for r in rules if r["kind"] == "member" and r["principal_type"] == "cog")
         profiles = {r["name"]: r for r in rules if r["kind"] == "cog"}
-        frames = sorted(n for n in self.hub.frames.frames if self.hub.frames.get(n).scope != "reference")
+        personas = sorted(r["name"] for r in rules if r["kind"] == "persona")
         from ..model import available_models
 
         models = available_models()
@@ -360,16 +360,15 @@ class SettingsMixin:
                 k = rule_key(prof)
                 fid = f"p-{k}"
                 opts = model_opts if any(v == prof.get("model") for v, _ in model_opts) else [(prof.get("model") or "", f"{prof.get('model')} (not served now)")] + model_opts
-                prof_html = (f"<details><summary>{icon('robot')}Profile: model {esc(prof.get('model') or 'none')}, autonomy {esc(prof.get('autonomy') or 'propose')}, "
-                             f"follows {esc(', '.join(prof.get('follows') or []) or 'nothing')}</summary><p>{self._origin(prof, released)}</p>"
+                popts = [(n, n) for n in personas] if prof.get("persona") in personas or not prof.get("persona") else [(prof["persona"], prof["persona"])] + [(n, n) for n in personas]
+                prof_html = (f"<details><summary>{icon('robot')}Profile: model {esc(prof.get('model') or 'none')}, persona {esc(prof.get('persona') or 'none')}"
+                             f"</summary><p>{self._origin(prof, released)}</p><p class='why'>What it follows, what it may do and its duties come from "
+                             "the SOPs that name it or its roles.</p>"
                              + self._sform(fid, "rails", "cog", "replace",
                                            f"<input type='hidden' name='name' value='{esc(cog)}'><div class='fields'>"
                                            + self._select("model", opts, self._sv(fid, "model", prof.get("model") or ""), label="Model (what Ollama serves now)")
-                                           + self._select("autonomy", [("read", "read: look and report"), ("propose", "propose: a person confirms"), ("act", "act: on its own")],
-                                                          self._sv(fid, "autonomy", prof.get("autonomy") or "propose"), label="Autonomy") + "</div>"
-                                           + f"<label class='f'><span>Prompt</span><textarea name='prompt' rows='3'>{esc(self._sv(fid, 'prompt', prof.get('prompt') or ''))}</textarea></label>"
-                                           + self._checks("follows", [(n, n) for n in frames], self._smulti(fid, "follows", prof.get("follows") or []), legend="Follows (the SOPs it works by)")
-                                           + f"<label class='f'><span>Duties <i>(one a line; taken up daily)</i></span><textarea name='duties' rows='2'>{esc(self._sv(fid, 'duties', chr(10).join(prof.get('duties') or [])))}</textarea></label>",
+                                           + self._select("persona", popts, self._sv(fid, "persona", prof.get("persona") or ""), label="Persona (how it behaves)") + "</div>"
+                                           + f"<label class='f'><span>About (what it does)</span><textarea name='about' rows='3'>{esc(self._sv(fid, 'about', prof.get('about') or ''))}</textarea></label>",
                                            f"{icon('check')}Save profile", key=k)
                              + "</details>")
             out += (f"<section class='cog-rails'><h2>{self._avatar(cog, size='sm')} {esc(cog)} <span class='muted'>{len(crits)} rail(s)</span></h2>"
@@ -492,9 +491,8 @@ class SettingsMixin:
             old = next((r for r in rules if rule_key(r) == key), None) or {}
             if not f("model"):
                 raise ShellError("Choose the model the cog comes with.", field="model")
-            return {"kind": "cog", "name": f("name"), "model": f("model"), "prompt": (f("prompt") or "").strip(), "follows": self._multi("follows"),
-                    "reviews": old.get("reviews") or [], "prompt_from": old.get("prompt_from") or "", "references": old.get("references") or [],
-                    "autonomy": f("autonomy") or "propose", "duties": [x.strip() for x in (self.form.get("duties") or "").splitlines() if x.strip()]}
+            return {"kind": "cog", "name": f("name"), "about": " ".join((f("about") or old.get("about") or "").split()), "model": f("model"),
+                    "persona": f("persona") or old.get("persona") or "", "prompt_from": old.get("prompt_from") or "", "references": old.get("references") or []}
         raise ShellError(f"Settings of kind '{kind}' are not edited here.", 400)
 
     def post_settings_edit(self):

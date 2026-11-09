@@ -219,13 +219,16 @@ def test_check_permission_quotes_the_deciding_sentence(hub):
 
 
 # ---------------------------------------------------------------- autonomy and budget
-def test_propose_mode_records_the_action_and_read_mode_refuses_it(hub):
-    t = tools_for(hub, mode="propose")
-    out = t.execute("create_task", {"title": "Proposed task"})
-    assert out["proposed"] and t.proposed[-1]["tool"] == "create_task"
-    assert not [r for r in hub.kernel.query(type_="task") if r["fields"].get("title") == "Proposed task"]
+def test_a_confirm_sentence_records_the_action_and_read_mode_refuses_it(hub):
+    # "The doc-reviewer cog may comment on anything in Quality when a person confirms.": its link waits for a person.
+    ncr = new_ncr(tools_for(hub), "Proposed link target")
+    other = new_ncr(tools_for(hub), "Proposed link other")
+    t = tools_for(hub, cog="doc-reviewer")
+    out = t.execute("link_records", {"number": ncr["number"], "rel": "references", "target": other["number"]})
+    assert out["proposed"] and t.proposed[-1]["tool"] == "link_records" and t.proposed[-1]["confirmer"] == "person"
+    assert not [x for x in hub.kernel.get(ncr["number"])["links"] if x["target"] == hub.kernel.get(other["number"])["locator"]]
     r = tools_for(hub, mode="read")
-    assert "may only read" in r.execute("create_task", {"title": "x"})["error"]
+    assert "may only look" in r.execute("create_task", {"title": "x"})["error"]
     assert r.execute("check_permission", {"action": "read", "object": "*", "folder": "Quality"})["allowed"]
 
 
