@@ -224,7 +224,7 @@ def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict |
                 out.append(Finding("consistency", "error", f"countersigning role {rule['countersign']!r} is not declared", key, frame, line))
         elif kind == "process" and rule.get("statuses"):
             out += _graph_consistency(rule, key, frame, line, roles, roles_with_members, members, cog_ids, criteria_by_cog, folders, record_types,
-                                      committees)
+                                      committees, light=light)
         elif kind == "process":
             if rule["folder"] and rule["folder"] not in folders:
                 out.append(Finding("consistency", "error", f"process folder {rule['folder']!r} is not declared", key, frame, line))
@@ -321,6 +321,24 @@ def _light(rules: list[dict]) -> dict:
     return render_light(rules)
 
 
+def _approves_change_order(rule: dict, t: dict) -> bool:
+    """The transition approves a change order: the change-order process, into a done status that completes it."""
+    if (rule.get("record_type") or rule.get("name")) != "change-order":
+        return False
+    st = next((s for s in rule.get("statuses") or [] if s.get("id") == t.get("to")), {})
+    return st.get("category") == "done" and (st.get("outcome") or "completed") == "completed"
+
+
+def _cog_members(committee: dict, members: dict, light: dict | None) -> list[str]:
+    """The cogs among a committee's members (named, or in its group), resolved from the rules before rendering."""
+    names = list(committee.get("members") or [])
+    if committee.get("group") and light is not None:
+        from .groups import group_members
+
+        names += group_members(light, committee["group"])
+    return sorted({m for m in names if (members.get(m) or {}).get("principal_type") == "cog"})
+
+
 def _group_consistency(rule: dict, key: str, frame: str, line: int, roles: set, members: dict, light: dict) -> list[Finding]:
     """A group names members of the organization and declared roles, does not share a name with a role, and has someone
     in it."""
@@ -343,7 +361,7 @@ def _group_consistency(rule: dict, key: str, frame: str, line: int, roles: set, 
 
 def _graph_consistency(rule: dict, key: str, frame: str, line: int, roles: set, roles_with_members: set, members: dict,
                        cog_ids: set, criteria_by_cog: dict, folders: set, record_types: dict | None,
-                       committees: dict | None = None) -> list[Finding]:
+                       committees: dict | None = None, light: dict | None = None) -> list[Finding]:
     """The checks a process written as a graph gets at compile: what it names exists, a cog gate has approval criteria,
     and the graph checks of the workflow model (``hubproto.workflow_model.checks``, when that module is present)."""
     out: list[Finding] = []
@@ -378,6 +396,12 @@ def _graph_consistency(rule: dict, key: str, frame: str, line: int, roles: set, 
             if c is None:
                 out.append(Finding("consistency", "error", f"{name!r} is decided by the {g.get('committee')} committee, which is not defined "
                                    "('## Committee: <name>' with Group: and Chair:)", key, frame, tl))
+            elif t.get("type") == "directed" and _approves_change_order(rule, t) and _cog_members(c, members, light):
+                # A person signs a change order: a committee that approves one decides by its people's votes only.
+                cogs_in = _cog_members(c, members, light)
+                out.append(Finding("consistency", "error", f"{name!r} approves change orders by the {g.get('committee')} committee, which has cog "
+                                   f"members ({', '.join(cogs_in)}): a person signs a change order, so a committee that approves one has "
+                                   "people only", key, frame, tl))
             elif t.get("type") == "directed":
                 # Consensus or back for revision: an objection needs a way back from the status the committee decides at.
                 from .process_graph import option_verdict
