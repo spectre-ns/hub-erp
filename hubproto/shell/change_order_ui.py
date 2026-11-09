@@ -1097,6 +1097,9 @@ class ChangeOrderMixin:
             if status == "open" and may_answer:
                 fid = f"answer-{anchor(q['id'])}"
                 div = (f"<label class='check'><input type='checkbox' name='record_divergence' value='1'{' checked' if self._co_cv('/co-answer', fid, 'record_divergence') else ''}> Record this as a divergence: the configuration in force will differ from the prose until a change order resolves it</label>") if committee_q else ""
+                if q.get("code") == "unread-rule":
+                    div += (f"<label class='check'><input type='checkbox' name='category' value='procedure'{' checked' if self._co_cv('/co-answer', fid, 'category') else ''}> "
+                            "It is a procedure: people follow it; the hub does not enforce it (not a divergence)</label>")
                 inner = (f"<input type='hidden' name='qid' value='{esc(q['id'])}'>{div}<div class='fields'>"
                          f"<label class='f'><span>Your answer <b aria-hidden='true'>*</b></span><textarea name='answer' rows='2' required>{esc(self._co_cv('/co-answer', fid, 'answer'))}</textarea></label>"
                          f"<label class='f'><span>The line of the prose that says it</span><input name='line' inputmode='numeric' size='6' value='{esc(self._co_cv('/co-answer', fid, 'line'))}'></label></div>"
@@ -1145,11 +1148,11 @@ class ChangeOrderMixin:
             return ""
 
     def _co_committee_answerer(self, q: dict, ctx: dict) -> bool:
-        """A committee question is answered by its chair or a system administrator who did not contribute to the change."""
-        if self._viewing_cog() or eco.finished(ctx["co"]) or self.user in ctx["ov"]["contributors"]:
+        """Whether the viewer may answer a committee question (hubproto.changecontrol.committee_answerer: its chair or a
+        system administrator who did not contribute; with no person as either, a policy owner who did not make it)."""
+        if self._viewing_cog() or eco.finished(ctx["co"]):
             return False
-        chair = q.get("chair") or self._co_compile_chair()
-        return self.user == chair or self.user in self._co_sysadmins()
+        return not cc.committee_answerer(self.hub, ctx["co"]["locator"], q, self.user)[0]
 
     def _co_findings_html(self, ctx: dict) -> str:
         fs = ctx["ov"]["findings"]
@@ -1946,7 +1949,7 @@ class ChangeOrderMixin:
             raise ShellError("Say what the answer is (and, best, which line of the prose says it).", field="answer")
         try:
             cc.answer_question(self.hub, co["locator"], self._f("qid"), answer, self.user, line=line,
-                               record_divergence=bool(self._f("record_divergence")))
+                               record_divergence=bool(self._f("record_divergence")), category=self._f("category") or None)
         except ValueError as e:
             raise self._co_refused(e) from None
         self._co_done(co, "The question is marked answered.", "co-questions")
