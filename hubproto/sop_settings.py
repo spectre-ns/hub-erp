@@ -15,8 +15,9 @@ from .settings import sentence
 
 SECTION = {"permission": "Permissions", "routing": "Routing", "sla": "Routing", "approval_criteria": "Approval criteria",
            "sod": "Segregation of duties", "threshold": "Thresholds", "member": "Members", "role": "Roles", "folder": "Folders",
-           "duty": "Duties"}
-SECTIONED = {"cog": "Cog: {name}", "process": "Process: {name}", "persona": "Persona: {name}"}  # rules written as a whole section
+           "duty": "Duties", "group": "Groups"}
+SECTIONED = {"cog": "Cog: {name}", "process": "Process: {name}", "persona": "Persona: {name}",
+             "committee": "Committee: {name}"}  # rules written as a whole section
 
 
 def slot(rule: dict) -> tuple:
@@ -36,7 +37,7 @@ def slot(rule: dict) -> tuple:
         return (k, rule.get("object"), tuple(rule.get("roles") or []), rule.get("rule"))
     if k == "member":
         return (k, rule.get("principal"))
-    if k in ("cog", "process", "role", "persona"):
+    if k in ("cog", "process", "role", "persona", "group", "committee"):
         return (k, rule.get("name"))
     if k == "duty":
         return (k, rule.get("cog"), rule.get("task"))
@@ -58,7 +59,7 @@ def home_frame(rule: dict, base_rules: list[dict]) -> str:
         return procs[rule["process"]]
     if k == "process":
         return procs.get(rule.get("name")) or next((f for f in procs.values() if f), "")
-    if k in ("member", "role", "folder", "cog"):
+    if k in ("member", "role", "folder", "cog", "group", "committee"):
         same = next((_frame_of(r) for r in base_rules if r.get("kind") == k and _frame_of(r)), "")
         if same:
             return same

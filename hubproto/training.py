@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from .release import follows_for, table_roles
+from .release import follows_for, table_groups, table_roles
 
 MATRIX_TITLE = "Required training"
 MATRIX_FOLDER = "Quality/Training"
@@ -43,6 +43,14 @@ def roles_to_train(bundle: dict, rec: dict, override: list[str] | None = None) -
         return list(override)
     frame = frame_of_document(rec)
     return table_roles(bundle, frame) if frame else []
+
+
+def groups_to_train(bundle: dict, rec: dict, override: list[str] | None = None) -> list[str]:
+    """The groups whose members a new revision trains: those its Roles and responsibilities table lists (none when the
+    document's ``training_roles`` override the table)."""
+    override = [r for r in (override if override is not None else ((rec or {}).get("fields") or {}).get("training_roles")) or [] if r]
+    frame = frame_of_document(rec)
+    return [] if override or not frame else table_groups(bundle, frame)
 
 
 def document_in_force(hub, frame: str) -> dict | None:
@@ -131,11 +139,17 @@ def matrix_text(hub, bundle: dict) -> str:
              "Generated from the Roles and responsibilities tables of the documents in force. It is not edited by hand: each release "
              "that changes a table, or the revision of a document listed here, publishes a new revision. A person must read every "
              "document listed under each of their roles and acknowledge each new revision.", ""]
-    for role in sorted({r["who"][5:] for r in rows if r["who"].startswith("role:")}):
-        lines += [f"## {role.replace('-', ' ').capitalize()}", "",
+    from .groups import group_members
+
+    whos = sorted({r["who"] for r in rows if r["who"].startswith("role:")}) + sorted({r["who"] for r in rows if r["who"].startswith("group:")})
+    for who in whos:
+        kind, _, name = who.partition(":")
+        head = name.replace("-", " ").capitalize() if kind == "role" else (
+            f"The {name.replace('-', ' ')} group ({', '.join(group_members(bundle, name)) or 'nobody'})")
+        lines += [f"## {head}", "",
                   "| Document | Title | Revision | Link | Responsibility | Cogs that follow it |", "|---|---|---|---|---|---|"]
         for f in frames:
-            mine = [r["text"] for r in rows if r["frame"] == f and r["who"] == "role:" + role]
+            mine = [r["text"] for r in rows if r["frame"] == f and r["who"] == who]
             if not mine:
                 continue
             number, title, rev, link = where[f]

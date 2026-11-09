@@ -54,7 +54,7 @@ def who(assignee: str) -> str:
         return "the " + _words(name)
     if kind == "cog":
         return f"the {name} cog"
-    if kind == "field":
+    if kind in ("field", "group"):  # a group is named as a role is ("the quality board"); the compiler resolves it
         return "the " + _words(name)
     return name or assignee
 
@@ -94,11 +94,27 @@ def sentence(rule: dict, processes: dict | None = None) -> str:
         return f"- {rule['name']}"
     if k == "member":
         return f"- {rule['principal']} ({rule['principal_type']}): {', '.join(rule.get('roles') or [])}"
+    if k == "group":
+        parts = list(rule.get("members") or [])
+        if rule.get("roles"):
+            parts.append("everyone holding " + " or ".join(rule["roles"]))
+        return f"- {rule['name']}: " + (", ".join(parts[:-1]) + " and " + parts[-1] if len(parts) > 1 else (parts[0] if parts else ""))
+    if k == "committee":
+        lines = [f"## Committee: {rule['name']}"]
+        if rule.get("group"):
+            lines.append(f"Group: {rule['group']}")
+        elif rule.get("members"):
+            lines.append("Members: " + ", ".join(rule["members"]))
+        if rule.get("chair"):
+            lines.append(f"Chair: {rule['chair']}")
+        if rule.get("purpose"):
+            lines.append(f"Purpose: {rule['purpose']}")
+        return "\n".join(lines)
     if k == "folder":
         return f"- {rule['path']}"
     if k == "permission":
         kind_, _, name_ = rule["subject"].partition(":")
-        subject = f"The {name_} cog" if kind_ == "cog" else plural(name_).capitalize()
+        subject = f"The {name_} cog" if kind_ == "cog" else f"The {name_} group" if kind_ == "group" else plural(name_).capitalize()
         neg = "not " if rule.get("effect") == "deny" else ""
         folder = rule["resource"].partition(":")[2]
         if rule["action"] == "read" and rule["object"] == "*":

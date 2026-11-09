@@ -76,17 +76,26 @@ or adds a "not" carries a `negation` warning. A rule that only moved in its file
 listed as moved, not as a change to decide. Direct changes on a change order are put into prose by the qa-manager cog
 and compiled back to check they give the same rule (`hubproto/prose_drafting.py`).
 
-**The committee reads by consensus.** Its members are cogs, and each reads with the model its profile bundles it with,
+**The committee reads by consensus.** It is defined on the `senior-cogs` group (organization model, `## Groups`):
+the **senior** cogs `senior-organization` and `senior-qa-manager`, bundled with Claude Opus (`claude-opus-5-5`); the
+**junior** cogs (`organization`, `qa-manager` and the others, group `junior-cogs`) stay on the local model for
+day-to-day work. Each member reads with the model its profile bundles it with,
 from its own perspective (its About text, its persona's behaviour and the roles it holds); the diff, the rules in force
 and the answer format are the same for every member, so their readings stay comparable.
 A rule goes in only when every member reads it the same way; where members read a line differently, the proposal gets
-a `disagreement` question quoting the line and each member's reading, for a person to decide. The `Agree: n of m` line
-of the committee is still parsed, but agreement means every member. A member whose model is not available here (not
-installed, Ollama down, or a `claude-*` model while hosted models are off) is a `member-unavailable` question: the
-prose of a changed SOP is not read until it is. To have a committee cog read with Claude Opus, change its `Model:` line
-to `claude-opus-5-5` in the cog profiles through a change order (the cog's profile page, `hubproto models`, or
-`hub.propose_cog_model`), and have the administrator switch hosted models on (`HUBPROTO_HOSTED_MODELS=on` with
-`ANTHROPIC_API_KEY`); the call goes through the hub's model gateway to the Anthropic Messages API.
+a `disagreement` question quoting the line and each member's reading, for a person to decide. A member whose model is
+not available here (not installed, Ollama down, or a `claude-*` model while hosted models are off) is a
+`member-unavailable` question naming the committee's chair (`Chair: carol`), who intervenes: the prose of a changed SOP
+is not read until it is. **The senior cogs are available only where the administrator has switched hosted models on**
+(`HUBPROTO_HOSTED_MODELS=on` with `ANTHROPIC_API_KEY`, under the IT SOP); the call goes through the hub's model gateway
+to the Anthropic Messages API. Without them the compiler reads the sentence shapes only and asks about changed prose.
+The committee's members change through a change order (the `senior-cogs` group, or a cog's `Model:` line).
+
+**Groups and committees** (change control 11) are also used in processes and on change orders: a process step written
+`the design-review committee decides` waits for every member of the committee (people and cogs) and moves only when all
+agree; an objection with its reason returns the item; when a cog member's criteria do not hold or a member is late, the
+committee's chair intervenes (decide in that member's place, extend the due date, or return the item). A change-control
+review sentence may name a committee as reviewers. See DEV-NOTES.md, "Groups and committees".
 
 | Compiler setting | Default | Effect |
 |---|---|---|

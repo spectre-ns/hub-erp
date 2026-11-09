@@ -106,21 +106,31 @@ def test_a_page_never_waits_on_the_model_and_hosted_models_are_off(hub, tmp_path
 
 
 
-def test_the_compile_op_is_read_by_the_quality_manager_and_the_organization_cog(hub, monkeypatch):
-    """Reading SOPs is the Compile the Frame Op, done by the compile-frame committee: the QA manager cog and the
-    organization cog, each with the model its profile names (changed through the policy); both must agree."""
+def test_the_compile_op_is_read_by_the_senior_cogs_committee(hub, monkeypatch):
+    """Reading SOPs is the Compile the Frame Op, done by the compile-frame committee, defined on the senior-cogs group
+    (change control 11.1): the senior organization and senior QA manager cogs, bundled with Claude Opus, each reading with
+    the model its profile names; every member must agree. Where hosted models are off, each senior is unavailable and a
+    person (the committee's chair) intervenes; the junior organization and qa-manager cogs stay on the local model."""
     from hubproto import model as model_mod
     from hubproto.llm_extract import CommitteeExtractor
 
     served = [{"name": "qwen3:14b", "params": "14.8B", "family": "qwen3", "quant": "Q4", "size_gb": 9.3}]
     monkeypatch.setattr(model_mod, "ollama_models", lambda refresh=False: (served, ""))
     monkeypatch.setattr(model_mod, "ollama_url", lambda: "http://ollama.test")
+    monkeypatch.delenv("HUBPROTO_HOSTED_MODELS", raising=False)
     b = hub.releases.bundle(hub.releases.current()["digest"])
     c = b["committees"]["compile-frame"]
-    assert c["members"] == ["qa-manager", "organization"] and c["quorum"] == 2
-    assert b["members"]["organization"] == {**b["members"]["organization"], "type": "cog", "roles": ["policy-reader"]}, "it signs nothing: it only reads the policy"
+    assert c["members"] == ["senior-organization", "senior-qa-manager"] and c["quorum"] == 2
+    assert (c["group"], c["chair"]) == ("senior-cogs", "carol") and b["groups"]["senior-cogs"]["resolved"] == c["members"]
+    assert {b["cogs"][n]["model"] for n in c["members"]} == {"claude-opus-5-5"}
+    assert b["cogs"]["organization"]["model"] == b["cogs"]["qa-manager"]["model"] == "ollama/qwen3:14b", "the juniors stay local"
+    assert "organization" in b["groups"]["junior-cogs"]["resolved"] and "qa-manager" in b["groups"]["junior-cogs"]["resolved"]
+    assert b["members"]["senior-organization"] == {**b["members"]["senior-organization"], "type": "cog", "roles": ["policy-reader"]}, \
+        "it signs nothing: it only reads the policy"
     ex = hub.extractor(calls=True)
-    assert isinstance(ex, CommitteeExtractor) and [n for n, _ in ex.members] == ["qa-manager", "organization"] and ex.quorum == 2
+    assert isinstance(ex, CommitteeExtractor) and ex.members == [] and ex.quorum == 2 and ex.chair == "carol"
+    assert set(ex.unavailable) == {"senior-organization", "senior-qa-manager"}
+    assert all("hosted models are switched off" in why for why in ex.unavailable.values())
     from hubproto.automation import AUTOMATIONS
 
     assert AUTOMATIONS["compile-frame"]["committee"] == "compile-frame"
@@ -480,6 +490,7 @@ def test_each_committee_cog_reads_with_its_own_model_a_local_one_or_claude(hub, 
 
 
 def _organization_on(hub, monkeypatch, model):
+    """The senior organization cog on ``model``, the senior QA manager on the local model (so one member can read)."""
     from hubproto import model as model_mod
 
     served = [{"name": "qwen3:14b", "params": "14.8B", "family": "qwen3", "quant": "Q4", "size_gb": 9.3}]
@@ -489,7 +500,8 @@ def _organization_on(hub, monkeypatch, model):
 
     def bundle(digest):
         b = json.loads(json.dumps(real(digest)))
-        b["cogs"]["organization"]["model"] = model
+        b["cogs"]["senior-organization"]["model"] = model
+        b["cogs"]["senior-qa-manager"]["model"] = "ollama/qwen3:14b"
         return b
     monkeypatch.setattr(hub.releases, "bundle", bundle)
 
@@ -499,14 +511,14 @@ def test_a_claude_member_reads_only_where_hosted_models_are_on(hub, monkeypatch)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     _organization_on(hub, monkeypatch, "claude-opus-5-5")
     c = hub.compile_committee()
-    assert c["members"] == [("qa-manager", "ollama/qwen3:14b"), ("organization", "")] and c["quorum"] == 2
-    assert "hosted models are switched off" in c["unavailable"]["organization"]
+    assert c["members"] == [("senior-organization", ""), ("senior-qa-manager", "ollama/qwen3:14b")] and c["quorum"] == 2
+    assert "hosted models are switched off" in c["unavailable"]["senior-organization"]
     monkeypatch.setenv("HUBPROTO_HOSTED_MODELS", "on")
     c = hub.compile_committee()
-    assert c["members"] == [("qa-manager", "ollama/qwen3:14b"), ("organization", "claude-opus-5-5")] and c["unavailable"] == {}
+    assert c["members"] == [("senior-organization", "claude-opus-5-5"), ("senior-qa-manager", "ollama/qwen3:14b")] and c["unavailable"] == {}
     ex = hub.extractor(calls=True)
-    assert isinstance(ex, CommitteeExtractor) and [r.model for r in ex.readers] == ["ollama/qwen3:14b", "claude-opus-5-5"]
-    assert ex.readers[1].call is not None and ex.unavailable == {}, "through the gateway (the Anthropic Messages API for claude-*)"
+    assert isinstance(ex, CommitteeExtractor) and [r.model for r in ex.readers] == ["claude-opus-5-5", "ollama/qwen3:14b"]
+    assert ex.readers[0].call is not None and ex.unavailable == {}, "through the gateway (the Anthropic Messages API for claude-*)"
 
 
 def test_a_member_that_cannot_read_is_a_question_not_skipped(prose_hub, tmp_path, monkeypatch):
@@ -516,12 +528,13 @@ def test_a_member_that_cannot_read_is_a_question_not_skipped(prose_hub, tmp_path
     _organization_on(hub, monkeypatch, "claude-opus-5-5")
     monkeypatch.setenv("HUBPROTO_EXTRACTOR", "hybrid")
     ex = hub.extractor(calls=True)
-    assert ex.unavailable == {"organization": hub.compile_committee()["unavailable"]["organization"]}
+    assert ex.unavailable == {"senior-organization": hub.compile_committee()["unavailable"]["senior-organization"]}
     out = ex.extract(hub.frames.get("finance-policy"))
     assert ex.calls == 0, "no consensus without every member: nobody is asked"
     [q] = out.questions
-    assert q["code"] == "member-unavailable" and q["member"] == "organization" and "the organization cog is not available" in q["text"]
+    assert q["code"] == "member-unavailable" and q["member"] == "senior-organization" and "the senior-organization cog is not available" in q["text"]
     assert "hosted models are switched off" in q["text"] and "change order" in q["text"]
+    assert q["chair"] == "carol" and "its chair, carol, intervenes" in q["text"]
     assert [r["condition"]["value"] for r in out.rules if (r.get("source") or {}).get("read_by")] == [], "the changed line is not read"
 
     def down(model, system, user):  # a member whose model fails at the time of reading: the same question
@@ -565,12 +578,13 @@ def test_each_member_reads_from_its_own_perspective_and_the_same_material(prose_
     served = [{"name": "qwen3:14b", "params": "14.8B", "family": "qwen3", "quant": "Q4", "size_gb": 9.3}]
     monkeypatch.setattr(model_mod, "ollama_models", lambda refresh=False: (served, ""))
     monkeypatch.setattr(model_mod, "ollama_url", lambda: "http://ollama.test")
-    views = hub.compile_committee()["perspectives"]
+    seniors = hub.compile_committee()["perspectives"]
+    assert set(seniors) == {"senior-organization", "senior-qa-manager"}
+    views = {"qa-manager": seniors["senior-qa-manager"], "organization": seniors["senior-organization"]}
     b = hub.releases.bundle(hub.releases.current()["digest"])
-    assert set(views) == {"qa-manager", "organization"}
-    assert b["cogs"]["qa-manager"]["about"] in views["qa-manager"] and "ISO 9001" in views["qa-manager"]
+    assert b["cogs"]["senior-qa-manager"]["about"] in views["qa-manager"] and "ISO 9001" in views["qa-manager"]
     assert "who decides what" in views["organization"] and "(policy-reader)" in views["organization"]
-    assert "author, reviewer, staff" in views["qa-manager"] and all(len(v) < 2000 for v in views.values()), "short: the budget is for the change"
+    assert "quality system's point of view" in views["qa-manager"] and all(len(v) < 2000 for v in views.values()), "short: the budget is for the change"
     rewrite(hub, PROSE, PROSE.replace("5,000", "7,500"))
     call, calls = reader(lambda user, system: {"changes": []})
     ex = CommitteeExtractor([("qa-manager", MODEL), ("organization", MODEL)], 2, cache_dir=tmp_path / "p", context=context_for(hub),

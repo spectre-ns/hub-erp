@@ -51,14 +51,15 @@ def impact(bundle: dict, frames: list[str]) -> dict:
 
 
 def required_reading(bundle: dict, person: str) -> list[dict]:
-    """The documents a person must read: every document whose Roles and responsibilities table lists one of their roles;
-    each with the roles that ask and what the table says each does there."""
+    """The documents a person must read: every document whose Roles and responsibilities table lists one of their roles
+    or one of their groups; each with the roles (and groups) that ask and what the table says each does there."""
     rows = bundle.get("responsibilities") or []
     out = []
     for frame, why in follows_for(bundle, person).items():
         roles = sorted(x.partition(":")[2] for x in why if x.startswith("role:"))
+        groups = sorted(x.partition(":")[2] for x in why if x.startswith("group:"))  # a group the table lists that they are in
         does = [r["text"] for r in rows if r.get("frame") == frame and r.get("who") in why]
-        out.append({"frame": frame, "roles": roles, "responsibilities": does})
+        out.append({"frame": frame, "roles": roles, "responsibilities": does, **({"groups": groups} if groups else {})})
     return out
 
 
