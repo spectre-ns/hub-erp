@@ -64,3 +64,9 @@ A section "## Process: <name>", one line "Records are filed in <Folder>.",
 then numbered steps "n. [role] Title (cog-id)". A step without a cog is a
 human checkpoint and becomes a Gate on the step before it, routed by the
 Routing sentences for that process.
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Process owner | Writes the SOPs of their processes in these shapes. |
+| Document controller | Checks that a new SOP reads as rules before it is sent for approval. |

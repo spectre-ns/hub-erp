@@ -64,7 +64,19 @@ def to_docx(body: str) -> bytes:
 
     blank, _ = blank_document("docx")
     paras = []
-    for line in body_lines(body):
+    lines = body_lines(body)
+    tables = markdown_tables(lines)
+    skip_to = -1
+    for i, line in enumerate(lines):
+        if i < skip_to:
+            continue
+        if i in tables:  # a Markdown table (the Roles and responsibilities table) as a Word table: it reads back as the same rows
+            end = tables[i]
+            paras.append(_docx_table([lines[i]] + lines[i + 2:end]))
+            if end >= len(lines) or not any(x.strip() for x in lines[end:]):
+                paras.append("<w:p/>")  # a body never ends with a table
+            skip_to = end
+            continue
         m = re.match(r"^(#{1,6}) (.*)$", line)
         if m:
             level = min(len(m.group(1)), 3) if len(m.group(1)) <= 3 else len(m.group(1))
@@ -89,6 +101,48 @@ def to_docx(body: str) -> bytes:
                 data = xml.encode("utf-8")
             z.writestr(item, data)
     return out.getvalue()
+
+
+_ROW = re.compile(r"^\|(.+)\|$")
+_RULE = re.compile(r"^\|(?:---\|)+$")
+
+
+def _cells(line: str) -> list[str]:
+    return [c.strip() for c in line.strip()[1:-1].split("|")]
+
+
+def markdown_tables(lines: list[str]) -> dict[int, int]:
+    """{first line: line after the table} for each Markdown table written as docx_lines reads a Word table back: a
+    header row, the rule '|---|---|' (one '---|' per cell), then rows of as many cells, every cell non-empty. Anything
+    else stays paragraphs, so it reads back exactly as written."""
+    out, i = {}, 0
+    while i < len(lines) - 1:
+        head = lines[i]
+        if _ROW.match(head) and not _RULE.match(head) and lines[i + 1] == "|" + "---|" * len(_cells(head)) \
+                and all(_cells(head)) and head == "| " + " | ".join(_cells(head)) + " |":
+            n, j = len(_cells(head)), i + 2
+            while j < len(lines) and _ROW.match(lines[j]) and not _RULE.match(lines[j]) and len(_cells(lines[j])) == n \
+                    and all(_cells(lines[j])) and lines[j] == "| " + " | ".join(_cells(lines[j])) + " |":
+                j += 1
+            out[i] = j
+            i = j
+            continue
+        i += 1
+    return out
+
+
+def _docx_table(rows: list[str]) -> str:
+    from html import escape
+
+    border = "".join(f'<w:{b} w:val="single" w:sz="4" w:space="0" w:color="999999"/>' for b in ("top", "left", "bottom", "right", "insideH", "insideV"))
+    n = len(_cells(rows[0]))
+    out = [f'<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/><w:tblBorders>{border}</w:tblBorders></w:tblPr><w:tblGrid>'
+           + "<w:gridCol/>" * n + "</w:tblGrid>"]
+    for k, row in enumerate(rows):
+        bold = "<w:rPr><w:b/></w:rPr>" if k == 0 else ""
+        out.append("<w:tr>" + "".join(f'<w:tc><w:p><w:r>{bold}<w:t xml:space="preserve">{escape(c, quote=False)}</w:t></w:r></w:p></w:tc>'
+                                      for c in _cells(row)) + "</w:tr>")
+    return "".join(out) + "</w:tbl>"
 
 
 def docx_lines(content: bytes, ext: str = "docx") -> list[str]:

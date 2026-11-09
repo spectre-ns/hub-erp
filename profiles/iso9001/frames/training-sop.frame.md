@@ -41,3 +41,10 @@ The record type is training.
 Closes as acknowledged.
 1. [system] File the training record (record-filer)
 2. [staff] Acknowledge the document
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Staff | Reads and acknowledges each revision of the documents their roles must read. |
+| Quality manager | Files training records for courses and assessments, and receives the overdue acknowledgements. |
+| Document controller | Files training records for courses and assessments. |

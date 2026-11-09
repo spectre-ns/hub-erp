@@ -58,3 +58,9 @@ Compiles: design-control-sop
 Level: department
 Layers on: company
 Compiles: it-sop
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Policy owner | Approves the scopes and what each one compiles. |
+| the organization cog | Knows which SOPs each scope compiles when it reads them into rules. |

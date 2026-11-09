@@ -412,7 +412,11 @@ def r_training(hub, job, memo):
     n, problems = eco.assign_revision_training(hub, job["subject"], memo["release"])
     if problems:
         raise StepError("training was not assigned for " + "; ".join(problems))
-    return f"{n} training task(s) assigned", {}
+    from . import training  # the training matrix, from the Roles and responsibilities tables in force (workstream 3)
+
+    matrix = training.publish_matrix(hub, memo["release"])
+    return f"{n} training task(s) assigned" + (f"; {matrix['number']} {training.MATRIX_TITLE} rev {matrix['fields']['revision']} published"
+                                                if matrix else ""), {}
 
 
 def r_divergences(hub, job, memo):

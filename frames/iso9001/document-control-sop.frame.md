@@ -68,3 +68,15 @@ Closes as effective.
 3. [system] Score the risk (risk-scorer)
 4. [reviewer] Approve the document
 5. [system] Publish the document (document-publisher)
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Author | Drafts controlled documents and sends them for approval; never approves their own. |
+| Reviewer | Reviews and approves controlled documents they did not write. |
+| Document controller | Files documents for authors, confirms what the doc-reviewer cog proposes and receives overdue reviews. |
+| Policy owner | Approves policies. |
+| Process owner | Approves the drawings of their process. |
+| Quality manager | Countersigns the major changes the qa-manager cog approves. |
+| the doc-reviewer cog | Approves minor revisions within its criteria. |
+| the qa-manager cog | Drafts and revises controlled documents and approves within its criteria after its adversarial reviews. |

@@ -32,3 +32,9 @@ For: internal auditors and the quality manager.
 5. The quality manager receives "Accept the findings", sets the `summary`
    and approves; the record closes and is rendered to the audit report. Raise
    a nonconformance for each major finding and link it to the audit.
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Internal auditor | Runs audits as this instruction says. |
+| Quality manager | Accepts audit findings as this instruction says. |

@@ -123,3 +123,16 @@ The record type is part.
 Closes as active.
 1. [staff] Request the part (record-filer)
 2. [buyer] Approve the part
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Storekeeper | Keeps the stock: receives, moves, counts and asks for adjustments. |
+| Stock reviewer | Signs small stock adjustments within the tolerance. |
+| Controller | Approves stock adjustments. |
+| Quality manager | Approves releases from quarantine. |
+| Buyer | Approves parts and keeps manufacturer and supplier parts. |
+| Design engineer | Creates parts and manufacturer parts for their designs. |
+| Staff | Asks for parts, quarantines suspect stock and asks for its release. |
+| the purchasing-assistant cog | Signs small stock adjustments within its criteria. |
+| the stores cog | Keeps stock as a storekeeper does, where the person who asks may too. |

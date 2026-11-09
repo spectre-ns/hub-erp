@@ -120,7 +120,11 @@ STANCES = ("reviewer", "executor", "author", "advisor")
 TONES = ("formal", "informal")
 _PASSES = re.compile(r"^(?P<n>\d+|one|two|three|four|five|six|once|twice) ?(?:adversarial )?(?:pass(?:es)?|times?|reviews?)?\.?$", re.I)
 _DUTY = re.compile(r"^Every (?P<every>day|working day|week|month) the (?P<cog>[a-z][\w-]*) cog (?P<task>[a-z].+\.)$")
-_FOR = re.compile(r"^For: (?P<who>.+)$")
+# The table every document ends with: who has a part in it (a role, a cog by name, later a group) and what. It says who
+# must read the document (people) and what a cog follows.
+RESPONSIBILITIES = "roles and responsibilities"
+_TABLE_ROW = re.compile(r"^\|(?P<cells>.*)\|$")
+_TABLE_RULE = re.compile(r"^\|(?:\s*:?-{3,}:?\s*\|)+$")
 _DOC_REF = re.compile(r"\b[A-Z]{2,}-\d[\w-]*\b")
 _OPS = {"over": ">", "above": ">", "under": "<", "below": "<", "at or under": "<=", "at or over": ">="}
 
@@ -153,24 +157,58 @@ def permission_subject(text: str) -> str:
     return "cog:" + m.group("cog") if m else "role:" + singular_role(text)
 
 
-def audience_rule(line: str, frame, n: int) -> dict | None:
-    """A work instruction's "For: ..." line: the roles it is written for, which makes it their required reading. Role
-    names in backticks are taken as written; otherwise each listed name ("internal auditors and the quality manager")
-    is read as a role. Names that are not roles (the chair) are dropped when the release is rendered."""
-    m = _FOR.match(line)
+def responsibility_who(cell: str) -> str:
+    """'Quality managers' -> 'role:quality-manager'; 'the it-admin cog' -> 'cog:it-admin'; 'the auditors group' ->
+    'group:auditors'."""
+    words = cell.strip().strip("*_`").strip()
+    m = re.match(r"^(?:the |The )?(?P<name>[a-z][\w-]*) cog$", words)
+    if m:
+        return "cog:" + m.group("name")
+    m = re.match(r"^(?:the |The )?(?P<name>[\w -]+?) group$", words)
+    if m:
+        return "group:" + slug(m.group("name"))
+    words = re.sub(r"^(?:the|a|an|every|all|any) ", "", words, flags=re.I)
+    return "role:" + singular_role(words)
+
+
+def responsibility_rule(line: str, frame, n: int) -> dict | None:
+    """A row of the Roles and responsibilities table: {"kind": "responsibility", "frame", "who", "text"}. None for the
+    header row and the rule under it; {"kind": "unparsed"} for a row that is not two cells."""
+    if _TABLE_RULE.match(line):
+        return None
+    m = _TABLE_ROW.match(line)
     if not m:
-        return None
-    who = m.group("who").strip()
-    named = re.findall(r"`([a-z][a-z0-9-]*)`", who)
-    if not named:
-        for part in re.split(r",| and ", re.sub(r"\([^)]*\)", "", who).rstrip(".")):
-            words = [w for w in part.strip().lower().split() if w not in ("the", "a", "an", "every", "all", "any")]
-            if words and len(words) <= 4:
-                named.append(singular_role(" ".join(words)))
-    if not named:
-        return None
-    return {"kind": "audience", "frame": frame.name, "roles": sorted(set(named)),  # the frame keeps two identical lines apart
+        return {"kind": "unparsed"}
+    cells = [c.strip() for c in m.group("cells").split("|")]
+    if len(cells) != 2 or not cells[0]:
+        return {"kind": "unparsed"}
+    if cells[0].lower() in ("role", "roles", "who") and cells[1].lower().startswith("responsibilit"):
+        return None  # the header
+    # The frame keeps two documents' identical rows apart.
+    return {"kind": "responsibility", "frame": frame.name, "who": responsibility_who(cells[0]), "text": cells[1],
             "source": {"frame": frame.name, "version": frame.version, "line": n, "text": line, "path": frame.relpath}}
+
+
+def responsibilities_of(frame) -> tuple[list[dict], list[dict]]:
+    """The rows of a Frame's Roles and responsibilities table, read whatever the Frame's compile mode (a work
+    instruction is not compiled, but its table still says who must read it). Returns (rules, notes)."""
+    rules, notes, inside = [], [], False
+    for n, raw in enumerate(frame.lines, start=frame.body_start):
+        line = raw.strip()
+        if line.startswith("#"):
+            inside = line.startswith("## ") and line[3:].strip().lower() == RESPONSIBILITIES
+            continue
+        if not inside or not line:
+            continue
+        r = responsibility_rule(line, frame, n)
+        if r is None:
+            continue
+        if r["kind"] == "unparsed":
+            notes.append({"frame": frame.name, "line": n, "text": line, "severity": "error",
+                          "note": "a Roles and responsibilities row reads '| <role, or the <name> cog> | <what they do> |'"})
+            continue
+        rules.append(r)
+    return rules, notes
 
 
 def _assignee(text: str) -> str:
@@ -191,12 +229,8 @@ class ConventionExtractor:
         out = Extraction()
         mode = str(frame.frontmatter.get("compile", "convention"))
         if mode == "none":
-            # Not compiled; only who it is for (a work instruction's "For:" line) is read, for required reading.
-            for n, raw in enumerate(frame.lines, start=frame.body_start):
-                aud = audience_rule(raw.strip(), frame, n)
-                if aud:
-                    out.rules.append(aud)
-                    break
+            # Not compiled; only its Roles and responsibilities table is read (who must read it).
+            out.rules, out.notes = responsibilities_of(frame)
             return out
         if mode == "guided":
             out.notes.append({"frame": frame.name, "line": 0, "text": "",
@@ -251,11 +285,6 @@ class ConventionExtractor:
             line = raw.strip()
             if not line:
                 continue
-            if section == "" and not line.startswith("#"):
-                aud = audience_rule(line, frame, n)
-                if aud:
-                    out.rules.append(aud)
-                    continue
             m = _SCOPE_HEAD.match(line) or _PERSONA_HEAD.match(line) or _COMMITTEE_HEAD.match(line)
             if m:
                 close_process()
@@ -385,7 +414,7 @@ class ConventionExtractor:
                 close_process()
                 close_cog()
                 section = line[3:].strip().lower()
-                if section not in RULE_SECTIONS and not section.startswith("process:"):
+                if section not in RULE_SECTIONS and section != RESPONSIBILITIES and not section.startswith("process:"):
                     near = difflib.get_close_matches(section, RULE_SECTIONS, n=1, cutoff=0.75)
                     if near:
                         out.notes.append({"frame": frame.name, "line": n, "text": line, "severity": "error",
@@ -438,6 +467,14 @@ class ConventionExtractor:
                                   "note": "unparsed line in a process section"})
                 continue
 
+            if section == RESPONSIBILITIES:
+                r = responsibility_rule(line, frame, n)
+                if r is not None and r["kind"] == "unparsed":
+                    out.notes.append({"frame": frame.name, "line": n, "text": line, "severity": "error",
+                                      "note": "a Roles and responsibilities row reads '| <role, or the <name> cog> | <what they do> |'"})
+                elif r is not None:
+                    out.rules.append(r)
+                continue
             if section not in RULE_SECTIONS:
                 continue
             matched = self._match_sentence(line, n, section, add)

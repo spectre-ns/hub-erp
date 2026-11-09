@@ -65,8 +65,6 @@ Segregation of duties: whoever made a direct configuration change on a change
 order is not its only approver. An internal auditor does not audit system
 administration they perform.
 
-For: system administrators and the management reviewers.
-
 ## Permissions
 System administrators may read Policy.
 System administrators may read Quality/Changes.
@@ -89,3 +87,13 @@ Whoever made a direct configuration change on a change-order is not its only app
 
 ## Duties
 Every week the it-admin cog reviews the open change orders that touch permissions, record types or forms and comments on each what it found.
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| System administrator | Prepares configuration changes as change orders, manages access, backs up and restores the hub, and handles incidents. |
+| Management reviewer | Reviews changes to roles, limits and segregation of duties. |
+| Quality manager | Approves the change orders that carry configuration changes. |
+| Internal auditor | Audits system administration they did not perform. |
+| the it-admin cog | Reviews open change orders that touch permissions, record types or forms; changes no configuration itself. |
+| the management cog | Reviews changes to roles, limits and segregation of duties; approves nothing. |

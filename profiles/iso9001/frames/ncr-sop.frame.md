@@ -53,3 +53,11 @@ The record type is ncr.
 6. [system] Apply the disposition (disposition-applier)
 7. [system] Open corrective action (capa-opener)
 8. [system] Render the record (document-renderer)
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Staff | Opens a nonconformance for anything that does not conform, and contains it. |
+| Quality manager | Dispositions nonconformances. |
+| Management representative | Dispositions the nonconformances the quality manager reported, and receives the overdue ones. |
+| the quality-assistant cog | Dispositions low-risk nonconformances within its criteria and reminds those a disposition waits for. |

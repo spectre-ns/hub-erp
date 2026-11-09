@@ -28,3 +28,9 @@ For: the quality manager and the management representative.
 5. If you reported the nonconformance yourself, it is routed to the
    management representative instead: the reporter and the approver must be
    different people.
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Quality manager | Dispositions stock held in quarantine, as this instruction says. |
+| Management representative | Dispositions stock held in quarantine when the quality manager may not. |

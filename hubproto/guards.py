@@ -99,12 +99,7 @@ def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict |
 
     roles_with_members = {role for m in members.values() for role in m["roles"]}
     personas = {r["name"]: r for r in rules if r["kind"] == "persona"}
-    from .release import rule_names
-
-    named = set()  # who the SOPs name anywhere (a cog named nowhere follows only the company scope and is routed nothing)
-    for r in rules:
-        if r["kind"] not in ("member", "cog"):
-            named |= rule_names(r)
+    listed = {r["who"] for r in rules if r["kind"] == "responsibility"}  # who some Roles and responsibilities table lists
 
     def ref_ok(ref: str) -> bool:
         kind, _, name = ref.partition(":")
@@ -140,9 +135,9 @@ def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict |
                 out.append(Finding("consistency", "error", f"cog {rule['name']}: there is no persona {rule['persona']!r} "
                                    f"(the personas are: {', '.join(sorted(personas)) or 'none'})", key, frame, line))
             m = members.get(rule["name"]) or {}
-            if m and not ({"cog:" + rule["name"]} | {"role:" + x for x in m.get("roles") or []}) & named:
-                out.append(Finding("consistency", "warning", f"cog {rule['name']} is named by no SOP (nor are its roles): it follows only the "
-                                   "company scope and will be routed nothing", key, frame, line))
+            if m and not ({"cog:" + rule["name"]} | {"role:" + x for x in m.get("roles") or []}) & listed:
+                out.append(Finding("consistency", "warning", f"cog {rule['name']} is listed in no Roles and responsibilities table (nor are its "
+                                   "roles): it follows only the company scope and will be routed nothing", key, frame, line))
         elif kind == "persona":
             if int(rule.get("passes") or 0) > len(rule.get("lenses") or []):
                 out.append(Finding("consistency", "warning", f"persona {rule['name']} makes {rule.get('passes')} adversarial passes but names "
@@ -226,6 +221,7 @@ def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict |
                 if not any(r["kind"] == "routing" and r["process"] == rule["name"] and r["step"] != "*"
                            and (checkpoint_for(rule, r["step"]) or {}).get("id") == cp["id"] for r in rules):
                     out.append(Finding("consistency", "warning", f"checkpoint {cp['title']!r} of {rule['name']} has no routing sentence; it will route to the role on the step", key, frame, cp["line"]))
+    out += responsibilities_guard(rules, roles, roles_with_members, members)
     profiled = {r["name"] for r in rules if r["kind"] == "cog"}
     for name, m in members.items():
         if m["principal_type"] == "cog" and name not in profiled:
@@ -264,6 +260,86 @@ def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict |
                                f"{subject} may both create and approve {obj} in {res}: whoever files an item never approves it "
                                f"(checked at every Gate routed to a role or a cog); a step routed to a named field "
                                f"(the requester, the assignee) is that person's unless a segregation sentence says otherwise"))
+    return out
+
+
+FIELD_STEP_ROLES = {"system", "assignee", "owner", "author", "requester", "auditor", "chair", "evaluator", "reporter"}
+
+
+def table_needs(rules: list[dict]) -> dict[str, list[tuple[str, str, int]]]:
+    """{Frame: [(who, what part, line)]}: who each document gives a part (a step, a route, approval criteria or a
+    countersignature, a duty, or a create, approve or update permission). Its Roles and responsibilities table must list
+    each of them, or a role the cog holds."""
+    out: dict[str, list[tuple[str, str, int]]] = {}
+    for r in rules:
+        src = r.get("source") or {}
+        frame = src.get("frame") or ""
+        if not frame or frame == "settings":
+            continue
+        k, line = r.get("kind"), int(src.get("line") or 0)
+        found = []
+        if k == "process":
+            for st in r.get("steps") or []:
+                if st.get("role") and st["role"] not in FIELD_STEP_ROLES:
+                    found.append(("role:" + st["role"], "a step", int(st.get("line") or line)))
+                for c in list(st.get("swarm") or []):
+                    found.append(("cog:" + c, "a step", int(st.get("line") or line)))
+        elif k == "routing" and str(r.get("assignee", "")).startswith(("role:", "cog:")):
+            found.append((r["assignee"], "a route" if r.get("mode", "assign") == "assign" else "a report", line))
+        elif k == "approval_criteria":
+            found.append((r["approver"], "approval criteria", line))
+            if r.get("countersign"):
+                found.append(("role:" + r["countersign"], "a countersignature", line))
+        elif k == "duty":
+            found.append(("cog:" + r["cog"], "a duty", line))
+        elif k == "permission" and r.get("action") in ("create", "approve", "update") and r.get("effect") in ("allow", "propose"):
+            found.append((r["subject"], f"'{r['action']}' on {r['object'].replace('-', ' ')}s", line))
+        if found:
+            out.setdefault(frame, []).extend(found)
+    return out
+
+
+def responsibilities_guard(rules: list[dict], roles: set[str], roles_with_members: set[str], members: dict) -> list[Finding]:
+    """Each document's Roles and responsibilities table against its rules, so the table (who must read the document,
+    what a cog follows) cannot drift from what the document gives people and cogs: a warning for each role or cog the
+    document gives a part that its table does not list, and for each table row naming a role nobody holds, a role that
+    is not declared, or a cog the organization does not have."""
+    out: list[Finding] = []
+    tables: dict[str, set[str]] = {}
+    for r in rules:
+        if r["kind"] != "responsibility":
+            continue
+        tables.setdefault(r["frame"], set()).add(r["who"])
+        kind, _, name = r["who"].partition(":")
+        frame, line = _where(r)
+        if kind == "role" and name not in roles:
+            out.append(Finding("consistency", "warning", f"{r['frame']}'s Roles and responsibilities table names '{name}', which is not a declared role",
+                               rule_key(r), frame, line))
+        elif kind == "role" and name not in roles_with_members:
+            out.append(Finding("consistency", "warning", f"{r['frame']}'s Roles and responsibilities table names the {name.replace('-', ' ')} role, "
+                               "which nobody holds", rule_key(r), frame, line))
+        elif kind == "cog" and (members.get(name) or {}).get("principal_type") != "cog":
+            out.append(Finding("consistency", "warning", f"{r['frame']}'s Roles and responsibilities table names the {name} cog, which the "
+                               "organization does not have", rule_key(r), frame, line))
+        elif kind == "group":
+            out.append(Finding("consistency", "warning", f"{r['frame']}'s Roles and responsibilities table names the {name} group; groups are "
+                               "not declared yet, so it makes nobody read it", rule_key(r), frame, line))
+    for frame, needs in table_needs(rules).items():
+        table = tables.get(frame)
+        if table is None:
+            out.append(Finding("consistency", "warning", f"{frame} has no Roles and responsibilities table: nobody is required to read it "
+                               f"though it gives {len(needs)} part(s) to roles and cogs", "", frame, 0))
+            continue
+        seen = set()
+        for who, what, line in needs:
+            kind, _, name = who.partition(":")
+            ok = who in table or (kind == "cog" and any("role:" + x in table for x in (members.get(name) or {}).get("roles") or []))
+            if ok or (who, what) in seen:
+                continue
+            seen.add((who, what))
+            words = f"the {name} cog" if kind == "cog" else f"the {name.replace('-', ' ')} role"
+            out.append(Finding("consistency", "warning", f"{frame} gives {words} {what} (line {line}) but its Roles and responsibilities "
+                               "table does not list it", "", frame, line))
     return out
 
 
@@ -423,8 +499,8 @@ def _reason(rule: dict, op: str) -> str:
                 f"{', '.join(rule.get('lenses') or []) or 'none'}, {int(rule.get('passes') or 0)} adversarial passes")
     if kind == "duty":
         return f"{op} duty of the {rule['cog']} cog, every {rule['every']}: {rule['task']}"
-    if kind == "audience":
-        return f"{op} required reading for {', '.join(rule.get('roles') or [])}"
+    if kind == "responsibility":
+        return f"{op} in {rule.get('frame')}'s Roles and responsibilities: {rule.get('who')}: {rule.get('text')}"
     if kind == "scope":
         return f"{op} scope {rule['name']} ({rule.get('level')}): compiles {', '.join(rule.get('compiles') or [])}" + (
             f", layers on {', '.join(rule['layers_on'])}" if rule.get("layers_on") else "")

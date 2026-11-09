@@ -93,3 +93,14 @@ Closes as approved.
 1. [staff] Prepare the change order (record-filer)
 2. [system] Check the change order is ready (frame-stager)
 3. [quality-manager] Approve the change order
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Staff | Raises change requests, prepares change orders and verifies the changes they asked for. |
+| Quality manager | Approves change requests and change orders, and countersigns what the qa-manager cog approves. |
+| Management representative | Receives the change requests and change orders that are overdue. |
+| the qa-manager cog | Approves change requests within its criteria and drafts the prose for direct changes. |
+| the quality-assistant cog | Suggests the review panel for each change order. |
+| the it-admin cog | Reviews changes that touch permissions, record types or forms. |
+| the management cog | Reviews changes to roles, limits and segregation of duties. |

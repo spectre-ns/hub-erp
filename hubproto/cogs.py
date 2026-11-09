@@ -598,7 +598,12 @@ class DocumentPublisher(Cog):
 
 
 def assign_training(runner, bundle: dict, kernel, rec: dict, roles: list[str], *, owner: str, parent_run: str, by: str, release: str = "") -> list[dict]:
-    """A read-and-acknowledge task for everyone in the roles a new revision trains."""
+    """A read-and-acknowledge task for everyone in the roles a new revision trains: the roles its Roles and
+    responsibilities table lists, unless ``roles`` (the document's hand-set training roles) overrides them
+    (hubproto.training.roles_to_train)."""
+    from .training import roles_to_train
+
+    roles = roles_to_train(bundle, rec, roles)
     assigned = []
     if not roles or runner is None or "training-acknowledgement" not in bundle.get("ops", {}):
         return assigned

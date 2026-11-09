@@ -35,3 +35,9 @@ The record type is supplier-evaluation.
 Closes as approved.
 1. [quality-manager] Evaluate the supplier (record-filer)
 2. [management-representative] Approve the supplier
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Quality manager | Evaluates suppliers. |
+| Management representative | Approves supplier evaluations. |

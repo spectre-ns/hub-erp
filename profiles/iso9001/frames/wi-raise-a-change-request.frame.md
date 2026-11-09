@@ -26,3 +26,8 @@ For: anyone holding the `staff` role.
 4. Open the record and decide **approve** with `verification` set to what
    was done and how it was checked. That closes the request. A rejected
    request ends the run; raise a new one with the concerns addressed.
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Staff | Raises change requests as this instruction says. |

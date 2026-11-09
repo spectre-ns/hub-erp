@@ -149,7 +149,7 @@ def render(rules: list[dict], record_types: dict | None = None) -> dict:
     personas: dict[str, dict] = {}
     committees: dict[str, dict] = {}
     duties: list[dict] = []
-    audiences: list[dict] = []
+    responsibilities: list[dict] = []
     for r in rules:
         body = {k: v for k, v in r.items() if k != "kind"}
         kind = r["kind"]
@@ -189,14 +189,12 @@ def render(rules: list[dict], record_types: dict | None = None) -> dict:
             committees[r["name"]] = body
         elif kind == "duty":
             duties.append(dict(body))
-        elif kind == "audience":
-            audiences.append(dict(body))
+        elif kind == "responsibility":
+            responsibilities.append(dict(body))
     # Scopes: each scope's Frames are those of the scopes it layers on, then its own, in order.
     for name in scopes:
         scopes[name]["frames"] = scope_frames(scopes, name)
-    # Who a work instruction is for: only roles the organization declares count.
-    audiences = [{**a, "roles": [x for x in a.get("roles") or [] if x in set(roles)]} for a in audiences]
-    audiences = [a for a in audiences if a["roles"]]
+    responsibilities.sort(key=lambda r: (r["frame"], r["source"]["line"]))
     duties.sort(key=lambda d: (d["cog"], d["source"]["frame"], d["source"]["line"]))
     # A cog's profile is its identity; its persona (shared) says how it behaves; what it follows and its duties are
     # derived from the SOPs (follows_for). The bundle carries the merged view the runtime reads.
@@ -209,7 +207,7 @@ def render(rules: list[dict], record_types: dict | None = None) -> dict:
     for name, p in personas.items():
         p["cogs"] = sorted(n for n, c in cogs.items() if c.get("persona") == name)
     partial = {"members": members, "permissions": permissions, "routing": routing, "approval_criteria": criteria,
-               "processes": processes, "duties": duties, "committees": committees, "scopes": scopes, "audiences": audiences}
+               "processes": processes, "duties": duties, "committees": committees, "scopes": scopes, "responsibilities": responsibilities}
     for name in cogs:
         why = follows_for(partial, name)
         cogs[name]["follows"] = list(why)
@@ -257,7 +255,7 @@ def render(rules: list[dict], record_types: dict | None = None) -> dict:
         "personas": dict(sorted(personas.items())),
         "committees": dict(sorted(committees.items())),
         "duties": duties,
-        "audiences": audiences,
+        "responsibilities": responsibilities,
         "ops": ops,
     }
 
@@ -348,18 +346,6 @@ def rule_names(rule: dict) -> set[str]:
     return out
 
 
-def _bundle_rules(bundle: dict):
-    """The rules a release renders, in the order the Frames were compiled where it is known."""
-    yield from ({"kind": "member", "principal": n, "principal_type": m.get("type"), "source": s}
-                for n, m in (bundle.get("members") or {}).items() for s in [m.get("source")] + list(m.get("sources") or []) if s)
-    yield from bundle.get("permissions") or []
-    yield from bundle.get("routing") or []
-    yield from bundle.get("approval_criteria") or []
-    yield from (bundle.get("processes") or {}).values()
-    yield from bundle.get("duties") or []
-    yield from (bundle.get("committees") or {}).values()
-
-
 def company_frames(bundle: dict) -> list[str]:
     scopes = bundle.get("scopes") or {}
     if "company" in scopes:
@@ -367,18 +353,12 @@ def company_frames(bundle: dict) -> list[str]:
     return list(COMPANY_FRAMES)
 
 
-def frames_naming(bundle: dict, names: set[str], *, audience: bool = False) -> dict[str, set[str]]:
-    """{Frame: the names (of ``names``) its rules name}, in the order first named. With ``audience``, a work
-    instruction's "For:" line names its roles too (people's required reading; cogs follow rules, not instructions)."""
+def frames_naming(bundle: dict, names: set[str]) -> dict[str, set[str]]:
+    """{Frame: the names (of ``names``) its Roles and responsibilities table lists}, in the order of the tables."""
     out: dict[str, set[str]] = {}
-    rules = list(_bundle_rules(bundle))
-    if audience:
-        rules += [{"kind": "audience", "roles": a["roles"], "source": a["source"]} for a in bundle.get("audiences") or []]
-    for r in rules:
-        named = ({"role:" + x for x in r.get("roles") or []} if r.get("kind") == "audience" else rule_names(r)) & names
-        frame = (r.get("source") or {}).get("frame")
-        if named and frame and frame != "settings":
-            out.setdefault(frame, set()).update(named)
+    for r in bundle.get("responsibilities") or []:
+        if r.get("who") in names and r.get("frame"):
+            out.setdefault(r["frame"], set()).add(r["who"])
     return out
 
 
@@ -387,23 +367,31 @@ def principal_names(bundle: dict, principal: str) -> set[str]:
     return {"role:" + r for r in m.get("roles") or []} | {f"{m.get('type') or 'person'}:{principal}"}
 
 
-def follows_for(bundle: dict, principal: str, *, audience: bool = False) -> dict[str, set[str]]:
-    """What a member follows (a cog) or must read (a person), derived: the company scope (org model, quality manual,
-    tasks SOP), then every SOP or policy whose rules name one of its roles or it by name. Returns {Frame: the names
-    that make it so ("role:quality-manager", "cog:stores"; "company" for the company scope)}, company Frames first,
-    then the others in alphabetical order."""
-    named = frames_naming(bundle, principal_names(bundle, principal), audience=audience)
-    out: dict[str, set[str]] = {f: {"company"} | named.get(f, set()) for f in company_frames(bundle)}
+def follows_for(bundle: dict, principal: str) -> dict[str, set[str]]:
+    """What a cog follows, or a person must read, from the documents' Roles and responsibilities tables: every
+    document whose table lists one of its roles (or the cog by name); a cog also follows the company scope (the org
+    model, the quality manual, the tasks SOP). Returns {Frame: the names that make it so ("role:quality-manager",
+    "cog:stores"; "company" for the company scope)}: the company Frames first, then the others alphabetically."""
+    named = frames_naming(bundle, principal_names(bundle, principal))
+    out: dict[str, set[str]] = {}
+    if ((bundle.get("members") or {}).get(principal) or {}).get("type") == "cog":
+        out = {f: {"company"} | named.get(f, set()) for f in company_frames(bundle)}
     for f in sorted(named):
         if f not in out:
             out[f] = set(named[f])
     return out
 
 
+def table_roles(bundle: dict, frame: str) -> list[str]:
+    """The roles a document's Roles and responsibilities table lists (who must read it, who is trained on it)."""
+    return sorted({r["who"][5:] for r in bundle.get("responsibilities") or [] if r.get("frame") == frame and r.get("who", "").startswith("role:")})
+
+
 def followed_by_cogs(rules: list[dict]) -> set[str]:
     """Every Frame some cog follows or behaves by, from a compile's rules (before rendering): a change to its text
     changes what a cog judges against or how it behaves, so two policy owners approve it."""
     bundle = render_light(rules)
+    bundle["responsibilities"] = [r for r in rules if r.get("kind") == "responsibility"]
     out: set[str] = set()
     for name, m in (bundle.get("members") or {}).items():
         if m.get("type") == "cog":

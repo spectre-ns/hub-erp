@@ -29,3 +29,8 @@ For: anyone holding the `staff` role.
    Watch the record page: when it closes, the disposition and its rationale
    are on it, and a CAPA is linked when one was opened.
 5. Press **Why** on any routing or decision to see the SOP sentence behind it.
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Staff | Files nonconformances as this instruction says. |
