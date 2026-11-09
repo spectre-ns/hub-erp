@@ -92,7 +92,7 @@ def add_sop(hub, co_ref: str, name: str, *, by: str) -> dict:
     if why:
         raise ValueError(why)
     for d in sopdocs.of_lineage(hub.kernel, name):
-        if d["state"] in ("draft", "open"):
+        if d["state"] in ("draft", "open", "held"):
             other = next((lk["target"] for lk in hub.kernel.links_of(d["locator"]) if lk["rel"] == CARRIES and lk["direction"] == "in"), None)
             o = hub.kernel.get(other) if other else None
             raise ValueError(f"{current['number']} is already being revised ({d['number']}" + (f", on {o['number']})" if o else ")"))
@@ -109,7 +109,16 @@ def add_sop(hub, co_ref: str, name: str, *, by: str) -> dict:
 
 
 def remove_sop(hub, co_ref: str, name: str, *, by: str) -> None:
-    co = _co(hub, co_ref)
+    """Take a revision off the change order (it is withdrawn): its requester or a document controller, while it is being
+    prepared or revised (once sent for approval what it carries is fixed)."""
+    from . import changecontrol
+
+    co = changecontrol.sync(hub, co_ref)
+    why = changecontrol.may_edit(hub, co, by)
+    if why:
+        raise ValueError(why)
+    if changecontrol.stage_of(co) not in changecontrol.EDITABLE:
+        raise ValueError(f"{co['number']} is {changecontrol.stage_of(co).replace('-', ' ')}: what it carries is fixed now")
     for c in carried(hub, co):
         if c["name"] == name:
             if c["draft"]["state"] not in ("draft", "open"):
@@ -254,9 +263,10 @@ def activate_frame(hub, co_ref: str) -> dict:
     proposal = hub.proposals.load(co["fields"]["staged_proposal"])
     for c in proposal["changes"]:
         if (not c.get("widening") or c.get("op") == "text") and change_state(c) == "pending":
-            for who in [f"change-order:{co['number']}"] + ([f"document-control:{co['number']}"] if c.get("widening") else []):
-                c["decisions"].append({"by": who, "verdict": "approve", "at": _utc(), "change_digest": "",
-                                       "meaning": f"approved with {co['number']} (the revision was approved through document control)"})
+            signer = (co["fields"].get("signed") or {}).get("by") or "its approver"
+            c["decisions"].append({"by": f"change-order:{co['number']}", "verdict": "approve", "at": _utc(), "change_digest": "",
+                                   "meaning": f"covered by the signature of {co['number']} ({signer}): the change order's approval approves "
+                                              "the revisions it carries"})
     hub.proposals.save(proposal)
     meta = hub.release(proposal["id"], f"change-order:{co['number']}")
     hub.kernel.set_fields(co["locator"], {"released_release": meta["digest"]}, by="hub")
@@ -309,28 +319,21 @@ def assign_revision_training(hub, co_ref: str, digest: str) -> tuple[int, list[s
 
 
 def release(hub, co_ref: str, *, by: str) -> dict:
-    """Release an approved change order at once (the release automation does the same, step by step)."""
-    from . import changecontrol, formlayout
+    """Release an approved change order now: the release automation's own job (``release-change-order``), worked at
+    once, so there is one release path. Raises ValueError with the job's reason when it stops."""
+    from . import automation
 
+    co = _co(hub, co_ref)
+    if co["state"] == "released" and co["fields"].get("released_release"):
+        return hub.releases.get(co["fields"]["released_release"])
+    if co["state"] != "approved":
+        raise ValueError(f"{co['number']} is {co['state']}: it is released once its approver signs it")
     blocked = check_approval(hub, co_ref)
     if blocked:
         raise ValueError("the change order cannot be released: " + "; ".join(blocked))
-    co = _co(hub, co_ref)
-    if co["state"] != "approved":
-        raise ValueError(f"{co['number']} is {co['state']}: it is released once its approver signs it")
-    changecontrol.approve_revisions(hub, co_ref)
-    changecontrol.apply_delta(hub, co_ref)
-    meta = activate_frame(hub, co_ref)
-    changecontrol.record_release(hub, co_ref, meta["digest"])
-    publish_revisions(hub, co_ref, meta["digest"])
-    formlayout.activate(hub, _co(hub, co_ref), meta["digest"])
-    from . import workflows
-
-    workflows.activate(hub, _co(hub, co_ref), meta["digest"])
-    assign_revision_training(hub, co_ref, meta["digest"])
-    changecontrol.raise_divergence_requests(hub, co_ref, meta["digest"])
-    co = _co(hub, co_ref)
-    if co["state"] != "released":
-        hub.kernel.transition(co["locator"], "released", by=by, reason="released: its Frame and revisions are in force")
-    hub.kernel.set_fields(co["locator"], {"stage": "released"}, by="hub")
-    return meta
+    job = automation.start(hub, "release-change-order", subject=co["locator"], trigger=f"{by} released {co['number']}", by=by)
+    if job["status"] in ("queued", "running"):
+        job = automation.run(hub, job["id"])
+    if job["status"] != "success":
+        raise ValueError(f"the release of {co['number']} stopped: {job.get('outcome')}")
+    return hub.releases.get(_co(hub, co_ref)["fields"]["released_release"])

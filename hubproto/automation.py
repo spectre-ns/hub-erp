@@ -352,11 +352,16 @@ def c_tell(hub, job, memo):
 def r_check(hub, job, memo):
     from . import eco
 
+    co = hub.kernel.get(job["subject"])
+    if co["state"] != "approved" and not co["fields"].get("released_release"):
+        raise StepError(f"not ready: {co['number']} is {co['state'].replace('-', ' ')}, not approved (it went back to revising, or was never signed)")
+    signer = (co["fields"].get("signed") or {})
+    if signer.get("by_type") not in (None, "person"):
+        raise StepError(f"{co['number']} was signed by {signer.get('by')}, a {signer.get('by_type')}: a person signs a change order")
     blocked = eco.check_approval(hub, job["subject"])
     if blocked:
         raise StepError("not ready: " + "; ".join(blocked))
-    co = hub.kernel.get(job["subject"])
-    return f"{co['number']} is approved and its delta is decided", {}
+    return f"{co['number']} is approved and its delta is decided; what it carries is what was signed", {}
 
 
 def r_revisions(hub, job, memo):
@@ -391,7 +396,10 @@ def r_state_maps(hub, job, memo):
     from .runner import apply_state_map
 
     co = hub.kernel.get(job["subject"])
-    smap = co["fields"].get("state_map") or {}
+    signed = co["fields"].get("state_map_signed")
+    smap = signed if signed is not None else (co["fields"].get("state_map") or {})
+    if signed is not None and (co["fields"].get("state_map") or {}) != signed:
+        raise StepError(f"the state map of {co['number']} changed after it was signed: only the signed map is applied, and it no longer matches")
     moved = []
     for process, mapping in sorted(smap.items()):
         if mapping:
@@ -454,18 +462,27 @@ def r_related(hub, job, memo):
     found = changecontrol.find_related(hub, job["subject"])
     parts = [f"{x['number']} ({'by definition' if x['kind'] == 'definition' else 'by meaning'})" for x in found["cos"]]
     parts += [f"{x['number']} flagged ({x['cog']})" for x in found["crs"]]
-    return ("sent back: " + ", ".join(parts)) if parts else "no related change", {}
+    errors = found.get("errors") or []
+    return ((("sent back: " + ", ".join(parts)) if parts else "no related change")
+            + (f"; could not look for related changes by meaning: {'; '.join(errors)}" if errors else "")), {}
 
 
 def r_restage(hub, job, memo):
     from . import changecontrol
 
     others = changecontrol.open_change_orders(hub, exclude=job["subject"])
-    started = []
+    started, problems = [], []
     for r in others:
-        j = start(hub, "compile-frame", subject=r["locator"], trigger=f"{job['subject_number']} brought a new release into force", by="hub")
-        started.append(f"{r['number']} ({j['status']})")
-    return (f"compiling again: {', '.join(started)}" if started else "no other open change order"), {}
+        try:
+            if r["state"] == "approved":  # signed against the release before: it cannot come into force as signed
+                r = changecontrol._back_to_revising(hub, r, f"{job['subject_number']} was released before it: it is compiled again against "
+                                                            "the new release, then decided and signed again")
+            j = start(hub, "compile-frame", subject=r["locator"], trigger=f"{job['subject_number']} brought a new release into force", by="hub")
+            started.append(f"{r['number']} ({j['status']})")
+        except Exception as e:  # one change order that cannot be restaged does not stop the others, nor the release
+            problems.append(f"{r['number']}: {e}")
+    return ((f"compiling again: {', '.join(started)}" if started else "no other open change order")
+            + (f"; not restaged: {'; '.join(problems)}" if problems else "")), {}
 
 
 def r_tell(hub, job, memo):

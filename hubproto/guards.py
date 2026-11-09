@@ -80,6 +80,12 @@ def grounding_guard(rules: list[dict], frames: dict[str, Frame]) -> list[Finding
 
 def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict | None = None) -> list[Finding]:
     out: list[Finding] = []
+    for r in rules:  # a person signs a change order: never a cog (change control v2, a guard, not configuration)
+        if r.get("process") == "change-order" and (
+                (r.get("kind") == "routing" and str(r.get("assignee") or "").startswith("cog:") and (r.get("mode") or "assign") == "assign")
+                or (r.get("kind") == "approval_criteria" and str(r.get("approver") or "").startswith("cog:"))):
+            out.append(Finding("consistency", "error", "a change order's approval may not go to a cog: a person signs a change order",
+                               rule_key(r), *_where(r)))
     # A cog with a profile and no code of its own is a profile cog: the hub installs it from the release.
     cog_ids = set(cog_ids) | {r["name"] for r in rules if r.get("kind") == "cog"}
     roles = {r["name"] for r in rules if r["kind"] == "role"}

@@ -31,7 +31,8 @@ class CompileError(Exception):
 
 
 def _reviewers(rules: list[dict]) -> set[str]:
-    return {r["principal"] for r in rules if r["kind"] == "member" and POLICY_OWNER_ROLE in r["roles"]}
+    """The policy owners who review a proposal: people only (a cog never decides configuration)."""
+    return {r["principal"] for r in rules if r["kind"] == "member" and POLICY_OWNER_ROLE in r["roles"] and r.get("principal_type", "person") == "person"}
 
 
 # ---------------------------------------------------------------- questions (change control v2, section 8)
@@ -333,11 +334,18 @@ def decide_change(proposal: dict, change_id: str, verdict: str, by: str, meaning
 
 
 def change_state(change: dict) -> str:
-    verdicts = [d["verdict"] for d in change["decisions"]]
+    """approved, rejected or pending. Stale decisions (change control: made before the baseline changed) do not count;
+    an approved override's widening is what was approved; a wording change of a change order is covered by its
+    signature (one entry by ``change-order:<CO>``)."""
+    live = [d for d in change["decisions"] if not d.get("stale")]
+    verdicts = [d["verdict"] for d in live]
     if "reject" in verdicts:
         return "rejected"
-    approvers = {d["by"] for d in change["decisions"] if d["verdict"] == "approve"}
-    need = 2 if change["widening"] else 1
+    approvers = {d["by"] for d in live if d["verdict"] == "approve"}
+    if change.get("op") == "text" and any(str(a).startswith("change-order:") for a in approvers):
+        return "approved"
+    widening = (change.get("override") or {}).get("widening", change.get("widening")) if change.get("override") else change.get("widening")
+    need = 2 if widening else 1
     if len(approvers) >= need:
         return "approved"
     return "pending"
