@@ -49,7 +49,7 @@ AUTOMATIONS = {
     "release-change-order": {
         "title": "Release the change order",
         "trigger": "a change order is approved",
-        "steps": ["Check the change order is ready", "Approve the carried revisions", "Bring the Frame into force", "Publish the revisions",
+        "steps": ["Check the change order is ready", "Approve the carried revisions", "Bring the Frame into force", "Move items by the state map", "Publish the revisions",
                   "Apply the form layouts", "Apply the record-type changes", "Assign training", "Record divergences",
                   "Send related changes back", "Compile every open change order", "Tell the people involved"],
     },
@@ -382,6 +382,22 @@ def r_frame(hub, job, memo):
     return f"release {meta['digest'][:12]} is in force" + (f" ({'; '.join(extra)})" if extra else ""), {"release": meta["digest"]}
 
 
+def r_state_maps(hub, job, memo):
+    """Items in statuses the release removed move where the change order's state map says (design note 5.2), once the
+    new release is in force: no validator or action runs, waiting Gates are withdrawn, each move is on the item's Track."""
+    from .runner import apply_state_map
+
+    co = hub.kernel.get(job["subject"])
+    smap = co["fields"].get("state_map") or {}
+    moved = []
+    for process, mapping in sorted(smap.items()):
+        if mapping:
+            moved += apply_state_map(hub, process, mapping, "hub", co["number"])
+    if not moved:
+        return "no item to move", {}
+    return f"moved {len(moved)} item(s): " + ", ".join(f"{m.get('record')} {m.get('from')} → {m.get('to')}" for m in moved[:5]), {"moved": len(moved)}
+
+
 def r_publish(hub, job, memo):
     from . import eco
 
@@ -456,7 +472,7 @@ def r_tell(hub, job, memo):
 
 
 STEPS = {"compile-frame": [c_collect, c_compile, c_draft, c_guards, c_stage, c_panel, c_queue, c_tell],
-         "release-change-order": [r_check, r_revisions, r_frame, r_publish, r_forms, r_record_types, r_training, r_divergences, r_related,
+         "release-change-order": [r_check, r_revisions, r_frame, r_state_maps, r_publish, r_forms, r_record_types, r_training, r_divergences, r_related,
                                   r_restage, r_tell]}
 
 
