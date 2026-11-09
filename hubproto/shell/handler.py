@@ -230,7 +230,8 @@ class BaseHandler(BaseHTTPRequestHandler):
                      "/start": self.page_start, "/people": self.page_people, "/suppliers": self.page_suppliers, "/settings": self.page_settings, "/templates": self.page_templates,
                      "/change-orders": self.page_change_orders, "/automation": self.page_automation,
                      "/automation-status": self.page_automation_status, "/scopes": self.page_scopes, "/forms": self.page_forms,
-                     "/workflows": self.page_workflows, "/record-types": self.page_record_types}
+                     "/workflows": self.page_workflows, "/record-types": self.page_record_types,
+                     "/download-marked": self.page_download_marked}
             if r in fixed:
                 return fixed[r]
             for prefix, fn in (("/record/", self.page_record), ("/document/", self.page_document), ("/doc/", self.page_document),
@@ -262,7 +263,7 @@ class BaseHandler(BaseHTTPRequestHandler):
                  "/co-dismiss-related": self.post_co_dismiss_related, "/co-direct-remove": self.post_co_direct_remove,
                  "/co-rt-uncarry": self.post_co_rt_uncarry, "/record-types-carry": self.post_record_types_carry,
                  "/co-intervene-review": self.post_co_intervene_review, "/co-report-unavailable": self.post_co_report_unavailable,
-                 "/co-answer-all": self.post_co_answer_all, "/co-accept-all": self.post_co_accept_all, "/co-ask-sop": self.post_co_ask_sop, "/intervene": self.post_intervene, "/assign": self.post_assign, "/agent-confirm": self.post_agent_confirm, "/new-person": self.post_new_person, "/new-cog": self.post_new_cog, "/cog-model": self.post_cog_model, "/restart": self.post_restart, "/mark-applied": self.post_mark_applied, "/verify-edit": self.post_verify_edit, "/editor-debug": self.post_editor_debug,
+                 "/co-answer-all": self.post_co_answer_all, "/co-accept-all": self.post_co_accept_all, "/co-ask-sop": self.post_co_ask_sop, "/co-evidence": self.post_co_evidence, "/intervene": self.post_intervene, "/assign": self.post_assign, "/agent-confirm": self.post_agent_confirm, "/new-person": self.post_new_person, "/new-cog": self.post_new_cog, "/cog-model": self.post_cog_model, "/restart": self.post_restart, "/mark-applied": self.post_mark_applied, "/verify-edit": self.post_verify_edit, "/editor-debug": self.post_editor_debug,
                  "/upload": self.post_upload, "/checkout": self.post_checkout, "/checkin": self.post_checkin, "/link": self.post_link,
                  "/snapshot": self.post_snapshot, "/hold": self.post_hold, "/resubmit": self.post_resubmit, "/retry": self.post_retry,
                  "/cancel": self.post_cancel, "/undo-checkout": self.post_undo_checkout, "/bulk-hold": self.post_bulk_hold}

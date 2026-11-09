@@ -40,6 +40,10 @@ WARNING_WORDS = {"finding": "blocking finding", "question": "open question", "ro
                  "divergence": "divergence", "related": "related change", "record-type": "record type"}
 ORIGIN_WORDS = {"prose": "read from the prose", "direct": "made directly", "suggested": "suggested by a reviewer", "override": "an override",
                 "divergence": "a divergence kept"}
+OVERRIDABLE = {"approval_criteria": ("max_amount", "max_per_day", "max_amount_per_month"), "threshold": ("value",), "sla": ("days",),
+               "routing": ("assignee",), "permission": ("effect",), "process": ()}
+OVERRIDE_LABELS = {"max_amount": "Limit", "max_per_day": "At most per day", "max_amount_per_month": "At most per month", "value": "Value",
+                   "days": "Due within (days)", "assignee": "Goes to", "effect": "allow, deny or propose"}
 RT_OPS = ("add_field", "add_enum_values", "add_state", "require_fields", "set_retention", "set_sensitivity", "set_default", "archive_type",
           "remove_field", "add_type", "remove_type")
 
@@ -110,6 +114,12 @@ def groups(delta: list[dict]) -> list[list[dict]]:
             aid = "add:" + rule_key(d["changed_to"])
             if aid in ids:
                 paired.setdefault(aid, []).append(d)
+    adds = {(d["rule"].get("kind"), d["rule"].get("name")): d["id"] for d in items if d.get("op") == "add" and (d.get("rule") or {}).get("kind") == "process"}
+    for d in items:
+        r = d.get("rule") or {}
+        if d.get("op") == "remove" and r.get("kind") == "process" and (r.get("kind"), r.get("name")) in adds and not d.get("changed_to"):
+            aid = adds[(r.get("kind"), r.get("name"))]
+            paired.setdefault(aid, []).append(d)
     folded = {x["id"] for xs in paired.values() for x in xs}
     return [[d] + paired.get(d["id"], []) for d in items if d["id"] not in folded]
 
@@ -378,7 +388,7 @@ class ChangeOrderMixin:
                ("co-questions", f"Questions ({open_q} open)"), ("co-findings", f"Findings ({len(ov['findings'])})"),
                ("co-suggestions", f"Suggestions ({open_s} open)"), ("delta", f"The delta ({len(ctx['groups'])} item{'s' if len(ctx['groups']) != 1 else ''}"
                                                                    + (f", {pend} to decide" if ctx["stage"] == "awaiting-approval" and pend else "") + ")"),
-               ("co-workflows", "Workflows"), ("co-state-map", "State map"), ("co-cogs", "Each cog"), ("co-related", "Related"),
+               ("co-workflows", "Workflows"), ("co-validation", "Validation"), ("co-state-map", "State map"), ("co-cogs", "Each cog"), ("co-related", "Related"),
                ("co-approval", "Approval")]
         out = (f"<style>{CO_CSS}</style><section class='co' id='change-order' aria-label='Change order {esc(co['number'])}'>"
                "<nav class='co-toc' aria-label='On this change order'>" + " ".join(f"<a href='#{a}'>{esc(t)}</a>" for a, t in toc) + "</nav>")
@@ -390,6 +400,7 @@ class ChangeOrderMixin:
         out += self._co_suggestions_html(ctx)
         out += self._co_delta_html(ctx)
         out += f"<section class='co-sec' id='co-wf'>{self._workflows_co_section(co, ctx['mine'], ctx['editable'] and ctx['mine'])}</section>"
+        out += self._co_validation_html(ctx)
         out += self._co_state_map_html(ctx)
         out += self._co_cogs_html(ctx)
         out += self._co_related_html(ctx)
@@ -440,16 +451,27 @@ class ChangeOrderMixin:
         last = {e["who"] for e in (ctx["round"] or {}).get("panel") or []}
         chosen = self._co_cmulti("/co-review", fid, "panel", sorted(last))
         own = self._co_cv("/co-review", fid, "choose", "") == "own"
-        boxes = "".join(f"<label class='check'><input type='checkbox' name='panel' value='{esc(n)}'{' checked' if n in chosen else ''}> {esc(n)} "
-                        f"<span class='why'>{esc(m.get('type') or 'person')}, {esc(', '.join(r.replace('-', ' ') for r in m.get('roles') or []))}</span></label>"
-                        for n, m in sorted(members.items(), key=lambda x: (x[1].get("type") != "cog", x[0])))
+        from ..groups import committee as _committee
+
+        b = self.bundle or {}
+        committees = [(f"the {n} committee", f"the {n} committee", ", ".join((_committee(b, n) or {}).get("members") or []))
+                      for n in sorted(b.get("committees") or {}) if n != "compile-frame"]
+        boxes = "".join(f"<label class='check'><input type='checkbox' name='panel' value='{esc(v)}'{' checked' if v in chosen else ''}> {esc(t)} "
+                        f"<span class='why'>committee: {esc(w)}</span></label>" for v, t, w in committees)
+        boxes += "".join(f"<label class='check'><input type='checkbox' name='panel' value='{esc(n)}'{' checked' if n in chosen else ''}> {esc(n)} "
+                         f"<span class='why'>{esc(m.get('type') or 'person')}, {esc(', '.join(r.replace('-', ' ') for r in m.get('roles') or []))}</span></label>"
+                         for n, m in sorted(members.items(), key=lambda x: (x[1].get("type") != "cog", x[0])))
+        plus = self._co_cv("/co-review", fid, "choose", "") == "plus"
         inner = (f"<button>{icon('users')}{'Request review again' if again else 'Request review'}</button>"
-                 f"<details class='inline-details'{' open' if own else ''}><summary>Choose the panel yourself</summary>"
+                 f"<details class='inline-details'{' open' if own or plus else ''}><summary>Choose the panel yourself</summary>"
                  "<fieldset class='checks'><legend>Panel for this round</legend>"
-                 f"<label class='check'><input type='radio' name='choose' value='suggested'{'' if own else ' checked'}> the reviewers the quality-assistant cog suggests "
+                 f"<label class='check'><input type='radio' name='choose' value='suggested'{'' if own or plus else ' checked'}> the reviewers the quality-assistant cog suggests "
                  "from the change-control SOP (with their reasons)</label>"
+                 f"<label class='check'><input type='radio' name='choose' value='plus'{' checked' if plus else ''}> the suggested reviewers and the ones ticked below</label>"
                  f"<label class='check'><input type='radio' name='choose' value='own'{' checked' if own else ''}> only the reviewers ticked below</label></fieldset>"
-                 f"<fieldset class='checks'><legend>Reviewers</legend>{boxes}</fieldset></details>")
+                 f"<fieldset class='checks' data-panel-boxes><legend>Reviewers and committees</legend>{boxes}</fieldset></details>"
+                 "<script>document.currentScript.parentElement.addEventListener('change',function(e){if(e.target.name!=='panel'||!e.target.checked)return;"
+                 "var f=e.target.form,s=f.querySelector('input[name=choose][value=suggested]');if(s&&s.checked){f.querySelector('input[name=choose][value=plus]').checked=true}})</script>")
         return self._co_form("/co-review", co, fid, inner, cls="inline", label="Request review")
 
     def _co_send_form(self, ctx: dict) -> str:
@@ -477,9 +499,14 @@ class ChangeOrderMixin:
             head = f"<p class='status'>Sent for approval: it waits for {esc(signer)} at its Gate.</p>"
             if ctx["decider"]:
                 mine_todo = [g for g in todo if not any(d["by"] == self.user and not d.get("stale") for d in g[0].get("decisions") or [])]
-                head += (f"<p><b>Next:</b> decide each item of <a href='#delta'>the delta</a> ({len(mine_todo)} without your decision"
-                         + (f", {len(todo)} still pending" if todo else ", none pending") + "), ticking <i>I accept</i> for each warning; "
-                         "a widening needs both policy owners.</p>")
+                if mine_todo:
+                    head += (f"<p><b>Next:</b> decide each item of <a href='#delta'>the delta</a> ({len(mine_todo)} without your decision"
+                             + (f", {len(todo)} still pending" if todo else "") + "), ticking <i>I accept</i> for each warning; "
+                             "a widening needs both policy owners.</p>")
+                elif todo:
+                    head += f"<p>You have decided every item; {len(todo)} still wait for another approver (a widening needs both policy owners).</p>"
+                else:
+                    head += "<p>You have decided every item.</p>"
             if self.user in (pending.get("assignees") or []):
                 head += ("<p><b>Then sign it</b> in the approval card above once <a href='#co-approval'>nothing stops it</a>. Your signature also "
                          "approves every revision it carries.</p>" if ov["approval_reasons"] else
@@ -495,7 +522,8 @@ class ChangeOrderMixin:
                         f"<a href='{href('/settings', self.user)}'>Settings</a>, the <a href='{href('/forms', self.user)}'>forms editor</a>, "
                         f"the <a href='{href('/workflows', self.user)}'>workflow editor</a> or on the <a href='{href('/record-types', self.user)}'>record types</a> page. "
                         "Then request review.</p>")
-            return ("<p><b>Next:</b> when the revisions say what you mean, request review. Round 1 compiles the delta from the prose, drafts "
+            first = "when the revisions say what you mean, request review" if eco.carried(self.hub, co) else "request review"
+            return (f"<p><b>Next:</b> {first}. Round 1 compiles the delta from the prose, drafts "
                     "the prose for direct changes, suggests the panel and asks it.</p><div class='actions'>" + self._co_request_form(ctx, False) + "</div>")
         # in review or revising
         if rnd.get("status") == "compiling":
@@ -525,7 +553,7 @@ class ChangeOrderMixin:
             else:
                 out += ("<p><b>Next:</b> " + (", ".join(todo) + "; then " if todo else "") +
                         ("request review again, or send it for approval (open findings and questions become warnings the approver accepts).</p>" if sendable else
-                         "request review again: " + esc(ov["send_reasons"][0]) + ".</p>"))
+                         "request review again: " + esc(re.sub(r"[:;,]? *request review again$", "", ov["send_reasons"][0])) + ".</p>"))
             out += "<div class='actions'>" + (self._co_send_form(ctx) + " " if sendable else "") + self._co_request_form(ctx, True) + "</div>"
         elif not out:
             out = f"<p>{esc(who)} is revising it after round {esc(rnd.get('n'))}.</p>"
@@ -572,10 +600,15 @@ class ChangeOrderMixin:
                 by = f"{self._co_who(o.get('by'))} <span class='why'>{esc('in the ' + o['editor'] + ' editor' if o.get('editor') else 'in Settings' if co['fields'].get('from_settings') else '')}</span>"
             st = it.get("stated") or {}
             rt = it.get("round_trip") or {}
+            busy = self._co_sop_busy(o.get("frame"), co) if not (st or it.get("prose")) else None
             prose = ((f"stated in {self._co_frame_line(st.get('sop') or o.get('frame'), (it.get('prose') or {}).get('line'))}"
                       + (" (" + esc(st.get("by")) + ")" if st.get("by") else ""))
                      if st or it.get("prose") else f"not in the prose yet: the next round drafts it into {self._co_frame_line(o.get('frame'), None) or 'its SOP'}")
-            if rt.get("ok") is False:
+            if busy:
+                other, draft = busy
+                prose = (f"not in the prose: {self._co_frame_line(o.get('frame'), None)} is being revised on {self._co_number_link(other['number'])} "
+                         f"({esc(cc.requester(other))}, {esc(draft['number'])}). Wait for it to be released, or ask {esc(cc.requester(other))} to carry this change.")
+            elif rt.get("ok") is False:
                 prose += " <span class='chip warn'>does not read back</span>"
             rm = self._co_form("/co-direct-remove", co, f"rm-{anchor(it['id'])}", f"<input type='hidden' name='item' value='{esc(it['id'])}'>"
                                f"<button class='ghost'>{icon('x')}Remove</button>", cls="inline") if prep else ""
@@ -588,6 +621,20 @@ class ChangeOrderMixin:
             out += ("<p class='why'>A direct change is not written into the SOP by the editor it was made in: the review round's qa-manager cog "
                     "writes the prose for it and checks it reads back as the same change.</p>")
         return out
+
+    def _co_sop_busy(self, frame: str | None, co: dict):
+        """(the other change order, its draft) when ``frame`` is being revised on another open change order."""
+        if not frame:
+            return None
+        for d in sopdocs.of_lineage(self.hub.kernel, frame):
+            if d["state"] not in ("draft", "open"):
+                continue
+            n = d["fields"].get("change_order")
+            if n and n != co["number"]:
+                other = next((r for r in self.hub.kernel.query(type_="change-order") if r["number"] == n), None)
+                if other is not None and not eco.finished(other):
+                    return other, d
+        return None
 
     def _co_rt_html(self, ctx: dict) -> str:
         from .. import recordtypes
@@ -763,11 +810,14 @@ class ChangeOrderMixin:
             out += f"<p class='why'>Prose for direct changes drafted by {esc(drafted.get('by'))}.</p>"
         sug = rnd.get("suggested") or []
         if sug:
+            by_reason: dict[str, list[dict]] = {}
+            for e in sug:
+                by_reason.setdefault(e.get("reason") or "", []).append(e)
             out += ("<h4>Suggested panel</h4><ul>" + "".join(
-                f"<li><b>{esc(e['who'])}</b> <span class='chip'>{esc(e.get('kind') or 'person')}</span>"
-                + ("" if e.get("member") else " <span class='chip warn'>not a member: shown, not asked</span>")
-                + f" <span class='why'>{esc(e.get('reason') or '')}"
-                + (f" (suggested by {esc(e.get('suggested_by'))})" if e.get("suggested_by") else "") + "</span></li>" for e in sug) + "</ul>")
+                "<li>" + ", ".join(f"<b>{esc(e['who'])}</b> <span class='chip'>{esc(e.get('kind') or 'person')}</span>"
+                                   + ("" if e.get("member") else " <span class='chip warn'>not a member: shown, not asked</span>") for e in es)
+                + f" <span class='why'>{esc(reason)}" + (f" (suggested by {esc(es[0].get('suggested_by'))})" if es[0].get("suggested_by") else "") + "</span></li>"
+                for reason, es in by_reason.items()) + "</ul>")
         elif st != "compiling":
             out += "<p class='why'>No reviewer suggested: the change-control SOP's section on reviewing changes names none for this delta.</p>"
         results = rnd.get("results") or {}
@@ -787,7 +837,8 @@ class ChangeOrderMixin:
             txt = (f"<div class='why'>{esc(short(res.get('summary') or '', 300))}</div>" if res.get("summary") else "")
             model = (f"<div class='why'>{'stand-in (no model)' if res.get('stand_in') else esc(res.get('model') or '')}</div>"
                      if res.get("kind") == "cog" and status == "done" else "")
-            why = esc(e.get("reason") or "") + (f" <span class='why'>(suggested by {esc(e['suggested_by'])})</span>" if e.get("suggested_by") else "") \
+            why = (("<span class='why'>as suggested above</span>" if e.get("reason") and any(x.get("reason") == e.get("reason") for x in sug) else esc(e.get("reason") or ""))
+                   + (f" <span class='why'>(suggested by {esc(e['suggested_by'])})</span>" if e.get("suggested_by") and not any(x.get("reason") == e.get("reason") for x in sug) else "")) \
                 + (f" <span class='why'>(added by {esc(e['added_by'])})</span>" if e.get("added_by") and not str(e.get("reason") or "").startswith("added by") else "")
             rm = self._co_form("/co-reviewer-remove", co, f"rmr-{e['who']}", f"<input type='hidden' name='who' value='{esc(e['who'])}'>"
                                f"<button class='ghost' aria-label='Take {esc(e['who'])} off the panel'>{icon('x')}Remove</button>", cls="inline") \
@@ -900,6 +951,10 @@ class ChangeOrderMixin:
                     + (f" (and {len(unread) - 3} more)" if len(unread) > 3 else "") + ". ")
         else:
             said = "Each changed sentence that became an item below was read by the hub's sentence grammar. "
+        if not qs and not unread:
+            return details(f"{icon('users')} The compile-frame committee cannot read here; this round did not need it",
+                           f"<div id='co-committee-unavailable'><p>{esc(what)}.</p><p>{said}Prose outside the grammar's sentence shapes waits for the "
+                           "committee, which reads by consensus.</p>" + self._co_fix_unavailable_html(ctx) + "</div>", cls="card quiet")
         return (f"<div class='card warn' role='status' id='co-committee-unavailable'><p style='margin-top:0'>{icon('alert')} <b>The compile-frame committee cannot read here.</b> "
                 f"{esc(what)}.</p><p>" + said
                 + "Prose outside the grammar's sentence shapes waits for the committee, which reads by consensus.</p>"
@@ -938,7 +993,11 @@ class ChangeOrderMixin:
     def _co_item_options(self, ctx: dict) -> list[tuple[str, str]]:
         out = []
         for i, g in enumerate(ctx["groups"], 1):
-            out.append((g[0]["id"], f"item {i}: {short(self._co_group_words(g), 90)}"))
+            c = g[0]
+            now = self._say(cc_api("effective")(c)) if c.get("op") != "remove" and (c.get("rule") or {}).get("kind") != "process" else self._co_group_words(g)
+            o = c.get("origin") or {}
+            where = f" ({o.get('frame')} line {o.get('line')})" if o.get("line") else ""
+            out.append((c["id"], f"item {i}: {short(now, 110)}{where}"))
         return out
 
     def _co_your_review_html(self, ctx: dict, rnd: dict) -> str:
@@ -965,18 +1024,29 @@ class ChangeOrderMixin:
         ss = ""
         for i in range(1, 3):
             ss += (f"<div class='r'><label class='f'><span>SOP <span class='vh'>of suggestion {i}</span></span>{sel(f'ssop{i}', [('', 'choose…')] + [(s, s) for s in sops], self._co_cv(act, fid, f'ssop{i}'))}</label>"
-                   f"<label class='f'><span>Section <span class='vh'>of suggestion {i}</span></span><input name='ssec{i}' value='{esc(self._co_cv(act, fid, f'ssec{i}'))}' placeholder='Routing'></label>"
+                   f"<label class='f'><span>Section <i>(e.g. Routing)</i> <span class='vh'>of suggestion {i}</span></span><input name='ssec{i}' value='{esc(self._co_cv(act, fid, f'ssec{i}'))}'></label>"
                    f"<label class='f'><span>Suggestion {i}: a sentence it should say</span><input name='stext{i}' value='{esc(self._co_cv(act, fid, f'stext{i}'))}'></label></div>")
         rows = (f"<fieldset class='co-rows'><legend>Findings <span class='why'>(blocking or advisory)</span></legend><div class='co-review-rows'>{fs}</div></fieldset>"
                 f"<fieldset class='co-rows'><legend>Questions <span class='why'>(the author answers them in the prose)</span></legend><div class='co-review-rows'>{qs}</div></fieldset>"
                 f"<fieldset class='co-rows'><legend>Suggested changes <span class='why'>(a sentence the SOP should say instead or as well)</span></legend><div class='co-review-rows'>{ss}</div></fieldset>")
+        entry = next((e for e in rnd.get("panel") or [] if e["who"] == self.user and e.get("committee")), None)
+        vote = ""
+        if entry:
+            vfid = "committee-vote"
+            vote = self._co_form(act, co, vfid,
+                                 f"<p style='margin-top:0'><b>You review as a member of the {esc(entry['committee'])} committee</b>, by consensus: say you agree, "
+                                 "or object with your reason (an objection sends the change order back for revision).</p>"
+                                 f"<div class='actions'><button name='vote' value='agree'>{icon('check')}I agree</button></div>"
+                                 f"<label class='f'><span>Or object: your reason</span><input name='objection' value='{esc(self._co_cv(act, vfid, 'objection'))}'></label>"
+                                 f"<div class='actions'><button name='vote' value='object' class='reject'>{icon('x')}I object</button></div>",
+                                 cls="card", label=f"Your vote on the {entry['committee']} committee")
         inner = (f"<h3 style='margin-top:0' id='co-your-review'>Your review of round {esc(rnd['n'])}</h3>"
                  "<p class='why'>Leave a row empty to skip it. A blocking finding does not stop sending; it becomes a warning the approver "
                  "must accept. A suggested change joins the delta only if the author accepts it.</p>"
                  f"{rows}"
                  f"<label class='f'><span>Summary</span><textarea name='summary' rows='2'>{esc(self._co_cv(act, fid, 'summary'))}</textarea></label>"
                  f"<div class='actions'><button>{icon('send')}Post my review</button></div>")
-        return self._co_form(act, co, fid, inner, cls="card", label=f"Your review of round {rnd['n']}")
+        return vote + self._co_form(act, co, fid, inner, cls="card", label=f"Your review of round {rnd['n']}")
 
     # ------------------------------------------------------------ 4. questions, findings, suggestions
     def _co_about(self, ctx: dict, item: str | None = None, frame: str | None = None, line=None) -> str:
@@ -1006,16 +1076,28 @@ class ChangeOrderMixin:
         for q in qs:
             status = q.get("status", "open")
             raised = q.get("raised_by") or "the compile"
-            body = (f"<li id='q-{anchor(q['id'])}'>{icon('help')}<div><p style='margin:0'><b>{esc(q.get('text'))}</b> {chip(status, 'warn' if status == 'open' else 'ok')}</p>"
+            cause = ""
+            if "could not be written into" in (q.get("text") or ""):
+                busy = self._co_sop_busy(q.get("frame"), co)
+                if busy:
+                    cause = (f"<p class='why' style='margin:0'><b>Why:</b> {esc(q.get('frame'))} is being revised on {self._co_number_link(busy[0]['number'])} "
+                             f"({esc(cc.requester(busy[0]))}). Wait for it, or ask {esc(cc.requester(busy[0]))} to carry this change.</p>")
+            body = (f"<li id='q-{anchor(q['id'])}'>{icon('help')}<div><p style='margin:0'><b>{esc(q.get('text'))}</b> {chip(status, 'warn' if status == 'open' else 'ok')}</p>{cause}"
                     f"<p class='why' style='margin:0'>Asked by {esc(raised)}" + (f" in round {esc(q.get('round'))}" if q.get("round") else "")
                     + f"; about {self._co_about(ctx, q.get('item'), q.get('frame'), q.get('line'))}.</p>")
             if status != "open" and q.get("answer"):
                 body += (f"<p style='margin:var(--sp-1) 0 0'>Answer by {esc(q.get('by'))}: “{esc(q.get('answer'))}”"
                          + (f" ({self._co_frame_line(q.get('frame') or next(iter(sorted(cc.touches(self.hub, co).get('sop') or [])), None), q.get('answer_line'))})"
                             if q.get("answer_line") else "") + "</p>")
-            if status == "open" and ctx["answerer"]:
+            committee_q = q.get("code") in cc.COMMITTEE_CODES
+            may_answer = self._co_committee_answerer(q, ctx) if committee_q else ctx["answerer"]
+            if committee_q and status == "open" and not may_answer:
+                body += (f"<p class='why' style='margin:0'>The committee's chair ({esc(q.get('chair') or self._co_compile_chair() or '-')}) or a system "
+                         "administrator answers it.</p>")
+            if status == "open" and may_answer:
                 fid = f"answer-{anchor(q['id'])}"
-                inner = (f"<input type='hidden' name='qid' value='{esc(q['id'])}'><div class='fields'>"
+                div = (f"<label class='check'><input type='checkbox' name='record_divergence' value='1'{' checked' if self._co_cv('/co-answer', fid, 'record_divergence') else ''}> Record this as a divergence: the configuration in force will differ from the prose until a change order resolves it</label>") if committee_q else ""
+                inner = (f"<input type='hidden' name='qid' value='{esc(q['id'])}'>{div}<div class='fields'>"
                          f"<label class='f'><span>Your answer <b aria-hidden='true'>*</b></span><textarea name='answer' rows='2' required>{esc(self._co_cv('/co-answer', fid, 'answer'))}</textarea></label>"
                          f"<label class='f'><span>The line of the prose that says it</span><input name='line' inputmode='numeric' size='6' value='{esc(self._co_cv('/co-answer', fid, 'line'))}'></label></div>"
                          f"<div class='actions'><button class='secondary'>{icon('check')}Mark answered</button></div>")
@@ -1041,10 +1123,11 @@ class ChangeOrderMixin:
                "<p>It reads by consensus, so the prose it could not read is not in the delta until it can: "
                + "; ".join(f"<b>{esc(m)}</b> ({esc(why.get(m) or 'not available')})" for m in members)
                + (f". Its chair is {esc(chair)}." if chair else ".") + "</p>" + self._co_fix_unavailable_html(ctx))
-        if open_ and ctx["answerer"] and ctx["editable"] and not self._viewing_cog():
+        if open_ and self._co_committee_answerer(open_[0], ctx) and ctx["editable"] and not self._viewing_cog():
             fid = "answer-unavailable"
             act = "/co-answer-all"
-            inner = (f"<label class='f'><span>One answer for the {len(open_)} open question(s) <b aria-hidden='true'>*</b> "
+            inner = (f"<label class='check'><input type='checkbox' name='record_divergence' value='1'{' checked' if self._co_cv(act, fid, 'record_divergence') else ''}> Record this as a divergence: the configuration in force will differ from the prose until a change order resolves it</label>"
+                     + f"<label class='f'><span>One answer for the {len(open_)} open question(s) <b aria-hidden='true'>*</b> "
                      "<i>(for example: what was read, and how it was checked)</i></span>"
                      f"<textarea name='answer' rows='2' required>{esc(self._co_cv(act, fid, 'answer'))}</textarea></label>"
                      f"<div class='actions'><button class='secondary'>{icon('check')}Mark them answered</button>"
@@ -1054,6 +1137,19 @@ class ChangeOrderMixin:
         lis = "".join(f"<li>{esc(q.get('frame') or '')}: {esc(q.get('member') or '')} {chip(q.get('status', 'open'), 'warn' if q.get('status', 'open') == 'open' else 'ok')}"
                       + (f" <span class='why'>answered by {esc(q.get('by'))}: “{esc(q.get('answer'))}”</span>" if q.get("answer") else "") + "</li>" for q in unav)
         return out + details("Each question", f"<ul>{lis}</ul>") + "</div>"
+
+    def _co_compile_chair(self) -> str:
+        try:
+            return (self.hub.compile_committee() or {}).get("chair") or ""
+        except Exception:
+            return ""
+
+    def _co_committee_answerer(self, q: dict, ctx: dict) -> bool:
+        """A committee question is answered by its chair or a system administrator who did not contribute to the change."""
+        if self._viewing_cog() or eco.finished(ctx["co"]) or self.user in ctx["ov"]["contributors"]:
+            return False
+        chair = q.get("chair") or self._co_compile_chair()
+        return self.user == chair or self.user in self._co_sysadmins()
 
     def _co_findings_html(self, ctx: dict) -> str:
         fs = ctx["ov"]["findings"]
@@ -1102,11 +1198,19 @@ class ChangeOrderMixin:
         return out + "</ul><p class='why'>An accepted suggestion that carries a change becomes a delta item (suggested by the reviewer, accepted by you); request review again to have it written into the prose.</p></section>"
 
     # ------------------------------------------------------------ 5. the delta
+    @staticmethod
+    def _old_of(g: list[dict]) -> dict | None:
+        c = g[0]
+        old = c.get("changes_from") or c.get("was") or (c["rule"] if c.get("op") == "remove" else None)
+        if old is None and len(g) > 1 and (g[1].get("rule") or {}).get("kind") == "process":
+            old = g[1]["rule"]  # a workflow removed and added again: what it was
+        return old
+
     def _co_group_words(self, g: list[dict]) -> str:
         c = g[0]
         op = item_op(c)
         new = cc_api("effective")(c) if c.get("op") != "remove" else None
-        old = c.get("changes_from") or c.get("was") or (c["rule"] if c.get("op") == "remove" else None)
+        old = self._old_of(g)
         if (new or old or {}).get("kind") == "process":
             from ..workflow_model import process_change_reason
 
@@ -1121,7 +1225,10 @@ class ChangeOrderMixin:
         c = g[0]
         op = item_op(c)
         new = cc_api("effective")(c) if c.get("op") != "remove" else None
-        old = c.get("changes_from") or c.get("was") or (c["rule"] if c.get("op") == "remove" else None)
+        old = self._old_of(g)
+        if c.get("override") and (new or {}).get("kind") != "process":  # prose and in force differ: say both
+            return (f"{esc(self._say(new))}<span class='was'>in force after the override; the prose says: {esc(self._say(c['rule']))}"
+                    + (f"; was: <del>{esc(self._say(old))}</del>" if old is not None else "") + "</span>")
         if (new or old or {}).get("kind") == "process":  # a workflow: one line per change of meaning (workflow_model), no ids
             from ..workflow_model import process_change_words
 
@@ -1163,7 +1270,10 @@ class ChangeOrderMixin:
         """The model's (or the author's) quote next to the hub's explained sentence."""
         o = c.get("origin") or {}
         quote_ = o.get("quote")
-        mine = self._say(cc_api("effective")(c) if c.get("op") != "remove" else c["rule"])
+        rule = cc_api("effective")(c) if c.get("op") != "remove" else c["rule"]
+        if (rule or {}).get("kind") == "process":
+            return ""  # a workflow's change is listed in words in the item's heading; the drawing is under Workflows
+        mine = self._say(rule)
         out = "<div class='co-reads'>"
         if quote_:
             out += (f"<div><h4>The SOP says ({self._co_frame_line(o.get('frame'), o.get('line'))})</h4><q>{esc(quote_)}</q></div>")
@@ -1227,6 +1337,11 @@ class ChangeOrderMixin:
             chips += " " + chip("stale: decide it again", "warn")
         if c.get("unstated"):
             chips += " " + chip("not in the prose", "warn")
+        if ctx.get("risks") is None:
+            ctx["risks"] = self._co_risks(co)
+        risk = ctx["risks"].get(c["id"], {}).get("risk")
+        if risk:
+            chips += " " + chip(f"{risk} risk", {"high": "crit", "medium": "warn"}.get(risk, ""))
         out = (f"<li id='{anchor(c['id'])}' class='st-{st}'><div class='co-item-head'><span class='co-sign {cls}' aria-hidden='true'>{sign}</span>"
                f"<span class='what'><span class='vh'>Item {n}, {word.lower()}: </span><span aria-hidden='true'>{n}. </span>{self._co_group_html(g)}</span>{chips}</div>")
         out += self._co_origin_html(c) + self._co_reads_html(c)
@@ -1236,8 +1351,13 @@ class ChangeOrderMixin:
                     f" while the prose says otherwise. “{esc(ov.get('meaning') or '')}”</p>")
         ws = [(x, w) for x in g for w in x.get("warnings") or []]
         if ws:
+            def wtext(x, w):
+                if w["code"] == "override" and x.get("override"):
+                    return (f"overridden by {x['override'].get('by')}: in force will be “{self._say(x['override'].get('rule'))}” while the prose says "
+                            f"“{(x.get('origin') or {}).get('quote') or self._say(x['rule'])}”")
+                return w["text"]
             out += "<ul class='co-warn' aria-label='Warnings on this item'>" + "".join(
-                f"<li>{icon('alert')} <b>{esc(WARNING_WORDS.get(w['code'], w['code']))}:</b> {esc(w['text'])}"
+                f"<li>{icon('alert')} <b>{esc(WARNING_WORDS.get(w['code'], w['code']))}:</b> {esc(wtext(x, w))}"
                 + (f" <span class='chip ok'>accepted by {esc(w['accepted'].get('by'))}</span> <span class='why'>“{esc(w['accepted'].get('meaning') or '')}”</span>"
                    if w.get("accepted") else "") + "</li>" for x, w in ws) + "</ul>"
         decs = [d for x in g for d in x.get("decisions") or []]
@@ -1281,9 +1401,13 @@ class ChangeOrderMixin:
                   "the configuration then differs from the prose (a divergence the release records).</p>")
         if c.get("op") != "remove":
             rule = cc_api("effective")(c)
-            fields = [(k, v) for k, v in rule.items() if k not in ("kind", "source", "key") and (v is None or isinstance(v, (str, int, float, bool)))]
+            editable = OVERRIDABLE.get(rule.get("kind"))
+            fields = [(k, v) for k, v in rule.items() if k not in ("kind", "source", "key") and (v is None or isinstance(v, (str, int, float, bool)))
+                      and (editable is None or k in editable)]
             if fields:
-                ctl = "".join(f"<label class='f'><span>{esc(k.replace('_', ' '))}</span><input name='ov_{esc(k)}' "
+                ctl = "".join(f"<label class='f'><span>{esc(OVERRIDE_LABELS.get(k, k.replace('_', ' ')))}"
+                              + (f" <i>({esc(rule.get('currency') or rule.get('unit') or '')})</i>" if k in ("max_amount", "max_amount_per_month", "value") else "")
+                              + f"</span><input name='ov_{esc(k)}' "
                               f"value='{esc(self._co_cv(act, fid, 'ov_' + k, '' if v is None else str(v)))}'></label>" for k, v in fields)
                 ov_open = bool(self.err and self.route == act and self.vals.get("form") == fid and self.vals.get("verdict") == "override")
                 inner += (f"<details class='co-override'{' open' if ov_open else ''}><summary>Override the value</summary>"
@@ -1318,6 +1442,88 @@ class ChangeOrderMixin:
         if not lis:
             return ""
         return "<h3>Shown, not decided item by item</h3><ul>" + "".join(lis) + "</ul>"
+
+    # ------------------------------------------------------------ validation (the IT SOP: risk-based, before approval)
+    def _co_risks(self, co: dict) -> dict[str, dict]:
+        from .. import validation
+
+        try:
+            return {i["id"]: i for i in validation.annotate(validation.items_of(self.hub, co), validation.policy(self.hub))}
+        except Exception:
+            return {}
+
+    def _co_validation_html(self, ctx: dict) -> str:
+        from .. import validation
+
+        co = ctx["co"]
+        out = f"<section class='co-sec' id='co-validation'><h2>{icon('check-circle')}Validation</h2>"
+        try:
+            risks = self._co_risks(co)
+            ev = validation.evidence(self.hub, co)
+            need = validation.requirements(self.hub, co)
+            basis = validation.basis(self.hub)
+        except Exception as e:  # the validation policy is another workstream's: never let it stop the page
+            log_line(f"validation view failed for {co['number']}: {type(e).__name__}: {e}")
+            return out + "<p class='muted'>The validation requirements could not be worked out.</p></section>"
+        words = {"test-record": "a test record (a scripted check)", "test-note": "a test note (an unscripted try-out)", "review": "the review of the delta"}
+        label, folded = {}, set()
+        for n, g in enumerate(ctx["groups"], 1):  # items as the delta numbers them; a change and the removal it replaces are one
+            label[g[0]["id"]] = f"item {n}: {self._co_group_words(g)}"
+            folded |= {x["id"] for x in g[1:]}
+        for c in ctx["ov"]["delta"]:
+            if c.get("op") == "text":
+                label[c["id"]] = f"wording of {c.get('frame') or (c.get('rule') or {}).get('frame') or 'an SOP'}"
+        rows = [[esc(short(label.get(i["id"]) or i.get("reason") or i["id"], 160)), chip(i["risk"], {"high": "crit", "medium": "warn"}.get(i["risk"], "")),
+                 esc(words.get(i["validation"], i["validation"]))]
+                for i in risks.values() if i["id"] not in folded and (i.get("op") != "text" or i["risk"] != "low")]
+        out += f"<p class='why'>Each item is classed by risk ({esc(basis)}); what a class needs is recorded here before approval.</p>"
+        out += table(["Item", "Risk", "Needs"], rows, "Nothing to validate.")
+        if ev:
+            out += "<h3>Evidence</h3>" + table(["Kind", "What was checked", "Expected", "Actual", "Result", "Covers", "By"],
+                                               [[esc(e.get("kind")), esc(e.get("text") or e.get("document") or ""), esc(e.get("expected") or ""), esc(e.get("actual") or ""),
+                                                 chip(e.get("result"), "ok" if e.get("result") == "pass" else "crit"), esc(", ".join(e.get("items") or []) or "every item"),
+                                                 f"{esc(e.get('by') or '')} <span class='why'>{esc(when(e.get('at')))}</span>"] for e in ev])
+        if need:
+            out += "<ul class='blockers'>" + "".join(f"<li>{esc(x)}</li>" for x in need) + "</ul>"
+        elif risks:
+            out += f"<p class='ok'>{icon('check')}Every item has the validation its class needs.</p>"
+        if not eco.finished(co) and self._is_member() and not self._viewing_cog() and risks:
+            fid, act = "evidence", "/co-evidence"
+            kind = self._co_cv(act, fid, "kind", "test-record")
+            chosen = self._co_cmulti(act, fid, "items")
+            boxes = "".join(f"<label class='check'><input type='checkbox' name='items' value='{esc(i['id'])}'{' checked' if i['id'] in chosen else ''}> "
+                            f"{esc(short(label.get(i['id']) or i.get('reason') or i['id'], 100))} <span class='why'>{esc(i['risk'])} risk</span></label>"
+                            for i in risks.values() if i["risk"] != "low" and i["id"] not in folded)
+            inner = ("<div class='fields'>"
+                     f"<label class='f'><span>Kind</span><select name='kind'><option value='test-record'{' selected' if kind == 'test-record' else ''}>test record (scripted check)</option>"
+                     f"<option value='test-note'{' selected' if kind == 'test-note' else ''}>test note (unscripted try-out)</option></select></label>"
+                     f"<label class='f'><span>Result</span><select name='result'><option value='pass'>pass</option><option value='fail'{' selected' if self._co_cv(act, fid, 'result') == 'fail' else ''}>fail</option></select></label></div>"
+                     f"<label class='f'><span>What was checked <b aria-hidden='true'>*</b></span><textarea name='text' rows='2' required>{esc(self._co_cv(act, fid, 'text'))}</textarea></label>"
+                     "<div class='fields'>"
+                     f"<label class='f'><span>Expected <i>(a test record)</i></span><input name='expected' value='{esc(self._co_cv(act, fid, 'expected'))}'></label>"
+                     f"<label class='f'><span>Actual <i>(a test record)</i></span><input name='actual' value='{esc(self._co_cv(act, fid, 'actual'))}'></label></div>"
+                     + (f"<fieldset class='checks'><legend>Covers <i>(none ticked: every item)</i></legend>{boxes}</fieldset>" if boxes else "")
+                     + f"<div class='actions'><button class='secondary'>{icon('plus')}Record the evidence</button></div>")
+            out += details("Record validation evidence", self._co_form(act, co, fid, inner, label="Record validation evidence"),
+                           open_=bool(self.err and self.route == act))
+        return out + "</section>"
+
+    def post_co_evidence(self):
+        from .. import validation
+
+        co = self._co_post()
+        if co is None:
+            return
+        picked = self._multi("items")
+        for g in groups(cc.delta(self.hub, co["locator"])):  # an item covers the removal it replaces too
+            if g[0]["id"] in picked:
+                picked += [x["id"] for x in g[1:] if x["id"] not in picked]
+        try:
+            validation.record_evidence(self.hub, co["locator"], by=self.user, kind=self._f("kind"), text=self._f("text"), result=self._f("result") or "pass",
+                                       items=picked, expected=self._f("expected"), actual=self._f("actual"))
+        except ValueError as e:
+            raise self._co_refused(e) from None
+        self._co_done(co, "The validation evidence is recorded.", "co-validation")
 
     # ------------------------------------------------------------ 6. state map
     def _co_state_map_html(self, ctx: dict) -> str:
@@ -1530,24 +1736,71 @@ class ChangeOrderMixin:
             return esc(number)
         return f"<a href='{self._co_href(co)}'>{esc(number)}</a>"
 
+    def _cr_link(self, number: str | None) -> str:
+        cr = next((r for r in self.hub.kernel.query(type_="change-request") if r["number"] == number), None) if number else None
+        return self._record_link(cr["locator"], with_summary=False) if cr else esc(number or "-")
+
     def _divergence_marker(self, d: dict, *, with_line: bool = False) -> str:
         """The marker at a line: "In force differs from this line: ... (accepted by bob on CO-2026-0007)"."""
         inf = self._say(d.get("in_force")) if d.get("in_force") else "nothing: the rule this line states is not in force"
         line = (f"{self._co_frame_line(d.get('frame'), d.get('line'))}: “{esc(d.get('prose') or '')}”. " if with_line else "")
-        cr = (f" A change request is raised to bring the line in line: {esc(d['change_request'])}." if d.get("change_request") and with_line else "")
+        cr = (f" A change request is raised to bring the line in line: {self._cr_link(d['change_request'])}." if d.get("change_request") and with_line else "")
         return (f"<div class='co-marker' role='note'>{line}<b>{icon('alert')} In force differs from this line:</b> {esc(inf)} "
                 f"(accepted by {esc(d.get('accepted_by') or '-')} on {self._co_number_link(d.get('co'))}"
                 + (f": “{esc(d.get('meaning'))}”" if d.get("meaning") else "") + f").{cr}</div>")
 
+    def _marked_text(self, frame: str, lines: list[str]) -> str:
+        """The text with each divergence's marker written under its line: the downloaded and printed copy."""
+        at: dict[int, list[dict]] = {}
+        for d in self._divergences_of(frame):
+            n = self._divergence_line_of(d, lines)
+            at.setdefault(n or 0, []).append(d)
+        out = []
+        for i, line in enumerate(lines, 1):
+            out.append(line)
+            for d in at.get(i, []):
+                out.append(f"> {divergence_words(d, self._say)}.")
+        for d in at.get(0, []):
+            out.append(f"> Line {d.get('line')} (“{d.get('prose') or ''}”): {divergence_words(d, self._say)}.")
+        return "\n".join(out) + "\n"
+
+    def page_download_marked(self):
+        """/download-marked?doc=: an SOP in force as text, each divergence marked under its line (uncontrolled copy)."""
+        from .. import sopdocs as _sd
+
+        self._need_release()
+        rec = self.hub.kernel.get(self.q.get("doc", [""])[0])
+        if rec is None or rec["type"] != "document" or not str(rec["fields"].get("lineage", "")).startswith(_sd.LINEAGE):
+            raise ShellError("That is not an SOP or policy in the library.", 404)
+        self._require_read(rec["folder"])
+        name = rec["fields"].get("sop_name") or ""
+        text = (f"{rec['number']} {rec['fields'].get('title') or name} rev {rec['fields'].get('revision') or ''}: copy with divergence markers, "
+                f"downloaded by {self.user}. Uncontrolled when printed.\n\n") + self._marked_text(name, _sd.frame_text(self.hub, rec).splitlines())
+        data = text.encode("utf-8")
+        fname = f"{rec['number']}-{name}-marked.md"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/markdown; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+        self.end_headers()
+        self.wfile.write(data)
+
     def _divergence_card(self, frame: str) -> str:
+        from .. import sopdocs as _sd
+
         divs = self._divergences_of(frame)
         if not divs:
             return ""
+        doc = _sd.in_force(self.hub.kernel, frame)
+        dl = (f" <a href='{href('/download-marked', self.user, doc=doc['locator'])}'>{icon('download')}Download the text with these markers</a>"
+              if doc else "")
         return (f"<style>{CO_CSS}</style><div class='card warn' id='divergences' role='status'><h3 style='margin-top:0'>{icon('alert')}In force differs from "
                 f"{'this line' if len(divs) == 1 else str(len(divs)) + ' lines'} of {esc(frame)}</h3>"
                 + "".join(self._divergence_marker(d, with_line=True) for d in divs)
                 + "<p class='why'>An approver overrode the prose on a change order. The rule in force is what the hub enforces (and what a cog "
-                "reading the line is given beside it) until a change order brings the two back in line.</p></div>")
+                "reading the line is given beside it) until a change order brings the two back in line. Printed and downloaded copies carry "
+                f"these markers too.{dl}</p></div>")
 
     def _divergence_line_of(self, d: dict, lines: list[str]) -> int | None:
         """Where a divergence's marker goes in these lines: its own line when that line says what it said, else the line
@@ -1626,6 +1879,14 @@ class ChangeOrderMixin:
         if co is None:
             return
         findings, questions, suggestions = [], [], []
+        vote = self._f("vote")
+        if vote == "object":
+            if not self._f("objection"):
+                raise ShellError("Say why you object: the reason goes to the author with the change order.", field="objection")
+            findings.append({"severity": "blocking", "text": self._f("objection"), "about": {}})
+        elif vote == "agree":
+            self.form.setdefault("summary", "I agree.")
+            self.form["summary"] = self.form.get("summary") or "I agree."
         for i in range(1, 4):
             text = self._f(f"ftext{i}")
             if text:

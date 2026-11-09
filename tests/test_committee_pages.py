@@ -168,6 +168,9 @@ def test_the_compile_frame_committee_that_cannot_read_here_is_one_card_with_who_
     ok(post(board, "/co-report-unavailable", {"as": "alice", "co": co["locator"], "form": "report-unavailable"}))
     assert any(m["to"] == "bob" and m["kind"] == "task" and "Incident" in m["subject"] for m in hub.inbox.all())
     assert "Reported to bob" in main_of(get(board, path, **{"as": "alice"})[1])
+    assert "Answer them together" not in main_of(get(board, path, **{"as": "alice"})[1]), "the requester does not answer for the committee"
+    carol = main_of(get(board, path, **{"as": "carol"})[1])
+    assert "Answer them together" in carol and "Record this as a divergence" in carol, "its chair does, and may record a divergence"
     refused(post(board, "/co-answer-all", {"as": "carol", "co": co["locator"], "form": "answer-unavailable", "answer": ""}))
     # The requester may not answer for the committee; its chair (carol) or a system administrator does.
     refused(post(board, "/co-answer-all", {"as": "alice", "co": co["locator"], "form": "answer-unavailable", "answer": "obvious"}))
