@@ -127,7 +127,8 @@ def items_of(hub, co: dict) -> list[dict]:
     """Every item the change order would change: the staged delta, and its form, record-type and workflow changes."""
     from . import changecontrol
 
-    out = [dict(i) for i in changecontrol.delta(hub, co["locator"]) if i.get("state") != "rejected"]
+    # The removal a change supersedes is that change's other half: the change's own evidence covers it.
+    out = [dict(i) for i in changecontrol.delta(hub, co["locator"]) if i.get("state") != "rejected" and not i.get("half_of")]
     f = co.get("fields") or {}
     out += [{"id": f"form:{n}", "kind": "form", "reason": f"form layout {n}"} for n in sorted(f.get("form_changes") or {})]
     out += [{"id": f"record-type:{i}", "kind": "record_type", "reason": f"record type change {(c or {}).get('type') or i}"}

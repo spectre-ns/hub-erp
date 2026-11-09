@@ -598,7 +598,7 @@ def independent_approval(hub, co_ref, p: dict | None = None) -> bool:
     only approver)."""
     co = _co(hub, co_ref)
     p = p if p is not None else _proposal(hub, co)
-    items = [c for c in (p or {}).get("changes") or [] if c.get("op") != "text"]
+    items = [c for c in (p or {}).get("changes") or [] if c.get("op") != "text" and not c.get("half_of")]  # a half follows its change
     if not items:
         return False
     contribs = set(contributors(hub, co))
@@ -953,9 +953,16 @@ def _refresh(hub, co: dict, p: dict) -> dict:
         _retire_items(hub, co, p)
     authors = _draft_authors(hub, co)
     contribs = contributors(hub, co)
+    ids = {c["id"] for c in p.get("changes") or []}
     for c in p.get("changes") or []:
         c["makers"] = _makers(c, authors)
         c["contributors"] = contribs
+        # The removal a change supersedes is that change's other half (its "from"): decided with it, never on its own.
+        half = "add:" + rule_key(c["changed_to"]) if c.get("op") == "remove" and c.get("changed_to") else None
+        if half in ids:
+            c["half_of"] = half
+        else:
+            c.pop("half_of", None)
     per_item, general = _warnings(hub, co, p)
     for c in p.get("changes") or []:
         ws = per_item.get(c["id"], [])
@@ -999,6 +1006,20 @@ def item_state(c: dict, owners) -> str:
     return "approved" if approvers else "pending"
 
 
+def state_in(c: dict, p: dict, owners) -> str:
+    """An item's state in its proposal: the removal a change supersedes (``half_of``) is in the state of that change."""
+    if c.get("half_of"):
+        whole = next((x for x in p.get("changes") or [] if x["id"] == c["half_of"]), None)
+        if whole is not None:
+            return item_state(whole, owners)
+    return item_state(c, owners)
+
+
+def halves(p: dict, item_id: str) -> list[dict]:
+    """The removals the change ``item_id`` supersedes (its other half), decided with it."""
+    return [x for x in p.get("changes") or [] if x.get("half_of") == item_id]
+
+
 def delta(hub, co_ref) -> list[dict]:
     """The delta items of the staged compile, each: {"id", "op", "rule", "override"?, "widening", "reason", "origin",
     "warnings": [{"code", "text", "ref", "accepted"}], "decisions", "state", "stale", "unstated"?}. Wording changes
@@ -1009,7 +1030,7 @@ def delta(hub, co_ref) -> list[dict]:
         return []
     _refresh(hub, co, p)
     owners = p.get("reviewers") or _owners(hub)
-    return [{**c, "state": "covered" if c.get("op") == "text" else item_state(c, owners)} for c in p.get("changes") or []]
+    return [{**c, "state": "covered" if c.get("op") == "text" else state_in(c, p, owners)} for c in p.get("changes") or []]
 
 
 def co_warnings(hub, co_ref) -> list[dict]:
@@ -2294,6 +2315,8 @@ def verify_delta(hub, co_ref) -> list[str]:
     for c in list(p.get("changes") or []) + list(p.get("applied_items") or []):
         if c.get("op") == "text":
             continue  # a wording change is not decided: the CO's signature covers it (apply_delta keeps only that)
+        if c.get("half_of"):
+            continue  # the removal a change supersedes is decided with that change: a decision on it alone counts for nothing
         for d in list(c.get("decisions") or []) + list(c.get("stale_decisions") or []):
             if str(d.get("by") or "").startswith(("change-order:", "document-control:")):
                 continue  # the release's own entry for a wording change, covered by the CO signature
@@ -2661,7 +2684,13 @@ def approval_reasons(hub, co_ref) -> list[str]:
         for c in p.get("changes") or []:
             if c.get("op") == "text":
                 continue
-            st = item_state(c, owners)
+            st = state_in(c, p, owners)
+            if c.get("half_of"):  # decided with its change (reported there); its warnings are accepted when that is approved
+                if st == "approved":
+                    for w in c.get("warnings") or []:
+                        if not w.get("accepted"):
+                            reasons.append(f"accept the warning on “{c.get('reason')}”: [{w['code']}] {w['text']}")
+                continue
             if st == "pending":
                 live = [d for d in c.get("decisions") or [] if not d.get("stale")]
                 if c.get("stale"):
@@ -2808,6 +2837,10 @@ def decide_item(hub, co_ref, item_id: str, verdict: str, by: str, meaning: str, 
         raise ValueError(f"{co['number']} has no item {item_id}")
     if c.get("op") == "text":
         raise ValueError("a wording change is the revision itself: the change order's approval approves it")
+    if c.get("half_of"):  # the removal a change supersedes is decided with that change: nothing to record for it here
+        if override is not None:
+            raise ValueError(f"this removal is the other half of a change ({c.get('reason')}): override the change it is superseded by")
+        return {**c, "state": state_in(c, p, p.get("reviewers") or _owners(hub)), "note": "decided with the change it is superseded by"}
     if by in (c.get("makers") or []) and not (_widening(c) and by in (p.get("reviewers") or _owners(hub)) and override is None):
         raise ValueError(f"segregation of duties: {by} made this change ({c.get('reason')}); someone who did not decides it "
                          f"({CHANGE_CONTROL_SOP}: “{SOD_SENTENCE}”; a policy owner who made a widening may be one of its two owners)")
@@ -2849,15 +2882,16 @@ def decide_item(hub, co_ref, item_id: str, verdict: str, by: str, meaning: str, 
                 "note": "overridden: another approver, who did not make it, approves the new value"}
     taken = []
     if verdict == "approve":
-        missing = [w for w in c["warnings"] if not w.get("accepted") and not _accepts(accept_warnings, w)]
+        own = [(item_id, w) for w in c["warnings"]] + [(h["id"], w) for h in halves(p, item_id) for w in h.get("warnings") or []]
+        missing = [w for _, w in own if not w.get("accepted") and not _accepts(accept_warnings, w)]
         if missing:
             raise ValueError("accept each warning to approve it (“I accept: …”): " + "; ".join(f"[{w['code']}] {w['text']}" for w in missing))
-        for w in c["warnings"]:
+        for wid, w in own:
             if not w.get("accepted"):
-                key = _wkey(item_id, w)
+                key = _wkey(wid, w)
                 acc[key] = {"by": by, "meaning": meaning, "at": now}
                 _record(hub, co, "warning_accepted", {**_signed(hub, co, by=by, verdict="accept", meaning=meaning, step=key,
-                                                                payload=_hash(w.get("text")), at=now), "item": item_id}, by)
+                                                                payload=_hash(w.get("text")), at=now), "item": wid}, by)
             taken.append(w.get("ref"))
     decision = {"by": by, "verdict": verdict, "at": now, "meaning": meaning, "change_digest": rule_key(_effective(c)), "accepted_warnings": taken}
     _record(hub, co, "item_decided", {**_signed(hub, co, by=by, verdict=verdict, meaning=meaning, step=item_id, payload=rule_key(_effective(c)),
@@ -2867,7 +2901,7 @@ def decide_item(hub, co_ref, item_id: str, verdict: str, by: str, meaning: str, 
     _refresh(hub, co, p)
     hub.proposals.save(p)
     _seal(hub, co)
-    return {**c, "state": item_state(c, p.get("reviewers") or _owners(hub))}
+    return {**c, "state": state_in(c, p, p.get("reviewers") or _owners(hub))}
 
 
 def accept_warning(hub, co_ref, ref: str, by: str, meaning: str) -> dict:
@@ -2993,7 +3027,7 @@ def apply_delta(hub, co_ref) -> dict:
             continue
         c["stale_decisions"] = [d for d in c.get("decisions") or [] if d.get("stale")]
         c["decisions"] = [d for d in c.get("decisions") or [] if not d.get("stale")]
-        st = item_state(c, owners)
+        st = state_in(c, p, owners)
         if c.get("op") in ("state-map", "retire"):
             applied.append({**c, "state": st})
             continue
