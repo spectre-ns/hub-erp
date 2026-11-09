@@ -278,6 +278,21 @@ def test_the_graph_writes_back_as_sentences_that_read_to_the_same_graph(tmp_path
     assert [{k: v for k, v in s.items() if k != "line"} for s in again["statuses"]] == [{k: v for k, v in s.items() if k != "line"} for s in p["statuses"]]
 
 
+def test_a_process_of_numbered_steps_converts_to_graph_sentences(tmp_path, hub):
+    rules = ConventionExtractor().extract(load_frame(TEST_FRAMES / "widget-policy.frame.md")).rules
+    b = render(rules, hub.kernel.types)
+    wf, op = b["workflows"]["widget-request"], b["ops"]["widget-request"]
+    lines = pg.to_sentences(wf, cogs={s["id"]: s["cog"]["id"] for s in op["steps"]})
+    # Ids are kept (a rename keeps the id): the compiled ones are written out where they are not the name's slug.
+    assert 'From Open to Awaiting check the widget ("Automatically" [auto-awaiting-check-the-widget]): automatically, after the record filer.' in lines
+    text = GIZMO.split("## Process: gizmo-review")[0] + "## Process: widget-request\nRecords are filed in Gizmos.\nThe record type is task.\n" + "\n".join(lines) + "\n"
+    ex = rules_of(text, tmp_path)
+    assert ex.notes == [], ex.notes
+    p = proc(ex.rules, "widget-request")
+    assert [t["id"] for t in p["transitions"]] == [t["id"] for t in wf["transitions"] if not t.get("system")]
+    assert [s["id"] for s in p["statuses"]] == [s["id"] for s in wf["statuses"] if not s.get("system")]
+
+
 # ---------------------------------------------------------------------------------------------- the runner on a graph
 def test_the_waiting_decision_is_derived_from_the_status(gizmos):
     run_id = submit(gizmos)

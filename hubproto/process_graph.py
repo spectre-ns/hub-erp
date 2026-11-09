@@ -58,7 +58,7 @@ def from_linear(process: dict, slas: dict, record_type: str) -> dict:
     reject_to = process.get("reject_to")
     statuses = [{"id": "open", "name": "Open", "category": "todo"}]
     for cp in checkpoints:
-        st = {"id": f"awaiting-{cp['id']}", "name": f"Awaiting: {cp['title']}", "category": "in_progress"}
+        st = {"id": f"awaiting-{cp['id']}", "name": f"Awaiting {cp['title'][:1].lower()}{cp['title'][1:]}", "category": "in_progress"}
         if slas.get(cp["id"]):
             st["sla_days"] = slas[cp["id"]]
         statuses.append(st)
@@ -425,7 +425,7 @@ def to_sentences(wf: dict, cogs: dict | None = None) -> list[str]:
             parts.append("then " + _names([action_words(a, cogs) for a in acts]) + verb)
         return "; ".join(parts) + "."
 
-    def label(t, auto_ok=True):
+    def label(t):
         if (t.get("gate") or {}).get("kind") == "auto" and t.get("name") in (None, "", "Automatically") and t["id"] == default_id(t):
             return ""
         ident = "" if slug(t.get("name") or "") == t["id"] else f" [{t['id']}]"
