@@ -324,6 +324,9 @@ def release(hub, co_ref: str, *, by: str) -> dict:
     changecontrol.record_release(hub, co_ref, meta["digest"])
     publish_revisions(hub, co_ref, meta["digest"])
     formlayout.activate(hub, _co(hub, co_ref), meta["digest"])
+    from . import workflows
+
+    workflows.activate(hub, _co(hub, co_ref), meta["digest"])
     assign_revision_training(hub, co_ref, meta["digest"])
     changecontrol.raise_divergence_requests(hub, co_ref, meta["digest"])
     co = _co(hub, co_ref)

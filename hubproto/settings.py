@@ -54,7 +54,7 @@ def who(assignee: str) -> str:
         return "the " + _words(name)
     if kind == "cog":
         return f"the {name} cog"
-    if kind == "field":
+    if kind in ("field", "group"):  # a group is named as a role is ("the quality board"); the compiler resolves it
         return "the " + _words(name)
     return name or assignee
 
@@ -94,11 +94,27 @@ def sentence(rule: dict, processes: dict | None = None) -> str:
         return f"- {rule['name']}"
     if k == "member":
         return f"- {rule['principal']} ({rule['principal_type']}): {', '.join(rule.get('roles') or [])}"
+    if k == "group":
+        parts = list(rule.get("members") or [])
+        if rule.get("roles"):
+            parts.append("everyone holding " + " or ".join(rule["roles"]))
+        return f"- {rule['name']}: " + (", ".join(parts[:-1]) + " and " + parts[-1] if len(parts) > 1 else (parts[0] if parts else ""))
+    if k == "committee":
+        lines = [f"## Committee: {rule['name']}"]
+        if rule.get("group"):
+            lines.append(f"Group: {rule['group']}")
+        elif rule.get("members"):
+            lines.append("Members: " + ", ".join(rule["members"]))
+        if rule.get("chair"):
+            lines.append(f"Chair: {rule['chair']}")
+        if rule.get("purpose"):
+            lines.append(f"Purpose: {rule['purpose']}")
+        return "\n".join(lines)
     if k == "folder":
         return f"- {rule['path']}"
     if k == "permission":
         kind_, _, name_ = rule["subject"].partition(":")
-        subject = f"The {name_} cog" if kind_ == "cog" else plural(name_).capitalize()
+        subject = f"The {name_} cog" if kind_ == "cog" else f"The {name_} group" if kind_ == "group" else plural(name_).capitalize()
         neg = "not " if rule.get("effect") == "deny" else ""
         folder = rule["resource"].partition(":")[2]
         if rule["action"] == "read" and rule["object"] == "*":
@@ -141,6 +157,8 @@ def sentence(rule: dict, processes: dict | None = None) -> str:
         if rule.get("countersign"):
             s += f", countersigned by a {_words(rule['countersign'])}"
         return s + "."
+    if k == "sod" and rule.get("rule") == "cog-work-signed-by-person":
+        return "A cog's work " + ("" if rule.get("object") in (None, "*") else f"on a {rule['object']} ") + "is signed by a person."
     if k == "sod":
         # Written as the grammar reads them: the roles and the object keep their hyphens ("received-by", "stock-adjustment").
         a, b = rule["roles"]
@@ -190,6 +208,10 @@ def sentence(rule: dict, processes: dict | None = None) -> str:
         for st in rule.get("steps") or []:
             cog = f" ({', '.join(st['swarm'])})" if st.get("swarm") else (f" ({st['cog']})" if st.get("cog") else "")
             lines.append(f"{st['n']}. [{st['role']}] {st['title']}{cog}")
+        if rule.get("statuses"):  # a process written as a graph (hubproto.process_graph)
+            from .process_graph import to_sentences
+
+            lines += to_sentences(rule)
         return "\n".join(lines)
     return json.dumps({x: y for x, y in rule.items() if x != "source"})
 

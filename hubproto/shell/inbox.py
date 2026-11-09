@@ -10,7 +10,7 @@ from .apps import avatars
 from .forms import file_input, text_input, widget
 from .handler import details, hidden_as, href, kv, table
 from .icons import icon, type_icon
-from .pages import next_state_for
+from .pages import legacy_transitions, next_state_for
 from .text import (BLOB_FIELDS, MEANING_EXAMPLES, NOTIFICATION_KINDS, chip, day, esc, field_label, join_words, money, notification_sentence,
                    qty, short, state_name, summary_of_record, tag, type_name, value_text, when)
 
@@ -264,7 +264,7 @@ class InboxMixin:
         rec = self.hub.kernel.get(r["record"]) if r.get("record") else None
         rt = rec["type"] if rec else self._record_type_of(r)
         nxt = next_state_for(r.get("workflow"), p["checkpoint"])
-        on_reject = next((t.get("on_reject") for t in (r.get("workflow") or {}).get("transitions", []) if t["kind"] == "human" and t["step"] == p["checkpoint"]), "rejected")
+        on_reject = next((t.get("on_reject") for t in legacy_transitions(r.get("workflow")) if t["kind"] == "human" and t["step"] == p["checkpoint"]), "rejected")
         mine = self.err is not None and self.vals.get("run") == r["id"] and self.route == "/decide"
         values = dict(self.vals) if mine else {}
         candidates = ["meaning", "reason"] + (self.hub.runner.allowed_decision_fields(r) if rec else [])
@@ -314,11 +314,11 @@ class InboxMixin:
 <div class="fields">{text_input("meaning", "Meaning of your signature", values.get("meaning", ""), required=True, textarea=True, hint="", error=self._field_error("meaning") if mine else None)}</div>
 <p class="why">{meaning_hint}</p>
 <div class="actions"><label><input type="checkbox" name="confirm" value="1" required{' checked' if values.get('confirm') else ''}> I have read the item and the checks above</label>
-<button{' disabled' if blocked else ''}>{esc(_approve_label(rt, p, rec))}</button> <span class="why">{leads}.</span></div></form>"""
+{self._option_buttons(r, user, "approve", blocked) or f"<button{' disabled' if blocked else ''}>{esc(_approve_label(rt, p, rec))}</button>"} <span class="why">{leads}.</span></div></form>"""
         reject_form = f"""<div class="card quiet" id="reject-{esc(r['id'])}"><h4>Reject instead</h4><p class="why">{rej}. {esc(r['owner'])} will see your reason.</p>
 <form method="post" action="/decide" aria-label="Reject {esc(rec['number'] if rec else '')}">{hidden_as(user)}<input type="hidden" name="run" value="{esc(r['id'])}"><input type="hidden" name="digest" value="{esc(digest)}"><input type="hidden" name="verdict" value="reject">
 <div class="fields">{text_input("reason", "Reason for rejecting", values.get("reason", "") if values.get("verdict") == "reject" else "", required=True, textarea=True, hint="", error=self._field_error("reason") if mine else None)}</div>
-<div class="actions"><button class="reject" formnovalidate>Reject {esc(rec['number'] if rec else '')}</button></div></form></div>"""
+<div class="actions">{self._option_buttons(r, user, "reject", False) or f"<button class='reject' formnovalidate>Reject {esc(rec['number'] if rec else '')}</button>"}</div></form></div>"""
         if self._viewing_cog():  # watching a cog: what it sees, and what it will do, without any form in its name
             crit = [c for c in (self.bundle or {}).get("approval_criteria", []) if c["approver"] == f"cog:{user}" and c["process"] == r["process"]]
             will = (f"{esc(user)} decides this on its own, within {self._rule_html(crit[0]['source'])}, or declines it to the next person on the route."
@@ -326,8 +326,37 @@ class InboxMixin:
             watch = f"<div class='card quiet' role='status'>{icon('eye')} <b>Read-only.</b> {will} Nobody signs in its name from here.</div>"
             return (f"<article class='card decide' aria-labelledby='h-{esc(r['id'])}'>{head}<div class='facts'>{' '.join(facts)}</div>{meta}{policy}{blocked_html}{checks}"
                     f"{watch}<h4>The item</h4>{brief}</article>")
+        co_gate = self._co_gate_html(r, rec) if rec and rec["type"] == "change-order" else ""
+        cm = p.get("committee")
+        if cm:  # a committee decides here by consensus: the tally; a member votes, whoever intervenes intervenes
+            tally = self._committee_tally_html(r)
+            outstanding = self.hub.runner.committee_outstanding(p)
+            if user in outstanding:
+                return (f"<article class='card decide' aria-labelledby='h-{esc(r['id'])}'>{head}<div class='facts'>{' '.join(facts)}</div>{meta}{policy}{blocked_html}{checks}"
+                        f"{tally}{self._intervention_html(r)}{self._committee_vote_note(r)}{approve_form}<h4>The item</h4>{brief}{reject_form}</article>")
+            refusal = f"<div class='card crit' role='alert'><p>{esc(self.err[0])}</p></div>" if mine else ""
+            if mine:
+                self._err_shown = True
+            vote = (cm.get("votes") or {}).get(user)
+            said = (f"<p class='status'>You {'agreed' if vote.get('verdict') == 'agree' else 'objected'}: “{esc(vote.get('meaning') or '')}”. "
+                    "Waiting for the other members.</p>" if vote else "")
+            return (f"<article class='card decide' aria-labelledby='h-{esc(r['id'])}'>{head}<div class='facts'>{' '.join(facts)}</div>{meta}{policy}{blocked_html}{checks}"
+                    f"{tally}{refusal}{said}{self._intervention_html(r)}<h4>The item</h4>{brief}</article>")
         return (f"<article class='card decide' aria-labelledby='h-{esc(r['id'])}'>{head}<div class='facts'>{' '.join(facts)}</div>{meta}{policy}{blocked_html}{checks}"
-                f"{approve_form}<h4>The item</h4>{brief}{reject_form}</article>")
+                f"{co_gate}{approve_form}<h4>The item</h4>{brief}{reject_form}</article>")
+
+    def _option_buttons(self, run: dict, user: str, verdict: str, blocked: bool) -> str:
+        """For a process written as a graph, one button per way forward of this kind the Gate offers this person, named by
+        its transition; empty for numbered steps (the card keeps its Approve and Reject buttons)."""
+        p = run.get("pending") or {}
+        if (run.get("workflow") or {}).get("form") != "graph":
+            return ""
+        mine = [o for o in p.get("options") or [] if o.get("verdict") == verdict
+                and user in (o["assignees"] if o.get("assignees") is not None else p.get("assignees") or [])]
+        if not mine:
+            return f"<span class='why'>No way to {verdict} it is offered to you here.</span>"
+        cls = " class='reject' formnovalidate" if verdict == "reject" else (" disabled" if blocked else "")
+        return " ".join(f"<button name='transition' value='{esc(o['id'])}'{cls}>{esc(o['name'])}</button>" for o in mine)
 
     def _brief(self, rec: dict, payload: dict) -> str:
         """A readable summary of a record for the person deciding on it: key fields by type, small tables for the rest."""
@@ -457,6 +486,14 @@ class InboxMixin:
             add("Person", "person")
             add("Document", "document", link=True)
             risk()
+        elif t == "change-order":  # what it changes is on its page: the delta, item by item
+            add("Title", "title")
+            add("What it changes and why", "description")
+            add("Requested by", "requested_by")
+            if f.get("implements"):
+                rows.append(("Implements", ", ".join(esc(x) for x in f["implements"])))
+            if f.get("contributor"):
+                rows.append(("Contributors (may not sign it)", esc(", ".join(f["contributor"]))))
         else:
             for k, v in sorted(f.items()):
                 if k in BLOB_FIELDS or k in ("conditions",) or isinstance(v, (dict, list)) or v in (None, ""):
@@ -556,7 +593,7 @@ class InboxMixin:
             return self._page("Inbox", f"<h1>Inbox</h1><div class='card' role='alert'><b>{esc(user)} is not a member</b> of the organization under the release in effect; "
                                        "there is nothing in this inbox. Ask a policy owner (bob or carol) to add you to the org model.</div>")
         today = self.today
-        open_id = self.q.get("open", [""])[0] or (self.vals.get("run", "") if self.err and self.route == "/decide" else "")
+        open_id = self.q.get("open", [""])[0] or (self.vals.get("run", "") if self.err and self.route in ("/decide", "/intervene") else "")
         type_filter = self.q.get("type", [""])[0]
         try:
             page = max(1, int(self.q.get("page", ["1"])[0] or 1))
@@ -589,6 +626,7 @@ class InboxMixin:
             if total_pages > 1:
                 pages = " ".join(f"<b>{n}</b>" if n == page else f'<a href="{href("/inbox", user, page=n, type=type_filter)}#forme">{n}</a>' for n in range(1, total_pages + 1))
                 body += f"<p class='why'>Page {page} of {total_pages} ({PAGE_SIZE} per page): {pages}</p>"
+        body += self._interventions_inbox_html() + self._co_inbox_html()
         awaiting = self._awaiting_me() if hasattr(self, "_awaiting_me") else []
         if awaiting:
             body += f"<h2 id='proposals'>Policy proposals waiting for your decision <span class='muted'>{len(awaiting)}</span></h2><ul class='notes'>"
@@ -641,7 +679,8 @@ class InboxMixin:
         if not notes:
             body += "<p class='muted'>No escalations, stops, returns or automatic decisions.</p>"
         else:
-            icons = {"escalation": "alert", "failure": "x-circle", "returned": "retry", "rejection": "x", "auto-decided": "robot", "request": "user", "review": "eye", "mention": "message"}
+            icons = {"escalation": "alert", "failure": "x-circle", "returned": "retry", "rejection": "x", "auto-decided": "robot", "request": "user", "review": "eye", "mention": "message",
+                     "automation": "layers", "task": "clipboard", "intervention": "users"}
 
             def note(m):
                 return (f"<li>{icon(icons.get(m['kind'], 'alert'))}<span>{notification_sentence(m, self._number_link)} <span class='muted'>{esc(when(m['at']))}</span>"
@@ -665,6 +704,80 @@ class InboxMixin:
             body += details("Sent by me", "<ul>" + "".join(f"<li>to {esc(m['to'])}: {esc(short(m['subject'], 120))} <span class='muted'>{esc(when(m['at']))}</span></li>" for m in sent) + "</ul>")
         body += self._message_form()
         self._page("Inbox", body, status=status, crumbs=[("Inbox", None)])
+
+    def _co_inbox_items(self) -> list[tuple[str, str, str, str]]:
+        """What the change-order loop asks of this person: (kind, icon, sentence html, link). Review requests (on a panel,
+        not reviewed yet), questions to answer and suggestions to settle (their change orders), items to decide (awaiting
+        approval, no decision of theirs yet), and baseline-changed flags."""
+        from .. import changecontrol as cc
+        from .. import eco
+
+        user = self.user
+        out = []
+        for co in sorted(cc.open_change_orders(self.hub), key=lambda r: r.get("created_at") or ""):
+            if not self._can_read(co["folder"])["allowed"]:
+                continue
+            f = co["fields"]
+            link = lambda anchor, co=co: self._co_href(co) + "#" + anchor  # noqa: E731
+            title = esc(f.get("title") or "")
+            rnd = cc.current_round(co) or {}
+            res = (rnd.get("results") or {}).get(user) or {}
+            if res.get("status") == "queued" and res.get("kind") == "person":
+                why = next((e.get("reason") for e in rnd.get("panel") or [] if e["who"] == user), "") or ""
+                out.append(("review", "eye", f"<b>Review {esc(co['number'])}</b> (round {esc(rnd.get('n'))}): {title}"
+                            + (f" <span class='muted'>{esc(short(why, 160))}</span>" if why else ""), link("co-your-review")))
+            mine = user in (cc.requester(co), co.get("created_by"))
+            stage = cc.stage_of(co)
+            if mine and stage in cc.EDITABLE:
+                qs = [q for q in cc.questions(self.hub, co) if q.get("status", "open") == "open"]
+                if qs:
+                    out.append(("question", "help", f"<b>Answer {len(qs)} question{'s' if len(qs) != 1 else ''}</b> on {esc(co['number'])}: "
+                                f"{esc(short(qs[0].get('text') or '', 140))}" + (" and more" if len(qs) > 1 else ""), link("co-questions")))
+                ss = [x for x in cc.suggestions(self.hub, co) if x.get("status") == "open"]
+                if ss:
+                    out.append(("suggestion", "note", f"<b>Accept or reject {len(ss)} suggested change{'s' if len(ss) != 1 else ''}</b> on {esc(co['number'])}: {title}",
+                                link("co-suggestions")))
+                bc = f.get("baseline_changed") or {}
+                if bc and not bc.get("dismissed"):
+                    out.append(("baseline", "git-merge", f"<b>{esc(co['number'])}: the baseline changed</b> ({esc(bc.get('by'))} was released, related "
+                                f"{'by definition' if bc.get('kind') == 'definition' else 'by meaning'}): run another review round", link("co-related")))
+            if stage == "awaiting-approval" and not eco.finished(co) and not cc._may_decide(self.hub, co, user):
+                from .change_order_ui import group_state, groups
+
+                todo = [g for g in groups(cc.delta(self.hub, co)) if group_state(g) == "pending"
+                        and not any(d["by"] == user and not d.get("stale") for d in g[0].get("decisions") or [])]
+                if todo:
+                    out.append(("decide", "check-circle", f"<b>Decide {len(todo)} item{'s' if len(todo) != 1 else ''}</b> of {esc(co['number'])}: {title}", link("delta")))
+        return out
+
+    def _co_inbox_html(self) -> str:
+        if self._viewing_cog():
+            return ""
+        items = self._co_inbox_items()
+        out = f"<h2 id='change-orders'>Change orders <span class='muted'>{len(items)}</span></h2>"
+        if not items:
+            return out + "<p class='muted'>No change order is waiting for your review, answer or decision.</p>"
+        return out + "<ul class='notes'>" + "".join(f"<li data-kind='{esc(k)}'>{icon(ic)}<span>{text} <a href='{esc(url)}'>Open</a></span></li>"
+                                                    for k, ic, text, url in items) + "</ul>"
+
+    def _co_gate_html(self, run: dict, rec: dict) -> str:
+        """On the change order's approval card: what still stops the signature, and the link to the delta."""
+        from .. import changecontrol as cc
+
+        from .change_order_ui import group_state, groups
+
+        reasons = cc.approval_reasons(self.hub, rec["locator"])
+        delta = cc.delta(self.hub, rec["locator"])
+        gs = groups(delta)
+        pending = sum(1 for g in gs if group_state(g) == "pending")
+        link = href("/record/" + rec["locator"], self.user) + "#delta"
+        head = (f"<p><a class='button secondary' href='{esc(link)}'>{icon('layers')}Decide the delta item by item</a> "
+                f"<span class='why'>{len(gs)} item(s), {pending} pending. Signing approves the change order and every revision it carries.</span></p>")
+        if not reasons:
+            return f"<div class='card quiet'>{head}<p class='ok'>{icon('check')}Every item is decided and every warning accepted: it may be signed.</p></div>"
+        lines = self._co_ready_lines(rec, delta, reasons)
+        return (f"<div class='card warn'>{head}<b>Before it can be signed:</b><ul class='blockers'>" + "".join(f"<li>{x}</li>" for x in lines[:6]) + "</ul>"
+                + (f"<p class='why'>and {len(lines) - 6} more on the change order's page.</p>" if len(lines) > 6 else "") + "</div>")
 
     def _stale_card(self, run_id: str) -> str:
         """The card an approver pressed was stale: say what happened to the item instead of an error page."""

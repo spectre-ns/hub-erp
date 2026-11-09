@@ -598,7 +598,7 @@ class ViewsMixin:
                        ("Follows", (follows_html or "<span class='muted'>no procedure: it is routed no work</span>")
                         + "<div class='why'>Derived: the company scope and every document whose Roles and responsibilities table lists it or one of "
                           "its roles (in brackets).</div>"),
-                       ("What it may do", acts),
+                       ("What it may do", acts + self._member_permissions_html(name)),
                        ("Written in", self._rule_link(prof.get("source")) if prof.get("source") else "")]
             def pin_html(pin):
                 d = self.hub.kernel.get(pin["locator"])

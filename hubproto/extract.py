@@ -23,7 +23,7 @@ from .frames import Frame
 from .rules import CONDITION_VOCABULARY, NUMBER_WORDS
 
 RULE_SECTIONS = (
-    "roles", "members", "folders", "permissions", "thresholds", "routing",
+    "roles", "members", "groups", "folders", "permissions", "thresholds", "routing",
     "approval criteria", "segregation of duties", "duties",
 )
 
@@ -54,11 +54,14 @@ _MEMBER_ITEM = re.compile(
     r"^- (?P<principal>[a-z][a-z0-9-]*) \((?P<ptype>person|cog)\): (?P<roles>[a-z0-9-]+(?:, [a-z0-9-]+)*)$"
 )
 _FOLDER_ITEM = re.compile(r"^- (?P<path>[A-Z][\w /-]*)$")
+# "- quality-board: carol, bob and qa-manager" or "- quality-managers: everyone holding quality-manager" (hubproto.groups)
+_GROUP_ITEM = re.compile(r"^- (?P<name>[a-z][a-z0-9-]*): (?P<rest>.+)$")
 _PERMISSION = re.compile(
     r"^(?P<subject>[A-Z][\w -]+?) may (?P<neg>not )?(?P<action>[a-z]+)(?: on)? (?P<object>[a-z][a-z -]*?) in (?P<folder>[A-Z][\w /-]+?)"
     r"(?: when (?:an? |the )?(?P<confirmer>[a-z][a-z -]*?) confirms)?\.$"
 )
 _COG_SUBJECT = re.compile(r"^The (?P<cog>[a-z][\w-]*) cog$")
+_GROUP_SUBJECT = re.compile(r"^(?:The|Members of the) (?P<group>[a-z][\w -]*?) group$")
 _PERMISSION_READ = re.compile(
     r"^(?P<subject>[A-Z][\w -]+?) may (?P<neg>not )?read (?P<folder>[A-Z][\w /-]+?)\.$"
 )
@@ -91,6 +94,8 @@ _SOD = re.compile(
 # "Whoever made a direct configuration change on a change-order is not its only approver.": that person may approve
 # it with others, never alone (enforced where the object's approvals are counted).
 _SOD_ONLY = re.compile(r"^Whoever (?P<did>[a-z][\w -]+?) on an? (?P<object>[\w-]+) is not its only approver\.$")
+# "A person signs a cog's work, never another cog", as configuration (change control 7): any item, or one kind of item.
+_SOD_COG = re.compile(r"^A cog's work(?: on an? (?P<object>[\w -]+?))? is signed by a person\.$")
 _PROCESS_HEAD = re.compile(r"^## Process: (?P<name>[a-z0-9-]+)$")
 _MODAL = re.compile(r"\b(may|must|shall|can|cannot|go to|goes to|are reported to|is due|closes as|threshold|tolerance|limit|interval)\b", re.I)
 _PROCESS_FOLDER = re.compile(r"^Records are filed in (?P<folder>[A-Z][\w /-]+?)\.$")
@@ -101,7 +106,7 @@ _COG_HEAD = re.compile(r"^## Cog: (?P<name>[a-z0-9][\w-]*)$")
 _SCOPE_HEAD = re.compile(r"^## Scope: (?P<name>[a-z0-9][\w-]*)$")
 _PERSONA_HEAD = re.compile(r"^## Persona: (?P<name>[a-z0-9][\w-]*)(?: \((?P<of>cog|role)\))?$")
 _COMMITTEE_HEAD = re.compile(r"^## Committee: (?P<name>[a-z0-9][\w-]*)$")
-_SECTION_KEY = re.compile(r"^(?P<key>Level|Layers on|Compiles|Members|Agree): ?(?P<rest>.*)$")
+_SECTION_KEY = re.compile(r"^(?P<key>Level|Layers on|Compiles|Members|Agree|Group|Chair|Purpose): ?(?P<rest>.*)$")
 _LEVELS = ("company", "site", "department", "process")
 # A cog profile is the cog's identity: what it does (About), the model it is bundled with and its persona. What it may do,
 # what it follows and its duties are derived from the SOPs; its behaviour (prompt, lenses) is in its persona.
@@ -152,9 +157,16 @@ def object_of(title: str) -> str:
 
 
 def permission_subject(text: str) -> str:
-    """'Finance clerks' -> 'role:finance-clerk'; 'The stores cog' -> 'cog:stores' (a permission that names one cog)."""
+    """'Finance clerks' -> 'role:finance-clerk'; 'The stores cog' -> 'cog:stores' (a permission that names one cog); 'The
+    quality-board group' -> 'group:quality-board'. A plural that names a group rather than a role ("Administrators", the
+    administrators group) is made a group reference once every Frame is read (``hubproto.groups.resolve_group_refs``)."""
     m = _COG_SUBJECT.match(text.strip())
-    return "cog:" + m.group("cog") if m else "role:" + singular_role(text)
+    if m:
+        return "cog:" + m.group("cog")
+    m = _GROUP_SUBJECT.match(text.strip())
+    if m:
+        return "group:" + slug(m.group("group"))
+    return "role:" + singular_role(text)
 
 
 def responsibility_who(cell: str) -> str:
@@ -259,6 +271,286 @@ def _assignee(text: str) -> str:
     return "person:" + slug(text)
 
 
+# --------------------------------------------------------------------------- processes as graphs (change control 10.2)
+# Inside a ``## Process:`` section, instead of numbered steps:
+#   Statuses: Open (to do), Awaiting disposition (in progress, due within 5 days), Closed (done, completed), ...
+#   Starts in Open ("Open the nonconformance"): the staff; needs title.
+#   From Open to Awaiting disposition: automatically, after the ncr classifier, the record filer and the risk scorer.
+#   From Awaiting disposition to Closed ("Disposition"): the quality manager decides, not the author; needs disposition;
+#       then the disposition applier and the capa opener run.
+#   From any status except done to Cancelled ("Cancel"): the quality manager.
+# (hubproto.process_graph builds the graph; DEV-NOTES.md, "Sentence grammar", is the reference.)
+_GRAPH_STATUSES = re.compile(r"^Statuses: (?P<rest>.+)\.$")
+_GRAPH_STATUS_ITEM = re.compile(r"(?P<name>[A-Z][^()\[\],]*?)(?: \[(?P<id>[a-z0-9][a-z0-9-]*)\])? \((?P<attrs>[^()]*)\)(?P<sep>, | and |$)")
+_GRAPH_FROM = re.compile(r'^From (?P<head>[^:"]+?(?: \("[^"]+"(?: \[[a-z0-9][a-z0-9-]*\])?\))?): (?P<rest>.+)\.$')
+_GRAPH_STARTS = re.compile(r'^Starts in (?P<head>[^:"]+?(?: \("[^"]+"(?: \[[a-z0-9][a-z0-9-]*\])?\))?): (?P<rest>.+)\.$')
+_GRAPH_LABEL = re.compile(r'^(?P<head>.+?)(?: \("(?P<name>[^"]+)"(?: \[(?P<id>[a-z0-9][a-z0-9-]*)\])?\))?$')
+_GRAPH_AUTO = re.compile(r"^automatically(?: when (?P<cond>.+?))?(?:,? after (?P<acts>.+))?$")
+_GRAPH_COG = re.compile(r"^the (?P<cog>[a-z][\w -]*?) cog decides(?: within its approval criteria)?, else (?P<fallback>the [\w -]+)$")
+# "the design-review committee decides": every member of the committee agrees (consensus), or the item goes back (groups)
+_GRAPH_COMMITTEE = re.compile(r"^the (?P<committee>[a-z][\w -]*?) committee decides(?: by consensus)?$")
+_GRAPH_PERSON = re.compile(r"^(?P<who>the [\w -]+?|anyone)(?: decides)?(?:, not (?P<not>.+))?$")
+_GRAPH_CATEGORY = {"to do": "todo", "in progress": "in_progress", "done": "done"}
+_GRAPH_OUTCOMES = ("completed", "rejected", "cancelled", "superseded")
+_GRAPH_FIELD_ROLES = {"the assignee": "assignee", "the owner": "owner", "the author": "author", "the requester": "requester",
+                      "the auditor": "auditor", "the chair": "chair", "the evaluator": "evaluator", "the reporter": "reporter"}
+
+
+def _words_list(text: str) -> list[str]:
+    """'a, b and c' -> ['a', 'b', 'c']."""
+    parts = [p.strip() for p in text.split(", ")]
+    last = parts.pop() if parts else ""
+    parts += [p.strip() for p in re.split(r" and | or ", last)]
+    return [p for p in parts if p]
+
+
+def _status_ref(process: dict, text: str) -> str | None:
+    text = text.strip()
+    for s in process.get("statuses") or []:
+        if text.lower() in (s["name"].lower(), s["id"]):
+            return s["id"]
+    return None
+
+
+def _status_refs(process: dict, text: str) -> tuple[list[str], str]:
+    """Statuses named in a list ('A, B and C'); a name containing 'and' is tried whole first."""
+    one = _status_ref(process, text)
+    if one:
+        return [one], ""
+    ids = []
+    for part in _words_list(text):
+        sid = _status_ref(process, part)
+        if not sid:
+            return [], f"{part!r} is not one of the statuses this process declares"
+        ids.append(sid)
+    return ids, ""
+
+
+def _role_of(words: str) -> str:
+    words = words.strip()
+    if words in _GRAPH_FIELD_ROLES:
+        return _GRAPH_FIELD_ROLES[words]
+    if words == "anyone":
+        return "system"
+    return singular_role(words[4:] if words.startswith("the ") else words)
+
+
+def _graph_gate(text: str) -> tuple[dict, list, str]:
+    """(gate, actions written in it, error) for the first clause after the colon."""
+    m = _GRAPH_AUTO.match(text)
+    if m:
+        gate = {"kind": "auto", "when": "actions-succeed"}
+        if m.group("cond"):
+            key = CONDITION_VOCABULARY.get(m.group("cond").strip())
+            if not key:
+                return {}, [], f"“{m.group('cond')}” is not a condition the hub can evaluate (see the condition vocabulary)"
+            gate["when"] = key
+        acts, err = _graph_actions(m.group("acts") or "")
+        return gate, acts, err
+    m = _GRAPH_COG.match(text)
+    if m:
+        return {"kind": "cog", "cog": slug(m.group("cog")), "fallback": _role_of(m.group("fallback"))}, [], ""
+    m = _GRAPH_COMMITTEE.match(text)
+    if m:
+        return {"kind": "committee", "committee": slug(m.group("committee"))}, [], ""
+    m = _GRAPH_PERSON.match(text)
+    if m:
+        gate = {"kind": "person", "role": _role_of(m.group("who"))}
+        if m.group("not"):
+            nots = []
+            for part in _words_list(m.group("not")):
+                w = re.match(r'^whoever decided "(?P<name>[^"]+)"$', part)
+                nots.append("@" + w.group("name") if w else _role_of(part))
+            gate["not"] = nots
+        return gate, [], ""
+    return {}, [], f"“{text}” does not say who decides (the <role>, the <cog> cog decides, else the <role>, the <name> committee decides, or automatically)"
+
+
+def _graph_actions(text: str) -> tuple[list, str]:
+    out: list = []
+    for part in _words_list(text) if text.strip() else []:
+        m = re.match(r"^notify (?P<who>the [\w -]+)$", part)
+        if m:
+            role = _role_of(m.group("who"))
+            out.append({"notify": ("field:" if role in _GRAPH_FIELD_ROLES.values() else "role:") + role})
+            continue
+        m = re.match(r"^set (?P<field>[a-z][a-z ]*?) to (?P<value>.+)$", part)
+        if m:
+            v = m.group("value").strip()
+            out.append({"set": {m.group("field").strip().replace(" ", "_"): {"true": True, "false": False}.get(v, v)}})
+            continue
+        m = re.match(r"^the (?P<cog>[\w -]+)$", part, re.I)
+        if not m:
+            return [], f"“{part}” is not an action (the <cog>, notify the <role>, or set <field> to <value>)"
+        out.append(slug(m.group("cog")))
+    return out, ""
+
+
+def _graph_statement(process: dict, line: str, n: int, src) -> str | None:
+    """Read one graph sentence into the process. None: not a graph sentence; "": read; otherwise why it does not read."""
+    m = _GRAPH_STATUSES.match(line)
+    if m:
+        if process.get("steps"):
+            return "a process is written either as numbered steps or as statuses and transitions, not both"
+        rest, pos, statuses = m.group("rest"), 0, []
+        for it in _GRAPH_STATUS_ITEM.finditer(rest):
+            if it.start() != pos:
+                break
+            pos = it.end()
+            attrs = [a.strip() for a in it.group("attrs").split(",") if a.strip()]
+            cat = _GRAPH_CATEGORY.get(attrs[0] if attrs else "")
+            if not cat:
+                return f"status {it.group('name')!r}: say its category first (to do, in progress or done)"
+            st = {"id": it.group("id") or slug(it.group("name")), "name": it.group("name").strip(), "category": cat, "line": n}
+            for a in attrs[1:]:
+                due = re.match(r"^due within (\d+) days?$", a)
+                if due:
+                    st["sla_days"] = int(due.group(1))
+                elif a in _GRAPH_OUTCOMES and cat == "done":
+                    st["outcome"] = a
+                else:
+                    return f"status {st['name']!r}: {a!r} is not an outcome of a done status or a due date ('due within N days')"
+            if cat == "done":
+                st.setdefault("outcome", "completed")
+            statuses.append(st)
+        if pos != len(rest) or not statuses:
+            return "a Statuses line lists 'Name (to do|in progress|done[, outcome][, due within N days])' items separated by commas"
+        ids = [s["id"] for s in statuses]
+        if len(set(ids)) != len(ids):
+            return "two statuses have the same id; give one an explicit id in square brackets"
+        process["statuses"] = statuses
+        process.setdefault("transitions", [])
+        process["statuses_source"] = src(n, line)
+        return ""
+    starts = _GRAPH_STARTS.match(line)
+    m = starts or _GRAPH_FROM.match(line)
+    if not m:
+        if line.startswith(("From ", "Starts in ", "Statuses")):
+            return ("this process sentence does not read: 'From <status> to <status> (\"Name\"): <who decides>[; needs <fields>]"
+                    "[; only if <condition>][; then <actions> run].'")
+        return None
+    if not process.get("statuses"):
+        return "declare the statuses ('Statuses: ...') before the transitions"
+    lab = _GRAPH_LABEL.match(m.group("head"))
+    head, name, ident = lab.group("head"), lab.group("name"), lab.group("id")
+    t: dict = {"type": "initial" if starts else "directed"}
+    if starts:
+        to = _status_ref(process, head)
+        if not to:
+            return f"{head!r} is not one of the statuses this process declares"
+        t["to"] = to
+    else:
+        split = None
+        for mm in re.finditer(" to ", head):
+            frm, to = head[:mm.start()], _status_ref(process, head[mm.end():])
+            if to:
+                split = (frm, to)
+                break
+        if split is None:
+            return f"the status after 'to' in {head!r} is not one this process declares"
+        frm, t["to"] = split
+        g = re.match(r"^any status(?: except (?P<exc>.+))?$", frm)
+        if g:
+            t["type"] = "global"
+            exc = g.group("exc")
+            if exc is None:
+                t["except"] = []
+            elif exc.strip() == "done":
+                t["except"] = [s["id"] for s in process["statuses"] if s["category"] == "done"]
+            else:
+                ids, err = _status_refs(process, exc)
+                if err:
+                    return err
+                t["except"] = ids
+        else:
+            ids, err = _status_refs(process, frm)
+            if err:
+                return err
+            t["from"] = ids
+    clauses = [c.strip() for c in m.group("rest").split("; ")]
+    gate, actions, err = _graph_gate(clauses[0])
+    if err:
+        return err
+    if starts and gate.get("kind") != "person":
+        return "a process is started by a person (the <role>), not automatically, by a cog or by a committee"
+    fields, validators = [], []
+    for c in clauses[1:]:
+        if c.startswith("needs "):
+            fields += [w.replace(" ", "_") for w in _words_list(c[len("needs "):])]
+        elif c.startswith("then "):
+            acts, err = _graph_actions(re.sub(r" runs?$", "", c[len("then "):]))
+            if err:
+                return err
+            actions += acts
+        elif c.startswith("only if "):
+            for part in _words_list(c[len("only if "):]):
+                v = re.match(r"^(?P<status>.+) was visited$", part)
+                if v and _status_ref(process, v.group("status")):
+                    validators.append({"status_visited": _status_ref(process, v.group("status"))})
+                elif CONDITION_VOCABULARY.get(part):
+                    validators.append({"condition": CONDITION_VOCABULARY[part]})
+                else:
+                    return f"“{part}” is not a check the hub can make ('<status> was visited', or a condition of the vocabulary)"
+        else:
+            return f"“{c}” does not read (needs <fields>; only if <condition>; then <actions> run)"
+    if fields:
+        validators.insert(0, {"fields_set": list(fields)})
+    if gate.get("kind") == "auto":
+        default_name = "Automatically"
+    elif starts:
+        default_name = "Start"
+    else:
+        default_name = "To " + next(s["name"] for s in process["statuses"] if s["id"] == t["to"])
+    t["name"] = name or default_name
+    if ident:
+        t["id"] = ident
+    elif name:
+        t["id"] = slug(name)
+    elif starts:
+        t["id"] = "start"
+    else:
+        t["id"] = f"{(t.get('from') or ['any'])[0]}-to-{t['to']}"
+    if any(x["id"] == t["id"] for x in process["transitions"]):
+        return f"two transitions have the id {t['id']!r}; name them differently or give an id in square brackets"
+    t.update({"gate": gate, "validators": validators, "actions": actions, "fields": fields, "line": n, "source": src(n, line)})
+    process["transitions"].append(t)
+    return ""
+
+
+def _close_graph(process: dict) -> list[str]:
+    """Finish a process written as a graph: its start, its object and its closing status. Returns errors."""
+    if not process.get("statuses"):
+        return []
+    errors = []
+    ts = process.setdefault("transitions", [])
+    by_name = {t["name"]: t["id"] for t in ts}
+    for t in ts:
+        g = t.get("gate") or {}
+        if g.get("not"):
+            resolved = []
+            for x in g["not"]:
+                if x.startswith("@"):
+                    if x[1:] not in by_name:
+                        errors.append(f"{t['name']!r}: no transition is named {x[1:]!r}")
+                        continue
+                    resolved.append(by_name[x[1:]])
+                else:
+                    resolved.append(x)
+            g["not"] = resolved
+    init = next((t for t in ts if t["type"] == "initial"), None)
+    if init is None:
+        init = {"id": "start", "type": "initial", "to": process["statuses"][0]["id"], "name": "Start",
+                "gate": {"kind": "person", "role": "system"}, "validators": [], "actions": [], "fields": []}
+        ts.insert(0, init)
+    if not process.get("object") and init.get("name") not in (None, "", "Start"):
+        process["object"] = object_of(init["name"])
+    ids = {s["id"] for s in process["statuses"]}
+    if process.get("terminal") not in ids:
+        process["terminal"] = next((s["id"] for s in process["statuses"] if s["category"] == "done" and s.get("outcome") == "completed"),
+                                   process.get("terminal") or "closed")
+    return errors
+
+
 class ConventionExtractor:
     name = "convention"
 
@@ -284,6 +576,9 @@ class ConventionExtractor:
         def close_process():
             nonlocal process
             if process is not None:
+                for note in _close_graph(process):
+                    out.notes.append({"frame": frame.name, "line": process["source"]["line"], "text": process["source"]["text"],
+                                      "severity": "error", "note": note})
                 out.rules.append(process)
                 process = None
 
@@ -330,7 +625,8 @@ class ConventionExtractor:
                 section = "layered"
                 skipping = False
                 if m.re is _COMMITTEE_HEAD:
-                    layered = {"kind": "committee", "name": m.group("name"), "members": [], "quorum": 0, "source": src(n, line)}
+                    layered = {"kind": "committee", "name": m.group("name"), "group": "", "chair": "", "purpose": "", "members": [],
+                               "quorum": 0, "source": src(n, line)}
                 elif m.re is _PERSONA_HEAD and m.group("of"):
                     out.notes.append({"frame": frame.name, "line": n, "text": line, "severity": "error",
                                       "note": "a persona is a behaviour document for cogs now ('## Persona: <name>' with Tone:, Stance:, Lenses:, "
@@ -391,12 +687,24 @@ class ConventionExtractor:
                         layered["compiles"] = name_list(rest)
                     elif key == "members":
                         layered["members"] = name_list(rest)
-                    elif key == "agree":
+                    elif key == "agree":  # kept for earlier texts: a committee decides by consensus, every member agreeing
                         agree = re.match(r"^(\d+)(?: of \d+)?", rest.strip())
                         layered["quorum"] = int(agree.group(1)) if agree else 0
+                    elif key == "group" and layered["kind"] == "committee":
+                        layered["group"] = slug(re.sub(r"^the |\s+group$", "", rest.rstrip(".").strip().lower()))
+                    elif key == "chair" and layered["kind"] == "committee":
+                        layered["chair"] = slug(rest.rstrip(".").strip())
+                    elif key == "purpose" and layered["kind"] == "committee":
+                        layered["purpose"] = rest.strip()
+                    else:
+                        out.notes.append({"frame": frame.name, "line": n, "text": line,
+                                          "note": f"{km.group('key')}: is not a line of a {layered['kind']} section"})
+                elif layered["kind"] == "committee" and layered.get("purpose") and not line.startswith("#"):
+                    layered["purpose"] += " " + line  # the purpose runs on
                 else:
                     out.notes.append({"frame": frame.name, "line": n, "text": line,
-                                      "note": "unparsed line in a scope or committee section (Level:, Layers on:, Compiles:, Members:, Agree:)"})
+                                      "note": "unparsed line in a scope or committee section (Level:, Layers on:, Compiles:; Group:, Chair:, "
+                                              "Purpose:, Members:)"})
                 continue
             if layered is not None:
                 close_layered()
@@ -487,8 +795,17 @@ class ConventionExtractor:
                 if m:
                     process["reject_to"] = slug(m.group("title"))
                     continue
+                graph = _graph_statement(process, line, n, src)
+                if graph is not None:
+                    if graph:
+                        out.notes.append({"frame": frame.name, "line": n, "text": line, "severity": "error", "note": graph})
+                    continue
                 m = _PROCESS_STEP.match(line)
                 if m:
+                    if process.get("statuses"):
+                        out.notes.append({"frame": frame.name, "line": n, "text": line, "severity": "error",
+                                          "note": "a process is written either as numbered steps or as statuses and transitions, not both"})
+                        continue
                     title = m.group("title").strip()
                     cog_names = [c.strip() for c in (m.group("cog") or "").split(",") if c.strip()]
                     step = {"n": int(m.group("n")), "id": slug(title), "title": title,
@@ -522,6 +839,13 @@ class ConventionExtractor:
                 if section == "duties":
                     note["severity"] = "error"
                     note["note"] = "a duty reads 'Every day|week|month the <cog> cog <does the task>.'; this one would be silently dropped"
+                elif section == "groups":
+                    from .groups import parse_group
+
+                    gm = _GROUP_ITEM.match(line)
+                    note["severity"] = "error"
+                    note["note"] = ((parse_group(gm.group("rest"))[2] if gm else "")
+                                    or "a group reads '- <name>: <member>, <member> and <member>' or '- <name>: everyone holding <role>'")
                 elif _MODAL.search(line):
                     note["severity"] = "error"
                     note["note"] = (f"this sentence in the {section!r} section looks like a rule but does not parse "
@@ -537,6 +861,15 @@ class ConventionExtractor:
         if m and section == "members":
             add("member", n, line, principal=m.group("principal"), principal_type=m.group("ptype"),
                 roles=[r.strip() for r in m.group("roles").split(",")])
+            return True
+        m = _GROUP_ITEM.match(line)
+        if m and section == "groups":
+            from .groups import parse_group
+
+            listed, roles, err = parse_group(m.group("rest"))
+            if err:
+                return False
+            add("group", n, line, name=m.group("name"), members=listed, roles=roles)
             return True
         m = _ROLE_ITEM.match(line)
         if m and section == "roles":
@@ -623,6 +956,11 @@ class ConventionExtractor:
         m = _SOD.match(line)
         if m:
             add("sod", n, line, object=slug(m.group("object")), roles=[slug(m.group("a")), slug(m.group("b"))])
+            return True
+        m = _SOD_COG.match(line)
+        if m and section == "segregation of duties":
+            add("sod", n, line, object=singular_role(m.group("object")) if m.group("object") else "*", roles=[],
+                rule="cog-work-signed-by-person")
             return True
         m = _SOD_ONLY.match(line)
         if m:

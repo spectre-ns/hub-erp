@@ -223,6 +223,10 @@ def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], re
                 r["prompt_doc"] = pin
             else:
                 r.setdefault("reference_docs", []).append(pin)
+    # "Administrators may ..." where administrators is a group of the org model: the permission is the group's.
+    from .groups import resolve_group_refs
+
+    resolve_group_refs(rules)
     # Later Frames override earlier ones: a rule with the same key stated twice keeps the last source.
     by_key: dict[str, dict] = {}
     for r in rules:

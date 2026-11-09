@@ -45,6 +45,7 @@ Reading
     findings(hub, co)                                   the open findings: each reviewer's latest review
     suggestions(hub, co)                                every suggestion made in any round, with its status
     suggest_panel(hub, co)                              the panel the quality-assistant cog suggests, with reasons
+    committee_reviews(hub, co)                          each committee on the panel: agreed, objected, waiting or paused
     send_reasons(hub, co) / approval_reasons(hub, co)   why it may not be sent / signed yet (empty: it may)
     contributors(hub, co)                               who wrote or made what it carries (none of them may approve it)
     touches(hub, co)                                    what it changes: SOPs, processes, rule slots, record types, forms, roles
@@ -54,6 +55,7 @@ The loop
     request_review(hub, co, by, panel=None)             start a round; ``panel`` (names or {"who", "reason"}) replaces the suggestion
     add_reviewer(hub, co, who, by, reason="") / remove_reviewer(hub, co, who, by)
     submit_review(hub, co, who, findings=(), questions=(), suggestions=(), summary="")
+    intervene_review(hub, co, committee, member, by, meaning)  the chair reviews in place of a member that could not
     cog_review(hub, co, n, cog)                         a cog's review of round n (the co-review queue task)
     accept_suggestion(hub, co, sid, by) / reject_suggestion(hub, co, sid, by, reason="")
     answer_question(hub, co, qid, answer, by, line=None)
@@ -473,7 +475,7 @@ def contributors(hub, co_ref) -> list[str]:
     for it in _items(co):
         o = it.get("origin") or {}
         out += [o.get("by"), o.get("accepted_by")] if o.get("kind") == "suggested" else [o.get("by")]
-    for kind in ("form_changes", "record_type_changes"):
+    for kind in ("form_changes", "record_type_changes", "workflow_changes"):
         carried = co["fields"].get(kind) or {}
         out += [(v or {}).get("by") for v in (carried.values() if isinstance(carried, dict) else carried)]
     return sorted({w for w in out if w and w not in MACHINES})
@@ -823,6 +825,7 @@ def touches(hub, co_ref, p: dict | None = None) -> dict[str, set]:
             out["slot"].add(_slot_key(r))
             out["role"] |= _roles_named(r)
     out["form"] = set(f.get("form_changes") or {})
+    out["process"] |= set(f.get("workflow_changes") or {})  # a workflow carried from the editor (hubproto.workflows)
     rtc = f.get("record_type_changes") or []
     out["record_type"] = {x.get("type") for x in (rtc if isinstance(rtc, list) else [{"type": k} for k in rtc])}
     for k in out:
@@ -905,12 +908,23 @@ def _term_hit(hub, term: str, t: dict[str, set]) -> str:
 
 def _who(hub, phrase: str) -> list[dict]:
     from .extract import singular_role, slug
+    from .groups import committee, committee_named
 
     b = _bundle(hub)
     members = b.get("members") or {}
     out = []
     for part in re.split(r",\s*|\s+and\s+|\s+or\s+", phrase):
         w = re.sub(r"^(?:the|a|an)\s+", "", part.strip().lower()).strip(" .")
+        if re.search(r"\bcommittee$", w):
+            # A committee reviews by consensus: every member of it is on the panel (groups and committees).
+            name = committee_named(b, w)
+            c = committee(b, name) if name else None
+            if c:
+                out += [{"who": m, "kind": (members.get(m) or {}).get("type") or "person", "member": True, "committee": name}
+                        for m in c["members"]]
+            else:
+                out.append({"who": slug(w), "kind": "committee", "member": False})
+            continue
         is_cog = bool(re.search(r"\bcogs?$", w))
         w = re.sub(r"\s+cogs?$", "", w)
         if not w:
@@ -945,9 +959,11 @@ def suggest_panel(hub, co_ref) -> list[dict]:
         cur = picked.get(entry["who"])
         if cur:
             cur["reason"] += f"; {reason}"
+            if entry.get("committee"):
+                cur["committee"] = entry["committee"]
         else:
             picked[entry["who"]] = {"who": entry["who"], "kind": entry["kind"], "reason": reason, "suggested_by": by,
-                                    "member": bool(entry.get("member"))}
+                                    "member": bool(entry.get("member")), **({"committee": entry["committee"]} if entry.get("committee") else {})}
 
     if PANEL is not None:
         for e in PANEL(hub, co, section, t) or []:
@@ -1016,7 +1032,7 @@ def request_review(hub, co_ref, by: str, panel=None) -> dict:
     if st not in EDITABLE:
         raise ValueError(f"{co['number']} is {st.replace('-', ' ')}: review rounds are over")
     f = co["fields"]
-    if not (eco.carried(hub, co) or _items(co) or f.get("form_changes") or f.get("record_type_changes")):
+    if not (eco.carried(hub, co) or _items(co) or f.get("form_changes") or f.get("record_type_changes") or f.get("workflow_changes")):
         raise ValueError(f"{co['number']} changes nothing yet: carry an SOP or policy revision, make a direct change or carry a form first")
     last = current_round(co)
     if last and last.get("status") == "compiling":
@@ -1271,6 +1287,16 @@ def _record_result(hub, co_ref, n: int, who: str, result: dict) -> dict:
     if rnd.get("status") == "reviewed" and n == len(rounds(co)) and stage_of(co) == "in-review":
         co = _set(hub, co, stage="revising")
     _refresh_saved(hub, co)
+    entry = next((e for e in rnd.get("panel") or [] if e["who"] == who and e.get("committee")), None)
+    if entry is not None and result.get("status") == "failed":
+        from .groups import committee
+
+        chair = (committee(_bundle(hub), entry["committee"]) or {}).get("chair")
+        if chair:  # the committee cannot agree without this member: its chair intervenes
+            hub.inbox.notify(chair, kind="intervention", subject=f"Intervene: {co['number']} ({entry['committee']} committee): {who} could not review",
+                             body=(f"{result.get('error') or 'Its review did not run'}. The {entry['committee']} committee reviews by consensus, so "
+                                   f"{co['number']} cannot be sent for approval until you review in {who}'s place, or the change is revised."),
+                             record=co["locator"])
     blocking = sum(1 for f in result.get("findings") or [] if f.get("severity") == "blocking")
     if requester(co) and requester(co) != who:
         hub.inbox.notify(requester(co), kind="review", subject=f"{who} reviewed {co['number']} (round {n})",
@@ -1662,7 +1688,7 @@ def send_reasons(hub, co_ref) -> list[str]:
     f = co["fields"]
     carried = eco.carried(hub, co)
     items = _items(co)
-    if not (carried or items or f.get("form_changes") or f.get("record_type_changes")):
+    if not (carried or items or f.get("form_changes") or f.get("record_type_changes") or f.get("workflow_changes")):
         return ["it changes nothing yet: carry an SOP or policy revision, make a direct change or carry a form"]
     reasons = []
     last = current_round(co)
@@ -1699,8 +1725,86 @@ def send_reasons(hub, co_ref) -> list[str]:
         recordtypes = None
     if recordtypes is not None:
         reasons += recordtypes.carried_reasons(hub, co)
+    from . import workflows  # workstream 8: workflow layouts and graph snapshots carried from the editor
+
+    reasons += workflows.carried_reasons(hub, co)
     reasons += _cr_reasons(hub, co)
+    reasons += [c["reason"] for c in committee_reviews(hub, co) if c["status"] != "agreed"]
     return reasons
+
+
+# ---------------------------------------------------------------- committees on the panel (groups and committees)
+def committee_reviews(hub, co_ref) -> list[dict]:
+    """Each committee on the current round's panel, by consensus (change control 11): ``agreed`` when every member has
+    reviewed and none raised a blocking finding (an objection); ``objected`` when one did (it returns for revision: the
+    author revises and requests review again); ``waiting`` while a member has not reviewed; ``paused`` when a member
+    could not review (its model is not available) or the chair is asked to intervene. A committee on the panel must
+    agree before the change order is sent for approval: nothing passes by default. Each: {"committee", "chair",
+    "members", "status", "objections": [{"member", "text"}], "waiting", "paused", "reason"}."""
+    from .groups import committee
+
+    co = _co(hub, co_ref)
+    rnd = current_round(co)
+    if rnd is None or rnd.get("status") in ("compiling", "failed"):
+        return []
+    b = _bundle(hub)
+    names = list(dict.fromkeys(e["committee"] for e in rnd.get("panel") or [] if e.get("committee")))
+    out = []
+    for name in names:
+        c = committee(b, name) or {"members": [], "chair": ""}
+        members = [e["who"] for e in rnd.get("panel") or [] if e.get("committee") == name]
+        res = rnd.get("results") or {}
+        objections = [{"member": m, "text": f.get("text")} for m in members for f in (res.get(m) or {}).get("findings") or []
+                      if f.get("severity") == "blocking" and (res.get(m) or {}).get("status") == "done"]
+        paused = [{"member": m, "why": (res.get(m) or {}).get("error") or "its review did not run"} for m in members
+                  if (res.get(m) or {}).get("status") == "failed"]
+        waiting = [m for m in members if (res.get(m) or {}).get("status") not in ("done", "failed")]
+        chair = c.get("chair") or ""
+        if objections:
+            status = "objected"
+            reason = (f"the {name} committee does not agree: " + "; ".join(f"{o['member']} objects: {o['text']}" for o in objections)
+                      + " (revise and request review again)")
+        elif paused:
+            status = "paused"
+            reason = (f"the {name} committee cannot agree: " + "; ".join(f"{p['member']}: {p['why']}" for p in paused)
+                      + f"; its chair{(', ' + chair + ',') if chair else ''} intervenes (decide in the member's place, or return it)")
+        elif waiting:
+            status = "waiting"
+            reason = f"the {name} committee has not agreed yet: waiting for {', '.join(waiting)}"
+        else:
+            status, reason = "agreed", f"the {name} committee agrees ({', '.join(members)})"
+        out.append({"committee": name, "chair": chair, "members": members, "status": status, "objections": objections,
+                    "waiting": waiting, "paused": paused, "reason": reason})
+    return out
+
+
+def intervene_review(hub, co_ref, committee_name: str, member: str, by: str, meaning: str) -> dict:
+    """The chair of a committee on the panel reviews in the place of a member that could not (its model is not
+    available): the member's result is recorded as done, with no finding, as an intervention with its meaning. To return
+    the change order instead, the chair raises a blocking finding through their own review or the requester revises."""
+    from .groups import committee
+
+    co = sync(hub, co_ref)
+    rnd = current_round(co)
+    c = committee(_bundle(hub), committee_name)
+    if rnd is None or c is None:
+        raise ValueError(f"the {committee_name} committee is not on the panel of {co['number']}")
+    if by != c.get("chair"):
+        raise ValueError(f"only the chair of the {committee_name} committee ({c.get('chair') or 'none'}) intervenes")
+    if not (meaning or "").strip():
+        raise ValueError("an intervention needs its meaning: say why you review in the member's place")
+    entry = next((e for e in rnd.get("panel") or [] if e["who"] == member and e.get("committee") == committee_name), None)
+    if entry is None:
+        raise ValueError(f"{member} is not on the panel for the {committee_name} committee")
+    if ((rnd.get("results") or {}).get(member) or {}).get("status") == "done":
+        raise ValueError(f"{member} has reviewed already")
+    result = {"status": "done", "kind": entry["kind"], "at": utcnow(), "findings": [], "questions": [], "suggestions": [],
+              "summary": f"reviewed by {by}, chair of the {committee_name} committee, in {member}'s place: {meaning.strip()}",
+              "intervention": {"by": by, "meaning": meaning.strip(), "for": member, "at": utcnow(),
+                               "was": ((rnd.get("results") or {}).get(member) or {}).get("error")},
+              "reviewed": _snapshot(_proposal(hub, co))}
+    _record_result(hub, co, rnd["n"], member, result)
+    return result
 
 
 def approval_reasons(hub, co_ref) -> list[str]:
@@ -2297,7 +2401,7 @@ def clear_cr_flag(hub, cr_ref: str, by: str, note: str) -> dict:
 def overview(hub, co_ref) -> dict:
     """Everything a change-order page shows: {"co", "stage", "rounds", "round", "panel", "delta", "warnings",
     "questions", "findings", "suggestions", "send_reasons", "approval_reasons", "contributors", "baseline_changed",
-    "state_questions", "proposal"}."""
+    "state_questions", "proposal", "committees"} (``committees``: each committee on the panel and where its consensus stands)."""
     co = sync(hub, co_ref)
     rnd = current_round(co)
     p = _proposal(hub, co)
@@ -2305,4 +2409,4 @@ def overview(hub, co_ref) -> dict:
             "delta": delta(hub, co), "warnings": co_warnings(hub, co), "questions": questions(hub, co), "findings": findings(hub, co),
             "suggestions": suggestions(hub, co), "send_reasons": send_reasons(hub, co), "approval_reasons": approval_reasons(hub, co),
             "contributors": contributors(hub, co), "baseline_changed": co["fields"].get("baseline_changed"),
-            "state_questions": state_questions(hub, co), "proposal": p}
+            "state_questions": state_questions(hub, co), "proposal": p, "committees": committee_reviews(hub, co)}

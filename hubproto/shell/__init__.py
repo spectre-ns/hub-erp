@@ -1,7 +1,7 @@
 """The workspace shell: an Odoo-style, app-based web UI over the record system, the DMS and the workflow engine.
 
-Standard library only (``http.server``), no JavaScript frameworks; the one optional script is mermaid for the
-workflow diagram, and every page degrades to plain HTML without it. Identity is chosen with ``?as=<principal>``
+Standard library only (``http.server``), no JavaScript frameworks and no CDN asset: the workflow diagrams are SVG drawn
+on the server (``workflow_svg``), and every page degrades to plain HTML without its small scripts. Identity is chosen with ``?as=<principal>``
 because the prototype has no SSO (a page without it asks who you are; nobody is assumed); a Nebari deployment
 puts Keycloak in front. Every page is permission-trimmed with the release in effect and explains a denial as
 "who may, you are, ask".
@@ -11,7 +11,9 @@ map, launcher and avatars), ``charts`` (server-rendered SVG), ``forms`` (control
 plumbing, errors, page frame), ``pages`` (dashboard, files library, boards, runs, records as forms, documents),
 ``views`` (list and kanban views, app pages, people and cog profiles, chatter), ``inbox`` (the queue and the decision
 card), ``policy`` (versions, policies, why, people and roles, conformance), ``actions`` (POSTs), ``editor`` (WOPI),
-``inventory_ui`` (parts and stock, the location tree, the stock panels and movements).
+``eco_ui`` and ``change_order_ui`` (change orders: the list, and the loop on one page), ``record_types_ui`` (the record types in
+force, carried on a change order), ``inventory_ui`` (parts and stock, the location tree, the stock panels and movements), ``workflow_svg`` and ``workflow_ui``
+(workflow graphs drawn on the server, the workflow editor, its Text view and the visual diff).
 """
 
 from __future__ import annotations
@@ -39,11 +41,15 @@ from .queue import QueueMixin
 from .settings_ui import SettingsMixin
 from .templates_ui import TemplatesMixin
 from .eco_ui import EcoMixin
+from .change_order_ui import ChangeOrderMixin
+from .record_types_ui import RecordTypesMixin
+from .committees_ui import CommitteesMixin
 from .automation_ui import AutomationMixin
 from .scopes_ui import ScopesMixin
 from .forms_ui import FormsMixin
 from .inventory_ui import InventoryMixin
 from .views import ViewsMixin
+from .workflow_ui import WorkflowsMixin
 from ..workqueue import CogWorker
 from .text import TYPE_NAMES, VERBS, chip, esc, friendly, money, day, when, why_sentence  # noqa: F401
 
@@ -52,7 +58,7 @@ __all__ = ["Handler", "ShellError", "coerce", "make_server", "serve", "serve_in_
            "when", "why_sentence", "sentence_diff", "widget", "prefill", "chip", "esc", "href", "table"]
 
 
-class Handler(SettingsMixin, TemplatesMixin, EcoMixin, AutomationMixin, ScopesMixin, FormsMixin, InventoryMixin, QueueMixin, PagesMixin, ViewsMixin, InboxMixin, PolicyMixin, ActionsMixin, EditorMixin, MessengerMixin, PolicyDocsMixin, McpMixin, AgentsMixin, NewMemberMixin, BaseHandler):
+class Handler(WorkflowsMixin, SettingsMixin, TemplatesMixin, ChangeOrderMixin, RecordTypesMixin, CommitteesMixin, EcoMixin, AutomationMixin, ScopesMixin, FormsMixin, InventoryMixin, QueueMixin, PagesMixin, ViewsMixin, InboxMixin, PolicyMixin, ActionsMixin, EditorMixin, MessengerMixin, PolicyDocsMixin, McpMixin, AgentsMixin, NewMemberMixin, BaseHandler):
     """The request handler: the plumbing in BaseHandler, the pages and actions in the mixins."""
 
 

@@ -56,6 +56,9 @@ Add one line per person and per cog under Members, in the shape
 - Quality/Complaints
 - Tasks
 
+## Segregation of duties
+A cog's work is signed by a person.
+
 ## Roles and responsibilities
 | Role | Responsibilities |
 |---|---|
