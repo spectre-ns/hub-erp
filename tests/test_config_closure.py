@@ -86,6 +86,10 @@ def staged_co(hub) -> tuple[dict, dict]:
     for item in changecontrol.delta(hub, co["number"]):
         if item["op"] != "text":
             changecontrol.decide_item(hub, co["number"], item["id"], "approve", "carol", "the lower limit is right")
+    from hubproto import validation
+
+    validation.record_evidence(hub, co["number"], by="dave", kind="test-record", text="a 1,800 USD bill", expected="it waits for a person",
+                               actual="it waited for a person")
     co = hub.kernel.get(co["locator"])
     assert co["fields"]["staged_proposal"], co["fields"]
     return co, hub.proposals.load(co["fields"]["staged_proposal"])
@@ -202,6 +206,14 @@ def test_a_staged_proposal_comes_into_force_only_with_its_approved_change_order(
     # The policy owners still sign a staged proposal's widenings (here: none needed), but never release it themselves.
     rc, out = run_cli(closed.root, "review", p["id"][:6], "--as", "bob", "--approve-all")
     assert rc == 0 and f"it comes into force with {co['number']}" in out and "ready: hubproto release" not in out
+    from hubproto import changecontrol
+
+    # A decision made outside the change order's own decisions has no signed record: it does not count until bob
+    # decides there (change control's audit trail).
+    assert any("bob" in r and "no signed record" in r for r in changecontrol.approval_reasons(closed, co["number"]))
+    for item in changecontrol.delta(closed, co["number"]):
+        if item["op"] != "text":
+            changecontrol.decide_item(closed, co["number"], item["id"], "approve", "bob", "agreed")
     with pytest.raises(closure.ChangeOrderRequired) as e:
         closed.release(p["id"], "bob")
     assert f"staged by {co['number']}" in str(e.value) and CO_SENTENCE in str(e.value)
@@ -210,7 +222,7 @@ def test_a_staged_proposal_comes_into_force_only_with_its_approved_change_order(
     assert "only once it is approved" in str(e.value)
     assert ap_limit(closed) == 2000.0
     # Exempt: the release automation acting for the approved change order.
-    corun = closed.runner.submit("change-order", {"record": {}}, owner="alice", record=co["locator"])
+    corun = changecontrol.send_for_approval(closed, co["number"], "alice")["id"]  # sending freezes it (change control v2)
     done = approve(closed, corun, "carol")
     assert done["status"] == "completed"
     [job] = [j for j in closed.automation.of(co["locator"]) if j["automation"] == "release-change-order"]
@@ -228,7 +240,9 @@ def test_after_a_release_a_proposal_no_change_order_staged_goes_stale_and_others
     write(closed, draft3, "under 500 USD go to", "under 400 USD go to", "carol")
     loose = closed.compile(sop_drafts={"purchasing-policy": draft3["locator"]})  # compiled, but no change order staged it
     co, _ = staged_co(closed)
-    corun = closed.runner.submit("change-order", {"record": {}}, owner="alice", record=co["locator"])
+    from hubproto import changecontrol
+
+    corun = changecontrol.send_for_approval(closed, co["number"], "alice")["id"]  # sending freezes it (change control v2)
     approve(closed, corun, "carol")
     assert ap_limit(closed) == 1500.0
     loose = closed.proposals.load(loose["id"])

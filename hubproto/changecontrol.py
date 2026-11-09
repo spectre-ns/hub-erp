@@ -92,6 +92,8 @@ PANEL_COG = "quality-assistant"
 SOD_SENTENCE = "The contributor and the approver of a change-order must be different people."
 MACHINES = ("hub", "system", "seed", "")
 CR_OPEN = ("open", "draft", "returned", "failed")
+DIVERGENCE_DAYS = 30  # a divergence's change request is due within the change-control SLA, else this
+COMMITTEE_CODES = ("member-unavailable", "disagreement", "outside-diff", "unread-rule")  # compile-committee questions: its chair (or a system administrator) answers
 
 # Seams for tests and for other workstreams (no model in tests): a callable that stands in for a cog's reading.
 REVIEWER = None  # (hub, co, cog, brief) -> text in the review format (see REVIEW_FORMAT)
@@ -180,6 +182,49 @@ def _may_decide(hub, co: dict, by: str) -> str:
     return f"{by} is neither a policy owner nor an approver of change orders: only they decide the items of a delta"
 
 
+# ---------------------------------------------------------------- public names for the shell
+def may_edit(hub, co: dict, by: str) -> str:
+    """Empty when ``by`` may change the change order (its requester, who prepared it, or a document controller);
+    otherwise why not."""
+    return _may_edit(hub, co, by)
+
+
+def may_decide(hub, co: dict, by: str) -> str:
+    """Empty when ``by`` may decide delta items (a person who is a policy owner or may approve change orders); otherwise
+    why not. Who made an item never decides that item (``decide_item`` says so)."""
+    return _may_decide(hub, co, by)
+
+
+def owners(hub) -> list[str]:
+    """The policy owners (people) of the release in force."""
+    return _owners(hub)
+
+
+def items(co: dict) -> list[dict]:
+    """The change order's direct changes (and accepted suggestions), as stored on it."""
+    return _items(co)
+
+
+def old_new(item: dict) -> tuple[dict | None, dict | None]:
+    """(the rule an item takes out or changes, the rule it puts in)."""
+    return _old_new(item)
+
+
+def apply_items(rules: list[dict], its: list[dict]) -> list[dict]:
+    """``rules`` with the items applied."""
+    return _apply(rules, its)
+
+
+def effective(c: dict) -> dict:
+    """The rule a delta item brings into force (its override, when it has one)."""
+    return _effective(c)
+
+
+def widening(c: dict) -> bool:
+    """Whether a delta item widens anyone's authority (its override's widening, when it has one)."""
+    return _widening(c)
+
+
 # ---------------------------------------------------------------- stage
 def stage_of(co: dict) -> str:
     """Where the change order stands in the loop (its ``stage`` field; the record state wins once it is approved or
@@ -199,19 +244,45 @@ def stage_of(co: dict) -> str:
 
 def sync(hub, co_ref) -> dict:
     """The change order, after noticing what happened to it outside this module: an approval Gate that was rejected
-    sends it back to revising (the record is open again, the rejection kept in ``rejected``)."""
+    sends it back to revising (the record is open again, the rejection kept in ``rejected``); anything it carries that
+    changed after it was sent for approval (a revision, a direct, form, record-type or workflow change, the state map)
+    sends it back to revising too, its decisions void (``_back_to_revising``)."""
     co = _co(hub, co_ref)
     if co["state"] == "rejected":
         dec = next((d for d in reversed(co.get("decisions") or []) if d.get("verdict") == "reject"), {})
         hub.kernel.transition(co["locator"], "open", by="hub", reason="its approval was rejected: back to revising")
-        co = _set(hub, co, stage="revising", rejected={"by": dec.get("by"), "meaning": dec.get("meaning"), "at": dec.get("at")})
+        _hold_drafts(hub, co, False)
+        co = _set(hub, co, stage="revising", frozen=None, rejected={"by": dec.get("by"), "meaning": dec.get("meaning"), "at": dec.get("at")})
+    elif stage_of(co) == "awaiting-approval" and co["fields"].get("frozen"):
+        changed = changed_since_sent(hub, co)
+        if changed:
+            co = _back_to_revising(hub, co, "changed after it was sent for approval: " + ", ".join(changed))
     return co
 
 
 def on_approved(hub, co_ref) -> dict:
-    """The CO Gate was signed (hubproto.automation calls this before the release starts)."""
+    """The CO Gate was signed (hubproto.automation calls this before the release starts): what was signed is recorded
+    (``signed``: the frozen content, the delta seal, the state map), so the release applies exactly that."""
     co = _co(hub, co_ref)
-    return _set(hub, co, stage="approved")
+    f = co["fields"]
+    dec = next((d for d in reversed(co.get("decisions") or []) if d.get("verdict") == "approve"), {})
+    return _set(hub, co, stage="approved", state_map_signed=copy.deepcopy(f.get("state_map") or {}),
+                signed={"frozen": f.get("frozen"), "seal": f.get("delta_seal"), "by": dec.get("by"), "by_type": dec.get("by_type"),
+                        "at": dec.get("at"), "signature": dec.get("signature")})
+
+
+def reopen(hub, co_ref, by: str, reason: str) -> dict:
+    """Send an approved change order that was not released (its release stopped: another release came first, its
+    content changed after the signature, a step refused) back to revising: its decisions are void and it is reviewed,
+    decided and signed again. Its requester or anyone who may approve change orders does it, with a reason."""
+    co = _co(hub, co_ref)
+    if co["state"] != "approved" or co["fields"].get("released_release"):
+        raise ValueError(f"{co['number']} is {co['state']}: only an approved change order that was not released is sent back")
+    if by != requester(co) and not authz.check(_bundle(hub), by, "approve", "change-order", co["folder"])["allowed"]:
+        raise ValueError(f"only {requester(co)} or an approver of change orders sends {co['number']} back")
+    if not (reason or "").strip():
+        raise ValueError("say why it goes back to revising")
+    return _back_to_revising(hub, co, reason.strip(), by=by)
 
 
 # ---------------------------------------------------------------- rounds
@@ -407,10 +478,13 @@ def add_direct_change(hub, co_ref, rule_or_change, by: str, *, origin: dict | No
         live = next((r for r in base if old is not None and _same(r, old)), None)  # the SOP that states the rule in force
         frame = ((live or {}).get("source") or {}).get("frame")
         item["origin"] = {**item["origin"], "frame": frame if frame not in (None, "", "settings") else home_frame(new or old, base), **(origin or {})}
+        if item.get("op") != "remove":  # the rule keeps a source (a release renders every rule with one)
+            item["rule"] = {**item["rule"], "source": {**(rule.get("source") or {}), "frame": item["origin"]["frame"] or "settings",
+                                                       "text": _sentence(item["rule"]), "direct": item["id"], "by": by}}
         item["reason"], item["widening"] = _item_reason(item), _item_widening(base, item)
         items.append(item)
     _set(hub, co, by=by, direct_changes=items, direct_base=_digest(hub), rebase_questions=questions)
-    _set(hub, _co(hub, co["locator"]), contributor=contributors(hub, co["locator"]))
+    _seal(hub, co)
     return items
 
 
@@ -480,11 +554,46 @@ def contributors(hub, co_ref) -> list[str]:
         out += _version_authors(hub, c["draft"])
     for it in _items(co):
         o = it.get("origin") or {}
-        out += [o.get("by"), o.get("accepted_by")] if o.get("kind") == "suggested" else [o.get("by")]
+        out += [o.get("accepted_by")] if o.get("kind") == "suggested" else [o.get("by")]
     for kind in ("form_changes", "record_type_changes", "workflow_changes"):
         carried = co["fields"].get(kind) or {}
         out += [(v or {}).get("by") for v in (carried.values() if isinstance(carried, dict) else carried)]
+    p = _proposal(hub, co)
+    out += [(c.get("override") or {}).get("by") for c in (p or {}).get("changes") or []]  # an overrider wrote that value
+    out += [(m or {}).get("by") for per in (co["fields"].get("state_map_meta") or {}).values() for m in (per or {}).values()]
     return sorted({w for w in out if w and w not in MACHINES})
+
+
+def revision_authors(hub, co_ref) -> list[str]:
+    """Who wrote the revisions the change order carries: none of them may sign it (they never approve their own
+    document; the kernel refuses it too)."""
+    co = _co(hub, co_ref)
+    return sorted({w for c in eco.carried(hub, co) for w in _version_authors(hub, c["draft"])})
+
+
+def independent_approval(hub, co_ref, p: dict | None = None) -> bool:
+    """True when every item of the delta that is decided (not a wording change) is approved by a person who
+    contributed nothing to the change order: then a contributor may sign it (whoever made a direct change is not its
+    only approver)."""
+    co = _co(hub, co_ref)
+    p = p if p is not None else _proposal(hub, co)
+    items = [c for c in (p or {}).get("changes") or [] if c.get("op") != "text"]
+    if not items:
+        return False
+    contribs = set(contributors(hub, co))
+    return all(any(d["verdict"] == "approve" and not d.get("stale") and d["by"] not in contribs for d in c.get("decisions") or [])
+               for c in items)
+
+
+def may_not_sign(hub, co_ref) -> list[str]:
+    """Who may not sign the change order's approval (its ``contributor`` field, which the change-control SOP's sentence
+    "The contributor and the approver of a change-order must be different people." keeps off the Gate): the authors of
+    the revisions it carries, always; every other contributor unless each item has an independent approver."""
+    co = _co(hub, co_ref)
+    out = set(revision_authors(hub, co))
+    if not independent_approval(hub, co):
+        out |= set(contributors(hub, co))
+    return sorted(out)
 
 
 # ---------------------------------------------------------------- compiling the delta
@@ -551,9 +660,9 @@ def compile_delta(hub, co_ref, *, extractor=None, n: int | None = None) -> dict:
     live = [c for c in p["changes"] if c.get("op") != "text"]
     from .compile import blocking_findings
 
-    _set(hub, co, staged_sig=_sig(_items(co)), staged_changes=len(live), staged_widenings=sum(1 for c in live if _widening(c)),
-         staged_errors=[f"{x['detail']} ({x['frame']} line {x['line']})" for x in blocking_findings(p)],
-         contributor=contributors(hub, co))
+    co = _set(hub, co, staged_sig=_sig(_items(co)), staged_changes=len(live), staged_widenings=sum(1 for c in live if _widening(c)),
+              staged_errors=[f"{x['detail']} ({x['frame']} line {x['line']})" for x in blocking_findings(p)])
+    _seal(hub, co)
     return {"proposal": p, "errors": [], "recompiled": recompiled}
 
 
@@ -691,10 +800,13 @@ def _warnings(hub, co: dict, p: dict) -> tuple[dict[str, list[dict]], list[dict]
              if (c.get("origin") or {}).get("line")}
     general: list[dict] = []
 
+    no_effect = {c["id"] for c in p.get("changes") or [] if c.get("no_effect") or "no effect" in str(c.get("reason") or "").lower()}
+
     def attach(about: dict | None, w: dict) -> None:
         about = about or {}
         if about.get("item") in items:
-            items[about["item"]].append(w)
+            if about["item"] not in no_effect:  # a "moved / no effect" item needs no acceptance
+                items[about["item"]].append(w)
         elif (about.get("frame"), about.get("line")) in where:
             items[where[(about.get("frame"), about.get("line"))]].append(w)
         else:
@@ -725,12 +837,20 @@ def _warnings(hub, co: dict, p: dict) -> tuple[dict[str, list[dict]], list[dict]
         if f.get("guard") == "divergence":
             general.append({"code": "divergence", "ref": str(f.get("rule_key") or "").split(":", 1)[-1], "text": f["detail"]})
     for q in questions(hub, co):
+        if q.get("code") in COMMITTEE_CODES and q.get("status") == "answered":
+            # The chair's (or a system administrator's) answer for the committee stays visible, as an accepted warning.
+            general.append({"code": "question", "ref": q["id"], "text": f"{q['text']} (answered by {q.get('by')}: {q.get('answer')})"})
+            continue
         if q.get("status", "open") != "open" or "round-trip" in (q.get("kind"), q.get("code")):
             continue  # a round-trip question is the item's round-trip warning
         attach({"item": q.get("item"), "frame": q.get("frame"), "line": q.get("line")}, {"code": "question", "ref": q["id"], "text": q["text"]})
     for f in findings(hub, co):
-        if f.get("severity") == "blocking":
-            attach(f.get("about"), {"code": "finding", "ref": f["id"], "text": f"{f['who']}: {f['text']}"})
+        if f.get("severity") in ("blocking", "advisory"):  # every unresolved finding is a warning the approver accepts
+            attach(f.get("about"), {"code": "finding", "ref": f["id"], "text": f"{f['who']}: {f['text']}", "severity": f.get("severity")})
+    rnd = current_round(co)
+    for o in (rnd or {}).get("omitted") or []:
+        general.append({"code": "panel", "ref": f"panel:{o['who']}", "text": f"the change-control SOP names {o['who']} to review this change "
+                        f"({o.get('reason') or 'see Review of changes'}), and {o.get('by') or 'the requester'} left it off the panel"})
     bc = co["fields"].get("baseline_changed") or {}
     if bc.get("dismissed"):
         general.append({"code": "related", "ref": f"related:{bc.get('by')}", "text": f"related by meaning to {bc.get('by')}: {'; '.join(bc.get('reasons') or [])} "
@@ -738,8 +858,49 @@ def _warnings(hub, co: dict, p: dict) -> tuple[dict[str, list[dict]], list[dict]
     return items, general
 
 
+def _makers(c: dict, authors: dict[str, list[str]]) -> list[str]:
+    """Who made a delta item: whoever wrote it in the prose (the revision's authors) or made it directly, who accepted it
+    (a suggestion), who overrode its value, who set a state-map entry. None of them decides it."""
+    o = c.get("origin") or {}
+    # A suggestion's maker is who accepted it onto the change order (the reviewer who suggested it reviewed, not authored).
+    by = [] if o.get("kind") == "suggested" else [x.strip() for x in str(o.get("by") or "").split(",")]
+    out = by + [o.get("accepted_by"), (c.get("override") or {}).get("by")]
+    if o.get("kind") == "prose" or c.get("op") == "text":
+        out += authors.get(o.get("frame") or c.get("frame") or "") or []
+    return sorted({w for w in out if w and w not in MACHINES})
+
+
+def _state_map_items(hub, co: dict, p: dict) -> None:
+    """Each state-map entry is an item of the delta the approvers decide ("move the 4 nonconformances in Awaiting
+    disposition to Open"), rebuilt from the CO's ``state_map``; decisions stay with an entry while it is the same."""
+    old = {c["id"]: c for c in p.get("changes") or [] if c.get("op") == "state-map"}
+    p["changes"] = [c for c in p.get("changes") or [] if c.get("op") != "state-map"]
+    if not co["fields"].get("state_map"):
+        return
+    meta = co["fields"].get("state_map_meta") or {}
+    counts = {(q["process"], q["state"]): q.get("count") or 0 for q in state_questions(hub, co, p=p, smap_only=True)}
+    for process, mapping in sorted((co["fields"].get("state_map") or {}).items()):
+        for frm, to in sorted((mapping or {}).items()):
+            if not to:
+                continue
+            iid = f"state-map:{process}:{frm}->{to}"
+            m = (meta.get(process) or {}).get(frm) or {}
+            n = counts.get((process, frm), 0)
+            prior = old.get(iid) or {}
+            p["changes"].append({"id": iid, "op": "state-map", "rule": {"kind": "state-map", "process": process, "from": frm, "to": to, "count": n},
+                                 "widening": False, "reason": f"move the {n} item(s) of {process} in {frm} to {to} when it is released",
+                                 "origin": {"kind": "direct", "by": m.get("by"), "at": m.get("at"), "frame": None, "line": None, "quote": None,
+                                            "read_by": None},
+                                 "decisions": [dict(d) for d in prior.get("decisions") or []], "warnings": [], "stale": False})
+
+
 def _refresh(hub, co: dict, p: dict) -> dict:
     acc = p.get("acceptances") or {}
+    if p.get("status") == "open" and not p.get("applied"):
+        _state_map_items(hub, co, p)
+    authors = _draft_authors(hub, co)
+    for c in p.get("changes") or []:
+        c["makers"] = _makers(c, authors)
     per_item, general = _warnings(hub, co, p)
     for c in p.get("changes") or []:
         ws = per_item.get(c["id"], [])
@@ -764,8 +925,10 @@ def _refresh_saved(hub, co_ref) -> None:
 
 def item_state(c: dict, owners) -> str:
     """approved, rejected or pending: a reject decides it; a widening needs two policy owners, anything else one
-    approver. Stale decisions (made before the baseline changed) do not count."""
-    live = [d for d in c.get("decisions") or [] if not d.get("stale")]
+    approver. Stale decisions (made before the baseline changed) do not count, nor does a decision by one of the item's
+    makers (who made a change never approves it: a maker is not the second owner on their own widening)."""
+    makers = set(c.get("makers") or [])
+    live = [d for d in c.get("decisions") or [] if not d.get("stale") and d["by"] not in makers]
     if any(d["verdict"] == "reject" for d in live):
         return "rejected"
     approvers = {d["by"] for d in live if d["verdict"] == "approve"}
@@ -1151,15 +1314,29 @@ def _draft_fallback(hub, co: dict, todo: list[dict]) -> list[dict]:
 def round_check(hub, co_ref, n: int) -> str:
     """Round step 3: the guards (a compile error stops the round) and the round trip."""
     co = _co(hub, co_ref)
+    if co["fields"].get("staged_errors") and (co["fields"].get("staged_from") or {}) != _shas(hub, eco.drafts_of(hub, co)):
+        compile_delta(hub, co, n=n)  # a retry after the author fixed the draft: compile what changed
+        co = _co(hub, co["locator"])
     errors = co["fields"].get("staged_errors") or []
+    grants = [{**g, "id": f"R{n}.hub.S{i}"} for i, g in enumerate(role_grant_suggestions(hub, co), 1)]
     if errors:
+        _update_round(hub, co, n, lambda r: r.setdefault("results", {}).update(
+            {"hub": {"status": "done", "kind": "hub", "at": utcnow(), "findings": [], "questions": [], "suggestions": grants,
+                     "summary": "roles the delta's new work needs"}}) if grants else None)
         _round_failed(hub, co, n, "the compiled delta has problems that stop it: " + "; ".join(errors[:3]))
         raise ValueError("the compiled delta has problems that stop it: " + "; ".join(errors[:3]))
     left = [it for it in _items(co) if not it.get("stated")]
     w = int(co["fields"].get("staged_widenings") or 0)
     # What this round reviews: the revisions and the direct changes as they are now (send_reasons compares with it).
-    seen = {"drafts": _shas(hub, eco.drafts_of(hub, co)), "items": _sig(_items(co))}
-    _update_round(hub, co, n, lambda r: r.update({"reviewed_from": seen}))
+    content = content_digest(hub, co)
+    seen = {k: content[k] for k in REVIEWED_KEYS}
+
+    def put(r):
+        r["reviewed_from"] = seen
+        if grants:
+            r.setdefault("results", {})["hub"] = {"status": "done", "kind": "hub", "at": utcnow(), "findings": [], "questions": [],
+                                                  "suggestions": grants, "summary": "roles the delta's new work needs"}
+    _update_round(hub, co, n, put)
     return ("no guard stops it" + (f"; {w} widening(s) need both policy owners" if w else "")
             + (f"; {len(left)} direct change(s) the prose does not state (round-trip questions)" if left else ""))
 
@@ -1177,8 +1354,15 @@ def round_panel(hub, co_ref, n: int) -> str:
                     panel.append(e)
     else:
         panel = [dict(s) for s in suggested]
-    _update_round(hub, co, n, lambda r: r.update({"suggested": suggested, "panel": panel}))
-    named = [f"{e['who']}" + ("" if e["member"] else " (not a member: shown, not asked)") for e in panel]
+    contribs = set(contributors(hub, co))
+    for e in panel:
+        if e["who"] in contribs:
+            e["excluded"] = "it contributed to this change order, so it does not review it"
+    on = {e["who"] for e in panel}
+    omitted = [{"who": s["who"], "reason": s.get("reason"), "by": rnd["requested_by"]} for s in suggested if s.get("member") and s["who"] not in on]
+    _update_round(hub, co, n, lambda r: r.update({"suggested": suggested, "panel": panel, "omitted": omitted}))
+    named = [f"{e['who']}" + ("" if e["member"] else " (not a member: shown, not asked)") + (" (a contributor: not asked)" if e.get("excluded") else "")
+             for e in panel]
     return ("panel: " + ", ".join(named)) if named else "no reviewer suggested: the section on reviewing changes names none for this delta"
 
 
@@ -1186,11 +1370,15 @@ def round_queue(hub, co_ref, n: int, by: str) -> str:
     """Round step 5: each member of the panel is asked: a cog through its queue, a person in their inbox."""
     co = _co(hub, co_ref)
     rnd = next(r for r in rounds(co) if r["n"] == n)
-    asked = [e for e in rnd.get("panel") or [] if e.get("member")]
+    asked = [e for e in rnd.get("panel") or [] if e.get("member") and not e.get("excluded")]
+    excluded = [e for e in rnd.get("panel") or [] if e.get("member") and e.get("excluded")]
     now = utcnow()
     _update_round(hub, co, n, lambda r: r.update({"status": "reviewing" if asked else "reviewed",
                                                   "results": {**(r.get("results") or {}),
-                                                              **{e["who"]: {"status": "queued", "kind": e["kind"], "at": now, **_due_of(e)} for e in asked}}}),
+                                                              **{e["who"]: {"status": "queued", "kind": e["kind"], "at": now, **_due_of(e)} for e in asked},
+                                                              **{e["who"]: {"status": "failed", "kind": e["kind"], "at": now, "excluded": True,
+                                                                            "error": f"{e['who']} {e['excluded']}", "findings": [], "questions": [],
+                                                                            "suggestions": []} for e in excluded}}}),
                   **({} if asked else {"stage": "revising"}))
     for e in asked:
         _ask(hub, co, n, e, by)
@@ -1255,6 +1443,9 @@ def add_reviewer(hub, co_ref, who: str, by: str, reason: str = "") -> dict:
     entries = _panel_entry(hub, {"who": who, "reason": reason}, by, rnd.get("suggested") or [])
     if not entries or not all(e["member"] for e in entries):
         raise ValueError(f"{who} is not a member of the organization: only members review")
+    mine = [e["who"] for e in entries if e["who"] in contributors(hub, co)]
+    if mine:
+        raise ValueError(f"segregation of duties: {', '.join(mine)} contributed to {co['number']} and does not review it")
     new = [e for e in entries if e["who"] not in {x["who"] for x in rnd.get("panel") or []}]
     if not new:
         return rnd
@@ -1278,21 +1469,32 @@ def remove_reviewer(hub, co_ref, who: str, by: str) -> dict:
     rnd = current_round(co)
     if rnd is None or who not in {e["who"] for e in rnd.get("panel") or []}:
         raise ValueError(f"{who} is not on the panel of {co['number']}")
-    for t in hub.queue.open_tasks(cog=who, record=co["locator"]):
-        if t["kind"] == "co-review" and t["status"] == "queued":
-            hub.queue.cancel(t["id"], by, f"taken off the panel of {co['number']}")
+    entry = next(e for e in rnd.get("panel") or [] if e["who"] == who)
+    gone = [e["who"] for e in rnd.get("panel") or [] if entry.get("committee") and e.get("committee") == entry["committee"]] or [who]
+    res = rnd.get("results") or {}
+    done = [w for w in gone if (res.get(w) or {}).get("status") == "done"]
+    if done:
+        raise ValueError(f"{', '.join(done)} has reviewed this round already: a reviewer who returned results stays on its panel (request "
+                         "review again for a new round with another panel)")
+    for w in gone:
+        for task in hub.queue.open_tasks(cog=w, record=co["locator"]):
+            if task["kind"] == "co-review" and task["status"] == "queued":
+                hub.queue.cancel(task["id"], by, f"taken off the panel of {co['number']}")
+    suggested = {s["who"]: s for s in rnd.get("suggested") or [] if s.get("member")}
 
     def fn(r):
-        r["panel"] = [e for e in r.get("panel") or [] if e["who"] != who]
-        r["removed"] = (r.get("removed") or []) + [{"who": who, "by": by, "at": utcnow()}]
-        res = r.get("results") or {}
-        if res.get(who, {}).get("status") != "done":
-            res.pop(who, None)
-        r["results"] = res
+        r["panel"] = [e for e in r.get("panel") or [] if e["who"] not in gone]
+        r["removed"] = (r.get("removed") or []) + [{"who": w, "by": by, "at": utcnow()} for w in gone]
+        r["omitted"] = (r.get("omitted") or []) + [{"who": w, "reason": suggested[w].get("reason"), "by": by} for w in gone if w in suggested]
+        rr = r.get("results") or {}
+        for w in gone:
+            rr.pop(w, None)
+        r["results"] = rr
         _maybe_reviewed(r)
     co = _update_round(hub, co, rnd["n"], fn)
     if (current_round(co) or {}).get("status") == "reviewed" and stage_of(co) == "in-review":
         _set(hub, co, stage="revising")
+    _refresh_saved(hub, co)
     return current_round(_co(hub, co["locator"]))
 
 
@@ -1424,6 +1626,11 @@ def cog_review(hub, co_ref, n: int, cog: str) -> dict:
         return {"skipped": f"{cog} is not on the panel of round {n} of {co['number']}"}
     if ((rnd.get("results") or {}).get(cog) or {}).get("status") == "done":
         return rnd["results"][cog]
+    if cog in contributors(hub, co):
+        result = {"status": "failed", "kind": "cog", "at": utcnow(), "excluded": True, "findings": [], "questions": [], "suggestions": [],
+                  "error": f"{cog} contributed to {co['number']} (it drafted or made part of it), so it does not review it"}
+        _record_result(hub, co, n, cog, result)
+        return result
     b = brief(hub, co, n, cog)
     ids = {c["id"] for c in b["items"]}
     prefix = f"R{n}.{cog}."
@@ -1483,6 +1690,8 @@ def submit_review(hub, co_ref, who: str, findings=(), questions=(), suggestions=
     rnd = current_round(co)
     if rnd is None or who not in {e["who"] for e in rnd.get("panel") or []}:
         raise ValueError(f"{who} is not on the panel of the current round of {co['number']}")
+    if who in contributors(hub, co):
+        raise ValueError(f"segregation of duties: {who} contributed to {co['number']} and does not review it")
     n = rnd["n"]
     prefix = f"R{n}.{who}."
     fs = []
@@ -1598,18 +1807,36 @@ def answer_question(hub, co_ref, qid: str, answer: str, by: str, line: int | Non
     also closes a compiler question that no longer arises. The requester, a document controller or a contributor
     answers."""
     co = sync(hub, co_ref)
-    if _may_edit(hub, co, by) and by not in contributors(hub, co):
-        raise ValueError(f"only {requester(co)}, a document controller or a contributor answers questions on {co['number']}")
     if not (answer or "").strip():
         raise ValueError("say what the answer is (and, best, which line of the prose says it)")
-    upd = {"status": "answered", "answer": answer.strip(), "by": by, "at": utcnow(), "answer_line": line}
+    now = utcnow()
+    upd = {"status": "answered", "answer": answer.strip(), "by": by, "at": now, "answer_line": line}
     p = _proposal(hub, co)
-    for q in (p or {}).get("questions") or []:
-        if q["id"] == qid:
-            q.update(upd)
-            _refresh(hub, co, p)
-            hub.proposals.save(p)
-            return q
+    q = next((x for x in (p or {}).get("questions") or [] if x["id"] == qid), None)
+    committee_q = q is not None and q.get("code") in COMMITTEE_CODES
+    if committee_q:
+        # The compile committee could not read (a member was unavailable) or did not agree: a person intervenes, and that
+        # is its chair or a system administrator, never whoever made the change.
+        chair = q.get("chair") or ((hub.compile_committee() or {}).get("chair") if hasattr(hub, "compile_committee") else None)
+        if by != chair and "system-administrator" not in authz.roles_of(_bundle(hub), by):
+            raise ValueError(f"only the committee's chair ({chair or 'none'}) or a system administrator answers a {q.get('code')} question")
+        if by in contributors(hub, co):
+            raise ValueError(f"segregation of duties: {by} contributed to {co['number']}; someone who did not answers for the committee")
+    elif _may_edit(hub, co, by) and by not in contributors(hub, co):
+        raise ValueError(f"only {requester(co)}, a document controller or a contributor answers questions on {co['number']}")
+    if q is not None:
+        q.update(upd)
+        _record(hub, co, "question_answered", {**_signed(hub, co, by=by, verdict="answer", meaning=answer.strip(), step=qid,
+                                                         payload=_hash(q.get("text")), at=now), "question": qid}, by)
+        if committee_q:  # the intervention is an accepted warning on the change order
+            key = f"co|question|{qid}"
+            p.setdefault("acceptances", {})[key] = {"by": by, "meaning": answer.strip(), "at": now}
+            _record(hub, co, "warning_accepted", {**_signed(hub, co, by=by, verdict="accept", meaning=answer.strip(), step=key,
+                                                            payload=_hash(q.get("text")), at=now), "item": None}, by)
+        _refresh(hub, co, p)
+        hub.proposals.save(p)
+        _seal(hub, co)
+        return q
     for r in rounds(co):
         for who, res in (r.get("results") or {}).items():
             for q in res.get("questions") or []:
@@ -1643,45 +1870,312 @@ def _state_names(hub, proc: dict | None, name: str) -> dict[str, str]:
         return {}
 
 
-def state_questions(hub, co_ref) -> list[dict]:
-    """Where the delta removes a state that items are in (spec 5.2): [{"process", "state", "count", "record_type",
-    "answer"}]. Questions of kind "state-map" a compiler left in the proposal are honoured too (missing keys: empty)."""
+def new_rules(hub, co_ref, p: dict | None = None) -> list[dict]:
+    """The rules the change order would bring into force: its compiled delta (the prose as it stands) with every direct
+    change the compile does not state yet and every override applied, rejected items left out."""
     co = _co(hub, co_ref)
-    p = _proposal(hub, co)
-    if p is None:
-        return []
-    b = _bundle(hub)
-    smap = co["fields"].get("state_map") or {}
-    old = {r["name"]: r for r in hub.settings_rules() if r.get("kind") == "process"}
-    new = {r["name"]: r for r in p.get("rules") or [] if r.get("kind") == "process"}
-    out, seen = [], set()
-    for c in p.get("changes") or []:
-        r = (c.get("rule") or {})
-        if c.get("op") == "text" or r.get("kind") != "process" or r.get("name") in seen or r.get("name") not in old:
+    p = p if p is not None else _proposal(hub, co)
+    live = p is not None and p.get("status") == "open"
+    rules = {rule_key(r): r for r in ((p or {}).get("rules") if live else hub.settings_rules()) or []}
+    owners = (p or {}).get("reviewers") or _owners(hub)
+    in_p = {c.get("direct"): c for c in (p or {}).get("changes") or [] if live and c.get("direct")}
+    for it in _items(co):
+        c = in_p.get(it["id"])
+        if c is not None and not c.get("unstated"):
+            continue  # the prose states it: it is in the compiled rules
+        if c is not None and item_state(c, owners) == "rejected":
             continue
-        name = r["name"]
-        seen.add(name)
-        rtype = ((b.get("workflows") or {}).get(name) or {}).get("record_type") or old[name].get("record_type") or old[name].get("object")
-        for s in sorted(_states(old[name]) - _states(new.get(name))):
-            count = len(hub.kernel.query(type_=rtype, state=s)) if rtype else 0
-            if count:
-                out.append({"process": name, "state": s, "count": count, "record_type": rtype, "answer": (smap.get(name) or {}).get(s)})
-    for q in p.get("questions") or []:
-        if "state-map" in (q.get("kind"), q.get("code")) and q.get("process") and q.get("state") and (q["process"], q["state"]) not in {(x["process"], x["state"]) for x in out}:
-            out.append({"process": q.get("process"), "state": q.get("state"), "count": q.get("count") or 0, "record_type": q.get("record_type"),
-                        "answer": (smap.get(q["process"]) or {}).get(q["state"])})
+        old, new = _old_new(it)
+        _with(rules, old, ((c or {}).get("override") or {}).get("rule") or new)
+    for c in (p or {}).get("changes") or [] if live else []:
+        if c.get("override") and not c.get("unstated") and item_state(c, owners) != "rejected":
+            rules.pop(rule_key(c["rule"]), None)
+            rules[rule_key(c["override"]["rule"])] = c["override"]["rule"]
+    return list(rules.values())
+
+
+def removed_statuses(hub, co_ref, p: dict | None = None) -> dict[str, dict]:
+    """For each process the change order changes, the statuses it removes and the statuses it leaves (graph form and
+    numbered steps alike: both are workflow graphs in a release): {process: {"removed": {status: items in it},
+    "statuses": [status ids of the new graph], "record_type"}}. Only processes that lose a status are listed."""
+    from .release import render
+    from .runner import items_in_removed_statuses
+
+    co = _co(hub, co_ref)
+    before = _bundle(hub).get("workflows") or {}
+    try:
+        after = render(new_rules(hub, co, p), hub.kernel.types).get("workflows") or {}
+    except Exception:
+        return {}
+    out = {}
+    for name, old in sorted(before.items()):
+        new = after.get(name) or {}
+        old_ids = [s["id"] for s in old.get("statuses") or [] if not s.get("system")] or list(old.get("states") or [])
+        new_ids = [s["id"] for s in new.get("statuses") or []] or list(new.get("states") or [])
+        gone = [s for s in old_ids if s not in set(new_ids)]
+        if not gone:
+            continue
+        counts = items_in_removed_statuses(hub, old, new) if new else {}
+        out[name] = {"removed": {s: int(counts.get(s, 0)) for s in gone}, "statuses": new_ids,
+                     "record_type": new.get("record_type") or old.get("record_type")}
+    return out
+
+
+def state_questions(hub, co_ref, p: dict | None = None, smap_only: bool = False) -> list[dict]:
+    """Where the delta removes a status that items are in (spec 5.2): [{"process", "state", "count", "record_type",
+    "answer"}], for graph-form and numbered-step processes alike. A compiler's question of code "state-map" (keys
+    ``process``, ``state``, ``count``) is honoured when its status is one this delta removes."""
+    co = _co(hub, co_ref)
+    p = p if p is not None else _proposal(hub, co)
+    smap = co["fields"].get("state_map") or {}
+    rs = removed_statuses(hub, co, p)
+    out = []
+    for process, r in rs.items():
+        for s, n in r["removed"].items():
+            if n or (smap_only and (smap.get(process) or {}).get(s)):
+                out.append({"process": process, "state": s, "count": n, "record_type": r["record_type"],
+                            "answer": (smap.get(process) or {}).get(s)})
+    seen = {(x["process"], x["state"]) for x in out}
+    for q in (p or {}).get("questions") or []:
+        if "state-map" not in (q.get("kind"), q.get("code")):
+            continue
+        st = q.get("state") or (q.get("status") if q.get("status") not in ("open", "answered", "overridden") else None)
+        if q.get("process") and st and (q["process"], st) not in seen and st in (rs.get(q["process"]) or {}).get("removed", {}):
+            out.append({"process": q["process"], "state": st, "count": int(q.get("count") or 0), "record_type": q.get("record_type"),
+                        "answer": (smap.get(q["process"]) or {}).get(st)})
+            seen.add((q["process"], st))
+    return out
+
+
+def state_map_problems(hub, co_ref, p: dict | None = None) -> list[str]:
+    """Entries of the state map that do not hold: a process the delta does not change, a status it does not remove, a
+    target that is not a status of the new graph."""
+    co = _co(hub, co_ref)
+    rs = removed_statuses(hub, co, p)
+    out = []
+    for process, mapping in sorted((co["fields"].get("state_map") or {}).items()):
+        for frm, to in sorted((mapping or {}).items()):
+            if not to:
+                continue
+            r = rs.get(process)
+            if r is None:
+                out.append(f"the state map moves {process} items, but this change removes no status of {process}")
+            elif frm not in r["removed"]:
+                out.append(f"the state map moves {process} items in {frm}, a status this change does not remove")
+            elif to not in r["statuses"]:
+                out.append(f"the state map sends {process} items to {to}, which is not a status of {process} as this change leaves it")
     return out
 
 
 def set_state_map(hub, co_ref, process: str, mapping: dict, by: str) -> dict:
-    """Where items in a state the delta removes go: {old_state: new_state} for ``process`` (merged into state_map)."""
+    """Where items in a status the delta removes go: {old status: new status} for ``process`` (merged into the CO's
+    ``state_map``; an empty value takes an entry out). Only while the change order is prepared or revised, only for a
+    status this delta removes from a process it changes, only to a status of that process's new graph. Each entry is an
+    item of the delta the approvers decide; who set it is its maker."""
     co = sync(hub, co_ref)
     why = _may_edit(hub, co, by)
     if why:
         raise ValueError(why)
-    smap = dict(co["fields"].get("state_map") or {})
-    smap[process] = {**(smap.get(process) or {}), **{k: v for k, v in (mapping or {}).items() if v}}
-    return _set(hub, co, by=by, state_map=smap)["fields"]["state_map"]
+    if stage_of(co) not in EDITABLE:
+        raise ValueError(f"{co['number']} is {stage_of(co).replace('-', ' ')}: its state map is fixed now")
+    rs = removed_statuses(hub, co)
+    r = rs.get(process)
+    for frm, to in (mapping or {}).items():
+        if not to:
+            continue
+        if r is None:
+            raise ValueError(f"{co['number']} removes no status of {process}: there is nothing to map")
+        if frm not in r["removed"]:
+            raise ValueError(f"{frm} is not a status this change removes from {process} (it removes {', '.join(r['removed']) or 'none'})")
+        if to not in r["statuses"]:
+            raise ValueError(f"{to} is not a status of {process} as this change leaves it ({', '.join(r['statuses'])})")
+    smap = copy.deepcopy(co["fields"].get("state_map") or {})
+    meta = copy.deepcopy(co["fields"].get("state_map_meta") or {})
+    now = utcnow()
+    cur = dict(smap.get(process) or {})
+    for frm, to in (mapping or {}).items():
+        if to:
+            cur[frm] = to
+            meta.setdefault(process, {})[frm] = {"by": by, "at": now}
+        else:
+            cur.pop(frm, None)
+            (meta.get(process) or {}).pop(frm, None)
+    if cur:
+        smap[process] = cur
+    else:
+        smap.pop(process, None)
+    co = _set(hub, co, by=by, state_map=smap, state_map_meta=meta)
+    _record(hub, co, "state_map_set", {**_signed(hub, co, by=by, verdict="set", meaning=f"{process}: {mapping}", step=f"state-map:{process}",
+                                                 payload=_hash(cur), at=now), "process": process, "mapping": mapping}, by)
+    _refresh_saved(hub, co)
+    _seal(hub, co)
+    return _co(hub, co["locator"])["fields"].get("state_map") or {}
+
+
+# ---------------------------------------------------------------- integrity: what was reviewed, sent and signed
+REVIEWED_KEYS = ("drafts", "items", "forms", "record_types", "workflows")
+CONTENT_WORDS = {"drafts": "the revisions it carries", "items": "its direct changes", "forms": "its form changes",
+                 "record_types": "its record-type changes", "workflows": "its workflow changes", "state_map": "its state map",
+                 "proposal": "its compiled delta"}
+
+
+def _hash(obj) -> str:
+    return sha256_of(obj)[:16]
+
+
+def content_digest(hub, co_ref) -> dict:
+    """What a change order carries, by hash: {"drafts": {SOP: content sha}, "items", "forms", "record_types",
+    "workflows", "state_map"}. A review round records it (``reviewed_from``), sending for approval freezes it
+    (``frozen``), the signature and the release check against it."""
+    co = _co(hub, co_ref)
+    f = co["fields"]
+    return {"drafts": _shas(hub, eco.drafts_of(hub, co)), "items": _sig(_items(co)), "forms": _hash(f.get("form_changes") or {}),
+            "record_types": _hash(f.get("record_type_changes") or []), "workflows": _hash(f.get("workflow_changes") or {}),
+            "state_map": _hash(f.get("state_map") or {})}
+
+
+def _differs(was: dict, now: dict, keys) -> list[str]:
+    return [CONTENT_WORDS[k] for k in keys if k in (was or {}) and (was or {}).get(k) != now.get(k)]
+
+
+def changed_since_sent(hub, co_ref) -> list[str]:
+    """What changed since the change order was sent for approval (empty when nothing did, or it was not sent)."""
+    co = _co(hub, co_ref)
+    fr = co["fields"].get("frozen") or {}
+    if not fr:
+        return []
+    now = {**content_digest(hub, co), "proposal": co["fields"].get("staged_proposal")}
+    return _differs(fr, now, REVIEWED_KEYS + ("state_map", "proposal"))
+
+
+def _hold_drafts(hub, co: dict, hold: bool) -> None:
+    """Carried revisions are held while the change order waits for approval (a held document takes no new version)."""
+    for c in eco.carried(hub, co):
+        d = c["draft"]
+        if hold and d["state"] in ("draft", "open", "returned"):
+            hub.kernel.transition(d["locator"], "held", by="hub", reason=f"held while {co['number']} waits for approval")
+        elif not hold and d["state"] == "held":
+            hub.kernel.transition(d["locator"], "draft", by="hub", reason=f"{co['number']} is back to revising")
+
+
+def _back_to_revising(hub, co: dict, why: str, by: str = "hub") -> dict:
+    co = _co(hub, co)
+    if co["state"] == "approved" and not co["fields"].get("released_release"):
+        hub.kernel.transition(co["locator"], "open", by=by, reason=f"back to revising: {why}")
+    p = _proposal(hub, co)
+    if p is not None and p.get("status") == "open":
+        for c in p.get("changes") or []:
+            for d in c.get("decisions") or []:
+                d["stale"] = True
+        p["acceptances_voided"] = {**(p.get("acceptances_voided") or {}), **(p.get("acceptances") or {})}
+        p["acceptances"] = {}
+        _refresh(hub, co, p)
+        hub.proposals.save(p)
+    _hold_drafts(hub, co, False)
+    co = _set(hub, co, by=by, stage="revising", frozen=None, state_map_signed=None,
+              reopened=list(co["fields"].get("reopened") or []) + [{"why": why, "by": by, "at": utcnow()}])
+    hub.kernel.append("co.reopened", co["locator"], {"why": why, "by": by}, by=by)
+    run = hub.runner.run_for_record(co["locator"])
+    waiting = ((run or {}).get("pending") or {}).get("assignees") or [] if run and run.get("status") == "waiting" else []
+    for who in dict.fromkeys([requester(co), *waiting]):
+        if who and who != by:
+            hub.inbox.notify(who, kind="automation", subject=f"{co['number']} is back to revising", body=f"{why}. Its item decisions are void: "
+                             "review it again, decide its items and sign it again" + (" (reject the waiting approval, or wait for it to be "
+                             "sent again)" if who in waiting else ""), record=co["locator"])
+    _seal(hub, co)
+    return _co(hub, co["locator"])
+
+
+def _signed(hub, co: dict, *, by: str, verdict: str, meaning: str, step: str, payload: str, at: str) -> dict:
+    """A decision on a change order's delta, signed with the hub's key as Gate decisions are (hubproto.track)."""
+    from .track import sign
+
+    d = {"by": by, "verdict": verdict, "meaning": meaning, "payload_digest": payload, "record_digest": co["locator"], "at": at,
+         "run_id": co["number"], "step": step, "release_digest": co["fields"].get("staged_base") or ""}
+    d["signature"] = sign(hub.runner.secret(), d)
+    return d
+
+
+def _record(hub, co: dict, kind: str, data: dict, by: str) -> None:
+    """An append-only, chained kernel event on the change order: every item decision, accepted warning, override,
+    answer and state-map entry. A re-decision appends; the proposal file is a projection of these events."""
+    hub.kernel.append(f"co.{kind}", co["locator"], data, by=by)
+
+
+def _events(hub, co: dict) -> list[dict]:
+    return [e for e in hub.kernel.events(aggregate=co["locator"]) if str(e["type"]).startswith("co.")]
+
+
+def verify_delta(hub, co_ref) -> list[str]:
+    """Problems with the change order's delta record (empty when it verifies): every decision, accepted warning and
+    override in the staged proposal must be the latest signed event of its kind on the change order, and every signed
+    event's signature must verify. Catches an edited proposal file (a changed meaning, a relabelled decider)."""
+    from .track import verify_signature
+
+    co = _co(hub, co_ref)
+    p = _proposal(hub, co)
+    if p is None:
+        return []
+    secret = hub.runner.secret()
+    problems = []
+    decided, latest, accepted, overridden = set(), {}, set(), set()
+    for e in _events(hub, co):
+        d = e["data"]
+        if d.get("signature") and verify_signature(secret, d) == "forged":
+            problems.append(f"the signed {e['type'][3:].replace('_', ' ')} by {d.get('by')} on {d.get('step')} does not verify")
+        if e["type"] == "co.item_decided":
+            k = (d.get("step"), d.get("by"))
+            decided.add((d.get("step"), d.get("by"), d.get("verdict"), d.get("meaning"), d.get("at")))
+            latest[k] = (d.get("verdict"), d.get("meaning"), d.get("at"))
+        elif e["type"] == "co.warning_accepted":
+            accepted.add((d.get("step"), d.get("by"), d.get("meaning"), d.get("at")))
+        elif e["type"] == "co.override":
+            overridden.add((d.get("item"), d.get("by"), d.get("at"), d.get("payload_digest")))
+    for c in list(p.get("changes") or []) + list(p.get("applied_items") or []):
+        if c.get("op") == "text":
+            continue  # a wording change is not decided: the CO's signature covers it (apply_delta keeps only that)
+        for d in list(c.get("decisions") or []) + list(c.get("stale_decisions") or []):
+            if str(d.get("by") or "").startswith(("change-order:", "document-control:")):
+                continue  # the release's own entry for a wording change, covered by the CO signature
+            key = (c["id"], d.get("by"), d.get("verdict"), d.get("meaning"), d.get("at"))
+            if key not in decided:
+                problems.append(f"the decision by {d.get('by')} on “{c.get('reason')}” has no signed record")
+            elif not d.get("stale") and latest.get((c["id"], d.get("by"))) != (d.get("verdict"), d.get("meaning"), d.get("at")):
+                problems.append(f"the decision by {d.get('by')} on “{c.get('reason')}” is not their latest")
+        o = c.get("override")
+        if o and (c["id"], o.get("by"), o.get("at"), rule_key(o["rule"])) not in overridden:
+            problems.append(f"the override of “{c.get('reason')}” by {o.get('by')} has no signed record")
+    for key, a in (p.get("acceptances") or {}).items():
+        if (key, (a or {}).get("by"), (a or {}).get("meaning"), (a or {}).get("at")) not in accepted:
+            problems.append(f"the acceptance of a warning ({key.split('|', 1)[-1]}) by {(a or {}).get('by')} has no signed record")
+    return problems
+
+
+def delta_digest(hub, co_ref) -> str:
+    """A digest of the decided delta and what the change order carries: the CO field ``delta_seal`` holds it, so the
+    approver's signature (which binds the CO's fields) covers every decision, acceptance and override, and a change after
+    the Gate card was drawn is refused."""
+    co = _co(hub, co_ref)
+    p = _proposal(hub, co) or {}
+    body = {"proposal": p.get("id"), "content": content_digest(hub, co),
+            "changes": [[c["id"], rule_key(_effective(c)) if c.get("op") != "text" else "",
+                         sorted([str(d.get(k)) for k in ("by", "verdict", "meaning", "at", "stale")] for d in c.get("decisions") or []),
+                         str((c.get("override") or {}).get("at"))] for c in p.get("changes") or []],
+            "acceptances": sorted([k, str((v or {}).get("by")), str((v or {}).get("at"))] for k, v in (p.get("acceptances") or {}).items())}
+    return _hash(body)
+
+
+def _seal(hub, co_ref) -> dict:
+    """Bring the CO's ``delta_seal`` and ``contributor`` (who may not sign it) up to date after a change to its delta."""
+    co = _co(hub, co_ref)
+    upd = {}
+    seal = delta_digest(hub, co)
+    if co["fields"].get("delta_seal") != seal:
+        upd["delta_seal"] = seal
+    excluded = may_not_sign(hub, co)
+    if list(co["fields"].get("contributor") or []) != excluded:
+        upd["contributor"] = excluded
+    return _set(hub, co, **upd) if upd else co
 
 
 # ---------------------------------------------------------------- readiness
@@ -1724,6 +2218,14 @@ def send_reasons(hub, co_ref) -> list[str]:
     from . import formlayout
 
     co = _co(hub, co_ref)
+    if co["state"] == "approved" and not co["fields"].get("released_release"):
+        out = []  # signed but not released yet: what would stop its release
+        if co["fields"].get("staged_base") and co["fields"].get("staged_base") != _digest(hub):
+            out.append("another release came into force after it was signed: it goes back to revising and is decided and signed again")
+        changed = changed_since_sent(hub, co)
+        if changed:
+            out.append("it changed after it was signed (" + ", ".join(changed) + "): it goes back to revising")
+        return out
     if eco.finished(co):
         return []
     f = co["fields"]
@@ -1742,10 +2244,14 @@ def send_reasons(hub, co_ref) -> list[str]:
     else:
         rec = last.get("reviewed_from") or {}
         drafts = eco.drafts_of(hub, co)
-        if rec.get("drafts") is not None and rec["drafts"] != _shas(hub, drafts):
+        now = content_digest(hub, co)
+        if rec.get("drafts") is not None and rec["drafts"] != now["drafts"]:
             reasons.append(f"the revisions changed since round {last['n']}: request review again")
-        if rec.get("items") is not None and rec["items"] != _sig(items):
+        if rec.get("items") is not None and rec["items"] != now["items"]:
             reasons.append(f"the direct changes changed since round {last['n']}: request review again")
+        for k in ("forms", "record_types", "workflows"):  # data-model changes carried after the round are reviewed too
+            if k in rec and rec[k] != now[k]:
+                reasons.append(f"{CONTENT_WORDS[k][4:]} changed since round {last['n']}: request review again")
         p = _proposal(hub, co)
         if (carried or items) and (p is None or p.get("status") != "open"):
             reasons.append("the delta is not compiled (or its compile was replaced): request review again")
@@ -1771,7 +2277,23 @@ def send_reasons(hub, co_ref) -> list[str]:
     reasons += workflows.carried_reasons(hub, co)
     reasons += _cr_reasons(hub, co)
     reasons += [c["reason"] for c in committee_reviews(hub, co) if c["status"] != "agreed"]
+    reasons += cog_sign_problems(new_rules(hub, co))
     return reasons
+
+
+def cog_sign_problems(rules: list[dict]) -> list[str]:
+    """A person signs a change order (as "a cog never signs its own work", a guard, not configuration): rules that would
+    let a cog sign one are refused: approval criteria for a cog on the change-order process, or its approval routed to
+    a cog."""
+    out = []
+    for r in rules:
+        if r.get("process") != "change-order":
+            continue
+        if r.get("kind") == "approval_criteria" and str(r.get("approver") or "").startswith("cog:"):
+            out.append(f"a person signs a change order: “{_sentence(r)}” would let {r['approver'][4:]} sign one")
+        elif r.get("kind") == "routing" and str(r.get("assignee") or "").startswith("cog:") and (r.get("mode") or "assign") == "assign":
+            out.append(f"a person signs a change order: “{_sentence(r)}” routes its approval to a cog")
+    return out
 
 
 # ---------------------------------------------------------------- committees on the panel (groups and committees)
@@ -1799,7 +2321,8 @@ def committee_reviews(hub, co_ref, today: str | None = None) -> list[dict]:
     out = []
     for name in names:
         c = committee(b, name) or {"members": [], "chair": ""}
-        members = [e["who"] for e in rnd.get("panel") or [] if e.get("committee") == name]
+        # Every member of the committee (from its definition, not the panel): consensus means all of them.
+        members = list(dict.fromkeys(list(c.get("members") or []) + [e["who"] for e in rnd.get("panel") or [] if e.get("committee") == name]))
         res = rnd.get("results") or {}
         objections = [{"member": m, "text": f.get("text")} for m in members for f in (res.get(m) or {}).get("findings") or []
                       if f.get("severity") == "blocking" and (res.get(m) or {}).get("status") == "done"]
@@ -1936,76 +2459,138 @@ def intervene_review(hub, co_ref, committee_name: str, member: str, by: str, mea
 
 
 def approval_reasons(hub, co_ref) -> list[str]:
-    """Why the CO Gate may not be signed yet (empty when it may): everything send_reasons checks, every delta item
-    decided (a widening by both policy owners), every warning accepted (on the items approved and on the CO as a
-    whole), no decision left stale, and a state map answer for every state the delta removes that items are in."""
+    """Why the CO Gate may not be signed yet (empty when it may): everything send_reasons checks; it is frozen for
+    approval and nothing it carries changed since; its delta record verifies (every decision, acceptance and override
+    a signed event); every delta item decided, by someone who did not make it (a widening by two policy owners who did
+    not); every warning accepted; no decision left stale; no two approved items set one rule; the state map holds (only
+    statuses this delta removes, to statuses of the new graph) and answers every removed status items are in; what
+    hubproto.validation requires, when that module is there."""
     co = _co(hub, co_ref)
     if eco.finished(co) and co["state"] != "approved":
         return []
     reasons = send_reasons(hub, co)
+    if stage_of(co) in ("awaiting-approval", "approved") or co["state"].startswith("awaiting"):
+        if not co["fields"].get("frozen"):
+            reasons.append("it is not frozen for approval: send it for approval again")
+        changed = changed_since_sent(hub, co)
+        if changed:
+            reasons.append("it changed after it was sent for approval (" + ", ".join(changed) + "): it goes back to revising")
+    reasons += verify_delta(hub, co)
     p = _proposal(hub, co)
     if p is not None:
         _refresh(hub, co, p)
         owners = p.get("reviewers") or _owners(hub)
+        slots: dict[str, list[str]] = {}
         for c in p.get("changes") or []:
             if c.get("op") == "text":
                 continue
             st = item_state(c, owners)
             if st == "pending":
+                live = [d for d in c.get("decisions") or [] if not d.get("stale")]
                 if c.get("stale"):
-                    reasons.append(f"decided before the baseline changed, decide it again: {c.get('reason')}")
+                    reasons.append(f"decided before the baseline changed (or before it went back to revising), decide it again: {c.get('reason')}")
                 elif _widening(c):
-                    have = sorted({d["by"] for d in c.get("decisions") or [] if d["verdict"] == "approve" and not d.get("stale")})
-                    reasons.append(f"widening: {c.get('reason')} needs both policy owners" + (f" (approved by {', '.join(have)})" if have else ""))
+                    have = sorted({d["by"] for d in live if d["verdict"] == "approve" and d["by"] not in (c.get("makers") or [])})
+                    reasons.append(f"widening: {c.get('reason')} needs two policy owners who did not make it" + (f" (approved by {', '.join(have)})" if have else ""))
+                elif any(d["by"] in (c.get("makers") or []) for d in live):
+                    reasons.append(f"not decided by anyone who did not make it: {c.get('reason')}")
                 else:
                     reasons.append(f"not decided yet: {c.get('reason')}")
             elif st == "approved":
                 for w in c.get("warnings") or []:
                     if not w.get("accepted"):
                         reasons.append(f"accept the warning on “{c.get('reason')}”: [{w['code']}] {w['text']}")
+                if c.get("op") in ("add", "change") or (c.get("op") == "remove" and c.get("override")):
+                    slots.setdefault(_slot_key(_effective(c)), []).append(c.get("reason") or c["id"])
+        for s, reasons_of in slots.items():
+            if len(reasons_of) > 1 and _unique_slot(s):
+                reasons.append("two approved items set the same rule: " + " and ".join(f"“{r}”" for r in reasons_of) + "; reject one")
         for w in p.get("warnings") or []:
             if not w.get("accepted"):
                 reasons.append(f"accept the warning: [{w['code']}] {w['text']}")
+    for q in (p or {}).get("questions") or []:
+        if q.get("blocking") and q.get("status", "open") == "open":
+            reasons.append(f"answer the question first ({q.get('code')}; its chair{(' ' + q['chair']) if q.get('chair') else ''} or a system "
+                           f"administrator): {q.get('text')}")
+    reasons += state_map_problems(hub, co, p)
     in_force = {r["name"]: r for r in hub.settings_rules() if r.get("kind") == "process"}
-    for q in state_questions(hub, co):
+    for q in state_questions(hub, co, p):
         if not q.get("answer"):
             sname = _state_names(hub, in_force.get(q["process"]), q["process"]).get(q["state"], q["state"])
             reasons.append(f"{q['count']} {q['record_type']} item(s) are in {sname}, which this change removes from {q['process']}: "
                            "say where they go (state map)")
+    try:
+        from . import validation  # workstream 3: the IT SOP's validation of configuration deltas
+    except ImportError:
+        validation = None
+    if validation is not None and hasattr(validation, "requirements"):
+        reasons += list(validation.requirements(hub, co["locator"]) or [])
     return reasons
+
+
+def validation_items(hub, co_ref) -> list[dict]:
+    """The delta items with what the IT SOP's risk-based validation says of each (hubproto.validation.annotate: its risk
+    class and the evidence it needs), for the CO page; the items as they are when that module is not there."""
+    items_ = delta(hub, co_ref)
+    try:
+        from . import validation
+    except ImportError:
+        return items_
+    return validation.annotate(items_) if hasattr(validation, "annotate") else items_
+
+
+UNIQUE_KINDS = ("threshold", "sla", "process", "cog", "approval_criteria")  # one rule per slot (a member or group may be stated in several Frames)
+
+
+def _unique_slot(slot_key: str) -> bool:
+    try:
+        return json.loads(slot_key)[0] in UNIQUE_KINDS
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------- sending, deciding, approving
 def send_for_approval(hub, co_ref, by: str) -> dict:
-    """The requester sends the change order for approval: it must be ready (send_reasons); its contributors are
-    recorded (they may not sign it) and the change-order process takes it to the quality manager's Gate. Returns
-    the run's state."""
+    """The requester sends the change order for approval: it must be ready (send_reasons). It is frozen: what it
+    carries is recorded by hash (``frozen``), its revisions are held (they take no new version), and from then on any
+    change to it sends it back to revising with its decisions void. The change-order process takes it to the quality
+    manager's Gate (a Gate already waiting for it, after it went back to revising, simply waits again). Returns the
+    run's state."""
     from .runner import RunError
 
     co = sync(hub, co_ref)
     if by not in (requester(co), co.get("created_by")) and "document-controller" not in authz.roles_of(_bundle(hub), by):
         raise ValueError(f"only {requester(co)} (its requester) or a document controller sends {co['number']} for approval")
     run = hub.runner.run_for_record(co["locator"])
-    if run and run["status"] in ("submitted", "running", "waiting"):
+    waiting = bool(run and run["status"] == "waiting" and co["state"].startswith("awaiting"))
+    if run and run["status"] in ("submitted", "running", "waiting") and not waiting:
         raise ValueError(f"{co['number']} is already in the change-order process ({run['status']})")
     st = stage_of(co)
     if st == "preparing":
         raise ValueError(f"{co['number']} has not been reviewed: request review first")
-    if st not in ("in-review", "revising"):
+    if st not in ("in-review", "revising") and not (waiting and st == "awaiting-approval" and not co["fields"].get("frozen")):
         raise ValueError(f"{co['number']} is {st.replace('-', ' ')}")
     reasons = send_reasons(hub, co)
     if reasons:
         raise ValueError("it cannot be sent for approval yet: " + "; ".join(reasons))
-    _set(hub, co, by=by, stage="awaiting-approval", contributor=contributors(hub, co), rejected=None)
+    _hold_drafts(hub, co, True)
+    frozen = {**content_digest(hub, co), "proposal": co["fields"].get("staged_proposal"), "at": utcnow(), "by": by}
+    co = _set(hub, co, by=by, stage="awaiting-approval", frozen=frozen, rejected=None)
+    hub.kernel.append("co.sent", co["locator"], {"frozen": frozen, "by": by}, by=by)
+    _seal(hub, co)
+    if waiting:
+        return hub.runner.load(run["id"])
     try:
         run_id = hub.runner.submit("change-order", {"record": {}}, owner=by, record=co["locator"])
     except RunError as e:
-        _set(hub, _co(hub, co["locator"]), stage=st)
+        _hold_drafts(hub, co, False)
+        _set(hub, _co(hub, co["locator"]), stage=st, frozen=None)
         raise ValueError(str(e)) from None
     state = hub.runner.load(run_id)
     if state["status"] not in ("waiting", "completed", "running", "submitted"):
         why = next((e.get("reason") for e in reversed(hub.runner.track(run_id)) if e.get("reason")), state["status"])
-        _set(hub, _co(hub, co["locator"]), stage=st)
+        _hold_drafts(hub, co, False)
+        _set(hub, _co(hub, co["locator"]), stage=st, frozen=None)
         raise ValueError(f"the change-order process stopped: {why}")
     return state
 
@@ -2017,10 +2602,13 @@ def _accepts(accept, w: dict) -> bool:
 
 def decide_item(hub, co_ref, item_id: str, verdict: str, by: str, meaning: str, accept_warnings=(), override: dict | None = None) -> dict:
     """An approver's decision on one delta item: approve or reject, with a meaning. To approve, every warning the item
-    carries must be accepted (``accept_warnings``: refs, codes, or "all"); the acceptance is recorded with the
-    decision. ``override`` edits the item's value (a rule, or fields to change in it): it is approved with the item,
-    is a warning the approver accepts, and may leave a divergence between configuration and prose. A widening needs
-    both policy owners (two decisions). Returns the item."""
+    carries must be accepted (``accept_warnings``: refs, codes, or "all"); each acceptance is recorded. Who made the item
+    (wrote it, made it directly, accepted it as a suggestion, overrode it, set the state-map entry) does not decide it.
+    ``override`` edits the item's value (a rule of the same kind and slot, or fields to change in it): the overrider
+    becomes a maker of the item, so another approver approves the new value; an override is a warning, and may leave a
+    divergence between configuration and prose. A widening needs two policy owners who did not make it. Every
+    decision, acceptance and override is a signed, chained event on the change order; a re-decision appends. Returns
+    the item."""
     from .guards import consistency_guard, drift_guard
 
     co = sync(hub, co_ref)
@@ -2036,18 +2624,26 @@ def decide_item(hub, co_ref, item_id: str, verdict: str, by: str, meaning: str, 
     p = _proposal(hub, co)
     if p is None or p.get("status") != "open":
         raise ValueError(f"{co['number']} has no compiled delta to decide: request review first")
+    _refresh(hub, co, p)
     c = next((x for x in p.get("changes") or [] if x["id"] == item_id), None)
     if c is None:
         raise ValueError(f"{co['number']} has no item {item_id}")
     if c.get("op") == "text":
         raise ValueError("a wording change is the revision itself: the change order's approval approves it")
+    if by in (c.get("makers") or []):
+        raise ValueError(f"segregation of duties: {by} made this change ({c.get('reason')}); someone who did not decides it "
+                         f"({CHANGE_CONTROL_SOP}: “{SOD_SENTENCE}”)")
     now = utcnow()
     acc = dict(p.get("acceptances") or {})
     if override is not None:
         if verdict != "approve":
-            raise ValueError("an override is approved with the item: approve it")
+            raise ValueError("an override sets the value the item comes into force with: give it with approve")
+        if c.get("op") == "state-map":
+            raise ValueError("a state-map entry is changed by setting the state map, not by an override")
         new = dict(override) if override.get("kind") else {**c["rule"], **override}
-        new = {k: v for k, v in new.items() if k != "source"}
+        new = {k: v for k, v in new.items() if k not in ("source", "key")}
+        if new.get("kind") != c["rule"].get("kind") or _slot(new) != _slot(c["rule"]):
+            raise ValueError("an override changes the item's value; it keeps its kind and what it is about (its slot)")
         new["source"] = {**((c["rule"].get("source")) or {}), "override": {"by": by, "at": now, "co": co["number"]}}
         problems = validate_rule(new)
         if problems:
@@ -2055,17 +2651,24 @@ def decide_item(hub, co_ref, item_id: str, verdict: str, by: str, meaning: str, 
         if rule_key(new) == rule_key(c["rule"]):
             raise ValueError("that override is the item as it stands")
         base = hub.settings_rules()
-        target = _apply(base, [{"op": "add", "rule": new, **({"changes_from": c["changes_from"]} if c.get("changes_from") else {})}]
+        was = c.get("changes_from") or c.get("was")
+        target = _apply(base, [{"op": "change" if was else "add", "rule": new, **({"was": was} if was else {})}]
                         + ([{"op": "remove", "rule": c["rule"]}] if c.get("op") == "remove" else []))
         errs = [x for x in consistency_guard(target, hub.registry.ids(), hub.kernel.types) if x.severity == "error" and x.rule_key == rule_key(new)]
         if errs:
             raise ValueError("the override does not hold: " + "; ".join(x.detail for x in errs[:3]))
         widen = any(d.get("widening") for d in drift_guard(base, target) if d["op"] == "add" and rule_key(d["rule"]) == rule_key(new))
+        for d in c.get("decisions") or []:
+            d["stale"] = True  # they decided another value
         c["override"] = {"rule": new, "by": by, "at": now, "meaning": meaning, "widening": widen}
-        c["decisions"] = [d for d in c.get("decisions") or [] if d["by"] == by]
-        acc[_wkey(item_id, {"code": "override", "ref": f"ov:{item_id}"})] = {"by": by, "meaning": meaning, "at": now}
+        _record(hub, co, "override", {**_signed(hub, co, by=by, verdict="override", meaning=meaning, step=item_id, payload=rule_key(new), at=now),
+                                      "item": item_id, "rule": new}, by)
         p["acceptances"] = acc
-    _refresh(hub, co, p)
+        _refresh(hub, co, p)
+        hub.proposals.save(p)
+        _seal(hub, co)
+        return {**c, "state": item_state(c, p.get("reviewers") or _owners(hub)),
+                "note": "overridden: another approver, who did not make it, approves the new value"}
     taken = []
     if verdict == "approve":
         missing = [w for w in c["warnings"] if not w.get("accepted") and not _accepts(accept_warnings, w)]
@@ -2073,23 +2676,31 @@ def decide_item(hub, co_ref, item_id: str, verdict: str, by: str, meaning: str, 
             raise ValueError("accept each warning to approve it (“I accept: …”): " + "; ".join(f"[{w['code']}] {w['text']}" for w in missing))
         for w in c["warnings"]:
             if not w.get("accepted"):
-                acc[_wkey(item_id, w)] = {"by": by, "meaning": meaning, "at": now}
+                key = _wkey(item_id, w)
+                acc[key] = {"by": by, "meaning": meaning, "at": now}
+                _record(hub, co, "warning_accepted", {**_signed(hub, co, by=by, verdict="accept", meaning=meaning, step=key,
+                                                                payload=_hash(w.get("text")), at=now), "item": item_id}, by)
             taken.append(w.get("ref"))
-    c["decisions"] = [d for d in c.get("decisions") or [] if d["by"] != by] + [
-        {"by": by, "verdict": verdict, "at": now, "meaning": meaning, "change_digest": rule_key(_effective(c)), "accepted_warnings": taken}]
+    decision = {"by": by, "verdict": verdict, "at": now, "meaning": meaning, "change_digest": rule_key(_effective(c)), "accepted_warnings": taken}
+    _record(hub, co, "item_decided", {**_signed(hub, co, by=by, verdict=verdict, meaning=meaning, step=item_id, payload=rule_key(_effective(c)),
+                                                at=now), "item": item_id, "accepted_warnings": taken, "proposal": p["id"]}, by)
+    c["decisions"] = [d for d in c.get("decisions") or [] if d["by"] != by or d.get("stale")] + [decision]
     p["acceptances"] = acc
     _refresh(hub, co, p)
     hub.proposals.save(p)
+    _seal(hub, co)
     return {**c, "state": item_state(c, p.get("reviewers") or _owners(hub))}
 
 
 def accept_warning(hub, co_ref, ref: str, by: str, meaning: str) -> dict:
     """Accept a warning on the change order as a whole (a kept divergence, a finding or question about no single
-    item): an approver ticks "I accept: ..."; recorded with who, when and the meaning."""
+    item): an approver who contributed nothing to the change order ticks "I accept: ..."; recorded as a signed event."""
     co = sync(hub, co_ref)
     why = _may_decide(hub, co, by)
     if why:
         raise ValueError(why)
+    if by in contributors(hub, co):
+        raise ValueError(f"segregation of duties: {by} contributed to {co['number']}; someone independent accepts what is raised against it")
     if not (meaning or "").strip():
         raise ValueError("say what you accept, in a few words")
     p = _proposal(hub, co)
@@ -2099,9 +2710,14 @@ def accept_warning(hub, co_ref, ref: str, by: str, meaning: str) -> dict:
     w = next((x for x in p.get("warnings") or [] if x.get("ref") == ref), None)
     if w is None:
         raise ValueError(f"{co['number']} has no warning {ref}")
-    p.setdefault("acceptances", {})[_wkey("co", w)] = {"by": by, "meaning": meaning, "at": utcnow()}
+    now = utcnow()
+    key = _wkey("co", w)
+    p.setdefault("acceptances", {})[key] = {"by": by, "meaning": meaning, "at": now}
+    _record(hub, co, "warning_accepted", {**_signed(hub, co, by=by, verdict="accept", meaning=meaning, step=key, payload=_hash(w.get("text")),
+                                                    at=now), "item": None}, by)
     _refresh(hub, co, p)
     hub.proposals.save(p)
+    _seal(hub, co)
     return next(x for x in p["warnings"] if x.get("ref") == ref)
 
 
@@ -2117,9 +2733,12 @@ def approve_revisions(hub, co_ref) -> list[str]:
     if state is None or decision is None:
         raise ValueError(f"{co['number']} has no approval to record on its revisions")
     approver = decision["by"]
-    if approver in contributors(hub, co):
+    if decision.get("by_type") not in (None, "person") or not _person(hub, approver):
+        raise ValueError(f"{co['number']} was signed by {approver}, which is not a person: a person signs a change order")
+    if approver in may_not_sign(hub, co):
         raise ValueError(f"segregation of duties: {approver} contributed to {co['number']} and may not approve it "
                          f"({CHANGE_CONTROL_SOP}: “{SOD_SENTENCE}”)")
+    frozen = co["fields"].get("frozen") or {}
     grant = state.get("grant") or {}
     done = []
     for c in eco.carried(hub, co):
@@ -2130,12 +2749,17 @@ def approve_revisions(hub, co_ref) -> list[str]:
             continue
         if approver in _version_authors(hub, d):
             raise ValueError(f"segregation of duties: {approver} wrote {d['number']} and may not approve it (document-control-sop)")
-        sig = {k: decision.get(k) for k in ("by", "by_type", "verdict", "meaning", "at", "payload_digest", "signature", "run_id", "step", "release_digest")}
-        hub.kernel.append("record.decision", d["locator"], {**sig, "approves": d["number"], "via": co["number"],
-                                                             "meaning": f"approved with {co['number']}: {decision.get('meaning') or ''}".strip()},
+        sha = str(f.get("content_sha") or "")
+        if (frozen.get("drafts") or {}).get(c["name"], sha) != sha:
+            raise ValueError(f"{d['number']} changed after {co['number']} was sent for approval: it is not what was signed")
+        # The CO's signature, unchanged (it verifies), with what it approves here beside it.
+        sig = {k: decision.get(k) for k in ("by", "by_type", "verdict", "meaning", "at", "payload_digest", "record_digest", "signature",
+                                            "run_id", "step", "release_digest")}
+        hub.kernel.append("record.decision", d["locator"], {**sig, "approves": d["number"], "via": co["number"], "approved_sha": sha,
+                                                             "note": f"approved with {co['number']}: the change order's signature approves this revision"},
                           run_id=state["id"], release=state["release"], by=approver)
         hub.kernel.set_fields(d["locator"], {"held_for": co["number"], "approved_by": approver, "approved_run": state["id"], "approved_grant": grant.get("id"),
-                                             "approved_release": state["release"], "approved_with": co["number"]},
+                                             "approved_release": state["release"], "approved_with": co["number"], "approved_sha": sha},
                               by="hub", run_id=state["id"], release=state["release"])
         if d["state"] != "approved":
             hub.kernel.transition(d["locator"], "approved", by="hub", run_id=state["id"], release=state["release"],
@@ -2147,36 +2771,73 @@ def approve_revisions(hub, co_ref) -> list[str]:
 # ---------------------------------------------------------------- release: the decided delta, divergences
 def apply_delta(hub, co_ref) -> dict:
     """Before the release: the decided delta goes into the staged proposal's rules. Stale decisions are set aside; an
-    approved override replaces its rule; an approved direct change the prose does not state is applied; such items
-    leave the proposal's changes (``applied_items``) so the compiler's own release logic sees only prose changes. What
-    the prose states is kept as ``prose_rules`` (divergences are measured against it). Safe to repeat."""
+    approved override replaces its rule (and the change carries the override's widening, so the compiler's own check
+    of approvals agrees); an approved direct change the prose does not state replaces whatever holds its slot. Such
+    items and the state-map entries leave the proposal's changes (``applied_items``), so the compiler's release logic
+    sees only prose changes. What the prose states is kept as ``prose_rules`` (divergences are measured against it).
+    Refuses two rules for one slot. Safe to repeat."""
     co = _co(hub, co_ref)
     p = _proposal(hub, co)
     if p is None or p.get("applied") or p.get("status") != "open":
         return {"overrides": 0, "direct": 0}
+    _refresh(hub, co, p)
     owners = p.get("reviewers") or _owners(hub)
-    p["prose_rules"] = copy.deepcopy(p["rules"])
+    prose = {rule_key(r): r for r in p["rules"]}
+    for f in p.get("findings") or []:  # what the prose itself says where a kept divergence put the rule in force back
+        if f.get("guard") == "divergence":
+            d = next((x for x in open_divergences(hub, p.get("base")) if x["id"] == str(f.get("rule_key") or "").split(":", 1)[-1]), None)
+            if d and d.get("in_force") is not None:
+                prose.pop(rule_key(d["in_force"]), None)
+            if d and d.get("prose_rule") is not None:
+                prose[rule_key(d["prose_rule"])] = d["prose_rule"]
+    p["prose_rules"] = copy.deepcopy(list(prose.values()))
     rules = {rule_key(r): r for r in p["rules"]}
     applied, keep, n_over, n_direct = [], [], 0, 0
+    touched: set[str] = set()
+
+    def put(old, new, why):
+        if old is not None:
+            rules.pop(rule_key(old), None)
+        if new is not None:
+            if not new.get("source"):
+                new = {**new, "source": {"frame": "settings", "version": "", "line": 0, "text": _sentence(new), "direct": why}}
+            if _unique_slot(_slot_key(new)):
+                for k in [k for k, r in rules.items() if _slot(r) == _slot(new)]:
+                    rules.pop(k)  # the decided value holds the slot alone
+            rules[rule_key(new)] = new
+            touched.add(_slot_key(new))
+
     for c in p.get("changes") or []:
-        if c.get("op") == "text":
+        if c.get("op") == "text":  # only the CO's signature decides a wording change (a decision made elsewhere does not)
+            c["set_aside"] = [d for d in c.get("decisions") or [] if not str(d.get("by") or "").startswith("change-order:")]
+            c["decisions"] = [d for d in c.get("decisions") or [] if str(d.get("by") or "").startswith("change-order:")]
             keep.append(c)
             continue
         c["stale_decisions"] = [d for d in c.get("decisions") or [] if d.get("stale")]
         c["decisions"] = [d for d in c.get("decisions") or [] if not d.get("stale")]
         st = item_state(c, owners)
+        if c.get("op") == "state-map":
+            applied.append({**c, "state": st})
+            continue
         if c.get("unstated"):
             if st == "approved":
                 old, new = _old_new(c)
-                _with(rules, old, (c.get("override") or {}).get("rule") or new)
+                put(old, (c.get("override") or {}).get("rule") or new, c["id"])
                 n_direct += 1
             applied.append({**c, "state": st})
             continue
         if c.get("override") and st == "approved":
-            rules.pop(rule_key(c["rule"]), None)
-            rules[rule_key(c["override"]["rule"])] = c["override"]["rule"]
+            put(c["rule"], c["override"]["rule"], c["id"])
+            c["widening"] = bool(c["override"].get("widening"))  # what was approved is the override
             n_over += 1
         keep.append(c)
+    counts: dict[str, int] = {}
+    for r in rules.values():
+        if _slot_key(r) in touched and _unique_slot(_slot_key(r)):
+            counts[_slot_key(r)] = counts.get(_slot_key(r), 0) + 1
+    twice = [s for s, n in counts.items() if n > 1]
+    if twice:
+        raise ValueError("the decided delta would put two rules in one slot: " + "; ".join(twice[:3]) + ": reject one of them and sign again")
     p["rules"] = list(rules.values())
     p["changes"] = keep
     p["applied_items"] = applied
@@ -2257,10 +2918,18 @@ def record_release(hub, co_ref, digest: str) -> dict:
     if p is None or meta.get("proposal_id") != p["id"]:
         return {"new": [], "kept": [], "resolved": []}  # no new release (forms only): nothing to record
     before = open_divergences(hub, parent) if parent else []
-    kept_ids = {str(f.get("rule_key") or "").split(":", 1)[-1] for f in p.get("findings") or [] if f.get("guard") == "divergence"}
-    kept = [d for d in before if d["id"] in kept_ids]
-    resolved = [d["id"] for d in before if d["id"] not in kept_ids]
     final = hub.releases.rules(digest)
+    final_keys = {rule_key(r) for r in final}
+    final_slots = {_slot_key(r) for r in final}
+
+    def still(d):  # the configuration still differs from the prose there as the divergence says
+        inf, pr = d.get("in_force"), d.get("prose_rule")
+        holds = (rule_key(inf) in final_keys) if inf is not None else (pr is None or rule_key(pr) not in final_keys)
+        return holds and (inf is not None or d.get("slot") not in final_slots or pr is not None)
+
+    kept_ids = {str(f.get("rule_key") or "").split(":", 1)[-1] for f in p.get("findings") or [] if f.get("guard") == "divergence"}
+    kept = [d for d in before if d["id"] in kept_ids and still(d)]
+    resolved = [d["id"] for d in before if d not in kept]
     prose = p.get("prose_rules") or p.get("rules") or []
     fin, pro = {}, {}
     for r in final:
@@ -2320,7 +2989,13 @@ def raise_divergence_requests(hub, co_ref, digest: str) -> list[str]:
                            f"Accepted by {d.get('accepted_by') or '-'}: {d.get('meaning') or ''}",
             "impact": f"{d.get('frame') or 'the SOP'}: its text, so that it states the rule in force",
             "affected_documents": [d.get("frame")] if d.get("frame") else [], "requested_by": owner, "divergence": d["id"]}, by="hub")
-        d["change_request"] = cr["number"]
+        days = int(((((_bundle(hub).get("workflows") or {}).get("change-control") or {}).get("sla") or {}).get("approve-the-change")) or 0) \
+            or DIVERGENCE_DAYS
+        from datetime import date, timedelta
+
+        due = (date.today() + timedelta(days=days)).isoformat()
+        hub.kernel.assign(cr["locator"], [owner], by="hub", due=due)
+        d["change_request"], d["due"] = cr["number"], due
         out.append(cr["number"])
         hub.inbox.notify(owner, kind="task", subject=f"{cr['number']}: bring {where} in line with what is in force",
                          body=f"{co['number']} was released with a divergence ({d['id']}). Raise the change through a change order.",
@@ -2332,8 +3007,10 @@ def raise_divergence_requests(hub, co_ref, digest: str) -> list[str]:
 
 # ---------------------------------------------------------------- release: every open CO, related changes
 def open_change_orders(hub, exclude: str | None = None) -> list[dict]:
-    """Every change order not yet finished (preparing, in review, revising or waiting at its Gate)."""
-    return [r for r in hub.kernel.query(type_="change-order") if r["locator"] != exclude and not eco.finished(r)]
+    """Every change order not yet released: preparing, in review, revising, waiting at its Gate, or approved but not
+    released yet (its release job has not run, or stopped)."""
+    return [r for r in hub.kernel.query(type_="change-order") if r["locator"] != exclude
+            and (not eco.finished(r) or (r["state"] == "approved" and not r["fields"].get("released_release")))]
 
 
 def _overlap(a: dict, b: dict) -> list[str]:
@@ -2370,8 +3047,8 @@ def _meaning(hub, cog: str, released: dict, candidates: list[dict]) -> list[tupl
     try:
         out = hub.model.complete(model=prof.get("model") or "", system=prof.get("prompt") or f"You are {cog}.", user="\n".join(lines), by=cog,
                                  max_tokens=500)
-    except Exception:
-        return []
+    except Exception as e:  # said in the release job: "none found" and "could not look" are not the same
+        raise LookupError(f"{cog} could not look ({type(e).__name__}: {e})") from None
     if out.get("stand_in"):
         return []  # the stand-in finds no relation by meaning
     numbers = {c["number"] for c in candidates}
@@ -2390,6 +3067,9 @@ def _flag_co(hub, other: dict, released: dict, kind: str, reasons: list[str], co
         kind = "definition" if "definition" in (kind, cur.get("kind")) else kind
         reasons = list(dict.fromkeys(list(cur.get("reasons") or []) + reasons))
     entry = {"by": released["number"], "kind": kind, "reasons": reasons, "cog": cog, "at": utcnow(), "dismissed": None}
+    if other["state"] == "approved" and not f.get("released_release"):
+        other = _back_to_revising(hub, other, f"{released['number']} was released after it was signed and is related to it")
+        f = other["fields"]
     upd: dict = {"baseline_changed": entry}
     if stage_of(other) in ("in-review", "revising", "awaiting-approval"):
         upd["stage"] = "revising"
@@ -2424,7 +3104,7 @@ def _flag_co(hub, other: dict, released: dict, kind: str, reasons: list[str], co
 
 def _flag_cr(hub, cr: dict, released: dict, cog: str, reason: str) -> None:
     approver = next((d["by"] for d in reversed(cr.get("decisions") or []) if d.get("verdict") == "approve"), None) or cr["fields"].get("requested_by")
-    task = None
+    task, failed = None, []
     for owner in (cog, approver):
         try:
             run_id = hub.runner.submit("task", {"record": {"title": f"Review {cr['number']} against {released['number']}",
@@ -2432,10 +3112,12 @@ def _flag_cr(hub, cr: dict, released: dict, cog: str, reason: str) -> None:
             task = hub.kernel.get(hub.runner.load(run_id)["record"])
             hub.kernel.link(task["locator"], "references", cr["locator"], by=owner)
             break
-        except Exception:
+        except Exception as e:
+            failed.append(f"{owner}: {e}")
             continue
     hub.kernel.set_fields(cr["locator"], {"flagged": {"by": released["number"], "cog": cog, "reason": reason, "at": utcnow(), "approver": approver,
-                                                      "task": task["number"] if task else None, "cleared": None}}, by="hub")
+                                                      "task": task["number"] if task else None, "task_error": "; ".join(failed) if not task else None,
+                                                      "cleared": None}}, by="hub")
     if approver:
         hub.inbox.notify(approver, kind="task", subject=f"{cr['number']} may be affected by {released['number']}",
                          body=f"{cog}: {reason}. Review it again" + (f" ({task['number']})" if task else "")
@@ -2462,9 +3144,15 @@ def find_related(hub, co_ref) -> dict:
             flagged.add(o["number"])
     panel = [e["who"] for e in (current_round(co) or {}).get("panel") or [] if e.get("kind") == "cog" and e.get("member")]
     crs = _approved_uncarried_crs(hub)
+    out["errors"] = []
     for cog in panel:
         cands = [o for o in others if o["number"] not in flagged] + [c for c in crs if not cr_flag_open(hub, c)]
-        for number, reason in _meaning(hub, cog, co, cands):
+        try:
+            found = _meaning(hub, cog, co, cands)
+        except LookupError as e:
+            out["errors"].append(str(e))
+            continue
+        for number, reason in found:
             target = next((c for c in cands if c["number"] == number), None)
             if target is None:
                 continue
@@ -2506,9 +3194,13 @@ def dismiss_related(hub, co_ref, by: str, reason: str, meaning: str) -> dict:
         for c in p.get("changes") or []:
             for d in c.get("decisions") or []:
                 d.pop("stale", None)
-        p.setdefault("acceptances", {})[f"co|related|related:{bc.get('by')}"] = {"by": by, "meaning": meaning, "at": now}
+        key = f"co|related|related:{bc.get('by')}"
+        p.setdefault("acceptances", {})[key] = {"by": by, "meaning": meaning, "at": now}
+        _record(hub, co, "warning_accepted", {**_signed(hub, co, by=by, verdict="accept", meaning=meaning, step=key, payload=_hash(reason),
+                                                        at=now), "item": None, "dismissed": reason}, by)
         _refresh(hub, co, p)
         hub.proposals.save(p)
+    _seal(hub, co)
     return bc
 
 
@@ -2527,6 +3219,97 @@ def clear_cr_flag(hub, cr_ref: str, by: str, note: str) -> dict:
     return hub.kernel.set_fields(cr["locator"], {"flagged": {**fl, "cleared": {"by": by, "note": note, "at": utcnow()}}}, by=by)
 
 
+# ---------------------------------------------------------------- role grants and what a change does to each cog
+def _assignee_name(rule: dict) -> str | None:
+    who = rule.get("assignee") if rule.get("kind") == "routing" else rule.get("approver") if rule.get("kind") == "approval_criteria" else None
+    if not who:
+        return None
+    who = str(who)
+    if who.startswith(("role:", "field:", "group:")):
+        return None
+    return who.split(":", 1)[1] if who.startswith(("cog:", "person:")) else who
+
+
+def role_grant_suggestions(hub, co_ref) -> list[dict]:
+    """When the delta gives a cog or a person work at a step that their roles do not cover (routing to them, or approval
+    criteria for them, where they may not approve that kind of item in its folder), a suggested change to the org model
+    adds the step's role to them. Never a grant by itself: the author accepts or rejects it like any suggestion."""
+    from .release import render
+
+    co = _co(hub, co_ref)
+    rules = new_rules(hub, co)
+    try:
+        after = render(rules, hub.kernel.types)
+    except Exception:
+        return []
+    members = after.get("members") or {}
+    out, seen = [], set()
+    for c in delta(hub, co):
+        if c.get("op") in ("text", "state-map", "remove") or c.get("state") == "rejected":
+            continue
+        r = _effective(c)
+        name = _assignee_name(r)
+        if not name or name not in members or name in seen:
+            continue
+        proc = (after.get("processes") or {}).get(r.get("process")) or {}
+        if not proc:
+            continue
+        if authz.check(after, name, "approve", proc.get("object") or "", proc.get("folder") or "")["allowed"]:
+            continue
+        cps = [s for s in proc.get("steps") or [] if s.get("kind") == "checkpoint"]
+        step = next((s for s in cps if s.get("id") == r.get("step")), cps[0] if cps else None)
+        role = (step or {}).get("role")
+        member = next((m for m in rules if m.get("kind") == "member" and m.get("principal") == name), None)
+        if not role or member is None or role in (member.get("roles") or []):
+            continue
+        seen.add(name)
+        grant = {**{k: v for k, v in member.items() if k != "source"}, "roles": list(member.get("roles") or []) + [role]}
+        out.append({"text": f"{name} is given work at {(step or {}).get('title') or r.get('step')} in {r.get('process')} that its roles do not "
+                            f"cover: grant it the {role} role? (a suggestion: never granted by itself)",
+                    "change": {"op": "change", "rule": grant, "was": member}, "frame": (member.get("source") or {}).get("frame"),
+                    "status": "open", "by": "hub", "kind": "role-grant"})
+    return out
+
+
+def cog_impact(hub, co_ref) -> dict[str, list[dict]]:
+    """What the change order does to each cog, as decided so far (rejected items left out): {cog: [{"item", "state",
+    "what"}]}: work routed to it or taken from it, its approval criteria, its roles, its profile and persona, the
+    permissions of roles it holds, the groups and committees it is in, the text of the SOPs it works from."""
+    co = _co(hub, co_ref)
+    b = _bundle(hub)
+    members = b.get("members") or {}
+    cogs = {n for n, m in members.items() if m.get("type") == "cog"}
+    holders = lambda role: {n for n in cogs if role in authz.roles_of(b, n)}
+    profiles = b.get("cogs") or {}
+    out: dict[str, list[dict]] = {}
+    for c in delta(hub, co):
+        if c.get("state") == "rejected":
+            continue
+        names: set[str] = set()
+        if c.get("op") == "text":
+            names = {n for n, prof in profiles.items() if c.get("frame") in (prof.get("follows") or [])}
+        else:
+            for r in [_effective(c)] + [x for x in (c.get("changes_from"), c.get("was")) if x]:
+                k = r.get("kind")
+                if k in ("routing", "approval_criteria"):
+                    names.add(_assignee_name(r) or "")
+                    if str(r.get("assignee") or "").startswith("role:"):
+                        names |= holders(r["assignee"][5:])
+                elif k == "member":
+                    names.add(r.get("principal"))
+                elif k == "cog":
+                    names.add(r.get("name"))
+                elif k == "persona":
+                    names |= {n for n, prof in profiles.items() if prof.get("persona") == r.get("name")}
+                elif k == "permission" and str(r.get("subject") or "").startswith("role:"):
+                    names |= holders(r["subject"][5:])
+                elif k in ("group", "committee"):
+                    names |= set(r.get("members") or [])
+        for n in names & cogs:
+            out.setdefault(n, []).append({"item": c["id"], "state": c.get("state"), "what": c.get("reason")})
+    return out
+
+
 # ---------------------------------------------------------------- the page in one call
 def overview(hub, co_ref) -> dict:
     """Everything a change-order page shows: {"co", "stage", "rounds", "round", "panel", "delta", "warnings",
@@ -2539,4 +3322,5 @@ def overview(hub, co_ref) -> dict:
             "delta": delta(hub, co), "warnings": co_warnings(hub, co), "questions": questions(hub, co), "findings": findings(hub, co),
             "suggestions": suggestions(hub, co), "send_reasons": send_reasons(hub, co), "approval_reasons": approval_reasons(hub, co),
             "contributors": contributors(hub, co), "baseline_changed": co["fields"].get("baseline_changed"),
-            "state_questions": state_questions(hub, co), "proposal": p, "committees": committee_reviews(hub, co)}
+            "state_questions": state_questions(hub, co), "proposal": p, "committees": committee_reviews(hub, co),
+            "cog_impact": cog_impact(hub, co), "may_not_sign": list(co["fields"].get("contributor") or [])}

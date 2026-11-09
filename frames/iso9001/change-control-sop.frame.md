@@ -85,6 +85,7 @@ remove reviewers before the panel reviews.
 A change that touches permissions, record types or forms is reviewed by the it-admin cog.
 A change to roles, limits or segregation of duties is reviewed by the management cog.
 A change to a quality process is reviewed by the qa-manager cog and the quality-assistant cog.
+A change to a cog profile or a persona is reviewed by the it-admin cog and the qa-manager cog.
 
 ## Process: change-order
 Records are filed in Quality/Changes.

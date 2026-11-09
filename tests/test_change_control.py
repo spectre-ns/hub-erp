@@ -51,9 +51,27 @@ def items(hub, co):
 
 
 def decide_all(hub, co, who=("carol",), accept=("all",)):
+    """Every item approved by each of ``who`` who did not make it (who made an item never decides it)."""
     for it in items(hub, co):
         for w in who:
-            cc.decide_item(hub, co["number"], it["id"], "approve", w, "checked against the SOP", accept_warnings=accept)
+            if w not in (it.get("makers") or []):
+                cc.decide_item(hub, co["number"], it["id"], "approve", w, "checked against the SOP", accept_warnings=accept)
+    validated(hub, co)
+
+
+def validated(hub, co):
+    """The IT SOP's validation: a passing test record for the change order's items (hubproto.validation)."""
+    from hubproto import validation
+
+    if validation.requirements(hub, co["number"]):
+        validation.record_evidence(hub, co["number"], by="dave", kind="test-record", text="ran the changed rules on a test bill",
+                                   expected="the new configuration applies", actual="it applied")
+
+
+def accept_co_warnings(hub, co, who="carol"):
+    for w in cc.co_warnings(hub, co["number"]):
+        if not w.get("accepted"):
+            cc.accept_warning(hub, co["number"], w["ref"], who, "seen and accepted")
 
 
 def gate(hub, co, who="carol", verdict="approve", meaning="signed"):
@@ -69,6 +87,7 @@ def released(hub, co, who=("carol",), panel=None, by=None):
     cc.request_review(hub, co["number"], by, panel=panel)
     cc.send_for_approval(hub, co["number"], by)
     decide_all(hub, co, who)
+    accept_co_warnings(hub, co, who[0])
     assert gate(hub, co)["status"] == "completed"
     return hub.kernel.get(co["locator"])
 
@@ -226,7 +245,8 @@ def test_people_review_ask_and_suggest_and_the_author_answers(hub):
     co = hub.kernel.get(co["locator"])
     assert cc.stage_of(co) == "revising" and cc.current_round(co)["status"] == "reviewed"
     route = next(i for i in items(hub, co) if i["id"] == route["id"])
-    assert [w["code"] for w in route["warnings"]] == ["finding"] and "bob:" in route["warnings"][0]["text"]
+    assert {w["code"] for w in route["warnings"]} == {"finding"} and any(w["text"].startswith("bob:") and w["severity"] == "blocking" for w in route["warnings"])
+    assert any(w["text"].startswith("qa-manager:") and w["severity"] == "advisory" for w in route["warnings"]), "an advisory finding is a warning too (P.10)"
     q = next(q for q in cc.questions(hub, co["number"]) if q["raised_by"] == "bob")
     assert any(w["code"] == "question" and w["ref"] == q["id"] for w in cc.co_warnings(hub, co["number"]))
     cc.answer_question(hub, co["number"], q["id"], "the management representative, as Overdue items says", "alice", line=50)
@@ -261,17 +281,21 @@ def test_every_warning_is_accepted_and_a_widening_needs_both_policy_owners(hub, 
     assert route["widening"] and [w["code"] for w in route["warnings"]] == ["finding"]
     with pytest.raises(ValueError, match="accept each warning"):
         cc.decide_item(hub, co["number"], route["id"], "approve", "carol", "routing checked")
-    out = cc.decide_item(hub, co["number"], route["id"], "approve", "carol", "routing checked", accept_warnings=[route["warnings"][0]["ref"]])
-    assert out["state"] == "pending" and out["decisions"][-1]["accepted_warnings"] == [route["warnings"][0]["ref"]]
-    assert any("needs both policy owners (approved by carol)" in r for r in cc.approval_reasons(hub, co["number"]))
+    ref = route["warnings"][0]["ref"]
+    out = cc.decide_item(hub, co["number"], route["id"], "approve", "carol", "routing checked", accept_warnings=[ref])
+    assert out["state"] == "pending" and out["decisions"][-1]["accepted_warnings"] == [ref]
+    assert any("needs two policy owners who did not make it (approved by carol)" in r for r in cc.approval_reasons(hub, co["number"]))
     cc.decide_item(hub, co["number"], route["id"], "approve", "bob", "routing checked")  # carol accepted it already
     rest = [i for i in items(hub, co) if i["id"] != route["id"]]
     for i in rest:
         cc.decide_item(hub, co["number"], i["id"], "approve", "carol", "ok")
+    validated(hub, co)
     reasons = cc.approval_reasons(hub, co["number"])
-    [w] = [w for w in cc.co_warnings(hub, co["number"]) if w["code"] == "question"]
-    assert reasons == [f"accept the warning: [question] {w['text']}"], "a general question is a warning on the change order"
-    cc.accept_warning(hub, co["number"], w["ref"], "carol", "minor enough")
+    ws = [w for w in cc.co_warnings(hub, co["number"]) if not w.get("accepted")]
+    assert {w["code"] for w in ws} >= {"question", "finding"}, "a general question and an advisory finding are warnings on the change order"
+    assert reasons == [f"accept the warning: [{w['code']}] {w['text']}" for w in ws]
+    for w in ws:
+        cc.accept_warning(hub, co["number"], w["ref"], "carol", "minor enough")
     assert cc.approval_reasons(hub, co["number"]) == []
     assert gate(hub, co)["status"] == "completed"
     assert job(hub, co, "release-change-order")[0]["status"] == "success"
@@ -283,17 +307,22 @@ def test_an_override_leaves_a_divergence_that_later_compiles_keep_until_one_reso
     cc.request_review(hub, co["number"], "alice")
     cc.send_for_approval(hub, co["number"], "alice")
     add = next(i for i in items(hub, co) if i["op"] == "add")
-    with pytest.raises(ValueError, match="approve it"):
+    with pytest.raises(ValueError, match="give it with approve"):
         cc.decide_item(hub, co["number"], add["id"], "reject", "carol", "no", override={"max_amount": 1200.0})
-    out = cc.decide_item(hub, co["number"], add["id"], "approve", "carol", "1,200 is what we agreed", override={"max_amount": 1200.0})
-    assert out["state"] == "approved" and [w["code"] for w in out["warnings"]] == ["override"] and out["warnings"][0]["accepted"]["by"] == "carol"
-    decide_all(hub, co)
+    with pytest.raises(ValueError, match="keeps its kind"):
+        cc.decide_item(hub, co["number"], add["id"], "approve", "carol", "x", override={"kind": "sla", "process": "purchase-to-pay", "step": "approve", "days": 60})
+    out = cc.decide_item(hub, co["number"], add["id"], "approve", "bob", "1,200 is what we agreed", override={"max_amount": 1200.0})
+    assert out["state"] == "pending" and "bob" in out["makers"] and [w["code"] for w in out["warnings"]] == ["override"]
+    assert "bob" in cc.contributors(hub, co["number"]), "an overrider contributed the value"
+    with pytest.raises(ValueError, match="segregation of duties: bob made this change"):
+        cc.decide_item(hub, co["number"], add["id"], "approve", "bob", "fine", accept_warnings=["override"])
+    decide_all(hub, co)  # carol approves the overridden value (and accepts its warning)
     assert gate(hub, co)["status"] == "completed"
     assert ap_limit(hub) == 1200.0, "the override is in force"
     meta = hub.releases.current()
     [d] = meta["divergences"]
     assert d["frame"] == "finance-policy" and "1,500" in d["prose"] and d["in_force"]["max_amount"] == 1200.0
-    assert d["accepted_by"] == "carol" and d["co"] == co["number"] and d["status"] == "open" and d["change_request"]
+    assert d["accepted_by"] == "bob" and d["co"] == co["number"] and d["status"] == "open" and d["change_request"]
     cr = next(r for r in hub.kernel.query(type_="change-request") if r["number"] == d["change_request"])
     assert cr["fields"]["requested_by"] == "alice" and cr["fields"]["divergence"] == d["id"] and "line" in cr["fields"]["title"]
     assert any(m["to"] == "alice" and cr["number"] in m["subject"] for m in hub.inbox.all())
@@ -319,6 +348,7 @@ def test_an_override_leaves_a_divergence_that_later_compiles_keep_until_one_reso
     cc.request_review(hub, fix["number"], "alice")
     assert items(hub, fix) == [], "the prose now says what is in force: no rule changes"
     cc.send_for_approval(hub, fix["number"], "alice")
+    validated(hub, fix)
     assert gate(hub, fix)["status"] == "completed"
     meta = hub.releases.current()
     assert meta["divergences"] == [] and meta["divergences_resolved"] == [d["id"]] and ap_limit(hub) == 1200.0
@@ -371,6 +401,8 @@ def test_a_direct_change_the_prose_does_not_state_is_a_round_trip_question_and_t
     with pytest.raises(ValueError, match="round-trip"):
         cc.decide_item(hub, co["number"], it["id"], "approve", "carol", "fine")
     cc.decide_item(hub, co["number"], it["id"], "approve", "carol", "fine", accept_warnings=["round-trip"])
+    accept_co_warnings(hub, co)  # it-admin, named by the SOP for permissions, was left off the panel
+    validated(hub, co)
     assert gate(hub, co)["status"] == "completed"
     b = hub.current_bundle()
     assert not any(p["subject"] == "role:controller" and p["action"] == "read" and p["resource"] == "folder:Finance" for p in b["permissions"])
@@ -380,28 +412,45 @@ def test_a_direct_change_the_prose_does_not_state_is_a_round_trip_question_and_t
     assert not [c for c in p["changes"] if c["rule"].get("kind") == "permission"], "a later compile keeps it removed"
 
 
-def test_the_approver_may_not_be_a_contributor(hub):
+def test_the_approver_may_not_be_a_contributor_unless_an_independent_approver_decided_every_item(hub):
     co = new_co(hub)
     revise(hub, co, "finance-policy", OLD, NEW)
-    cc.add_direct_change(hub, co["number"], {"kind": "threshold", "name": "match-tolerance", "value": 3.0, "unit": "percent"}, "alice")
+    read = next(r for r in hub.settings_rules() if r["kind"] == "permission" and (r.get("source") or {}).get("text") == "Controllers may read Finance.")
+    cc.add_direct_change(hub, co["number"], {"op": "remove", "rule": read}, "alice")  # a narrowing: one approver
     assert cc.contributors(hub, co["number"]) == ["alice"]
     cc.request_review(hub, co["number"], "alice", panel=[])
     cc.send_for_approval(hub, co["number"], "alice")
-    decide_all(hub, co, who=("carol", "bob"))
-    hub.kernel.set_fields(co["locator"], {"contributor": ["alice", "carol"]}, by="test")  # as if carol had written part of it
-    with pytest.raises(RunError, match="segregation of duties.*contributor"):
-        gate(hub, co)
     rule = next(s for s in hub.current_bundle()["sod"] if s["object"] == "change-order")
     assert rule["roles"] == ["contributor", "approver"] and cc.SOD_SENTENCE in rule["source"]["text"]
-    hub.kernel.set_fields(co["locator"], {"contributor": ["alice"]}, by="test")
+    # A contributor who is not a revision author may sign once every item has an independent approver.
+    hub.kernel.set_fields(co["locator"], {"direct_changes": [{**d, "origin": {**d["origin"], "by": "carol"}}
+                                                             for d in hub.kernel.get(co["locator"])["fields"]["direct_changes"]]}, by="test")
+    hub.kernel.set_fields(co["locator"], {"frozen": {**hub.kernel.get(co["locator"])["fields"]["frozen"],
+                                                     "items": cc.content_digest(hub, co["number"])["items"]}}, by="test")
+    cc.compile_delta(hub, co["number"])  # as if carol had made the direct change
+    assert "carol" in cc.contributors(hub, co["number"]) and "carol" in hub.kernel.get(co["locator"])["fields"]["contributor"]
+    state = hub.runner.load(hub.runner.run_for_record(co["locator"])["id"])
+    assert "contributor" in hub.runner.excluded(hub.current_bundle(), state).get("carol", ""), "the SOP sentence keeps her off the Gate"
+    with pytest.raises(ValueError, match="segregation of duties: carol contributed"):
+        cc.accept_warning(hub, co["number"], cc.co_warnings(hub, co["number"])[0]["ref"], "carol", "fine by me")
+    decide_all(hub, co, who=("bob",))  # bob, who contributed nothing, approves every item
+    accept_co_warnings(hub, co, "bob")
+    excluded = hub.kernel.get(co["locator"])["fields"]["contributor"]
+    assert "carol" not in excluded and "alice" in excluded, "now carol may sign; alice (and the qa-manager) wrote the revision"
+    assert cc.approval_reasons(hub, co["number"]) == [] and "carol" not in cc.may_not_sign(hub, co["number"])
+    # The runner keeps every contributor off the Gate (it reads changecontrol.contributors): carol is still refused there.
+    with pytest.raises(RunError, match="segregation of duties"):
+        gate(hub, co)
+    hub.kernel.set_fields(co["locator"], {"direct_changes": [{**d, "origin": {**d["origin"], "by": "alice"}}
+                                                             for d in hub.kernel.get(co["locator"])["fields"]["direct_changes"]]}, by="test")
     assert gate(hub, co)["status"] == "completed"
-    original = cc.contributors
+    original = cc.may_not_sign
     try:  # the release re-checks it (the backstop when a release lacks the sentence)
-        cc.contributors = lambda hub_, co_ref: ["alice", "carol"]
+        cc.may_not_sign = lambda hub_, co_ref: ["alice", "carol"]
         with pytest.raises(ValueError, match="segregation of duties"):
             cc.approve_revisions(hub, co["number"])
     finally:
-        cc.contributors = original
+        cc.may_not_sign = original
 
 
 def test_a_rejected_approval_goes_back_to_revising(hub):
@@ -443,8 +492,8 @@ def test_a_release_recompiles_every_open_change_order_and_sends_related_ones_bac
     cc.add_direct_change(hub, b["number"], {**{k: v for k, v in tol.items() if k != "source"}, "value": 3.0}, "bob")
     cc.request_review(hub, b["number"], "bob", panel=[])
     cc.send_for_approval(hub, b["number"], "bob")
-    decide_all(hub, b, who=("carol", "bob"))
-    assert cc.approval_reasons(hub, b["number"]) == []
+    decide_all(hub, b, who=("carol", "bob"))  # carol approves it (bob made it, so his decision would not count)
+    assert [d["by"] for d in items(hub, b)[0]["decisions"]] == ["carol"]
     # c changes something else entirely: compiled again, its decisions kept.
     c = new_co(hub, by="bob", title="Tasks")
     task_rule = next(r for r in hub.settings_rules() if r["kind"] == "permission" and (r.get("source") or {}).get("text") == "Staff may approve tasks in Tasks.")

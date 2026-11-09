@@ -96,6 +96,10 @@ def test_a_change_order_is_reviewed_approved_and_released_with_its_revisions(hub
     for item in changecontrol.delta(hub, co["number"]):
         if item["op"] != "text":
             changecontrol.decide_item(hub, co["number"], item["id"], "approve", "carol", "the lower limit is right")
+    from hubproto import validation
+
+    validation.record_evidence(hub, co["number"], by="dave", kind="test-record", text="a 1,800 USD bill", expected="it waits for a person",
+                               actual="it waited for a person")
     assert eco.check_approval(hub, co["number"]) == []
     done = approve(hub, cos["id"], "carol")
     assert done["status"] == "completed", hub.runner.track(cos["id"])[-3:]

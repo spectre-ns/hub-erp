@@ -57,7 +57,7 @@ BOARD = {
 def board_co(hub, author="alice"):
     co = new_co(hub)
     revise(hub, co, "finance-policy", OLD, NEW, by=author)
-    cc.request_review(hub, co["number"], "alice", panel=[])
+    cc.request_review(hub, co["number"], "alice")  # the suggested panel (leaving it out would be a warning to accept)
     cc.send_for_approval(hub, co["number"], "alice")
     return hub.kernel.get(co["locator"]), hub.runner.run_for_record(co["locator"])["id"]
 
@@ -93,8 +93,28 @@ def test_a_committee_that_agrees_on_a_change_order_that_became_unready_pauses_fo
     assert hub.kernel.get(co["locator"])["state"] != "approved"
 
 
-def test_a_change_order_is_approved_by_a_person_never_by_a_cog(tmp_path):
-    # Governance H4: the policy routes change-order approvals to a cog and gives it criteria and the permission.
+COG_SIGNS = {"iso9001/change-control-sop.frame.md": [
+    ("Approvals in change-order go to the quality manager.",
+     "Approvals in change-order go to the qa-manager cog.\nApprovals in change-order go to the quality manager."),
+    ("Quality managers may approve change-orders in Quality/Changes.\n",
+     "Quality managers may approve change-orders in Quality/Changes.\nThe qa-manager cog may approve change-orders in Quality/Changes.\n"),
+    ("## Approval criteria\n", "## Approval criteria\nThe qa-manager cog may approve change-order change-orders.\n")]}
+
+
+def test_the_compiler_refuses_a_policy_that_lets_a_cog_sign_a_change_order(tmp_path):
+    from hubproto.compile import CompileError
+
+    with pytest.raises(CompileError, match="a person signs a change order"):
+        converted_hub(tmp_path, COG_SIGNS)
+
+
+def test_a_change_order_is_approved_by_a_person_never_by_a_cog(tmp_path, monkeypatch):
+    # Governance H4: the policy routes change-order approvals to a cog and gives it criteria and the permission (the
+    # compile refuses that; with the compile's guard switched off, the runner still refuses a cog's signature).
+    from hubproto import guards
+
+    monkeypatch.setattr(guards, "change_order_signer_guard", lambda rules: [])
+    monkeypatch.setattr(cc, "cog_sign_problems", lambda rules: [])  # the change order's own readiness check, too
     hub = converted_hub(tmp_path, {"iso9001/change-control-sop.frame.md": [
         ("Approvals in change-order go to the quality manager.",
          "Approvals in change-order go to the qa-manager cog.\nApprovals in change-order go to the quality manager."),

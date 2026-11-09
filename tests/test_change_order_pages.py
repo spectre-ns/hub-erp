@@ -172,12 +172,16 @@ def test_the_loop_from_the_pages(shell):
     # bob's suggestion changes a tolerance: a widening, so the second policy owner decides it too (the page says so).
     widening = [i for i in items(hub, co) if i["state"] == "pending" and i["widening"]]
     assert widening and "widening: needs both policy owners" in co_page(shell, co, "bob")
-    assert any("needs both policy owners (approved by carol)" in r for r in cc.approval_reasons(hub, co["number"]))
+    assert any("needs two policy owners who did not make it (approved by carol)" in r for r in cc.approval_reasons(hub, co["number"]))
     for i in widening:
         ok(decide(shell, co, i, "bob", "tighter matching, as I suggested", accept=[w["ref"] for w in i["warnings"]]))
     for w in cc.co_warnings(hub, co["number"]):
         if not w.get("accepted"):
             ok(post(shell, "/co-accept-warning", {"as": "carol", "co": co["locator"], "form": "acc", "ref": w["ref"], "confirm": "1", "meaning": "known"}))
+    from hubproto import validation
+
+    validation.record_evidence(hub, co["number"], by="dave", kind="test-record", text="tried a bill against the new rules",
+                               expected="the new configuration applies", actual="it applied")
     assert cc.approval_reasons(hub, co["number"]) == [], cc.approval_reasons(hub, co["number"])
     html = co_page(shell, co, "carol")
     assert "Ready to sign" in html and "accepted by carol" in html
@@ -195,21 +199,26 @@ def test_an_override_is_marked_at_the_line_everywhere_the_prose_is_read(shell):
     ok(post(shell, "/co-review", {"as": "alice", "co": co["locator"], "choose": "own", "panel": ["management"]}))
     ok(post(shell, "/co-send", {"as": "alice", "co": co["locator"]}))
     limit = next(i for i in items(hub, co) if i["op"] == "add" and i["rule"]["kind"] == "approval_criteria")
-    page = refused(decide(shell, co, limit, "carol", "keep 1,200", verdict="override", ov_max_amount="twelve hundred"))
+    page = refused(decide(shell, co, limit, "bob", "keep 1,200", verdict="override", ov_max_amount="twelve hundred"))
     assert "max amount is a number" in page and "twelve hundred" in page
-    ok(decide(shell, co, limit, "carol", "1,200 is what we agreed", verdict="override", ov_max_amount="1200"))
+    # bob overrides the value: he made the new value, so another approver (carol) approves it and signs.
+    ok(decide(shell, co, limit, "bob", "1,200 is what we agreed", verdict="override", ov_max_amount="1200"))
     html = co_page(shell, co, "carol")
     assert "Overridden" in html and "1,200" in html
     for i in items(hub, co):
         if i["state"] == "pending" and not (i["op"] == "remove" and i.get("changed_to")):
             ok(decide(shell, co, i, "carol", "ok", accept=[w["ref"] for w in i["warnings"]]))
+    from hubproto import validation
+
+    validation.record_evidence(hub, co["number"], by="dave", kind="test-record", text="tried a bill against the new rules",
+                               expected="the new configuration applies", actual="it applied")
     ok(sign(shell, co))
     assert ap_limit(hub) == 1200.0
     [d] = hub.releases.current()["divergences"]
     words = "In force differs from this line"
     doc = sopdocs.in_force(hub.kernel, "finance-policy")
     html = main_of(get(shell, "/document/" + quote(doc["locator"], safe=":"), **{"as": "alice"})[1])
-    assert words in html and f"accepted by carol on" in html and co["number"] in html and "1,200" in html
+    assert words in html and f"accepted by bob on" in html and co["number"] in html and "1,200" in html
     lines = re.findall(r"<tr id='L(\d+)' class='co-div'>", html)
     assert lines == [str(d["line"])], "the marker sits under the line it names"
     assert "The text, line by line" in html
@@ -324,6 +333,10 @@ def test_a_related_release_flags_the_change_order_and_a_by_meaning_flag_is_dismi
     for i in items(hub, co):
         if not (i["op"] == "remove" and i.get("changed_to")):
             ok(decide(shell, co, i, "carol", "ok", accept=[w["ref"] for w in i["warnings"]]))
+    from hubproto import validation
+
+    validation.record_evidence(hub, co["number"], by="dave", kind="test-record", text="tried a bill against the new rules",
+                               expected="the new configuration applies", actual="it applied")
     ok(sign(shell, co))
     other = hub.kernel.get(other["locator"])
     assert (other["fields"]["baseline_changed"] or {}).get("kind") == "definition"
