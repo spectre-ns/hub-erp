@@ -235,8 +235,11 @@ def test_render_snapshot_shows_the_approval_signature(p2p):
     doc = p2p.dms.render_snapshot(bill["locator"], by="carol")
     md = p2p.dms.content(doc["locator"])[0].decode("utf-8")
     assert "## Signatures" in md
-    assert f"- bob (person), {decision['at']}: **approved for posting**; decision {decision['signature']}" in md
-    assert f"payload {decision['payload_digest'][:16]}" in md
+    from hubproto.co_record import when_utc
+
+    # Part 11 11.50: the signer, the date and time with its zone, the verdict, the meaning category and the meaning.
+    assert f"| bob | {when_utc(decision['at'])} | Approved | approval | approved for posting | approve the bill | {decision['signature'][:24]} |" in md
+    assert when_utc(decision["at"]).endswith(" UTC")
 
 
 def test_render_snapshot_shows_the_rejection_signature(p2p):
@@ -249,7 +252,9 @@ def test_render_snapshot_shows_the_rejection_signature(p2p):
     doc = p2p.dms.render_snapshot(bill["locator"], by="carol")
     md = p2p.dms.content(doc["locator"])[0].decode("utf-8")
     assert "## Signatures" in md
-    assert f"- bob (person), {decision['at']}: **duplicate invoice**; decision {decision['signature']}" in md
+    from hubproto.co_record import when_utc
+
+    assert f"| bob | {when_utc(decision['at'])} | Rejected | rejection | duplicate invoice |" in md
     assert "State: **rejected**" in md
 
 

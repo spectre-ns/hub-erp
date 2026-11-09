@@ -37,9 +37,11 @@ APP_PAGES: dict[str, list[tuple[str, str, str]]] = {
     "engineering": [("Archived items", "/items/item", "archive")],
     "quality": [("Change orders", "/change-orders", "layers"), ("Forms", "/forms", "form")],
     "people": [("Members and cogs", "/people", "users")],
-    "settings": [("Your changes", "/settings", "edit"), ("People and roles", "/settings/people", "users"), ("Permissions", "/settings/permissions", "lock"),
+    "settings": [("Your changes", "/settings", "edit"), ("People and roles", "/settings/people", "users"), ("Groups and committees", "/settings/groups", "group"),
+                 ("Permissions", "/settings/permissions", "lock"),
                  ("Limits and due dates", "/settings/limits", "clock"), ("Cog rails", "/settings/rails", "robot"),
-                 ("Segregation of duties", "/settings/sod", "shield"), ("Workflows", "/settings/workflows", "activity"), ("Forms", "/forms", "form")],
+                 ("Segregation of duties", "/settings/sod", "shield"), ("Workflows and routing", "/settings/workflows", "activity"), ("Forms", "/forms", "form"),
+                 ("Record types", "/record-types", "grid")],
     "policy": [("Policy versions", "/releases", "layers"), ("Policies", "/frames", "book"), ("Scopes and personas", "/scopes", "layers"), ("Automation", "/automation", "activity"), ("Why", "/why", "help"),
                ("Conformance", "/conformance", "check-circle"), ("People and roles", "/admin", "users")],
 }

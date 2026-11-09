@@ -300,8 +300,7 @@ class Hub:
 
     def compile(self, scopes: list[str] | None = None, extractor=None, now: str | None = None,
                 overrides: dict[str, str] | None = None, drafts: dict[str, str] | None = None, save: bool = True,
-                by: str | None = None, sop_drafts: dict[str, str] | None = None, from_release: bool = False,
-                sop_retire=None) -> dict:
+                by: str | None = None, sop_drafts: dict[str, str] | None = None, from_release: bool = False) -> dict:
         """Compile the Frames into a proposal. ``overrides`` are drafts of Frames (name -> text) compiled in place of the
         files, written only when the proposal is released; ``drafts`` names the draft document of each. Drafts already in
         an open proposal on the same base carry forward, so a recompile never drops someone's pending policy change.
@@ -319,14 +318,16 @@ class Hub:
             names = self.released_frame_names()
             if names:
                 frames = frames.only(names)
+        added: dict[str, str] = {}  # new Frames: {name: relpath}
         if self.sop_source():
             # The Frame is derived from the SOP documents: the documents in force (or the drafts an ECO carries, in
             # ``sop_drafts``: {frame name: draft locator}) on top of the release in force; the files on disk are not read.
             from . import sopdocs
 
-            # Which Frames: one per document in force, plus a new SOP a change order carries, minus one it retires.
+            # Which Frames: one per document in force, plus a new SOP the change order carries (eco.add_new_sop), minus
+            # one it retires (eco.retire_sop: the name with None in ``sop_drafts``). Never the files on disk.
             released = self.released_frames()
-            frames = sopdocs.document_store(self, drafts=sop_drafts or {}, retire=sop_retire)
+            frames = sopdocs.document_store(self, drafts=sop_drafts or {})
             changed = {n: f.text for n, f in frames.frames.items() if n not in released.frames or released.get(n).text != f.text}
             overrides = {**changed, **{n: t for n, t in (overrides or {}).items() if n in frames.frames}}
             drafts = {**{n: loc for n, loc in (sop_drafts or {}).items() if n in changed}, **(drafts or {})}
@@ -362,9 +363,9 @@ class Hub:
             if self.sop_source():  # the version in force is the release's; a new Frame keeps its own
                 texts[name] = bump_version(text, versions_in_force[name]) if name in versions_in_force else text
             else:
-                texts[name] = bump_version(text, frames.get(name).version)
+                texts[name] = bump_version(text, frames.get(name).version) if name in frames.frames else text
             docs[name] = (drafts or {}).get(name) or docs.get(name)
-        store = frames.with_overrides(texts) if texts else frames
+        store = frames.with_overrides(texts, added=added) if texts else frames
         proposal = compile_proposal(store, scopes or default_scopes(store), self.registry.ids(), self.releases,
                                     extractor=extractor or self.extractor(), now=now,
                                     record_types=self.kernel.types, config_digests=self.kernel.config_digests,
@@ -770,27 +771,11 @@ class Hub:
                     self.kernel.transition(draft["locator"], "released", by=by, reason=f"released in policy {meta['digest'][:12]}")
         elif not self.sop_source() and any(_is_frame_doc(d["fields"]) for d in self.kernel.query(type_="document")):
             self.frame_documents(create=False)
-        if self.sop_source():
-            self._retire_frame_files(was_in_force, meta)
         self._rebase_open_proposals(base, proposal, now=now)
         from . import closure
 
         closure.after_release(self, base, by)  # the first release: the SOPs become documents (unless kept as files)
         return meta
-
-    def _retire_frame_files(self, was_in_force, meta: dict) -> None:
-        """Once the SOPs are documents: the file of a Frame this release took out (a change order retired it) is moved
-        to frames/.retired/, where no store reads it, so the files on disk keep following the release."""
-        kept = {f["name"] for f in meta.get("frames") or []}
-        for name, frame in list(was_in_force.frames.items()):
-            if name in kept:
-                continue
-            path = Path(self._frames_dir) / frame.relpath
-            if path.exists():
-                dest = Path(self._frames_dir) / ".retired" / frame.relpath
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                path.replace(dest)
-                self._frames = None
 
     def _texts_for_release(self, proposal: dict, overrides: dict, rejected_text: set) -> dict[str, str]:
         """The Frame texts a release records: for each Frame in the proposal, exactly the text it was compiled from (the

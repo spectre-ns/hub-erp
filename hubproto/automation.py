@@ -380,7 +380,7 @@ def r_frame(hub, job, memo):
     co = hub.kernel.get(job["subject"])
     applied = changecontrol.apply_delta(hub, job["subject"])
     meta = eco.activate_frame(hub, job["subject"])
-    if not co["fields"].get("staged_proposal") and not eco.carried(hub, co):
+    if not co["fields"].get("staged_proposal") and not eco.carried(hub, co) and not eco.retirements(co):
         return f"no Frame change: release {meta['digest'][:12]} stays in force", {"release": meta["digest"]}
     rec = changecontrol.record_release(hub, job["subject"], meta["digest"])
     extra = [f"{applied['overrides']} override(s)" if applied["overrides"] else "", f"{applied['direct']} direct change(s) the prose does not state"

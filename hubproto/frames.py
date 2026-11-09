@@ -183,14 +183,23 @@ class FrameStore:
                 raise FrameError(f"duplicate Frame name {frame.name!r} ({path} and {self.frames[frame.name].path})")
             self.frames[frame.name] = frame
 
-    def with_overrides(self, texts: dict[str, str]) -> "FrameStore":
+    def with_overrides(self, texts: dict[str, str], added: dict[str, str] | None = None) -> "FrameStore":
         """A copy of this store in which the named Frames read as the given texts (drafts), for compiling a change
-        before it is written. A draft must keep its Frame's name."""
+        before it is written. A draft must keep its Frame's name. ``added`` ({name: relpath}) names new Frames (a new
+        SOP document a change order carries), which need not be in the store yet."""
         import copy
 
         clone = copy.copy(self)
         clone.frames = dict(self.frames)
         for name, text in (texts or {}).items():
+            if name not in self.frames and name in (added or {}):
+                rel = added[name] or f"{name}.frame.md"
+                frame = load_frame_text(text, self.root / rel)
+                if frame.name != name:
+                    raise FrameError(f"the new Frame {rel} is named {frame.name!r}, not {name!r}")
+                frame.relpath = rel
+                clone.frames[name] = frame
+                continue
             if name not in self.frames:
                 raise FrameError(f"there is no Frame {name!r} to change")
             old = self.frames[name]

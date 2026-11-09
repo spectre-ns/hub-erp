@@ -627,29 +627,6 @@ Ask the system administrator.
 """
 
 
-def _new_sop_draft(hub, co) -> dict:
-    """A draft of an SOP that has no document yet, carried on the change order (what eco's new-SOP step makes)."""
-    header, body = NEW_GUIDE.split("\n---\n", 1)
-    d = hub.dms.create(title="IT guide", doc_class="controlled", folder="Quality/Controlled Documents", by="carol",
-                       content=sopdocs.to_docx(body), filename="it-guide.docx",
-                       mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", doc_type="sop",
-                       fields={"lineage": "sop:it-guide", "sop_name": "it-guide", "frame_header": header + "\n---",
-                               "frame_path": "it/it-guide.frame.md", "revision": "A", "change_order": co["number"]})
-    hub.kernel.link(co["locator"], eco.CARRIES, d["locator"], by="carol")
-    return d
-
-
-def _retirement_draft(hub, co, name: str) -> dict:
-    current = sopdocs.in_force(hub.kernel, name)
-    content, v = hub.dms.content(current["locator"])
-    d = hub.dms.create(title=current["fields"].get("title") or name, doc_class="controlled", folder=current["folder"], by="carol",
-                       content=content, filename=v.get("filename"), mime=v.get("mime"), doc_type=current["fields"].get("doc_type"),
-                       fields={**{k: current["fields"][k] for k in ("lineage", "sop_name", "frame_header") if k in current["fields"]},
-                               "retire": True, "revises": current["number"], "change_order": co["number"]})
-    hub.kernel.link(co["locator"], eco.CARRIES, d["locator"], by="carol")
-    return d
-
-
 def test_once_converted_the_documents_decide_which_frames_compile_not_the_disk(closed):
     root = closed.root / "frames"
     gone = closed.frames.get("finance-policy").path
@@ -661,28 +638,43 @@ def test_once_converted_the_documents_decide_which_frames_compile_not_the_disk(c
     assert "finance-policy" in closed.released_frames().frames and "stray" not in closed.released_frames().frames
 
 
-def test_a_change_order_adds_a_new_sop_and_retires_one(closed):
-    co = new_co(closed)
-    new = _new_sop_draft(closed, co)
-    old = _retirement_draft(closed, co, "scopes")
-    p = closed.compile(save=False, sop_drafts={"it-guide": new["locator"], "scopes": old["locator"]})
+def test_end_to_end_a_change_order_revises_adds_and_retires_and_the_documents_decide_the_next_compile(tmp_path, config_dir):
+    """On a converted hub one change order carries a revision, a new SOP (eco.add_new_sop) and a retirement
+    (eco.retire_sop); it compiles, is approved and released; the next compile has the new Frame and not the retired one,
+    and the Frame files on disk decide nothing."""
+    from test_change_control import new_co as cc_new_co, revise
+    from test_change_control_documents import COACH, coach_text, released as release_co
+
+    shutil.copytree(ROOT / "frames", tmp_path / "frames")
+    hub = Hub(tmp_path)
+    hub.kernel.seed()
+    release_all(hub, keep_frame_files=False)  # the first release converts
+    assert hub.sop_source()
+    hub.kernel.set_fields(sopdocs.in_force(hub.kernel, "finance-policy")["locator"], {"owner": "alice"}, by="setup")
+    co = cc_new_co(hub, by="alice")
+    revise(hub, co, "finance-policy", OLD, NEW)
+    eco.add_new_sop(hub, co["number"], "persona-coach", coach_text(), by="alice", relpath=COACH)
+    eco.retire_sop(hub, co["number"], "scopes", by="alice", reason="the scopes move into the org model")
+    co = hub.kernel.get(co["locator"])
+    p = hub.compile(sop_drafts=eco.drafts_of(hub, co), save=False)
     names = {f["name"] for f in p["frames"]}
-    assert "it-guide" in names and "scopes" not in names
-    assert not [f for f in p["findings"] if f["severity"] == "error"], p["findings"]
-    fields = eco.stage(closed, co["number"], drafts={"it-guide": new["locator"], "scopes": old["locator"]})
-    assert fields["staged_proposal"] and not fields["staged_errors"], fields
-    staged = closed.proposals.load(fields["staged_proposal"])
-    for c in staged["changes"]:  # the change order's approval covers these (eco.activate_frame signs them)
-        c["decisions"] = [{"by": "bob", "verdict": "approve", "at": "", "meaning": "ok", "change_digest": ""},
-                          {"by": "carol", "verdict": "approve", "at": "", "meaning": "ok", "change_digest": ""}]
-    closed.proposals.save(staged)
-    approved(closed, closed.kernel.get(co["locator"]))
-    meta = closed.release(staged["id"], f"change-order:{co['number']}")
-    bom = {f["name"] for f in meta["frames"]}
-    assert "it-guide" in bom and "scopes" not in bom
-    assert (closed.root / "frames" / "it" / "it-guide.frame.md").read_text() == closed.released_frames().get("it-guide").text
-    files = list((closed.root / "frames").rglob("scopes.frame.md"))
-    assert files and all(".retired" in x.parts for x in files), "the retired Frame's file is set aside, where no store reads it"
+    assert "persona-coach" in names and "scopes" not in names and not [f for f in p["findings"] if f["severity"] == "error"], \
+        [f["detail"] for f in p["findings"] if f["severity"] == "error"]
+    release_co(hub, co, deciders=("bob", "carol"))
+    assert hub.kernel.get(co["locator"])["state"] == "released" and ap_limit(hub) == 1500.0
+    bom = {f["name"] for f in hub.releases.current()["frames"]}
+    assert "persona-coach" in bom and "scopes" not in bom
+    # The files on disk decide nothing: lose one in force, keep the retired one where it was, add a stray.
+    root = tmp_path / "frames"
+    (root / "finance" / "finance-policy.frame.md").unlink()
+    retired = next(root.joinpath(".retired").rglob("scopes.frame.md"))
+    shutil.copy(retired, root / "scopes.frame.md")
+    (root / "stray.frame.md").write_text(NEW_GUIDE.replace("it-guide", "stray"))
+    again = Hub(tmp_path)
+    nxt = again.compile(save=False)
+    names = {f["name"] for f in nxt["frames"]}
+    assert "persona-coach" in names and "finance-policy" in names and "scopes" not in names and "stray" not in names
+    assert nxt["changes"] == [], "the next compile reads the documents in force: nothing changed"
 
 
 def test_system_fields_the_file_adds_are_carried_and_then_refused_from_forms(closed, config_dir):

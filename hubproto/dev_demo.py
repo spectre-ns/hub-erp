@@ -49,11 +49,9 @@ def change_order(hub) -> str:
 
     co = hub.kernel.create("change-order", "Quality/Changes", {
         "title": "Lower the AP cog limit", "description": "Bills from 1,500 USD up should get a person's review.",
-        "requested_by": "alice"}, by="alice")
-    try:
-        draft = eco.add_sop(hub, co["number"], "finance-policy", by="carol", author="bob")  # bob writes it; carol may then sign
-    except TypeError:  # a branch whose add_sop has no author yet
-        draft = eco.add_sop(hub, co["number"], "finance-policy", by="carol")
+        "requested_by": "bob"}, by="bob")
+    # bob asks for it and writes it: carol, who opened nothing on it, may sign it (whoever opens a revision contributes)
+    draft = eco.add_sop(hub, co["number"], "finance-policy", by="bob")
     text = sopdocs.frame_text(hub, draft)
     _, body = text.split("\n---\n", 1)
     if AP_OLD not in body:
@@ -61,7 +59,7 @@ def change_order(hub) -> str:
     hub.dms.add_version(draft["locator"], sopdocs.to_docx(body.replace(AP_OLD, AP_NEW)), by=draft["fields"].get("author") or "carol",
                         filename=f"{draft['fields']['sop_name']}.docx", note="lower the ap-reviewer limit to 1,500 USD",
                         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-    print(f"change order {co['number']} prepared by alice, carrying {draft['number']} (finance-policy rev "
+    print(f"change order {co['number']} prepared by bob, carrying {draft['number']} (finance-policy rev "
           f"{draft['fields'].get('revision')})")
     return co["number"]
 

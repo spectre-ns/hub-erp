@@ -269,6 +269,8 @@ def source_texts(hub, drafts: dict[str, str] | None = None) -> dict[str, str]:
     drafts = drafts or {}
     names = {d["fields"]["sop_name"] for d in hub.kernel.query(type_="document") if str(d["fields"].get("lineage", "")).startswith(LINEAGE)}
     for name in sorted(names):
+        if name in drafts and drafts[name] is None:  # retired by the change order: compiled as absent
+            continue
         rec = hub.kernel.get(drafts[name]) if name in drafts else in_force(hub.kernel, name)
         if rec is not None:
             out[name] = frame_text(hub, rec)
@@ -276,11 +278,6 @@ def source_texts(hub, drafts: dict[str, str] | None = None) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------- the Frames, once the SOPs are documents
-def is_retirement(rec: dict | None) -> bool:
-    """A carried draft that retires its SOP (``fields.retire``): the change order takes that Frame out of the policy."""
-    return bool(rec and rec["fields"].get("retire"))
-
-
 def _store_of(hub, frames: dict[str, tuple[str, str]]):
     """A Frame store made of texts, never of the files on disk: {name: (text, path relative to the Frames root)}."""
     from pathlib import Path
@@ -310,7 +307,7 @@ def _relpath(hub, name: str, rec: dict | None, bom: dict) -> str:
     if name in bom and bom[name].get("path"):
         return bom[name]["path"]
     f = (rec or {}).get("fields") or {}
-    rel = f.get("frame_path") or ((f.get("converted_from") or {}).get("frame") if isinstance(f.get("converted_from"), dict) else None)
+    rel = f.get("frame_relpath") or f.get("frame_path") or ((f.get("converted_from") or {}).get("frame") if isinstance(f.get("converted_from"), dict) else None)
     return rel or f"documents/{name}.frame.md"
 
 
@@ -336,19 +333,21 @@ def released_store(hub, digest: str | None = None):
     return _store_of(hub, frames)
 
 
-def document_store(hub, drafts: dict[str, str] | None = None, retire=None):
+def document_store(hub, drafts: dict[str, str | None] | None = None):
     """The Frames a compile reads once the SOPs are documents: one per document in force, each read from it, with the
-    drafts a change order carries in place of theirs ({name: draft locator}; a draft of an SOP with no document in
-    force adds that Frame; a retirement draft, or a name in ``retire``, takes the Frame out). Never the disk listing."""
+    drafts a change order carries in place of theirs (``eco.drafts_of``: {name: draft locator}; a draft of an SOP with no
+    document in force, ``eco.add_new_sop``, adds that Frame; a name with None, ``eco.retire_sop``, takes it out).
+    Never the disk listing."""
     drafts = dict(drafts or {})
-    gone = set(retire or ())
     bom = {f["name"]: f for f in (hub.releases.current() or {}).get("frames") or []}
     frames = {}
     names = {d["fields"]["sop_name"] for d in hub.kernel.query(type_="document")
              if str(d["fields"].get("lineage", "")).startswith(LINEAGE) and d["state"] == "effective"} | set(drafts)
     for name in sorted(names):
+        if name in drafts and drafts[name] is None:
+            continue  # retired by the change order
         rec = hub.kernel.get(drafts[name]) if name in drafts else in_force(hub.kernel, name)
-        if rec is None or name in gone or is_retirement(rec):
+        if rec is None:
             continue
         frames[name] = (frame_text(hub, rec), _relpath(hub, name, rec, bom))
     return _store_of(hub, frames)

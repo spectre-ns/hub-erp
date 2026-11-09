@@ -79,11 +79,11 @@ class PolicyMixin:
             label = version_label(m, releases)
             parent = version_label(self.hub.releases.get(m["parent"]), releases) if m.get("parent") and any(x["digest"] == m["parent"] for x in releases) else "none (first version)"
             rows.append([f'<a href="{href("/release/" + m["digest"][:16], user)}">{esc(label)}</a>' + (" " + chip("in effect", "ok") if cur and cur["digest"] == m["digest"] else ""),
-                         esc(when(m["effective_from"])), esc(m["released_by"]), esc(parent),
+                         esc(when(m["effective_from"])), self._released_by_html(m), esc(parent),
                          f'<a href="{href("/release/" + m["digest"][:16], user)}">What changed</a>', details("digest", f"<code>{esc(m['digest'])}</code>")])
-        n_open = sum(1 for q in self.hub.proposals.list() if q.get("status") == "open")
+        n_open = sum(1 for q in self.hub.proposals.list() if q.get("status") == "open" and not q.get("eco"))
         body = "<h1>Policy versions</h1><p class='why'>Every released version of the policy, newest first. Open one to see what changed and who approved it.</p>" \
-            + (f"<p><a class='button ghost' href='{href('/proposals', user)}'>{icon('layers')}Policy proposals ({n_open} open)</a></p>") \
+            + (f"<p><a class='button ghost' href='{href('/proposals', user)}'>{icon('layers')}Policy proposals ({n_open} open)</a></p>" if n_open else "") \
             + table(["Version", "Effective from", "Released by", "Based on", "Changes", "Digest"], rows, "No release yet.")
         if self.bundle:
             bundle = self.bundle
@@ -138,7 +138,7 @@ class PolicyMixin:
             return f"{self._rule_link(src)}"
 
         body = f"""<h1>{esc(label[0].upper() + label[1:])} {chip('in effect', 'ok') if in_effect else ''}</h1>
-<div class="card">Released by {esc(meta['released_by'])}, effective from {esc(when(meta['effective_from']))}; based on {esc(version_label(parent_meta, releases)) if parent_meta else 'nothing (the first version)'};
+<div class="card">Released by {self._released_by_html(meta)}, effective from {esc(when(meta['effective_from']))}; based on {esc(version_label(parent_meta, releases)) if parent_meta else 'nothing (the first version)'};
 proposal <code>{esc(meta.get('proposal_id') or '-')}</code>{(' reviewed by ' + esc(', '.join(proposal.get('reviewers') or []))) if proposal else ''}.
 {details("digest", f"<code>{esc(meta['digest'])}</code>")}</div>"""
         if not parent_meta:
@@ -335,11 +335,17 @@ proposal <code>{esc(meta.get('proposal_id') or '-')}</code>{(' reviewed by ' + e
         self._page("People and roles", body, crumbs=[("People and roles", None)])
 
     # ------------------------------------------------------------ conformance
+    def _released_by_html(self, meta: dict) -> str:
+        by = str(meta.get("released_by") or "")
+        if by.startswith("change-order:"):
+            return f"the release of {self._co_number_link(by.split(':', 1)[1])}"
+        return esc(by)
+
     def _divergence_rows(self, divs: list[dict]) -> list[list[str]]:
         return [[esc(d.get("id")), self._co_frame_line(d.get("frame"), d.get("line")) + (f"<div class='why'>“{esc(d.get('prose') or '')}”</div>" if d.get("prose") else ""),
                  esc(self._say(d.get("in_force")) if d.get("in_force") else "nothing (the rule the line states is not in force)"),
                  f"{esc(d.get('accepted_by') or '-')} on {self._co_number_link(d.get('co'))}" + (f"<div class='why'>“{esc(d.get('meaning') or '')}”</div>" if d.get("meaning") else ""),
-                 esc(d.get("change_request") or "-"), "<span style='white-space:nowrap'>" + chip(d.get("status", "open"), "warn" if d.get("status", "open") == "open" else "ok") + "</span>"] for d in divs]
+                 self._cr_link(d.get("change_request")), "<span style='white-space:nowrap'>" + chip(d.get("status", "open"), "warn" if d.get("status", "open") == "open" else "ok") + "</span>"] for d in divs]
 
     def _release_divergences_html(self, meta: dict) -> str:
         """On the release diff: the change order that released it, its divergences (configuration differing from the prose)."""
