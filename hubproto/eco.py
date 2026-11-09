@@ -47,8 +47,94 @@ def carried(hub, co: dict) -> list[dict]:
     return sorted(out, key=lambda x: x["name"] or "")
 
 
-def drafts_of(hub, co: dict) -> dict[str, str]:
-    return {c["name"]: c["draft"]["locator"] for c in carried(hub, co) if c["name"]}
+def drafts_of(hub, co: dict) -> dict[str, str | None]:
+    """{SOP name: draft locator} of what the change order carries; a retirement it carries is the name with None (the
+    Frame compiles as absent)."""
+    out = {c["name"]: c["draft"]["locator"] for c in carried(hub, co) if c["name"]}
+    for name in retirements(co):
+        out[name] = None
+    return out
+
+
+def retirements(co: dict) -> dict[str, dict]:
+    """{SOP name: {"document", "locator", "by", "reason", "at"}}: the documents this change order retires."""
+    return dict(co["fields"].get("retires") or {})
+
+
+def add_new_sop(hub, co_ref: str, name: str, text: str, *, by: str, author: str | None = None, relpath: str | None = None) -> dict:
+    """A new SOP, work instruction, policy, cog profile or persona document carried by the change order: ``text`` is its
+    whole Frame text (front matter and body, ``name`` its Frame name). It is a draft at revision A until the change
+    order's release makes it effective, like any revision. ``by`` asks (the requester or a document controller);
+    ``author`` writes it (default ``by``). ``relpath`` is where its Frame file goes under frames/ (default
+    ``<name>.frame.md``). Returns the draft (or the one the change order already carries for that name)."""
+    from .frames import load_frame_text
+
+    co = _co(hub, co_ref)
+    if finished(co) or (co.get("state") or "").startswith("awaiting"):
+        raise ValueError(f"{co['number']} is {co['state']}: change what it carries while it is being prepared or revised")
+    bundle = hub.releases.bundle(hub.releases.current()["digest"])
+    if by not in (co["fields"].get("requested_by"), co.get("created_by")) and "document-controller" not in authz.roles_of(bundle, by):
+        raise ValueError(f"{co['number']} is {co['fields'].get('requested_by') or co.get('created_by')}'s change order: they or a document controller add documents to it")
+    for c in carried(hub, co):
+        if c["name"] == name:
+            return c["draft"]
+    if sopdocs.of_lineage(hub.kernel, name):
+        raise ValueError(f"{name} already has a document: revise it on the change order (add_sop)")
+    from pathlib import Path
+
+    rel = relpath or f"{name}.frame.md"
+    frame = load_frame_text(text, Path(hub.root) / "frames" / rel)
+    if frame.name != name:
+        raise ValueError(f"the text is the Frame {frame.name!r}, not {name!r}")
+    doc_type, folder = sopdocs.kind_of(frame)
+    writer = author or by
+    head = "\n".join(text.splitlines()[: max(0, frame.body_start - 1)])
+    tail = max(1, len(text) - len(text.rstrip("\n")))
+    draft = hub.dms.create(title=sopdocs.title_of(frame), doc_class="controlled", folder=folder, by=writer, content=sopdocs.to_docx(frame.body),
+                           filename=f"{name}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                           doc_type=doc_type,
+                           fields={"lineage": sopdocs.LINEAGE + name, "sop_name": name, "frame_meta": dict(frame.frontmatter), "frame_header": head,
+                                   "frame_tail": tail, "revision": "A", "owner": frame.maintainer or writer, "author": writer,
+                                   "description": frame.description, "change_order": co["number"], "frame_relpath": rel, "new_document": True,
+                                   **({"started_by": by} if writer != by else {})})
+    hub.kernel.link(co["locator"], CARRIES, draft["locator"], by=by)
+    return hub.kernel.get(draft["locator"])
+
+
+def retire_sop(hub, co_ref: str, name: str, *, by: str, reason: str) -> dict:
+    """The change order retires the document in force for ``name``: the delta compiles without that Frame (a delta item
+    says so), and at release the document becomes obsolete and its Frame leaves the release (its file is moved aside
+    to frames/.retired/). The requester or a document controller, with a reason. Returns the change order."""
+    from .release import utcnow
+
+    co = _co(hub, co_ref)
+    if finished(co) or (co.get("state") or "").startswith("awaiting"):
+        raise ValueError(f"{co['number']} is {co['state']}: change what it carries while it is being prepared or revised")
+    bundle = hub.releases.bundle(hub.releases.current()["digest"])
+    if by not in (co["fields"].get("requested_by"), co.get("created_by")) and "document-controller" not in authz.roles_of(bundle, by):
+        raise ValueError(f"{co['number']} is {co['fields'].get('requested_by') or co.get('created_by')}'s change order: they or a document controller retire documents on it")
+    if not (reason or "").strip():
+        raise ValueError("say why the document is retired")
+    if any(c["name"] == name for c in carried(hub, co)):
+        raise ValueError(f"{co['number']} carries a revision of {name}: take it off first, then retire it")
+    d = sopdocs.in_force(hub.kernel, name)
+    if d is None:
+        raise ValueError(f"there is no SOP or policy {name!r} in force to retire")
+    r = retirements(co)
+    if name not in r:
+        r[name] = {"document": d["number"], "locator": d["locator"], "by": by, "reason": reason.strip(), "at": utcnow()}
+        hub.kernel.set_fields(co["locator"], {"retires": r}, by=by)
+    return hub.kernel.get(co["locator"])
+
+
+def unretire_sop(hub, co_ref: str, name: str, *, by: str) -> dict:
+    """Take a retirement off the change order."""
+    co = _co(hub, co_ref)
+    r = retirements(co)
+    if name not in r:
+        raise ValueError(f"{co['number']} does not retire {name}")
+    r.pop(name)
+    return hub.kernel.set_fields(co["locator"], {"retires": r}, by=by)
 
 
 def finished(co: dict) -> bool:
@@ -179,9 +265,9 @@ def stage(hub, co_ref: str, drafts: dict[str, str] | None = None, extractor=None
 
     co = _co(hub, co_ref)
     if drafts is None:
-        drafts = {n: d["locator"] for n, d in approved_of(hub, co).items()}
+        drafts = {**{n: d["locator"] for n, d in approved_of(hub, co).items()}, **{n: None for n in retirements(co)}}
     old = co["fields"].get("staged_proposal")
-    shas = {n: str((hub.kernel.get(loc) or {}).get("fields", {}).get("content_sha") or "") for n, loc in sorted(drafts.items())}
+    shas = {n: (str((hub.kernel.get(loc) or {}).get("fields", {}).get("content_sha") or "") if loc else "retired") for n, loc in sorted(drafts.items())}
     fields: dict = {"staged_from": shas, "staged_base": (hub.releases.current() or {}).get("digest"), "staged_errors": [],
                     "staged_at": __import__("hubproto.release", fromlist=["utcnow"]).utcnow()}
     if not drafts:
@@ -290,7 +376,7 @@ def activate_frame(hub, co_ref: str) -> dict:
     co = _co(hub, co_ref)
     if co["fields"].get("released_release"):
         return hub.releases.get(co["fields"]["released_release"]) or {"digest": co["fields"]["released_release"]}
-    if not co["fields"].get("staged_proposal") and not carried(hub, co):
+    if not co["fields"].get("staged_proposal") and not carried(hub, co) and not retirements(co):
         return hub.releases.current()  # it changes forms only: the Frame in force stays
     proposal = hub.proposals.load(co["fields"]["staged_proposal"])
     for c in proposal["changes"]:
@@ -325,6 +411,18 @@ def publish_revisions(hub, co_ref: str, digest: str) -> list[str]:
         hub.dms.release_revision(d["locator"], by="hub", release=digest)
         hub.kernel.transition(d["locator"], "effective", by="hub", release=digest, reason=f"released with {co['number']}")
         done.append(d["number"])
+    for name, r in retirements(co).items():  # the documents it retires become obsolete; their Frame file is moved aside
+        old = hub.kernel.get(r["locator"])
+        if old and old["state"] == "effective":
+            hub.kernel.transition(old["locator"], "obsolete", by="hub", release=digest, reason=f"retired with {co['number']}: {r.get('reason')}")
+            done.append(old["number"])
+        frame = hub.frames.frames.get(name)
+        if frame is not None and frame.path.exists():
+            aside = hub.frames.root / ".retired" / frame.relpath
+            aside.parent.mkdir(parents=True, exist_ok=True)
+            frame.path.replace(aside)
+            hub._frames = None
+            hub._released_cache = {}
     return done
 
 
