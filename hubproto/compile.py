@@ -176,10 +176,15 @@ def collapse_moves(changes: list[dict]) -> tuple[list[dict], list[dict]]:
             removes.setdefault(body(c["rule"]), []).append(c)
     gone: set[str] = set()
     moved = []
+    by_id = {c["id"]: c for c in changes}
     for c in changes:
-        if c.get("op") != "add" or c.get("changes_from"):
+        if c.get("op") != "add":
             continue
-        pair = next((r for r in removes.get(body(c["rule"]), []) if r["id"] not in gone), None)
+        if c.get("changes_from"):  # paired as one change (a process by its name): moved only when the body is the same
+            prior = by_id.get("remove:" + __import__("hubproto.rules", fromlist=["rule_key"]).rule_key(c["changes_from"]))
+            pair = prior if prior is not None and body(prior["rule"]) == body(c["rule"]) and prior["id"] not in gone else None
+        else:
+            pair = next((r for r in removes.get(body(c["rule"]), []) if r["id"] not in gone), None)
         if pair is None:
             continue
         gone |= {c["id"], pair["id"]}
