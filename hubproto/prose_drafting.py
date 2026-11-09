@@ -246,7 +246,32 @@ def graph_lines(rule: dict, *, heading: bool = True) -> list[str]:
     if rule.get("record_type"):
         lines.append(f"The record type is {rule['record_type']}.")
     cogs = {a: _cog_of_step(a, t) for t in rule.get("transitions") or [] for a in t.get("actions") or [] if isinstance(a, str)}
-    return lines + to_sentences(rule, cogs)
+    return lines + to_sentences(rule, cogs, ids=False)  # no ids in the prose: a renamed element keeps its id in workflow_ids
+
+
+def record_workflow_ids(hub, draft: dict, process: str, ids: dict[str, str]) -> dict:
+    """Write ``ids`` (``process_graph.id_map``: {id the new name gives: id kept}) for ``process`` into the revision's
+    front matter (``workflow_ids``), beside the prose: a renamed status or transition keeps its id, so items in it stay
+    where they are. Returns the revision."""
+    import json as _json
+
+    from .frames import parse_frontmatter
+
+    f = draft["fields"]
+    head = f.get("frame_header") or sopdocs.header_text(dict(f.get("frame_meta") or {}))
+    meta, _body = parse_frontmatter(head + "\n")
+    have = meta.get("workflow_ids") if isinstance(meta.get("workflow_ids"), dict) else {}
+    have = {k: dict(v) for k, v in have.items() if isinstance(v, dict) and k != process}
+    if ids:
+        have[process] = dict(sorted(ids.items()))
+    lines = [ln for ln in head.split("\n") if not ln.startswith("workflow_ids:")]
+    close = max(i for i, ln in enumerate(lines) if ln.strip() == "---")
+    if have:
+        lines.insert(close, f"workflow_ids: {_json.dumps(have, sort_keys=True)}")
+    fm = {k: v for k, v in dict(f.get("frame_meta") or {}).items() if k != "workflow_ids"}
+    if have:
+        fm["workflow_ids"] = have
+    return hub.kernel.set_fields(draft["locator"], {"frame_header": "\n".join(lines), "frame_meta": fm}, by="hub")
 
 
 def _row_text(what: str, said: str) -> str:
@@ -387,8 +412,11 @@ def draft_direct_changes(hub, co_ref: str, by: str, *, call=None, extractor=None
         name, ops = sorted(planned.items())[0]  # one item is one edit, in the SOP the rule belongs to
         op = ops[0]
         if new is not None and new.get("kind") == "process" and new.get("statuses") and op.get("lines"):
-            # A process written as a graph is stated in the graph sentences, which read back to the same graph.
-            op = {**op, "lines": graph_lines(new, heading=op["op"] != "replace_section")}
+            # A process written as a graph is stated in the graph sentences, which read back to the same graph; the ids
+            # its names do not give (a rename) go into the revision's front matter, never into the prose.
+            from .process_graph import id_map
+
+            op = {**op, "lines": graph_lines(new, heading=op["op"] != "replace_section"), "workflow_ids": id_map(new)}
         how, why = "sentence", ""
         if writer and new is not None and new.get("kind") in sop_settings.SECTION and op.get("lines") \
                 and op["op"] in ("insert", "replace_paragraph"):
@@ -411,6 +439,8 @@ def draft_direct_changes(hub, co_ref: str, by: str, *, call=None, extractor=None
             item["round_trip"] = {"ok": False, "question": q["id"], "at": utcnow(), "detail": rep.get("detail") or ""}
             continue
         draft = _carried_draft(hub, co["locator"], name)
+        if "workflow_ids" in op:
+            draft = record_workflow_ids(hub, draft, new.get("name") or new.get("process"), op["workflow_ids"])
         text = sopdocs.frame_text(hub, draft)
         lines = list(op.get("lines") or [])
         item["stated"] = {"sop": name, "draft": draft["number"], "revision": draft["fields"].get("revision"),

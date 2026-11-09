@@ -141,7 +141,7 @@ def apply_plan(hub, co_ref: str, plan_ops: dict[str, list[dict]], *, by: str, au
         content, v = hub.dms.content(draft["locator"])
         ext = (v.get("filename") or "x.docx").rsplit(".", 1)[-1].lower()
         for op in ops:
-            clean = {k: x for k, x in op.items() if k not in ("rule", "was")}
+            clean = {k: x for k, x in op.items() if k not in ("rule", "was", "workflow_ids")}
             out, rep = edits.apply_ops(content, ext, [clean])
             if out is None and clean["op"] == "insert" and clean.get("section_end"):
                 # The SOP has no section for this kind of rule yet: add one at the end.
