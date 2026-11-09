@@ -21,7 +21,7 @@ Steps (docs/rollout/cc2.md is the runbook):
 3. review   a review round (compile with the extractor in HUBPROTO_EXTRACTOR, panel, reviews); every question and
             finding is logged verbatim; carol, a policy owner, answers the blocking unread-rule questions with
             "narrative, no rule" only where the paragraph was read as narrative (READ); the others wait for the
-            product owner's decisions (--decisions).
+            product owner decided are people's procedures (category "procedure").
 4. validate a passing test record (the suite's result on the commit) for the high-risk items, and a test note for
             the medium-risk ones, through hubproto.validation.record_evidence.
 5. decide   bob and carol decide every item (both, so widenings have their two owners), accepting each warning; the
@@ -65,13 +65,14 @@ MEANING = ("Approved by Claude at the user's instruction: migration to change co
            "(rollout rehearsed on a copy of the live data)")
 ANSWER = "Answered by Claude at the product owner's instruction: "
 NARRATIVE = ANSWER + "narrative, no rule"
+PROCEDURE = ANSWER + "a procedure people follow; the hub does not enforce it"
 OPENER = "bob"     # opens each revision and new document for alice, and retires: never carol, who signs and decides
 ANSWERER = "carol"  # a policy owner who contributed nothing answers the compile committee's blocking questions under v9
 # Each unread-rule paragraph of the repository's texts, read one by one (key: Frame, first line, sha256 of the quoted
 # words, first 16 hex). "narrative": it explains rules the sentence sections, the code or its guards already state, so
-# "narrative, no rule" is true. "decide": it states an obligation the hub does not configure from it (a procedure for
-# people, or a rule with no sentence); answering "no rule" would not be true, so the product owner decides (record it as a
-# divergence, or have the text rewritten). A paragraph not in this table is never answered.
+# "narrative, no rule" is true. "procedure": it states an obligation the hub does not configure from it; the product
+# owner decided (2026-11-09) these are procedures people follow, answered with category "procedure", not divergences.
+# A paragraph not in this table is never answered.
 READ = {
     ("org-model", 14, "e847750e6236f814"): ("narrative", "cogs as members; what they may do comes from the role, group and name sentences"),
     ("org-model", 20, "cb8b16eadc055d3e"): ("narrative", "what groups and committees are; stated in ## Groups and ## Committee"),
@@ -84,12 +85,12 @@ READ = {
     ("it-sop", 15, "aa8da55d97b8e59d"): ("narrative", "what configuration is and what this SOP covers"),
     ("it-sop", 24, "88dc75451b78299f"): ("narrative", "closure is the code's; system administrators creating change orders is a sentence"),
     ("it-sop", 30, "bfd6c2ed50cf5a85"): ("narrative", "no approval sentence for the role; the it-admin deny and the SoD sentence state the rest"),
-    ("it-sop", 37, "72a2cf53230b1a16"): ("decide", "the quarterly access review by the system administrators is a duty for people that no sentence configures (only the 90-day interval is a threshold)"),
+    ("it-sop", 37, "72a2cf53230b1a16"): ("procedure", "the quarterly access review by the system administrators is a duty for people that no sentence configures (only the 90-day interval is a threshold)"),
     ("it-sop", 45, "b540cd7b837873c5"): ("narrative", "validation, stated in ## Validation and enforced by the code"),
-    ("it-sop", 62, "dedfdecc068d207c"): ("decide", "hosted models: an installation switch recorded under the SOP and a supplier approval; procedures for people, not configured from this text"),
-    ("it-sop", 76, "175b614cc9c8769c"): ("decide", "daily backups kept off the host, recorded restore tests, restores only by a system administrator on a task: procedures the hub does not configure"),
-    ("it-sop", 82, "46520643a4ee0751"): ("decide", "incidents reported as tasks, the agents switch, an incident as a nonconformance: procedures the hub does not configure"),
-    ("it-sop", 88, "dfe9e7fe288e5412"): ("decide", "the first sentence is in ## Segregation of duties, but 'an internal auditor does not audit system administration they perform' has no sentence"),
+    ("it-sop", 62, "dedfdecc068d207c"): ("procedure", "hosted models: an installation switch recorded under the SOP and a supplier approval; procedures for people, not configured from this text"),
+    ("it-sop", 76, "175b614cc9c8769c"): ("procedure", "daily backups kept off the host, recorded restore tests, restores only by a system administrator on a task: procedures the hub does not configure"),
+    ("it-sop", 82, "46520643a4ee0751"): ("procedure", "incidents reported as tasks, the agents switch, an incident as a nonconformance: procedures the hub does not configure"),
+    ("it-sop", 88, "dfe9e7fe288e5412"): ("procedure", "the first sentence is in ## Segregation of duties, but 'an internal auditor does not audit system administration they perform' has no sentence"),
     ("ncr-sop", 15, "65b8e40eeed1554c"): ("narrative", "summarises the permissions, routing, criteria, SLA, duty and steps below"),
     ("training-sop", 15, "5d5f53d755d2420e"): ("narrative", "summarises the permissions, SLA, overdue routing and steps below"),
 }
@@ -682,13 +683,9 @@ def change_order(hub, args, log: Log) -> dict | None:
     if not authz.check(bundle, PREPARER, "create", "change-order", "Quality/Changes")["allowed"]:
         raise CheckFailed(f"{PREPARER} may not prepare change orders under the release in force")
     starter = OPENER
-    if starter != PREPARER and "document-controller" not in authz.roles_of(bundle, starter) and not getattr(eco, "OPENERS_MAY_BE_OWNERS", False):
-        # eco.add_sop, add_new_sop and retire_sop take the requester or a document controller (eco.py:171-172, 76-77,
-        # 114-115). Checked before anything is written, so a refusal leaves no half-made change order. (A code change
-        # that lets a policy owner open drafts for the requester should set eco.OPENERS_MAY_BE_OWNERS = True.)
-        refused_needs_code(lambda: (_ for _ in ()).throw(ValueError(
-            f"{starter} is neither {PREPARER} (the requester) nor a document controller: they or a document controller add SOPs to it")),
-            "add_sop", starter)
+    why = eco._may_carry(bundle, {"fields": {"requested_by": PREPARER}}, starter, "open drafts and retire") if hasattr(eco, "_may_carry") else ""
+    if why:  # checked with the code's own rule before anything is written, so a refusal leaves no half-made change order
+        refused_needs_code(lambda: (_ for _ in ()).throw(ValueError(why + "; a document controller")), "add_sop", starter)
     if args.dry_run:
         log.line(f"dry run: would prepare '{TITLE}' as {PREPARER}, carrying {len(p['revise'])} revision(s), {len(p['create'])} new "
                  f"document(s), {len(p['retire'])} retirement(s) and {len(rt_changes)} record-type change(s); each revision "
@@ -851,24 +848,21 @@ def review(hub, args, log: Log, co: dict) -> dict:
         quote = t[t.find("“") + 1:t.find("”")] if "“" in t else ""
         first = (q.get("lines") or [q.get("line")])[0]
         verdict, why = READ.get((q.get("frame"), first, hashlib.sha256(quote.encode()).hexdigest()[:16]), ("unread", "not read for this rollout"))
-        po = (args.decisions or {}).get(f"{q.get('frame')}:{first}")
-        if po and q.get("code") == "unread-rule" and po.get("answer") in ("narrative", "divergence"):
-            # The product owner's decision on this paragraph (--decisions): its words, as the answer
-            text = ANSWER + po["meaning"]
-            cc.answer_question(hub, co["number"], q["id"], text, ANSWERER, record_divergence=po["answer"] == "divergence")
-            log.line(f"  {ANSWERER} answered {q['id']} ({q.get('frame')} line {first}) as the product owner decided "
-                     f"({po['answer']}): {text}")
-            continue
-        if q.get("code") != "unread-rule" or verdict != "narrative":
+        if q.get("code") != "unread-rule" or verdict not in ("narrative", "procedure"):
             undecided.append(f"[{q.get('code')}] {q.get('frame')} line {first} ({verdict}: {why}): {quote or t}")
             continue
-        cc.answer_question(hub, co["number"], q["id"], NARRATIVE, ANSWERER)
-        log.line(f"  {ANSWERER} answered {q['id']} ({q.get('frame')} line {first}): {NARRATIVE} [read: {why}]")
+        if verdict == "narrative":
+            cc.answer_question(hub, co["number"], q["id"], NARRATIVE, ANSWERER)
+            text = NARRATIVE
+        else:
+            cc.answer_question(hub, co["number"], q["id"], PROCEDURE, ANSWERER, category="procedure")
+            text = PROCEDURE + " (category procedure)"
+        log.line(f"  {ANSWERER} answered {q['id']} ({q.get('frame')} line {first}): {text} [read: {why}]")
     if undecided:
         for u in undecided:
             log.line(f"  NEEDS THE PRODUCT OWNER'S DECISION: {u}")
-        raise NeedsDecision(f"{len(undecided)} blocking question(s) are not narrative and stay open (each blocks approval): the product "
-                            "owner decides each (record it as a divergence, or rewrite the text); then run the script again")
+        raise NeedsDecision(f"{len(undecided)} blocking question(s) this script has no reading for stay open (each blocks approval): "
+                            "the product owner decides each; then run the script again")
     return hub.kernel.get(co["locator"])
 
 
@@ -1094,12 +1088,9 @@ def main(argv=None) -> int:
     ap.add_argument("--test-result", default="", help="the suite's summary line on that commit, e.g. '1029 passed in 41.2s'")
     ap.add_argument("--rehearsal-note", default="see docs/rollout/cc2.md and the rehearsal logs",
                     help="what the rehearsals showed (the medium-risk items' test note)")
-    ap.add_argument("--decisions", default="", help="JSON file of the product owner's decisions on the paragraphs this script does not "
-                    "answer itself: {\"<frame>:<first line>\": {\"answer\": \"divergence\"|\"narrative\", \"meaning\": \"...\"}}")
     ap.add_argument("--_sample-decide", default="", help=argparse.SUPPRESS)
     ap.add_argument("--_sample-out", default="", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
-    args.decisions = json.loads(Path(args.decisions).read_text()) if args.decisions else {}
     root = Path(args.root).resolve()
     if not (root / "state" / "kernel.db").exists():
         print(f"error: no hub at {root}", file=sys.stderr)

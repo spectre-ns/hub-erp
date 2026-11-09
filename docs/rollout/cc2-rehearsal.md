@@ -2,7 +2,7 @@
 
 Each rehearsal ran on a fresh restore of `~/hub-backups/pre-cc2` (taken 2026-11-09T13:34:47Z, release v9 `2dcbfc780b93`), made with the new code's `restore`, then `init` as the entrypoint does, then the script. The table gives the commit each ran on. All ran with `HUBPROTO_ALLOW_STAND_IN=1`, `HUBPROTO_EXTRACTOR=convention`, and no Ollama, hosted model or Docker. The logs and JSON reports are in the scratchpad folder `rollout/logs/` (see the report for the full path).
 
-**Stand-in rehearsals (s1 to s4, final-4).** final-4 used `tools/standin2_patch.py` (bob may open and retire; a revision keeps its Frame path) and `tools/assumed-decisions.json` (the five non-narrative paragraphs recorded as divergences, an assumption, not the product owner's decision); the earlier ones used `standin_patch.py`. The script cannot get past step 2 on this code (findings 1 and 2 in `cc2.md`). To rehearse steps 3 to 6 and find what else stops the rollout, s1 to s4 ran on a scratch copy of the code with a rehearsal-only stand-in patch, `rollout/tools/standin_patch.py`. The patch is not a fix and is not committed. It lets a change order carry new SOP documents and retirements, and lets a policy owner answer a committee question when the release in force names no chair or system administrator. Their cog reviews were also written by the development stand-in, not by a model: every finding below is the stand-in's.
+**Stand-in rehearsals (s1 to s4, final-4).** final-4 used `tools/retired-standins/standin2_patch.py` (bob may open and retire; a revision keeps its Frame path) and `tools/retired-standins/assumed-decisions.json` (the five non-narrative paragraphs recorded as divergences, an assumption, not the product owner's decision); the earlier ones used `retired-standins/standin_patch.py`. Before 1cdc06d the script could not get past step 2. To rehearse steps 3 to 6 and find what else stops the rollout, s1 to s4 ran on a scratch copy of the code with a rehearsal-only stand-in patch, `rollout/tools/retired-standins/`. The patch is not a fix and is not committed. It lets a change order carry new SOP documents and retirements, and lets a policy owner answer a committee question when the release in force names no chair or system administrator. Their cog reviews were also written by the development stand-in, not by a model: every finding below is the stand-in's.
 
 | Rehearsal | Commit | Code | Frames on disk | Mode | Exit | Steps (s) |
 |---|---|---|---|---|---|---|
@@ -17,13 +17,15 @@ Each rehearsal ran on a fresh restore of `~/hub-backups/pre-cc2` (taken 2026-11-
 | r6-dry-run-postmerge | f224afd (change-control-v2 7352022 merged) | unpatched | the new repository's | --dry-run | 3 | 1 health before: 11.95; 2 the migration change order: 0.05 (stopped (needs a code change)) |
 | r7-real-postmerge | f224afd (change-control-v2 7352022 merged) | unpatched | the new repository's | real | 3 | 1 health before: 11.39; 2 the migration change order: 0.05 (stopped (needs a code change)) |
 | s4-standin-postmerge | f224afd (change-control-v2 7352022 merged) | stand-in patch | the new repository's | real | 1 | 1 health before: 11.34; 2 the migration change order: 0.65; 3 review round: 8.31; 4 validation evidence: 0.18; 5 decisions, approval and release: 157.32; 6 verify: 26.48 (failed) |
-| final-1-dry-run | 870e401 (change-control-v2 769d2e0 merged, final) | unpatched | the new repository's | --dry-run | 3 | 1 health before: 17.38; 2 the migration change order: 0.06 (stopped (needs a code change)) |
-| final-2-real | 870e401 (change-control-v2 769d2e0 merged, final) | unpatched | the new repository's | real | 3 | 1 health before: 19.61; 2 the migration change order: 0.06 (stopped (needs a code change)) |
-| final-4-standin-opener-relpath | 870e401 (change-control-v2 769d2e0 merged, final) | stand-in 2 (opener, Frame path) + assumed decisions | the new repository's | real | 0 | 1 health before: 16.99; 2 the migration change order: 0.87; 3 review round: 8.74; 4 validation evidence: 0.19; 5 decisions, approval and release: 170.25; 6 verify: 31.9 |
+| final-1-dry-run | 870e401 (change-control-v2 769d2e0 merged) | unpatched | the new repository's | --dry-run | 3 | 1 health before: 17.38; 2 the migration change order: 0.06 (stopped (needs a code change)) |
+| final-2-real | 870e401 (change-control-v2 769d2e0 merged) | unpatched | the new repository's | real | 3 | 1 health before: 19.61; 2 the migration change order: 0.06 (stopped (needs a code change)) |
+| final-4-standin-opener-relpath | 870e401 (change-control-v2 769d2e0 merged) | stand-in 2 (opener, Frame path) + assumed decisions | the new repository's | real | 0 | 1 health before: 16.99; 2 the migration change order: 0.87; 3 review round: 8.74; 4 validation evidence: 0.19; 5 decisions, approval and release: 170.25; 6 verify: 31.9 |
+| go-1-dry-run | 821e292 (change-control-v2 1cdc06d merged, final) | no patch | the new repository's | --dry-run | 0 | 1 health before: 18.53; 2 the migration change order: 0.06 |
+| go-2-real | 821e292 (change-control-v2 1cdc06d merged, final) | no patch | the new repository's | real | 0 | 1 health before: 17.6; 2 the migration change order: 1.06; 3 review round: 9.45; 4 validation evidence: 0.19; 5 decisions, approval and release: 176.52; 6 verify: 31.23 |
 
 Exit 3 means step 2 stopped for a code change and nothing was written. Exit 1 on s1 to s4 is the 15 waiting runs of finding 5, which fail before the rollout too. Every other check passed: verify_chain, verify_signatures over 472 runs, verify_delta, status --check, 129 of 129 waiting runs still waiting, and the 15 sampled runs gave the same outcome before and after on throwaway copies.
 
-## What the change order carries (final-4)
+## What the change order carries (go-2, no patch)
 
 - 30 revisions: audit-sop, calibration-sop, capa-sop, change-control-sop, cog-profiles, complaint-sop, design-control-sop, document-control-sop, finance-policy, inventory-policy, management-review-sop, ncr-sop, org-model, persona-author, persona-reviewer, purchasing-policy, quality-manual, scopes, supplier-sop, tasks-sop, training-sop, wi-acknowledge-training, wi-disposition-stock, wi-file-a-nonconformance, wi-raise-a-change-request, wi-record-management-review, wi-respond-to-a-cog-escalation, wi-review-a-document, wi-run-an-audit, writing-policy-frames.
 - 3 new documents: it-sop, persona-advisor, persona-executor.
@@ -31,10 +33,10 @@ Exit 3 means step 2 stopped for a code change and nothing was written. Exit 1 on
 - 14 record-type changes (`record-types carry --from-file`), system fields included.
 - Form layouts: none.
 - The delta: 234 items to decide, 66 of them widenings, plus 32 wording items. That is 180 additions (103 Roles and responsibilities rows, 29 permissions, 11 cog profiles, 8 members, 8 validation sentences, 4 personas, 4 duties, 3 roles, 3 segregation-of-duties rules, 2 groups, 2 thresholds, a committee, a scope and the new change-order process) and 35 removals (21 personas; the 7 cog profiles, 4 member entries, committee and change-order process that additions replace; and one permission: design engineers creating items in Inventory/Items), plus one retirement item per retired persona (19).
-- Each carried text is alice's: she is the author and wrote its only version. bob opened each draft and did the retirements (`started_by` and the retirer count as contributors), and carol opened nothing. On unpatched code bob is refused (eco.py:171-172, 76-77, 114-115), so final-4 used the stand-in for that.
+- Each carried text is alice's: she is the author and wrote its only version. bob opened each draft and did the retirements (`started_by` and the retirer count as contributors), and carol opened nothing. A policy owner may do that on any change order since 1cdc06d.
 - The release made 33 documents effective, made 19 obsolete, activated record types v2, and assigned 97 training acknowledgements.
 
-## The review round (final-4, round 1)
+## The review round (go-2, round 1)
 
 Compiled by the convention reader. The v9 compile committee (qa-manager and organization on ollama/qwen3:14b) did not read here. With the convention extractor the committee is not asked, and nothing raised a `member-unavailable` question. The v9 change-control SOP has no Review of changes section, so the suggested panel was empty. alice added the members the repository's section names: qa-manager ("a change to a quality process, a cog profile or a persona") and quality-assistant ("a change to a quality process"). it-admin and management are not members until this CO is released. **Both reviews were written by the development stand-in** (each summary says "stand-in (no model)"), but the result names ollama/qwen3:14b. On the live hub, without the stand-in, qwen3:14b writes them through Ollama.
 
@@ -197,11 +199,11 @@ Compiled by the convention reader. The v9 compile committee (qa-manager and orga
 
 ### Suggestions: 0
 
-## Warnings accepted (final-4)
+## Warnings accepted (go-2, no patch)
 
 132 warnings on items, each one of the findings above (`[finding] <reviewer>: <finding>`). bob and carol accepted each one when deciding the item, with the meaning "Approved by Claude at the user's instruction: migration to change control v2 (rollout rehearsed on a copy of the live data)". There were no warnings on the CO as a whole. The 19 answered committee questions are also recorded as accepted warnings: the code records an intervention that way.
 
-## Health before (final-4; the same on every restore)
+## Health before (go-2; the same on every restore)
 
 ```
 == 1 health before
@@ -239,7 +241,7 @@ workflow shapes saved on the waiting runs: earlier shape (numbered steps) 129
   note x1: on hold: 
 129 of 129 waiting runs readable and decidable by someone; 0 with problems
 inbox cards: 149 card(s) found on 4 inbox(es); record pages with a decision form: 15
-decided 15 sampled run(s) on a throwaway copy (/tmp/claude-1000/-home-dahubley-source-torch-spyre/387c1394-4297-4d27-8a47-0143b1e49bfc/scratchpad/rollout/copies/cc2-before-7y466l3g):
+decided 15 sampled run(s) on a throwaway copy (/tmp/claude-1000/-home-dahubley-source-torch-spyre/387c1394-4297-4d27-8a47-0143b1e49bfc/scratchpad/rollout/copies/cc2-before-_azr8wf_):
   moved    d7204f86ab task TASK-0002: alice approved; now completed at done; kept its release
   moved    d0a0579a19 requirements-capture REQ-2026-0008: needs statement, acceptance_criteria, verification_method from bob; decided with placeholder values on the copy; bob approved; now completed at accepted; kept its release
   moved    533d0d9d7c purchase-to-pay BILL-0005: dave approved; now completed at posted; kept its release
