@@ -735,8 +735,9 @@ def test_ops_buttons_on_a_document_start_its_process_or_ask_a_cog_with_a_key(she
     status, text, _ = get(shell, "/document/" + quote(loc, safe=":"), **{"as": "carol"})
     assert status == 200 and 'aria-label="Ops on this item"' in text
     assert "Send for approval" in text and 'data-hotkey="1"' in text and '<kbd class="hk">1</kbd>' in text
-    # Only cogs that follow the document-control SOP are offered (review 2026-11-07, ux-10).
-    assert "Ask doc-reviewer to review" in text and 'data-hotkey="q"' in text and "Ask quality-assistant to review" not in text
+    # Only cogs that follow the document-control SOP are offered (review 2026-11-07, ux-10); what a cog follows is derived from
+    # the SOPs that name it or its roles, so the payables reviewer (named only in the finance policy) is not.
+    assert "Ask doc-reviewer to review" in text and 'data-hotkey="q"' in text and "Ask ap-reviewer to review" not in text
     assert "data-hotkey" in text and "keydown" in text, "the page script wires the keys"
     # The process button runs document-control on this very item.
     status, url, text = post(shell, "/start-on", {"as": "carol", "process": "document-control", "record": loc})

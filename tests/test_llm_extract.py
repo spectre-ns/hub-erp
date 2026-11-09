@@ -118,7 +118,7 @@ def test_the_compile_op_is_read_by_the_quality_manager_and_the_organization_cog(
     b = hub.releases.bundle(hub.releases.current()["digest"])
     c = b["committees"]["compile-frame"]
     assert c["members"] == ["qa-manager", "organization"] and c["quorum"] == 2
-    assert b["members"]["organization"] == {**b["members"]["organization"], "type": "cog", "roles": ["staff"]}, "it signs nothing"
+    assert b["members"]["organization"] == {**b["members"]["organization"], "type": "cog", "roles": ["policy-reader"]}, "it signs nothing: it only reads the policy"
     ex = hub.extractor(calls=True)
     assert isinstance(ex, CommitteeExtractor) and [n for n, _ in ex.members] == ["qa-manager", "organization"] and ex.quorum == 2
     from hubproto.automation import AUTOMATIONS

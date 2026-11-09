@@ -3,7 +3,7 @@ type: frame [0.2]
 name: org-model
 description: Roles, members (people and cogs) and folders of Example Instruments Ltd.
 visibility: internal
-version: "1.5.0"
+version: "1.6.0"
 scope: company
 maintainer: operations
 ---
@@ -12,7 +12,10 @@ maintainer: operations
 This Frame is the root of the scope tree. Every other policy Frame inherits
 it. Roles, members and folders named anywhere else must be declared here.
 Cogs are members like anyone else: they hold roles, receive routed work and
-messages, and are bound by segregation of duties.
+messages, and are bound by segregation of duties. What a member may do is
+what the SOPs give their roles (or them by name); a cog is given no role
+wider than its work needs. A member comments on the items it may read where
+a sentence below or in the SOP that owns them says so.
 
 ## Roles
 - finance-clerk
@@ -28,17 +31,22 @@ messages, and are bound by segregation of duties.
 - process-owner
 - staff
 - design-review-committee
+- system-administrator
+- management-reviewer
+- policy-reader
 
 ## Members
 - alice (person): finance-clerk, author, process-owner, staff
-- bob (person): controller, reviewer, policy-owner, management-representative, internal-auditor, staff, design-review-committee
+- bob (person): controller, reviewer, policy-owner, management-representative, internal-auditor, staff, design-review-committee, system-administrator
 - carol (person): quality-manager, reviewer, policy-owner, document-controller, staff, design-review-committee
 - dave (person): payables-reviewer, staff
 - ap-reviewer (cog): payables-reviewer, finance-clerk
 - doc-reviewer (cog): reviewer, author
 - quality-assistant (cog): quality-manager, author, reviewer, staff, design-review-committee
 - qa-manager (cog): quality-manager, reviewer, author, staff
-- organization (cog): staff
+- organization (cog): policy-reader
+- it-admin (cog): system-administrator
+- management (cog): management-reviewer
 
 ## Folders
 - Finance
@@ -62,3 +70,8 @@ messages, and are bound by segregation of duties.
 Staff may read Policy.
 Staff may create documents in Policy.
 Policy owners may approve documents in Policy.
+Staff may comment on anything in Policy.
+Staff may comment on anything in Quality.
+Staff may comment on anything in Tasks.
+Policy readers may read Policy.
+Policy readers may read Quality.

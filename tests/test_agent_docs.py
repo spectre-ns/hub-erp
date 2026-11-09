@@ -111,13 +111,17 @@ def test_search_procedures_finds_the_passage_that_answers(hub):
     assert "error" in tools(hub).execute("search_procedures", {"query": "a"})
 
 
-def test_in_propose_mode_the_write_tools_are_recorded_as_proposals(hub):
-    t = tools(hub, mode="propose")
-    out = t.execute("create_document", {"title": "Proposed doc", "folder": "Policy"})
-    assert out.get("proposed") and t.proposed[-1]["tool"] == "create_document"
+def test_where_an_sop_says_a_person_confirms_the_write_tools_are_recorded_as_proposals(hub):
+    # "The doc-reviewer cog may create documents in Quality/Controlled Documents when a document controller confirms."
+    t = tools(hub, cog="doc-reviewer")
+    out = t.execute("create_document", {"title": "Proposed doc", "folder": "Quality/Controlled Documents"})
+    assert out.get("proposed") and t.proposed[-1]["tool"] == "create_document" and t.proposed[-1]["confirmer"] == "document-controller"
     assert not [d for d in hub.kernel.query(type_="document") if d["fields"].get("title") == "Proposed doc"]
     looked = t.execute("search_procedures", {"query": "minor revision"})
     assert looked["results"] and not t.proposed[-1]["tool"] == "search_procedures"
+    # Nowhere an SOP gives it the right, it is refused and says what should be done instead.
+    out = t.execute("create_document", {"title": "Policy doc", "folder": "Policy"})
+    assert "describe what should be done instead" in out["error"]
     r = tools(hub, mode="read")
     assert "error" in r.execute("apply_document_ops", {"number": "DOC-0001", "ops": "@@ delete: x"})
     assert "results" in r.execute("search_procedures", {"query": "minor revision"})

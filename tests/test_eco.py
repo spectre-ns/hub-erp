@@ -171,8 +171,8 @@ def test_once_the_sops_are_documents_a_model_change_is_an_sop_edit_on_a_change_o
     assert b["cogs"]["quality-assistant"]["model"] != "claude-opus-5-5", "nothing changes until the change order is released"
     pv = eco.preview(hub, co["number"])
     assert any((ch.get("rule") or {}).get("kind") == "cog" and (ch.get("rule") or {}).get("model") == "claude-opus-5-5" for ch in pv["changes"])
-    new = hub.propose_new_cog(name="audit-helper", roles=["staff"], model="ollama/qwen3:14b", prompt="You help with audits.",
-                              follows=["audit-sop"], autonomy="propose", duties=[], by="bob")
+    new = hub.propose_new_cog(name="audit-helper", roles=["staff"], model="ollama/qwen3:14b", about="Helps with audits.",
+                              persona="advisor", by="bob")
     assert new["change_order"] == out["change_order"], "the same open change order collects the person's policy changes"
     names = sorted(x["name"] for x in eco.carried(hub, hub.kernel.get(out["locator"])))
     assert names == ["cog-profiles", "org-model"], names

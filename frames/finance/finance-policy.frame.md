@@ -3,7 +3,7 @@ type: frame [0.2]
 name: finance-policy
 description: Who may file and approve supplier bills, how they are routed, and how purchase-to-pay runs.
 visibility: internal
-version: "1.2.0"
+version: "1.3.0"
 scope: department
 maintainer: bob
 inherits: org-model
@@ -25,6 +25,7 @@ Payables reviewers may read Finance.
 Controllers may approve bills in Finance/Payables.
 Controllers may read Finance.
 Quality managers may not create bills in Finance/Payables.
+Payables reviewers may comment on anything in Finance.
 
 ## Thresholds
 The match tolerance is 2 percent.

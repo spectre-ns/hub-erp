@@ -4,7 +4,7 @@ policy owners review and release through the same paths people use (two owners f
 
 from __future__ import annotations
 
-from .agent import register
+from .agent import intent_change_order, register
 from .compile import change_state
 from .frames import FrameError
 
@@ -149,8 +149,6 @@ def propose_member(tools, a: dict) -> dict:
         if kind == "person":
             proposal = hub.propose_new_person(name=name, roles=roles, by=tools.cog)
         else:
-            duties = a.get("duties") or []
-            duties = [duties] if isinstance(duties, str) else list(duties)
             model = str(a.get("model") or "").strip()
             if model:
                 from .model import resolve_model
@@ -158,9 +156,8 @@ def propose_member(tools, a: dict) -> dict:
                 res = resolve_model(model)
                 if not res["available"]:
                     return {"error": f"{model} cannot be used here: {res['note']}"}
-            proposal = hub.propose_new_cog(name=name, roles=roles, model=model, prompt=str(a.get("prompt") or ""),
-                                           follows=_names(a.get("follows")), autonomy=str(a.get("autonomy") or "propose"),
-                                           duties=duties, by=tools.cog)
+            proposal = hub.propose_new_cog(name=name, roles=roles, model=model, about=str(a.get("about") or a.get("prompt") or ""),
+                                           persona=str(a.get("persona") or ""), by=tools.cog)
     except (ValueError, FrameError) as e:
         return {"error": str(e)}
     out = _summary(proposal)
@@ -196,21 +193,22 @@ register({"name": "propose_policy_change",
               "ops": {"type": "string", "description": "edit operations, e.g. '@@ replace: 10,000 USD\\n@@ with: 15,000 USD'"},
               "text": {"type": "string", "description": "the whole new text (instead of ops)"},
               "reason": {"type": "string"}}, "required": ["frame", "reason"]}},
-         propose_policy_change, write=True)
+         propose_policy_change, write=True, intent=intent_change_order)
 register({"name": "propose_cog_model",
           "description": "Propose that a cog use a different model, as a policy proposal. The model must be one this hub can reach. " + _OWNERS_DECIDE,
           "parameters": {"type": "object", "properties": {"cog": {"type": "string", "description": "the cog (default: you)"},
                                                          "model": {"type": "string"}, "reason": {"type": "string"}}, "required": ["model"]}},
-         propose_cog_model, write=True)
+         propose_cog_model, write=True, intent=intent_change_order)
 register({"name": "propose_member",
-          "description": "Propose a new person or cog for the organization, with its roles (and for a cog its model, prompt, SOPs it follows "
-                         "and autonomy), as a policy proposal. " + _OWNERS_DECIDE,
+          "description": "Propose a new person or cog for the organization, with its roles (and for a cog what it does, its model and its "
+                         "persona; what it follows and may do come from the SOPs that name its roles), as a policy proposal. " + _OWNERS_DECIDE,
           "parameters": {"type": "object", "properties": {
               "kind": {"type": "string", "enum": ["person", "cog"]}, "name": {"type": "string"},
-              "roles": {"type": "array", "items": {"type": "string"}}, "model": {"type": "string"}, "prompt": {"type": "string"},
-              "follows": {"type": "array", "items": {"type": "string"}}, "autonomy": {"type": "string", "enum": ["read", "propose", "act"]},
-              "duties": {"type": "array", "items": {"type": "string"}}, "reason": {"type": "string"}}, "required": ["kind", "name", "roles"]}},
-         propose_member, write=True)
+              "roles": {"type": "array", "items": {"type": "string"}}, "model": {"type": "string"},
+              "about": {"type": "string", "description": "a cog: what it does, in one paragraph"},
+              "persona": {"type": "string", "description": "a cog: how it behaves (reviewer, executor, author, advisor)"},
+              "reason": {"type": "string"}}, "required": ["kind", "name", "roles"]}},
+         propose_member, write=True, intent=intent_change_order)
 register({"name": "list_proposals",
           "description": "List the open policy proposals: their changes, widenings, errors, decisions so far and what still needs a decision. "
                          "Only the policy owners decide and release them.",
@@ -274,4 +272,4 @@ register({"name": "propose_setting_change",
                                                          "key": {"type": "string", "description": "the rule's key from list_settings (replace, remove)"},
                                                          "rule": {"type": "object", "description": "the new rule's fields, as list_settings shows them (add, replace)"},
                                                          "reason": {"type": "string"}},
-                         "required": ["action", "reason"]}}, propose_setting_change, write=True)
+                         "required": ["action", "reason"]}}, propose_setting_change, write=True, intent=intent_change_order)
