@@ -249,3 +249,38 @@ def test_a_change_request_is_verified_only_once_its_change_order_is_released(tmp
     released(hub, co, who=("bob",))
     assert hub.kernel.get(co["locator"])["state"] == "released" or hub.kernel.get(co["locator"])["fields"].get("stage") == "released"
     assert hub.runner.decide(run_id, verifier, "approve", meaning="done", payload_digest=seen(hub.runner, run_id))["status"] == "completed"
+
+
+# --------------------------------------------------------------------------------------------- runs saved by earlier code
+def _as_saved_by_earlier_code(hub, run_id, **extra):
+    """The run's waiting Gate as the code before change control v2 saved it: no ``kind``, no ``route``."""
+    import json
+
+    path = hub.runner.root / run_id / "state.json"
+    s = json.loads(path.read_text())
+    s["pending"] = {k: v for k, v in s["pending"].items() if k in ("assignees", "checkpoint", "due", "payload_digest", "route_rule", "step", "title")}
+    s["pending"].update(extra)
+    path.write_text(json.dumps(s))
+
+
+def test_a_gate_saved_by_earlier_code_is_decided_by_whoever_it_waits_for(released):
+    """Rollout: tasks, training acknowledgements and audits routed to a named field were saved with no route, and the
+    runner then kept their owner (the assignee) out; and with no ``kind`` they got no seen digest for the CLI."""
+    from hubproto import cli
+
+    run_id = released.runner.submit("task", {"record": {"title": "Calibrate the scale"}}, owner="alice")
+    assert released.runner.load(run_id)["pending"]["assignees"] == ["alice"]
+    _as_saved_by_earlier_code(released, run_id)
+    state = released.runner.load(run_id)
+    assert state["seen_digest"] and state["pending"]["kind"] == "decision" and state["pending"]["route"] == "field:assignee"
+    assert "alice" not in released.runner.excluded(released.current_bundle(), state, state["pending"]["route"])
+    rc = cli.main(["--root", str(released.root), "decide", run_id, "--as", "alice", "--verdict", "approve", "--meaning", "calibrated"])
+    assert rc == 0 and released.runner.load(run_id)["status"] == "completed"
+
+
+def test_an_old_gate_never_widens_who_may_decide(released):
+    # Escalated to someone the field does not name: the route stays unset (the strict default) and the owner stays out.
+    run_id = released.runner.submit("task", {"record": {"title": "Calibrate the scale"}}, owner="alice")
+    _as_saved_by_earlier_code(released, run_id, assignees=["alice", "bob"])
+    state = released.runner.load(run_id)
+    assert not state["pending"].get("route") and "alice" in released.runner.excluded(released.current_bundle(), state, "role:")
