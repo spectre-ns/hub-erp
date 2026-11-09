@@ -585,8 +585,8 @@ def _auto_conflicts(g: dict) -> list[dict]:
     for a, t, b in edges(g):
         if (t.get("gate") or {}).get("kind") == "auto":
             by_source.setdefault(a, []).append(t)
-        elif gated(t) and a != b:
-            gated_out.add(a)
+        elif gated(t) and a != b and (t.get("type") or "directed") != "global":
+            gated_out.add(a)  # someone decides the way on (a global Cancel is not a way on)
     sm = status_map(g)
     for sid, ts in by_source.items():
         name = (sm.get(sid) or {}).get("name") or sid

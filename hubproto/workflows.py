@@ -223,7 +223,7 @@ def edit(hub, user: str, process: str, op: dict, *, coalesce: bool = False) -> d
     new = wm.apply_op(doc, prepared)
     cur = int(d.get("cursor", len(d["log"])))
     log = d["log"][:cur]
-    entry = {**prepared, "said": said, "at": utcnow()}
+    entry = {**prepared, "said": said, "logged_at": utcnow()}
     if coalesce and kind == "move" and log and log[-1].get("op") == "move" and log[-1].get("id") == prepared.get("id"):
         log[-1] = entry
     elif coalesce and kind == "move_label" and log and log[-1].get("op") == "move_label" and log[-1].get("id") == prepared.get("id"):
@@ -240,7 +240,7 @@ def edit(hub, user: str, process: str, op: dict, *, coalesce: bool = False) -> d
 
 
 def _strip(op: dict) -> dict:
-    return {k: v for k, v in op.items() if k not in ("said", "at")}
+    return {k: v for k, v in op.items() if k not in ("said", "logged_at")}
 
 
 def discard(hub, user: str, process: str) -> None:
