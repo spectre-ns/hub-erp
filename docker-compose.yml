@@ -28,8 +28,12 @@ services:
       # Cogs work from queues: asking one returns at once and its answer lands where it was asked. "worker" works the
       # queues on a thread in this process; "service" leaves them to the cog-users service below.
       HUBPROTO_COG_QUEUE: ${HUBPROTO_COG_QUEUE:-worker}
-      # The hub talks only to local models (Ollama): hosted models (Claude) are off. To switch them on deliberately,
-      # set HUBPROTO_HOSTED_MODELS=on and pass ANTHROPIC_API_KEY here.
+      # Hosted models (Claude) are switched on for the senior cogs, which compile SOP changes (the compile-frame
+      # committee); every other cog stays on its local model. Switched on 2026-11-09 by the system administrator
+      # (bob) as an installation change under the IT SOP, at the product owner's instruction, with the
+      # change-control v2 rollout. ANTHROPIC_API_KEY comes from .env (never committed).
+      HUBPROTO_HOSTED_MODELS: "on"
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
