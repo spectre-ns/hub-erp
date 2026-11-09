@@ -195,7 +195,7 @@ def test_proposals_list_and_proposal_show_status_base_changes_and_decisions(fres
     assert len(rows) == 2
     released_row = next(l for i, l in rows.items() if i != pid)
     assert "released as v1 (" in released_row and "decisions by bob, carol" in released_row
-    assert rows[pid].split()[0] == num.lstrip("#") and " open" in rows[pid] and "v1 (" in rows[pid] and rows[pid].split()[5] == "6"  # 5 rule changes and the wording change
+    assert rows[pid].split()[0] == num.lstrip("#") and " open" in rows[pid] and "v1 (" in rows[pid] and rows[pid].split()[5] == "2"  # the rule change and the wording change; the processes only moved
     rc, out = run_cli(fresh, "review", num, "--as", "bob", "--approve-all", "--meaning", "reviewers may file too")
     assert rc == 0 and "needs:" in out
     rc, out = run_cli(fresh, "proposal", pid[:6])

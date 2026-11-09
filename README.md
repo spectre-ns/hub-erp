@@ -68,15 +68,29 @@ again", and a release that only re-renders a process is reported as
 Prose that is not in the sentence shapes is read by the compile-frame committee, **as a diff**: an SOP whose text
 is the one in force keeps the rules the release read from it, with no model call; a changed SOP's readers get the
 unified diff (with line numbers) and the rules in force from it, and answer with rules to add, remove or change and
-with **questions** where the changed prose is ambiguous (`proposal["questions"]`; a question the next compile no
-longer raises is closed). A large diff is read in parts that fit the model's window. Every change on a proposal
-says where it came from (`origin`: the SOP, line, words and reader). Direct changes on a change order are put into
-prose by the qa-manager cog and compiled back to check they give the same rule (`hubproto/prose_drafting.py`).
+with **questions** where the changed prose is ambiguous (`proposal["questions"]`; members asking the same thing about
+a line make one question; a question the next compile no longer raises is closed). A large diff is read in parts that
+fit the model's window. Every change on a proposal says where it came from (`origin`: the SOP, line, words and
+reader) and, for a rule a model read, what it means in the hub's own words (`origin.explained`); a reading that drops
+or adds a "not" carries a `negation` warning. A rule that only moved in its file (a process below inserted lines) is
+listed as moved, not as a change to decide. Direct changes on a change order are put into prose by the qa-manager cog
+and compiled back to check they give the same rule (`hubproto/prose_drafting.py`).
+
+**The committee reads by consensus.** Its members are cogs, and each reads with the model its profile bundles it with,
+from its own perspective (its About text, its persona's behaviour and the roles it holds); the diff, the rules in force
+and the answer format are the same for every member, so their readings stay comparable.
+A rule goes in only when every member reads it the same way; where members read a line differently, the proposal gets
+a `disagreement` question quoting the line and each member's reading, for a person to decide. The `Agree: n of m` line
+of the committee is still parsed, but agreement means every member. A member whose model is not available here (not
+installed, Ollama down, or a `claude-*` model while hosted models are off) is a `member-unavailable` question: the
+prose of a changed SOP is not read until it is. To have a committee cog read with Claude Opus, change its `Model:` line
+to `claude-opus-5-5` in the cog profiles through a change order (the cog's profile page, `hubproto models`, or
+`hub.propose_cog_model`), and have the administrator switch hosted models on (`HUBPROTO_HOSTED_MODELS=on` with
+`ANTHROPIC_API_KEY`); the call goes through the hub's model gateway to the Anthropic Messages API.
 
 | Compiler setting | Default | Effect |
 |---|---|---|
-| `HUBPROTO_EXTRACTOR` | `hybrid` with an Ollama (or with `HUBPROTO_COMPILE_HOSTED`), else `convention` | `convention` reads the sentence shapes only; `hybrid` has the committee read the prose too |
-| `HUBPROTO_COMPILE_HOSTED` | off | `1` (with `ANTHROPIC_API_KEY`) has Claude Opus (`claude-opus-5-5`) read the prose for compilation only, for every committee member; cogs keep their bundled models and hosted models stay off elsewhere (`HUBPROTO_HOSTED_MODELS` is not needed) |
+| `HUBPROTO_EXTRACTOR` | `hybrid` with an Ollama (or with hosted models on and a key), else `convention` | `convention` reads the sentence shapes only; `hybrid` has the committee read the prose too |
 | `HUBPROTO_MODEL_MAX_CHARS` | the model's window | the most characters one reading may send; a larger diff is read in parts |
 
 ## Once the SOPs are documents: change orders only
