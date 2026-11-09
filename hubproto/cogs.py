@@ -1493,9 +1493,11 @@ class ReviewerCog(Cog):
         evidence = (have.get("_evidence") or {}).get(state)
         if evidence is None and ctx.record and (state == "pass" or failed):
             reviews = [have[x]["review"] for x in names if x in have and have[x].get("review")]
-            doc = file_review(rctx, rctx.kernel.get(ctx.record), reviews, f"{n} adversarial reviews before approval", by=self.id) if reviews else None
+            doc = file_review(rctx, rctx.kernel.get(ctx.record), reviews, f"{n} adversarial reviews before approval", by=self.id,
+                              fields={"adversarial": {"cog": self.id, "key": key, "state": state, "lenses": names}}) if reviews else None
             evidence = doc["locator"] if doc else None
-            self._save_lens(ctx, key, "_evidence", {**(have.get("_evidence") or {}), state: evidence})
+            if doc is None:
+                self._save_lens(ctx, key, "_evidence", {**(have.get("_evidence") or {}), state: evidence})
         if state == "pass":
             return {"state": "pass", "evidence": evidence, "missing": [],
                     "summary": f"{n} adversarial reviews passed ({', '.join(names)})"}
@@ -1528,36 +1530,48 @@ class ReviewerCog(Cog):
                  "findings": [f"[{p.get('severity')}] {p.get('detail')}" for p in rv.get("findings") or [] if p.get("severity") == "error"][:6]
                  or [f"[{p.get('severity')}] {p.get('detail')}" for p in rv.get("findings") or []][:6], "review": rv,
                  "at": __import__("hubproto.release", fromlist=["utcnow"]).utcnow()}
-            self._save_lens(ctx, key, lens, r)
+            # Filed on the item as a review record of this lens and this version of it, and read back from there: cogs have
+            # no private memories (change control 13).
+            from .review import LENSES
+
+            doc = _review.file_review(rctx, rec, [rv], f"Adversarial review: the {LENSES.get(lens, (lens,))[0].lower()} lens", by=self.id,
+                                      fields={"lens_review": {"cog": self.id, "key": key, "lens": lens, **{k: v for k, v in r.items() if k != "at"}}})
+            if doc is None:  # nowhere to file it (no documents here): kept for this process only
+                self._save_lens(ctx, key, lens, r)
             have = self._lens_results(ctx).get(key, {})
         names = input.get("lenses") or [lens]
         return self.ok("lens", {"lens": lens, "passes": r["passes"], "verdict": r["verdict"], "findings": r["findings"][:3],
                                 "done": all(x in have for x in names), "failed": any(x in have and not have[x]["passes"] for x in names)})
 
-    def _lens_path(self, ctx):
-        root = getattr(ctx.runner, "root", None)
-        return (root.parent / "judgments" / f"{self.id}-lenses.json") if root is not None else None
-
     def _lens_results(self, ctx) -> dict:
-        path = self._lens_path(ctx)
-        if path is None:
-            return getattr(self, "_lens_mem", {})
+        """{item version: {lens: its result, "_evidence": {"pass"|"fail": the combined review record}}} for this cog, read
+        back from the review records filed on the item (a lens review, the adversarial reviews as one); nothing of the
+        cog's own is kept (change control 13). Where nothing can be filed (no documents here) what was reviewed in this
+        process is used."""
+        out: dict = json.loads(json.dumps(getattr(self, "_lens_mem", {}) or {}))
+        rctx = self._review_ctx(ctx)
+        if rctx.dms is None or not ctx.record:
+            return out
         try:
-            return json.loads(path.read_text())
-        except (OSError, ValueError):
-            return {}
+            docs = sorted(rctx.dms.documents_of(ctx.record), key=lambda d: str(d.get("created_at") or ""))
+        except Exception:
+            return out
+        for d in docs:
+            f = d.get("fields") or {}
+            if f.get("doc_class") != "evidence":
+                continue
+            lr, ad = f.get("lens_review") or {}, f.get("adversarial") or {}
+            if lr.get("cog") == self.id and lr.get("key") and lr.get("lens"):
+                out.setdefault(lr["key"], {})[lr["lens"]] = {k: v for k, v in lr.items() if k not in ("cog", "key", "lens")} | {"record": d["locator"]}
+            if ad.get("cog") == self.id and ad.get("key") and ad.get("state"):
+                out.setdefault(ad["key"], {}).setdefault("_evidence", {})[ad["state"]] = d["locator"]
+        return out
 
     def _save_lens(self, ctx, key: str, lens: str, result) -> None:
-        data = self._lens_results(ctx)
-        data.setdefault(key, {})[lens] = result
-        path = self._lens_path(ctx)
-        if path is None:
-            self._lens_mem = data
-            return
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=1, default=str))
-        tmp.replace(path)
+        """Only where no review record can be filed on the item: kept for this process, never in a file of the cog's."""
+        mem = getattr(self, "_lens_mem", None) or {}
+        mem.setdefault(key, {})[lens] = result
+        self._lens_mem = mem
 
     @staticmethod
     def _in_words(reason: str) -> str:

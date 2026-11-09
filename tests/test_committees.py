@@ -180,7 +180,9 @@ def test_a_group_in_a_table_is_required_reading_and_a_cogs_context(tmp_path):
 
     hub = design_hub(tmp_path)
     b = bundle(hub)
-    assert "design-policy" in [r["frame"] for r in required_reading(b, "kim")], "kim reads it as a member of the design-reviewers group"
+    [reading] = [r for r in required_reading(b, "kim") if r["frame"] == "design-policy"]
+    assert reading["groups"] == ["design-reviewers"] and reading["roles"] == [], "kim reads it as a member of the design-reviewers group"
+    assert reading["responsibilities"] == ["Reviews each design on the design-review committee, by consensus."]
     from hubproto.release import follows_for
 
     assert follows_for(b, "doc-reviewer")["design-policy"] == {"group:design-reviewers"}, "its context, through its group"
@@ -704,3 +706,66 @@ def test_why_item_explains_a_committee_decision(tmp_path):
     assert hub.why_item("sam", rec)["as"] == "intervener", "the chair, while it is paused"
     why = hub.why_item("lee", rec)
     assert not why["may"] and "not one of its members" in why["reasons"][0] and "chair sam" in why["reasons"][0]
+
+
+def test_adversarial_lens_reviews_are_review_records_on_the_item_too(tmp_path, monkeypatch):
+    """The qa-manager's lens reviews are filed on the document (one record per lens, and the adversarial reviews as one),
+    and a failed lens binds for that version because it is read back from there; no file of the cog's own."""
+    from hubproto import review as review_mod
+
+    shutil.copytree(ROOT / "frames", tmp_path / "frames")
+    hub = Hub(tmp_path)
+    hub.kernel.seed()
+    release_all(hub)
+    calls, real = [], review_mod.review
+
+    def fake(cog_id, profile, ctx, record, question="", judgment=False, lens="", lens_of=(1, 1)):
+        calls.append(lens)
+        r = real(cog_id, profile, ctx, record, question, judgment=judgment, lens=lens, lens_of=lens_of)
+        return {**r, "verdict": "fail", "findings": [{"severity": "error", "check": lens, "detail": "a gap"}]} if lens == "consistency" else r
+    monkeypatch.setattr(review_mod, "review", fake)
+    run_id = hub.runner.submit("document-control", {"record": {"title": "SOP-LENS", "change_type": "minor",
+                                                               "body": "# SOP-LENS\n\n1. Purpose\n2. Scope\n3. Steps"}}, owner="alice")
+    rec = hub.runner.load(run_id)["record"]
+    hub.send("bob", "qa-manager", "Approval", "@qa-manager please approve this document", record=rec)
+    assert calls == ["compliance", "consistency"]
+    lens = {d["fields"]["lens_review"]["lens"]: d["fields"]["lens_review"] for d in hub.dms.documents_of(rec) if d["fields"].get("lens_review")}
+    assert set(lens) == {"compliance", "consistency"} and lens["consistency"]["passes"] is False and lens["compliance"]["passes"] is True
+    assert any((d["fields"].get("adversarial") or {}).get("state") == "fail" for d in hub.dms.documents_of(rec))
+    hub.send("bob", "qa-manager", "Approval", "@qa-manager please approve this document", record=rec)
+    assert calls == ["compliance", "consistency"], "read back from the item: not reviewed again"
+    assert not (tmp_path / "state" / "judgments").exists(), "no private store"
+
+
+def test_a_group_listed_in_a_table_is_trained_and_has_its_section_in_the_training_matrix(tmp_path):
+    from hubproto import training
+    from hubproto.cogs import assign_training
+
+    shutil.copytree(ROOT / "frames", tmp_path / "frames")
+    hub = Hub(tmp_path)
+    hub.kernel.seed()
+    release_all(hub)
+    b = bundle(hub)
+    assert training.groups_to_train(b, {"fields": {"sop_name": "cog-profiles"}}) == ["senior-cogs"]
+    assert training.groups_to_train(b, {"fields": {"sop_name": "cog-profiles", "training_roles": ["staff"]}}) == [], "an override wins"
+    assert "## The senior cogs group (senior-organization, senior-qa-manager)" in training.matrix_text(hub, b)
+    # People in a group the table lists get the read-and-acknowledge task.
+    b = json.loads(json.dumps(b))
+    b["groups"]["readers"] = {"members": ["dave", "alice"], "roles": []}
+    b["responsibilities"].append({"frame": "cog-profiles", "who": "group:readers", "text": "Reads it."})
+    asked = []
+
+    class Runner:
+        def submit(self, process, inputs, owner, parent_run=None):
+            asked.append(inputs["record"]["person"])
+            return f"r{len(asked)}"
+
+        def load(self, rid):
+            return {"record": "rec:training:X"}
+
+    class Kernel:
+        def link(self, *a, **k):
+            pass
+    assign_training(Runner(), b, Kernel(), {"locator": "rec:document:D", "fields": {"sop_name": "cog-profiles", "title": "Cogs", "revision": "B"}},
+                    [], owner="carol", parent_run="", by="hub")
+    assert {"dave", "alice"} <= set(asked) and "bob" in asked, "the group's people, and the policy owners the table lists"

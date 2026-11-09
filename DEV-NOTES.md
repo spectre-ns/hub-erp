@@ -331,7 +331,9 @@ hub.registry.cards()
 
 Cogs have no private memories (change control 13): a cog's judgment for an approval is filed as a review record on
 the item (evidence, with `judgment: {cog, key (the version it judged), verdict, findings}`) and read back only from
-there (`ReviewerCog._judgment_on_item`); a failed judgment binds for that version of the item.
+there (`ReviewerCog._judgment_on_item`); a failed judgment binds for that version of the item. Adversarial lens reviews
+likewise: one review record per lens (`lens_review: {cog, key, lens, passes, ...}`) and the adversarial reviews as one
+(`adversarial: {cog, key, state}`), read back by `ReviewerCog._lens_results`; nothing is kept in `state/judgments`.
 
 Cog ids available for process steps: record-filer, record-linker, notifier,
 document-renderer, risk-scorer, invoice-extractor, three-way-matcher,
