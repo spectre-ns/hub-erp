@@ -326,13 +326,16 @@ def test_the_agent_tool_edits_with_operations(shell, monkeypatch):
     monkeypatch.setattr(hub, "model", FakeModel("@@ delete section: Records\n@@ insert at end\n## Review\nReviewed yearly."))
     refused = AgentTools(hub, "ap-reviewer", "t-edit0", "act", 5, AgentStore(shell["root"] / "state" / "agents"), requester="carol")
     assert "error" in refused.execute("edit_document", {"number": doc["number"], "request": "x"})  # it may not change documents there
-    tools = AgentTools(hub, "doc-reviewer", "t-edit", "act", 5, AgentStore(shell["root"] / "state" / "agents"), requester="carol")
+    # The document control SOP says a document controller confirms what the doc-reviewer cog would write: it proposes.
+    waits = AgentTools(hub, "doc-reviewer", "t-edit1", "act", 5, AgentStore(shell["root"] / "state" / "agents"), requester="carol")
+    assert waits.execute("edit_document", {"number": doc["number"], "request": "x"}).get("proposed")
+    tools = AgentTools(hub, "qa-manager", "t-edit", "act", 5, AgentStore(shell["root"] / "state" / "agents"), requester="carol")
     out = tools.execute("edit_document", {"number": doc["number"], "request": "drop the records section and add a review section"})
     assert out["ok"] and [c["ok"] for c in out["changes"]] == [True, True]
     t = hub.dms.content(doc["locator"])[0].decode()
     assert "Records" not in t and t.rstrip().endswith("Reviewed yearly.")
     last = hub.dms.versions(doc["locator"])[-1]
-    assert last["by"] == "doc-reviewer" and "asked by carol" in last["note"]
+    assert last["by"] == "qa-manager" and "asked by carol" in last["note"]
 
 
 def test_an_insert_in_the_wrong_place_is_caught_and_moved(shell, monkeypatch):

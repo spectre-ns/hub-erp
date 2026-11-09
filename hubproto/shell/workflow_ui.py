@@ -203,15 +203,6 @@ def _json_in_script(data) -> str:
     return json.dumps(data, default=str).replace("</", "<\\/")
 
 
-def _num_or_text(v: str):
-    for cast in (int, float):
-        try:
-            return cast(v)
-        except (TypeError, ValueError):
-            continue
-    return v
-
-
 def _csv(text: str) -> list[str]:
     return [x.strip() for x in str(text or "").replace("\n", ",").split(",") if x.strip()]
 
@@ -260,8 +251,8 @@ class WorkflowsMixin:
     def _wf_flags(self, checks: list[dict]) -> dict:
         out = {}
         for c in checks:
-            if c.get("element") and c.get("id"):
-                key = f"{c['element']}:{c['id']}"
+            if c.get("kind") and c.get("id"):
+                key = f"{c['kind']}:{c['id']}"
                 if out.get(key) != "error":
                     out[key] = c["level"]
         return out
@@ -287,7 +278,7 @@ class WorkflowsMixin:
         for c in sorted(checks, key=lambda c: (c["level"] != "error", c.get("code") or "")):
             cls = "err" if c["level"] == "error" else "warn"
             word = "Error" if c["level"] == "error" else "Warning"
-            rows.append(f"<li class='{cls}'><span class='vh'>{word}: </span>{self._wf_sel_link(process, c.get('element'), c.get('id'), c['text'])}</li>")
+            rows.append(f"<li class='{cls}'><span class='vh'>{word}: </span>{self._wf_sel_link(process, c.get('kind'), c.get('id'), c['text'])}</li>")
         return "".join(rows)
 
     def _wf_delta_html(self, process: str, delta: list[dict]) -> str:
@@ -377,6 +368,8 @@ class WorkflowsMixin:
         rt = g.get("record_type") or ""
         items = st["items"]
         src = g.get("source") or {}
+        lines = src.get("lines")
+        first = min((v for v in (lines.values() if isinstance(lines, dict) else lines or []) if isinstance(v, int)), default=None)
         rows = [[esc(s["name"]), (f"<a href='{href('/items/' + rt, user, state=s['id'])}'>{int(items.get(s['id']) or 0)}</a>"
                                                            if items.get(s["id"]) and rt else str(int(items.get(s["id"]) or 0)))] for s in g["statuses"]]
         routes = [r for r in (self.bundle or {}).get("routing") or [] if r.get("process") == process]
@@ -385,7 +378,7 @@ class WorkflowsMixin:
         out = (f"<h2 id='wf-panel-h'>{icon('workflow')} {esc(self._wf_title(process))}</h2>"
                f"<p class='why'>{esc(type_name(rt)) if rt else 'No record type'}: {wm.plural(len(g['statuses']), 'status')}, "
                f"{wm.plural(len(g['transitions']), 'transition')}. Stated in "
-               + (self._rule_link({"frame": src.get("frame"), "line": (src.get("lines") or [None])[0]}) if src.get("frame") else "no SOP yet") + ".</p>")
+               + (self._rule_link({"frame": src.get("frame"), "line": first}) if src.get("frame") else "no SOP yet") + ".</p>")
         if st["editable"]:
             out += ("<p class='wf-help'>Select a status or a transition to change it (click it, or Tab to it and press Enter). Drag a status "
                     "to move it; drag from its round handle to another status to connect them.</p>")
@@ -414,6 +407,9 @@ class WorkflowsMixin:
                 f"<p class='why'>{esc(wm.status_words(s).capitalize())}. {wm.plural(n, 'item')} {'is' if n == 1 else 'are'} here now.</p>")
         if not st["editable"]:
             return head + self._wf_ways(process, g, sid)
+        if wm.is_system(s):
+            return (head + "<p class='wf-help'>The hub keeps this status: an item comes here when one of its actions fails, and Retry "
+                    "takes it back to where it stopped. It is drawn so you can see it; it is not changed here.</p>" + self._wf_ways(process, g, sid))
         cat_opts = [(c, wm.CATEGORY_WORDS[c]) for c in wm.CATEGORIES]
         out_opts = [(o, o) for o in wm.OUTCOMES]
         edit = self._wf_form(process, "edit_status", "<div class='fields'>"
@@ -474,20 +470,17 @@ class WorkflowsMixin:
                      + self._wf_checkboxes("except", statuses, [] if ex_default else (t.get("except") or []), legend="or except these (when the box above is clear)")
                      + "</div>" + self._sel("to", statuses, t.get("to"), label="To", blank="choose…", attrs=" required"))
         vs = t.get("validators") or []
-        fields_set = next((v["fields_set"] for v in vs if "fields_set" in v), [])
+        needs = list(t.get("fields") or []) or next((list(v["fields_set"]) for v in vs if "fields_set" in v), [])
         visited = next((v["status_visited"] for v in vs if "status_visited" in v), "")
-        linked = next((v["linked"] for v in vs if "linked" in v), "")
-        cond = next((v["form_condition"] for v in vs if "form_condition" in v and isinstance(v["form_condition"], dict) and "field" in v["form_condition"]), {})
-        ops = [(o, o) for o in ("==", "!=", ">", "<", ">=", "<=", "set", "empty")]
-        checks = ("<fieldset><legend>Checks before it moves (on failure nothing moves and no action runs)</legend><div class='fields'>"
-                  + self._inp("fields_set", ", ".join(fields_set), label="These fields are filled in", hint="comma separated")
-                  + self._sel("visited", statuses, visited, label="It has been in", blank="(no check)")
-                  + self._sel("linked", list(wm.LINKED.items()), linked, label="Linked records", blank="(no check)")
-                  + "<div class='wf-checklist'>" + self._inp("cond_field", cond.get("field") or "", label="Field") + self._sel("cond_op", ops, cond.get("op") or "==", label="is")
-                  + self._inp("cond_value", "" if cond.get("value") is None else cond.get("value"), label="Value") + "</div></div></fieldset>")
-        rest = ("<div class='fields'>" + self._inp("fields", ", ".join(t.get("fields") or []), label="Asks for these fields at the decision", hint="comma separated")
-                + f"<label class='f'><span>After the move, in order <i>(one per line: a step, notify:&lt;role&gt;, set:&lt;field&gt;=&lt;value&gt;)</i></span>"
-                  f"<textarea name='actions' rows='3'>{esc(chr(10).join(t.get('actions') or []))}</textarea></label></div>")
+        cond = next((v["condition"] for v in vs if "condition" in v), "")
+        conds = [(c, wm.condition_words(c)) for c in wm.CONDITIONS]
+        checks = ("<fieldset><legend>What it needs (checked before it moves: on failure nothing moves and no action runs)</legend><div class='fields'>"
+                  + self._inp("needs", ", ".join(needs), label="Fields, asked for at the decision and filled in before it moves", hint="comma separated")
+                  + self._sel("visited", statuses, visited, label="Only if it has been in", blank="(no check)")
+                  + self._sel("condition", conds, cond, label="Only if", blank="(no condition)") + "</div></fieldset>")
+        rest = ("<div class='fields'>"
+                + f"<label class='f'><span>After the move, in order <i>(one per line: a cog or step, notify:&lt;role&gt;, set:&lt;field&gt;=&lt;value&gt;)</i></span>"
+                  f"<textarea name='actions' rows='3'>{esc(chr(10).join(wm.action_text(a) for a in t.get('actions') or []))}</textarea></label></div>")
         return f"<div class='fields'>{name}{route}</div>{self._wf_gate_fields(g, t.get('gate'), t.get('id'))}{checks}{rest}"
 
     def _wf_transition_panel(self, process: str, st: dict, tid: str, view: str = "diagram") -> str:
@@ -499,6 +492,8 @@ class WorkflowsMixin:
         head = f"<h2 id='wf-panel-h'>{esc(t['name'])}</h2><p class='wf-rule'>{esc(wm.sentence(g, t))}</p>"
         if not st["editable"]:
             return head
+        if wm.is_system(t):
+            return head + "<p class='wf-help'>The hub keeps this transition: it is how a failed item is tried again. It is not changed here.</p>"
         edit = self._wf_form(process, "edit_transition", self._wf_transition_fields(g, t), key="edit-transition", button=f"{icon('check')}Save the transition",
                              view=view, hidden={"id": tid}, anchor=anchor, btn_cls="")
         reset = ""
@@ -703,8 +698,21 @@ class WorkflowsMixin:
             out += (f"<h2>{icon('move')}Where items in removed statuses go</h2>"
                     + table(["Removed status", "Items now", "They move to"], [[esc((osm.get(k) or {}).get("name") or k), str(int(st["items"].get(k) or 0)),
                                                                                 esc(wm.name_of(g, v))] for k, v in smap.items() if k not in wm.status_map(g)]))
-        out += f"<h2>{icon('layers')}Changes from the workflow in force</h2><ol class='wf-changes'>{self._wf_delta_html(process, st['delta'])}</ol></div>"
+        out += f"<h2>{icon('layers')}Changes from the workflow in force</h2><ol class='wf-changes'>{self._wf_delta_html(process, st['delta'])}</ol>"
+        out += self._wf_prose(process, g) + "</div>"
         return out
+
+    def _wf_prose(self, process: str, graph: dict) -> str:
+        """The graph in the sentences of the SOP's process section (process_graph.to_sentences): they compile back to the
+        same graph. For a draft, it is what the review round writes into the SOP."""
+        try:
+            lines = wfs.prose_of(self.bundle, process, graph)
+        except Exception as e:  # the words are a view: a graph they cannot say yet still edits
+            log_line(f"workflow prose not written for {process}: {type(e).__name__}: {e}")
+            return ""
+        return (f"<h2>{icon('file-text')}As the SOP will say it</h2><p class='why'>The process section in the sentences the hub reads back "
+                "to this graph. Carried on a change order, the review round writes them into the SOP.</p>"
+                f"<pre class='pre card'>{esc(chr(10).join(lines))}</pre>")
 
     def _wf_text_transition(self, process: str, st: dict, t: dict) -> str:
         g = st["doc"]["graph"]
@@ -834,30 +842,25 @@ class WorkflowsMixin:
         if not out["name"] and out.get("to"):
             out["name"] = wm.name_of(g, out["to"])
         out["gate"] = self._wf_gate_from_form()
-        vs = []
-        if _csv(self._f("fields_set")):
-            vs.append({"fields_set": _csv(self._f("fields_set"))})
+        if old and (old.get("gate") or {}).get("kind") == out["gate"]["kind"]:
+            # What the form does not show of the gate (who else may take it: "also") is kept as it is.
+            out["gate"] = {**{k: v for k, v in (old.get("gate") or {}).items() if k not in ("kind", "role", "not", "cog", "fallback", "when")}, **out["gate"]}
+        needs = _csv(self._f("needs"))
+        vs = [{"fields_set": needs}] if needs else []
         if self._f("visited"):
             vs.append({"status_visited": self._f("visited")})
-        if self._f("linked"):
-            vs.append({"linked": self._f("linked")})
-        if self._f("cond_field"):
-            cop = self._f("cond_op") or "=="
-            cond = {"field": self._f("cond_field"), "op": cop}
-            if cop not in ("set", "empty"):
-                cond["value"] = _num_or_text(self._f("cond_value"))
-            vs.append({"form_condition": cond})
+        if self._f("condition"):
+            vs.append({"condition": self._f("condition")})
         seen: set[str] = set()
         for v in (old or {}).get("validators") or []:
             k = next((x for x in v if x in wm.VALIDATORS), None)
-            simple = k != "form_condition" or (isinstance(v.get("form_condition"), dict) and "field" in v["form_condition"])
-            if not simple or k in seen:
-                vs.append(v)  # a check the form does not show (a second of a kind, a combined condition): kept as it is
-            elif k:
+            if k not in ("fields_set", "status_visited", "condition") or k in seen:
+                vs.append(v)  # a check the form does not show (a form condition, a second of a kind): kept as it is
+            if k:
                 seen.add(k)
         out["validators"] = vs
-        out["actions"] = [a.strip() for a in (self.form.get("actions") or "").replace(",", "\n").splitlines() if a.strip()]
-        out["fields"] = _csv(self._f("fields"))
+        out["fields"] = needs
+        out["actions"] = [wm.action_from_text(a) for a in (self.form.get("actions") or "").replace(",", "\n").splitlines() if a.strip()]
         return out
 
     def _wf_transition_ops(self, g: dict, old: dict, new: dict) -> list[dict]:
@@ -1063,7 +1066,9 @@ class WorkflowsMixin:
                 out += diff_html(base, c["graph"], live_layout, c["layout"], idp=f"cowf-{process}", items=c.get("delta"), title=self._wf_title(process), script=False)
             else:
                 out += "<ol class='wf-changes'>" + "".join(f"<li>{esc(i.get('text'))}</li>" for i in c.get("delta") or []) + "</ol>"
-            smap = c.get("state_map") or {}
+            if not c.get("layout_only"):
+                out += f"<details><summary>As the SOP will say it</summary>{self._wf_prose(process, c['graph'])}</details>"
+            smap = (co["fields"].get("state_map") or {}).get(process) or c.get("state_map") or {}
             removed = {k: v for k, v in smap.items() if k not in wm.status_map(c["graph"])}
             if removed and base is not None:
                 rows = []

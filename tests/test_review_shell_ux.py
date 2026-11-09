@@ -98,7 +98,8 @@ def test_ops_hotkeys_focus_and_confirm_and_can_be_switched_off(shell):
     page = get(shell, "/document/" + quote(doc["locator"], safe=":"), **{"as": "carol"})[1]
     assert "data-hotkeys-toggle" in page and "hk-armed" in page and "el.click()" not in page and "Enter confirms" in page
     assert 'name="change_type" required' in page  # Send for approval asks minor or major
-    assert "Ask quality-assistant to review" not in page  # only cogs that follow the item's SOP
+    # Only cogs that follow the item's SOP (derived: its rules name them or their roles): not the payables reviewer.
+    assert "Ask ap-reviewer to review" not in page and "Ask doc-reviewer to review" in page
 
 
 def test_the_messenger_never_takes_the_focus_on_page_load(shell):

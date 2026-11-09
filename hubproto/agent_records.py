@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 
 from . import authz
-from .agent import register
+from .agent import intent_on_record, register
 from .kernel import KernelGuardError
 
 # Fields a cog never sets directly: the runner, the DMS and the editor manage them.
@@ -50,6 +50,34 @@ def _process_for_type(bundle: dict, type_: str, wanted: str = "") -> str | None:
 
 def _member(bundle: dict, name: str) -> dict | None:
     return (bundle.get("members") or {}).get(name)
+
+
+def _create_intent(t, a: dict) -> dict:
+    type_ = _type_of(t.hub, str(a.get("type") or ""))
+    if type_ is None:
+        return {"error": f"there is no record type {a.get('type')!r}"}
+    process = _process_for_type(t.bundle, type_, str(a.get("process") or ""))
+    folder = ((t.bundle.get("processes") or {}).get(process) or {}).get("folder") if process else str(a.get("folder") or "")
+    return {"action": "create", "object": _object_of(t.hub, type_), "folder": folder or "", "checked": True}
+
+
+def _move_intent(t, a: dict) -> dict:
+    rec = t._find(str(a.get("number") or ""))
+    if rec is None:
+        return {"error": f"no record {a.get('number')!r} that {t.cog} may read"}
+    return {"action": "create", "object": _object_of(t.hub, rec["type"]), "folder": str(a.get("folder") or rec["folder"]), "checked": True}
+
+
+def _task_intent(t, a: dict) -> dict:
+    proc = (t.bundle.get("processes") or {}).get("task") or {}
+    return {"action": "create", "object": proc.get("object") or "task", "folder": proc.get("folder") or "Tasks", "checked": True}
+
+
+def _delegate_intent(t, a: dict) -> dict:
+    """Handing work to another cog is a note to it: a comment on the item, or in Tasks when there is none."""
+    if a.get("number"):
+        return intent_on_record("comment")(t, a)
+    return {"action": "comment", "object": "*", "folder": "Tasks"}
 
 
 # ---------------------------------------------------------------- create_record
@@ -95,7 +123,7 @@ register({"name": "create_record",
               "folder": {"type": "string", "description": "only when no process files this type"},
               "process": {"type": "string", "description": "optional: the process to start, when several file this type"}},
               "required": ["type", "fields"]}},
-         create_record, write=True)
+         create_record, write=True, intent=_create_intent)
 
 
 # ---------------------------------------------------------------- update_fields
@@ -156,7 +184,7 @@ register({"name": "update_fields",
                          "Fields the hub manages (state, owner, revision, decisions, assignees) cannot be set, and finished records are not changed.",
           "parameters": {"type": "object", "properties": {"number": {"type": "string"}, "fields": {"type": "object"}},
                          "required": ["number", "fields"]}},
-         update_fields, write=True)
+         update_fields, write=True, intent=intent_on_record("update", checked=True))
 
 
 # ---------------------------------------------------------------- move_record
@@ -192,7 +220,7 @@ register({"name": "move_record",
                          "A record in a running process stays where its process keeps it.",
           "parameters": {"type": "object", "properties": {"number": {"type": "string"}, "folder": {"type": "string"}, "reason": {"type": "string"}},
                          "required": ["number", "folder"]}},
-         move_record, write=True)
+         move_record, write=True, intent=_move_intent)
 
 
 # ---------------------------------------------------------------- assign
@@ -237,7 +265,7 @@ register({"name": "assign",
                          "A person is told in their inbox; a cog takes it from its queue. You may assign items you own, are assigned, filed, or may approve.",
           "parameters": {"type": "object", "properties": {"number": {"type": "string"}, "to": {"type": "string"},
                                                          "instruction": {"type": "string"}}, "required": ["number", "to"]}},
-         assign, write=True)
+         assign, write=True, intent=intent_on_record("comment", checked=True))
 
 
 # ---------------------------------------------------------------- link_records
@@ -266,7 +294,7 @@ register({"name": "link_records",
                          "The link shows on both records.",
           "parameters": {"type": "object", "properties": {"number": {"type": "string"}, "rel": {"type": "string"}, "target": {"type": "string"}},
                          "required": ["number", "rel", "target"]}},
-         link_records, write=True)
+         link_records, write=True, intent=intent_on_record("comment"))
 
 
 # ---------------------------------------------------------------- send_back_to_start
@@ -343,7 +371,7 @@ register({"name": "change_state",
           "parameters": {"type": "object", "properties": {"number": {"type": "string"}, "action": {"type": "string", "enum": list(STATE_ACTIONS)},
                                                           "reason": {"type": "string"}},
                          "required": ["number", "action", "reason"]}},
-         change_state, write=True)
+         change_state, write=True, intent=intent_on_record("update", checked=True))
 
 
 register({"name": "send_back_to_start",
@@ -351,7 +379,7 @@ register({"name": "send_back_to_start",
                          "Its owner and whoever it waited for are told; versions and history stay.",
           "parameters": {"type": "object", "properties": {"number": {"type": "string"}, "reason": {"type": "string"}},
                          "required": ["number", "reason"]}},
-         send_back_to_start, write=True)
+         send_back_to_start, write=True, intent=intent_on_record("update", checked=True))
 
 
 # ---------------------------------------------------------------- create_task
@@ -394,7 +422,7 @@ register({"name": "create_task",
                                                          "priority": {"type": "string"},
                                                          "concerns": {"type": "string", "description": "the record number the task is about; it is linked"}},
                          "required": ["title"]}},
-         create_task, write=True)
+         create_task, write=True, intent=_task_intent)
 
 
 # ---------------------------------------------------------------- delegate_to_cog
@@ -434,7 +462,7 @@ register({"name": "delegate_to_cog",
                          "Asking twice for the same thing while it is still open does not queue it again.",
           "parameters": {"type": "object", "properties": {"cog": {"type": "string"}, "goal": {"type": "string"}, "number": {"type": "string"}},
                          "required": ["cog", "goal"]}},
-         delegate_to_cog, write=True)
+         delegate_to_cog, write=True, intent=_delegate_intent)
 
 
 # ---------------------------------------------------------------- check_permission (look)

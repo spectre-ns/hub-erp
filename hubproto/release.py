@@ -30,8 +30,12 @@ def render_manifest(process: dict) -> dict:
     """Turn a process rule into an Op manifest.
 
     Cog steps become steps. A checkpoint step becomes a human Gate on the
-    step before it, routed through the release routing table.
+    step before it, routed through the release routing table. (A process written
+    as a graph: one step per cog action, and the Gates come from the graph; see
+    ``hubproto.process_graph`` and the runner.)
     """
+    if process.get("statuses"):
+        return render_graph_manifest(process)
     steps: list[dict] = []
     prev_id = None
     for step in process["steps"]:
@@ -78,10 +82,50 @@ def render_manifest(process: dict) -> dict:
     }
 
 
+def render_graph_manifest(process: dict) -> dict:
+    """The Op manifest of a process written as a graph: one step per cog action (the actions say which run when; the
+    graph says where the item goes). The first step carries the role that starts the process, as for numbered steps."""
+    from .process_graph import action_steps
+
+    init = next((t for t in process.get("transitions") or [] if t.get("type") == "initial"), None) or {}
+    start_role = (init.get("gate") or {}).get("role") or "system"
+    steps: list[dict] = []
+    prev: dict[str, str] = {}
+    for sid, cog, t in action_steps(process):
+        entry = {"id": sid, "title": cog.replace("-", " ").capitalize(), "role": "system", "cog": {"id": cog, "task": "run"},
+                 "input": {"record": {"$from": "inputs.record"}}, "gate": {"type": "default"}, "transition": t["id"]}
+        if prev.get(t["id"]):
+            entry["input"]["prior"] = {"$from": f"steps.{prev[t['id']]}.payload"}
+            entry["depends_on"] = [prev[t["id"]]]
+        prev[t["id"]] = sid
+        steps.append(entry)
+    if not steps:  # readers take the starting role from the first step
+        steps.append({"id": "start", "title": init.get("name") or "Start", "role": start_role, "cog": {"id": "noop", "task": "run"},
+                      "input": {"record": {"$from": "inputs.record"}}, "gate": {"type": "default"}})
+    steps[0] = {**steps[0], "role": start_role}
+    return {
+        "schema": OP_PROFILE,
+        "id": process["name"],
+        "title": process["name"].replace("-", " "),
+        "folder": process["folder"],
+        **({"files_by_type": dict(process["files_by_type"])} if process.get("files_by_type") else {}),
+        "object": process["object"],
+        "inputs": [{"name": "record", "required": True}],
+        "steps": steps,
+        "start_role": start_role,
+    }
+
+
 def checkpoint_for(process: dict, step: str) -> dict | None:
     """Resolve a routing or SLA step name against a process: a checkpoint id, or the
-    'approve' alias meaning the first checkpoint whose title starts with Approve."""
-    cps = [s for s in process["steps"] if s["kind"] == "checkpoint"]
+    'approve' alias meaning the first checkpoint whose title starts with Approve.
+    In a process written as a graph the checkpoints are its decisions (gated transitions)."""
+    if process.get("statuses"):
+        from .process_graph import gated_checkpoints
+
+        cps = gated_checkpoints(process)
+    else:
+        cps = [s for s in process["steps"] if s["kind"] == "checkpoint"]
     if step == "approve":
         for cp in cps:
             if cp["id"].startswith(("approv", "accept", "confirm", "authori")):
@@ -94,48 +138,18 @@ def checkpoint_for(process: dict, step: str) -> dict | None:
 
 
 def render_workflow(process: dict, slas: dict[str, int], record_type: str) -> dict:
-    """The state machine a record type follows, derived from the process section."""
-    states = ["open"]
-    transitions: list[dict] = []
-    checkpoints: list[dict] = []
-    current = "open"
-    pending_auto: list[str] = []
-    for step in process["steps"]:
-        if step["kind"] == "cog":
-            pending_auto.append(step["id"])
-            continue
-        if checkpoints and not pending_auto:
-            pending_auto.append(f"reach-{step['id']}")
-        waiting = f"awaiting-{step['id']}"
-        states.append(waiting)
-        transitions.append({"from": current, "to": waiting, "kind": "automatic", "steps": pending_auto})
-        checkpoints.append({"id": step["id"], "title": step["title"], "role": step["role"], "state": waiting,
-                            "sla_days": slas.get(step["id"])})
-        pending_auto = []
-        current = waiting
-    terminal = process.get("terminal") or "closed"
-    states.append(terminal)
-    reject_to = process.get("reject_to")
-    cp_ids = {cp["id"] for cp in checkpoints}
-    if reject_to and reject_to in cp_ids:
-        on_reject = f"awaiting-{reject_to}"
-    elif reject_to:
-        on_reject = "returned"  # rejection returns the item to its owner for rework at that step
-        states.append("returned")
-    else:
-        on_reject = "rejected"
-        states.append("rejected")
-    # Close the human transitions: each checkpoint approves into the next waiting state or the terminal.
-    human = []
-    for i, cp in enumerate(checkpoints):
-        nxt = checkpoints[i + 1]["state"] if i + 1 < len(checkpoints) else terminal
-        human.append({"from": cp["state"], "to": nxt, "kind": "human", "step": cp["id"], "title": cp["title"],
-                      "on_reject": on_reject, "sla_days": cp["sla_days"]})
-    if pending_auto or not checkpoints:
-        transitions.append({"from": current, "to": terminal, "kind": "automatic", "steps": pending_auto})
-    return {"record_type": record_type, "object": process["object"], "states": states,
-            "transitions": transitions + human, "checkpoints": checkpoints, "terminal": terminal,
-            "reject_to": reject_to, "sla": {cp["id"]: cp["sla_days"] for cp in checkpoints if cp["sla_days"]}}
+    """The graph a record type follows (change control 10.1), derived from the process section: statuses and
+    transitions, plus the earlier state-machine keys derived from it (``hubproto.process_graph``)."""
+    from .process_graph import build
+
+    return build(process, slas, record_type)
+
+
+def legacy_transitions(wf: dict | None) -> list[dict]:
+    """A workflow's transitions in the earlier shape (kind automatic|human, step, on_reject), for its readers."""
+    from .process_graph import legacy_transitions as _lt
+
+    return _lt(wf)
 
 
 def render(rules: list[dict], record_types: dict | None = None) -> dict:
@@ -148,6 +162,8 @@ def render(rules: list[dict], record_types: dict | None = None) -> dict:
     scopes: dict[str, dict] = {}
     personas: dict[str, dict] = {}
     committees: dict[str, dict] = {}
+    duties: list[dict] = []
+    audiences: list[dict] = []
     for r in rules:
         body = {k: v for k, v in r.items() if k != "kind"}
         kind = r["kind"]
@@ -185,15 +201,33 @@ def render(rules: list[dict], record_types: dict | None = None) -> dict:
             personas[r["name"]] = body
         elif kind == "committee":
             committees[r["name"]] = body
-    # Scopes and personas: each scope's Frames are those of the scopes it layers on, then its own, in order; a
-    # persona's are those of its layers (scopes or Frames), then what it also reads. A cog's persona is what it works
-    # from: its profile follows exactly those Frames.
+        elif kind == "duty":
+            duties.append(dict(body))
+        elif kind == "audience":
+            audiences.append(dict(body))
+    # Scopes: each scope's Frames are those of the scopes it layers on, then its own, in order.
     for name in scopes:
         scopes[name]["frames"] = scope_frames(scopes, name)
+    # Who a work instruction is for: only roles the organization declares count.
+    audiences = [{**a, "roles": [x for x in a.get("roles") or [] if x in set(roles)]} for a in audiences]
+    audiences = [a for a in audiences if a["roles"]]
+    duties.sort(key=lambda d: (d["cog"], d["source"]["frame"], d["source"]["line"]))
+    # A cog's profile is its identity; its persona (shared) says how it behaves; what it follows and its duties are
+    # derived from the SOPs (follows_for). The bundle carries the merged view the runtime reads.
+    for name, prof in list(cogs.items()):
+        persona = personas.get(prof.get("persona") or "") or {}
+        merged = {**prof, **{k: persona.get(k) for k in PERSONA_FIELDS if k in persona}}
+        merged["prompt"] = compose_prompt(name, prof, persona)
+        merged["duties"] = [d["source"]["text"] for d in duties if d["cog"] == name]
+        cogs[name] = merged
     for name, p in personas.items():
-        p["frames"] = persona_frames(scopes, p)
-        if p.get("of") == "cog" and name in cogs:
-            cogs[name] = {**cogs[name], "follows": list(p["frames"]), "persona": name}
+        p["cogs"] = sorted(n for n, c in cogs.items() if c.get("persona") == name)
+    partial = {"members": members, "permissions": permissions, "routing": routing, "approval_criteria": criteria,
+               "processes": processes, "duties": duties, "committees": committees, "scopes": scopes, "audiences": audiences}
+    for name in cogs:
+        why = follows_for(partial, name)
+        cogs[name]["follows"] = list(why)
+        cogs[name]["follows_why"] = {f: sorted(w) for f, w in why.items()}
     # Resolve the 'approve' alias and bare checkpoint names to checkpoint ids.
     for r in routing + slas:
         proc = processes.get(r["process"])
@@ -206,7 +240,6 @@ def render(rules: list[dict], record_types: dict | None = None) -> dict:
     permissions.sort(key=lambda x: (x["resource"], x["subject"], x["action"], x["object"], x["effect"]))
     criteria.sort(key=lambda x: (x["approver"], x["process"]))
     sod.sort(key=lambda x: (x["object"], x["roles"]))
-    ops = {name: render_manifest(p) for name, p in sorted(processes.items())}
 
     def type_for(obj: str) -> str:
         for tname, td in (record_types or {}).items():
@@ -214,6 +247,10 @@ def render(rules: list[dict], record_types: dict | None = None) -> dict:
                 return tname
         return obj
 
+    for name, p_ in processes.items():  # a process written as a graph without a start sentence: its record type's object
+        if p_.get("statuses") and not p_.get("object") and p_.get("record_type"):
+            p_["object"] = ((record_types or {}).get(p_["record_type"]) or {}).get("object") or p_["record_type"]
+    ops = {name: render_manifest(p) for name, p in sorted(processes.items())}
     workflows = {}
     for name, p_ in sorted(processes.items()):
         sla_map = {x["step"]: x["days"] for x in slas if x["process"] == name}
@@ -236,6 +273,8 @@ def render(rules: list[dict], record_types: dict | None = None) -> dict:
         "scopes": dict(sorted(scopes.items())),
         "personas": dict(sorted(personas.items())),
         "committees": dict(sorted(committees.items())),
+        "duties": duties,
+        "audiences": audiences,
         "ops": ops,
     }
 
@@ -260,11 +299,165 @@ def scope_frames(scopes: dict, name: str, seen: tuple = ()) -> list[str]:
     return _dedupe(out + list(s.get("compiles") or []))
 
 
-def persona_frames(scopes: dict, persona: dict) -> list[str]:
-    out: list[str] = []
-    for layer in persona.get("layers") or []:
-        out += scope_frames(scopes, layer) if layer in scopes else [layer]
-    return _dedupe(out + list(persona.get("reads") or []))
+# ---------------------------------------------------------------- personas and derived follows
+
+PERSONA_FIELDS = ("tone", "stance", "lenses", "passes", "escalates", "behaviour")
+COMPANY_FRAMES = ("org-model", "quality-manual", "tasks-sop")  # the company scope when the release defines none
+
+
+def compose_prompt(name: str, profile: dict, persona: dict) -> str:
+    """The standing prompt a cog works under: who it is and what it does (its profile's About), then how it behaves
+    (its persona's behaviour, tone, how it reviews and when it escalates)."""
+    return "\n\n".join(p for p in (identity_text(name, profile), behaviour_text(persona)) if p)
+
+
+def identity_text(name: str, profile: dict) -> str:
+    about = (profile.get("about") or "").strip()
+    return f"You are the {name} cog, a member of the organization." + (f" What you do: {about}" if about else "")
+
+
+def behaviour_text(persona: dict) -> str:
+    """How a cog behaves, from its persona (or a merged profile carrying the persona's fields)."""
+    parts = []
+    if persona and (persona.get("behaviour") or persona.get("stance")):
+        how = [persona.get("behaviour") or ""]
+        if persona.get("tone"):
+            how.append(f"Your tone is {persona['tone']}.")
+        if persona.get("passes") and persona.get("lenses"):
+            how.append(f"You review in {persona['passes']} adversarial passes, each alone with one lens "
+                       f"({', '.join(persona['lenses'][: persona['passes']])}) and each trying to find a reason not to approve.")
+        esc_ = (persona.get("escalates") or "").strip()
+        if esc_:
+            how.append(f"You escalate {esc_[0].lower() + esc_[1:]}" if esc_.lower().startswith(("when", "if", "as soon"))
+                       else f"When to escalate: {esc_}")
+        parts.append(" ".join(x.strip() for x in how if x and x.strip()))
+    return "\n\n".join(p for p in parts if p)
+
+
+def rule_names(rule: dict) -> set[str]:
+    """The members and roles a rule names ("role:x", "cog:x", "person:x"): a permission's subject, a route's assignee,
+    an approval criterion's approver and countersigning role, a process step's role and cogs, a duty's cog, a
+    committee's members, a member line's principal."""
+    kind = rule.get("kind")
+    out: set[str] = set()
+    if kind == "permission" or ("subject" in rule and "action" in rule):
+        out.add(rule["subject"])
+    elif kind == "routing" or ("assignee" in rule and "process" in rule):
+        if not str(rule.get("assignee", "")).startswith("field:"):
+            out.add(rule["assignee"])
+    elif kind == "approval_criteria" or "approver" in rule:
+        out.add(rule["approver"])
+        if rule.get("countersign"):
+            out.add("role:" + rule["countersign"])
+    elif kind == "process" or "steps" in rule:
+        for st in rule.get("steps") or []:
+            if st.get("role") and st["role"] != "system":
+                out.add("role:" + st["role"])
+            for c in [st.get("cog")] + list(st.get("swarm") or []):
+                if c and c != "swarm":
+                    out.add("cog:" + c)
+    elif kind == "duty" or ("task" in rule and "every" in rule):
+        out.add("cog:" + rule["cog"])
+    elif kind == "committee" or ("quorum" in rule and "members" in rule):
+        out |= {"cog:" + m for m in rule.get("members") or []}
+    elif kind == "member" or "principal" in rule:
+        out.add(f"{rule.get('principal_type') or 'person'}:{rule['principal']}")
+    return out
+
+
+def _bundle_rules(bundle: dict):
+    """The rules a release renders, in the order the Frames were compiled where it is known."""
+    yield from ({"kind": "member", "principal": n, "principal_type": m.get("type"), "source": s}
+                for n, m in (bundle.get("members") or {}).items() for s in [m.get("source")] + list(m.get("sources") or []) if s)
+    yield from bundle.get("permissions") or []
+    yield from bundle.get("routing") or []
+    yield from bundle.get("approval_criteria") or []
+    yield from (bundle.get("processes") or {}).values()
+    yield from bundle.get("duties") or []
+    yield from (bundle.get("committees") or {}).values()
+
+
+def company_frames(bundle: dict) -> list[str]:
+    scopes = bundle.get("scopes") or {}
+    if "company" in scopes:
+        return list(scopes["company"].get("frames") or scope_frames(scopes, "company"))
+    return list(COMPANY_FRAMES)
+
+
+def frames_naming(bundle: dict, names: set[str], *, audience: bool = False) -> dict[str, set[str]]:
+    """{Frame: the names (of ``names``) its rules name}, in the order first named. With ``audience``, a work
+    instruction's "For:" line names its roles too (people's required reading; cogs follow rules, not instructions)."""
+    out: dict[str, set[str]] = {}
+    rules = list(_bundle_rules(bundle))
+    if audience:
+        rules += [{"kind": "audience", "roles": a["roles"], "source": a["source"]} for a in bundle.get("audiences") or []]
+    for r in rules:
+        named = ({"role:" + x for x in r.get("roles") or []} if r.get("kind") == "audience" else rule_names(r)) & names
+        frame = (r.get("source") or {}).get("frame")
+        if named and frame and frame != "settings":
+            out.setdefault(frame, set()).update(named)
+    return out
+
+
+def principal_names(bundle: dict, principal: str) -> set[str]:
+    m = (bundle.get("members") or {}).get(principal) or {}
+    return {"role:" + r for r in m.get("roles") or []} | {f"{m.get('type') or 'person'}:{principal}"}
+
+
+def follows_for(bundle: dict, principal: str, *, audience: bool = False) -> dict[str, set[str]]:
+    """What a member follows (a cog) or must read (a person), derived: the company scope (org model, quality manual,
+    tasks SOP), then every SOP or policy whose rules name one of its roles or it by name. Returns {Frame: the names
+    that make it so ("role:quality-manager", "cog:stores"; "company" for the company scope)}, company Frames first,
+    then the others in alphabetical order."""
+    named = frames_naming(bundle, principal_names(bundle, principal), audience=audience)
+    out: dict[str, set[str]] = {f: {"company"} | named.get(f, set()) for f in company_frames(bundle)}
+    for f in sorted(named):
+        if f not in out:
+            out[f] = set(named[f])
+    return out
+
+
+def followed_by_cogs(rules: list[dict]) -> set[str]:
+    """Every Frame some cog follows or behaves by, from a compile's rules (before rendering): a change to its text
+    changes what a cog judges against or how it behaves, so two policy owners approve it."""
+    bundle = render_light(rules)
+    out: set[str] = set()
+    for name, m in (bundle.get("members") or {}).items():
+        if m.get("type") == "cog":
+            out |= set(follows_for(bundle, name))
+    used = {r.get("persona") for r in rules if r.get("kind") == "cog"}
+    out |= {(r.get("source") or {}).get("frame") for r in rules if r.get("kind") == "persona" and r.get("name") in used}
+    return {f for f in out if f}
+
+
+def render_light(rules: list[dict]) -> dict:
+    """The parts of a bundle that say who is named where, without rendering workflows or manifests."""
+    members: dict[str, dict] = {}
+    out = {"members": members, "permissions": [], "routing": [], "approval_criteria": [], "processes": {}, "duties": [],
+           "committees": {}, "scopes": {}}
+    for r in rules:
+        k = r.get("kind")
+        body = {x: y for x, y in r.items() if x != "kind"}
+        if k == "member":
+            cur = members.setdefault(r["principal"], {"type": r["principal_type"], "roles": [], "source": r.get("source")})
+            cur["roles"] = sorted(set(cur["roles"]) | set(r["roles"]))
+        elif k == "permission":
+            out["permissions"].append(body)
+        elif k == "routing":
+            out["routing"].append(body)
+        elif k == "approval_criteria":
+            out["approval_criteria"].append(body)
+        elif k == "process":
+            out["processes"][r["name"]] = body
+        elif k == "duty":
+            out["duties"].append(body)
+        elif k == "committee":
+            out["committees"][r["name"]] = body
+        elif k == "scope":
+            out["scopes"][r["name"]] = body
+    for n in out["scopes"]:
+        out["scopes"][n]["frames"] = scope_frames(out["scopes"], n)
+    return out
 
 
 def strip_sources(obj):

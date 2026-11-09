@@ -342,6 +342,8 @@ def describe_change(change: dict) -> str:
     if kind == "member":
         return f"{op} member {rule['principal']} ({rule['principal_type']}) with roles {', '.join(rule['roles'])}"
     if kind == "sod":
+        if rule.get("only"):
+            return f"{op} segregation of duties on {rule['object']}: whoever {rule['roles'][0].replace('-', ' ')} is not its only approver"
         return f"{op} segregation of duties on {rule['object']}: {' and '.join(rule['roles'])} must differ"
     if kind in ("role", "folder"):
         return f"{op} {kind} {rule.get('name') or rule.get('path')}"
@@ -388,6 +390,13 @@ def collapse_changes(changes: list[dict]) -> list[dict]:
 
 def _decisions_text(change: dict) -> str:
     return ", ".join(f"{d['by']}:{d['verdict']}" for d in change.get("decisions", [])) or "-"
+
+
+def print_moved(proposal: dict) -> None:
+    """Rules that only moved in their file (compile.collapse_moves): shown, never decided."""
+    for m in proposal.get("moved") or []:
+        print(f"  {m['kind']} {m['name']}: re-rendered, no semantic change (moved from line {m.get('from_line')} to "
+              f"{m.get('to_line')}; nothing to decide)")
 
 
 def print_changes(hub: Hub, changes: list[dict], with_decisions: bool = False) -> None:
@@ -534,6 +543,7 @@ def cmd_compile(args) -> int:
     if proposal["changes"]:
         print("changes:")
         print_changes(hub, proposal["changes"])
+        print_moved(proposal)
     else:
         print(f"no changes against the release in force ({version_of(hub, proposal['base'])}); nothing to review")
     print(f"reviewers: {', '.join(proposal['reviewers']) or 'none (no policy owner in the org model)'}")
@@ -598,6 +608,7 @@ def cmd_proposal(args) -> int:
     if p["changes"]:
         print("changes:")
         print_changes(hub, p["changes"], with_decisions=True)
+        print_moved(p)
     else:
         print("no changes")
     for line in hub.readiness(p["id"]):
@@ -1458,14 +1469,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_tick)
     s = sub.add_parser("models", help="the models a cog can use (installed in Ollama, Claude with a key) and who serves each cog now")
     s.set_defaults(fn=cmd_models)
-    s = sub.add_parser("agent", help="give a cog a task: it plans and acts on its own within its autonomy (read, propose or act)")
+    s = sub.add_parser("agent", help="give a cog a task: it plans and acts on its own where the SOPs let it (each action: act, propose or refuse)")
     s.add_argument("--cog", required=True, metavar="COG", help="the cog to give the task to")
     s.add_argument("--goal", metavar="TEXT", help="what it should do")
     s.add_argument("--as", dest="as_user", required=True, metavar="PERSON", help="who hands over the task (is told the outcome)")
     s.add_argument("--actions", type=int, metavar="N", help="at most N actions (default 5)")
     s.add_argument("--confirm", metavar="RUN", help="confirm a run's proposed actions instead of starting one")
     s.set_defaults(fn=cmd_agent)
-    s = sub.add_parser("agent-duties", help="let the cogs take up the duties in their profiles (once a day each)")
+    s = sub.add_parser("agent-duties", help="let the cogs take up the duties the SOPs give them (every day, week or month)")
     s.add_argument("--cog", metavar="COG", help="only this cog")
     s.add_argument("--loop", type=int, metavar="SECONDS", help="keep checking every SECONDS")
     s.set_defaults(fn=cmd_agent_duties)

@@ -1,9 +1,9 @@
 ---
 type: frame [0.2]
 name: scopes
-description: "The scoping Frames: which SOP and policy Frames each scope compiles, at which level, and what it layers on. Personas layer these."
+description: "The scoping Frames: which SOP and policy Frames each scope compiles, at which level, and what it layers on."
 visibility: internal
-version: "1.1.0"
+version: "1.2.0"
 scope: company
 maintainer: carol
 inherits: org-model
@@ -12,9 +12,13 @@ inherits: org-model
 
 A scope is a set of SOPs and policies that applies together: the company's,
 a department's, a process's. A scope layers on a wider one, so a department
-scope brings the company's with it. A persona (a cog or a job role) layers the
-scopes and SOPs it works within: those are what it reads and what binds it.
-Later layers add rules and context and may only narrow what earlier ones allow.
+scope brings the company's with it. Later layers add rules and context and may
+only narrow what earlier ones allow.
+
+What a member works within is derived, not listed: everyone follows the
+company scope, and a cog follows (a person must read) every SOP or policy
+whose rules name it or one of its roles. A work instruction is required
+reading for the roles its "For:" line names.
 
 ## Scope: company
 Level: company
@@ -49,3 +53,8 @@ Compiles: inventory-policy
 Level: department
 Layers on: company
 Compiles: design-control-sop
+
+## Scope: it
+Level: department
+Layers on: company
+Compiles: it-sop

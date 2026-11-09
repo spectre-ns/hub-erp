@@ -75,24 +75,29 @@ def test_the_kill_switch_and_duties(released, monkeypatch):
     with pytest.raises(ValueError, match="switched off"):
         Agent(hub, "quality-assistant").run("anything", by="carol")
     monkeypatch.delenv("HUBPROTO_AGENTS")
+    # Duties are sentences in the SOPs that own the work: every day, every week or every month.
     due = due_duties(hub, today="2026-11-07")
-    assert {c for c, _ in due} == {"quality-assistant", "purchasing-assistant"}
+    assert {c for c, _ in due} == {"quality-assistant", "purchasing-assistant", "it-admin", "management"}
+    assert any(d.startswith("Every day the quality-assistant cog finds nonconformances") for _, d in due)
     monkeypatch.setattr(hub.model, "complete_with_tools", scripted([("finish", {"summary": "nothing overdue"})]))
     done = run_duties(hub, today="2026-11-07")
-    assert len(done) == 2 and due_duties(hub, today="2026-11-07") == [] and len(due_duties(hub, today="2026-11-08")) == 2
+    assert len(done) == 4 and due_duties(hub, today="2026-11-07") == []
+    assert {c for c, _ in due_duties(hub, today="2026-11-08")} == {"quality-assistant", "purchasing-assistant"}, "the daily ones"
+    assert {c for c, _ in due_duties(hub, today="2026-11-14")} == {"quality-assistant", "purchasing-assistant", "it-admin"}, "a week on"
 
 
 def test_a_new_cog_from_a_proposal_works_with_no_code(released, monkeypatch):
     hub = released
     p = hub.propose_new_cog(name="calibration-assistant", roles=["quality-manager", "staff"], model="ollama/qwen3:14b",
-                            prompt="You keep calibration on schedule.", follows=["calibration-sop"], autonomy="act",
-                            duties=["Find calibrations due this month and tell the quality manager."], by="carol")
+                            about="Keeps calibration on schedule.", persona="executor", by="carol")
     assert set(p["overrides"]) == {"org-model", "cog-profiles"} and not [f for f in p["findings"] if f["severity"] == "error"]
     hub.review(p["id"], "bob", approve_all=True, meaning="ok")
     hub.review(p["id"], "carol", approve_all=True, meaning="ok")
     hub.release(p["id"], "bob")
     b = hub.releases.bundle(hub.releases.current()["digest"])
-    assert b["members"]["calibration-assistant"]["type"] == "cog" and b["cogs"]["calibration-assistant"]["autonomy"] == "act"
+    prof = b["cogs"]["calibration-assistant"]
+    assert b["members"]["calibration-assistant"]["type"] == "cog" and prof["persona"] == "executor" and prof["about"] == "Keeps calibration on schedule."
+    assert "calibration-sop" in prof["follows"], "it follows the SOPs that name its roles"
     assert "calibration-assistant" in hub.registry.ids() and "chat" in hub.registry.get("calibration-assistant").tasks
     assert "calibration-assistant" in hub.chat_cogs()
     monkeypatch.setattr(hub.model, "complete_with_tools", scripted([("overview", {}), ("finish", {"summary": "counted"})]))

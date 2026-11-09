@@ -66,7 +66,7 @@ def test_the_list_and_the_editor_render_for_editors_and_read_only_for_others(she
     assert data["editable"] and data["process"] == NCR and data["urls"]["op"] == "/workflow-op" and data["geo"]["W"] == wm.W
     # Every status and transition is a focusable, named element; each status has a connect handle.
     assert f'id="wfc-s-{AWAIT}"' in body and 'tabindex="0" role="button" aria-roledescription="status"' in body
-    assert 'aria-label="Awaiting: Disposition the nonconformance, in progress, due within 5 days, 3 ways out, 0 items"' in body
+    assert 'aria-label="Awaiting disposition the nonconformance, in progress, due within 5 days, 3 ways out, 0 items"' in body
     assert 'class="wf-handle" data-handle="open"' in body and 'id="wfc-t-disposition-the-nonconformance"' in body
     assert "id='live-say'" in body and "role='status' aria-live='polite'" in body
     status, text = get(shell, "/workflows/" + NCR, **{"as": "dave"})
@@ -81,8 +81,9 @@ def test_the_text_view_shows_every_rule_as_a_sentence_and_every_edit_as_a_form(s
     status, text = get(shell, "/workflows/" + NCR, **{"as": "carol", "view": "text"})
     body = main_of(text)
     assert status == 200 and "id='add-status'" in body and "id='add-transition'" in body and f"id='s-{AWAIT}'" in body
-    assert ("From “Awaiting: Disposition the nonconformance” to “Closed” (“Disposition the nonconformance”): the quality-assistant cog "
-            "decides within its approval criteria, otherwise the quality manager; checks that disposition and disposition rationale are filled in") in body
+    assert ("From “Awaiting disposition the nonconformance” to “Closed” (“Disposition the nonconformance”): the quality manager decides; "
+            "after the move: apply the disposition, open corrective action, render the record.") in body
+    assert "As the SOP will say it" in body and "Statuses: Open (to do), Awaiting disposition the nonconformance (in progress, due within 5 days)" in body
     for form in ("edit-status", "allow-all", "connect", "move", "delete-status", "edit-transition", "delete-transition", "add-status", "add-transition"):
         assert f"data-wf-form='{form}'" in body, form
     status, text = get(shell, "/workflows/" + NCR, **{"as": "dave", "view": "text"})
@@ -133,12 +134,12 @@ def test_every_edit_works_as_a_plain_form(shell):
     assert wm.status_map(doc_of(shell)["graph"])["awaiting-verification"] == {"id": "awaiting-verification", "name": "Verification", "category": "in_progress"}
     op(shell, "carol", {"op": "connect", "id": "awaiting-verification", "to": "closed", "name": "Verified"})
     op(shell, "carol", {"op": "edit_transition", "id": "disposition-the-nonconformance", "name": "Disposition", "from": [AWAIT], "to": "awaiting-verification",
-                        "gate_kind": "person", "role": "quality-manager", "not_author": "1", "fields_set": "disposition", "linked": "no_open_ncr",
-                        "actions": "apply-the-disposition\nnotify:quality-manager", "fields": "disposition, containment"})
+                        "gate_kind": "person", "role": "quality-manager", "not_author": "1", "needs": "disposition, containment",
+                        "condition": "no_open_ncr", "actions": "apply-the-disposition\nnotify:quality-manager"})
     t = wm.transition_map(doc_of(shell)["graph"])["disposition-the-nonconformance"]
     assert t["name"] == "Disposition" and t["to"] == "awaiting-verification" and t["gate"] == {"kind": "person", "role": "quality-manager", "not": ["author"]}
-    assert t["validators"] == [{"fields_set": ["disposition"]}, {"linked": "no_open_ncr"}] and t["actions"] == ["apply-the-disposition", "notify:quality-manager"]
-    assert t["fields"] == ["disposition", "containment"]
+    assert t["validators"] == [{"fields_set": ["disposition", "containment"]}, {"condition": "no_open_ncr"}]
+    assert t["actions"] == ["apply-the-disposition", {"notify": "role:quality-manager"}] and t["fields"] == ["disposition", "containment"]
     op(shell, "carol", {"op": "add_transition", "name": "Put on hold", "any": "1", "except_default": "1", "to": "awaiting-verification",
                         "gate_kind": "auto", "when": "risk_low"})
     hold = wm.transition_map(doc_of(shell)["graph"])["put-on-hold"]
@@ -266,6 +267,16 @@ def test_carry_a_draft_on_a_change_order_and_see_the_visual_diff_there(shell):
     assert c["by"] == "carol" and c["base"]["graph_digest"] and not c["layout_only"]
     assert {i["key"] for i in c["delta"]} >= {"status:awaiting-verification", "transition:verified", "status:rejected", "transition:disposition-the-nonconformance"}
     assert all(i["origin"] == {**i["origin"], "kind": "direct", "by": "carol"} for i in c["delta"])
+    # What changes how items move is one direct change of the process on the change order (workstream 1's delta): the
+    # process rule in the graph form, whose prose compiles back to the same graph; the state map is the change order's.
+    from hubproto import changecontrol
+
+    direct = [i for i in changecontrol._items(co) if i["id"] == c["direct_id"]]
+    assert direct and direct[0]["op"] == "change" and direct[0]["origin"]["kind"] == "direct" and direct[0]["origin"]["by"] == "carol"
+    rule = direct[0]["rule"]
+    assert rule["kind"] == "process" and rule["name"] == NCR and not rule["steps"] and "awaiting-verification" in {s["id"] for s in rule["statuses"]}
+    assert "failed" not in {s["id"] for s in rule["statuses"]} and "retry" not in {t["id"] for t in rule["transitions"]}, "the compile adds the hub's own"
+    assert "disposition-applier" in wm.transition_map(rule)["disposition-the-nonconformance"]["actions"], "actions name cogs, as the prose does"
     assert co["fields"]["state_map"] == {NCR: {"rejected": "cancelled"}}
     items = wfs.delta_items(hub, co)
     assert items and all(not i["stale"] for i in items) and {i["process"] for i in items} == {NCR}
@@ -274,13 +285,20 @@ def test_carry_a_draft_on_a_change_order_and_see_the_visual_diff_there(shell):
     assert "<span class='wf-sign add'" in page and "Status “Awaiting verification” added" in page
     assert re.search(r'class="[^"]*m-del[^"]*" id="cowf-nonconformance-c-s-rejected"', page), "the removed status, dashed and struck, at its old place"
     assert "Items in removed statuses" in page and "Consequences" in page and "the waiting decision" not in page.split("Items in removed statuses")[1][:20]
-    reasons = wfs.carried_reasons(hub, co)
-    assert any("ncr-sop" in x and "come into force only through" in x for x in reasons), reasons
+    assert wfs.carried_reasons(hub, co) == []
+    # Carried again after another edit: it replaces the first (one direct change for the process).
+    jop(shell, "carol", {"op": "rename_status", "id": "awaiting-verification", "name": "Verification"})
+    post(shell, "/workflow-carry", {"as": "carol", "process": NCR, "co": co["locator"]})
+    co = hub.kernel.get(co["locator"])
+    mine = [i for i in changecontrol._items(co) if (i.get("origin") or {}).get("process") == NCR]
+    assert len(mine) == 1 and mine[0]["id"] == co["fields"]["workflow_changes"][NCR]["direct_id"]
     # Its requester (or a document controller) takes it off.
     status, url, body = post(shell, "/workflow-uncarry", {"as": "dave", "co": co["locator"], "process": NCR})
     assert status == 403
     status, url, body = post(shell, "/workflow-uncarry", {"as": "alice", "co": co["locator"], "process": NCR})
-    assert status == 200 and not hub.kernel.get(co["locator"])["fields"]["workflow_changes"] and not hub.kernel.get(co["locator"])["fields"]["state_map"]
+    co = hub.kernel.get(co["locator"])
+    assert status == 200 and not co["fields"]["workflow_changes"] and not co["fields"]["state_map"]
+    assert not [i for i in changecontrol._items(co) if (i.get("origin") or {}).get("process") == NCR], "its direct change goes too"
 
 
 def test_a_draft_with_errors_is_not_carried(shell):

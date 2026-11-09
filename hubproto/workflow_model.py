@@ -10,9 +10,13 @@ A process's workflow is one graph::
 
 Gates: ``{"kind": "person", "role", "not": ["author" | <transition id>]}``, ``{"kind": "cog", "cog", "fallback": <role>}``,
 ``{"kind": "auto", "when": "actions-succeed" | <condition> | "not <condition>"}`` (conditions: the closed vocabulary of
-``hubproto.rules.CONDITION_VOCABULARY``). Validators, a closed list: ``{"fields_set": [...]}``, ``{"form_condition":
-<condition as in form layouts>}``, ``{"status_visited": <status id>}``, ``{"linked": <one of LINKED>}``. Actions, in order:
-a code step id, ``"notify:<role>"`` or ``"set:<field>=<value>"``.
+``hubproto.rules.CONDITION_VOCABULARY``). Validators, the closed list the graph grammar reads: ``{"fields_set": [...]}``,
+``{"status_visited": <status id>}``, ``{"condition": <condition>}`` (a linked-records check such as "no open
+nonconformance exists" is a condition of the vocabulary). Actions, in order: a step id (the release's manifest step),
+``{"notify": "role:<role>" | "field:<role>"}`` or ``{"set": {<field>: <value>}}``.
+
+This module works on the shape ``hubproto.process_graph`` (workstream 7) compiles; elements marked ``system`` (the
+``failed`` status and its Retry loop) are the hub's: checked around, drawn, never edited.
 
 Layout is presentation, not policy: ``{<status id>: [x, y], "label:<transition id>": [dx, dy]}`` (integers on an 8 px
 grid; label offsets move a transition's label from where it would sit).
@@ -47,13 +51,16 @@ CONDITION_WORDS = {}
 for _phrase, _key in CONDITION_VOCABULARY.items():
     CONDITION_WORDS.setdefault(_key, _phrase)
 AUTO_WHEN = ("actions-succeed",) + CONDITIONS
-VALIDATORS = ("fields_set", "form_condition", "status_visited", "linked")
-LINKED = {"no_open_ncr": "no open nonconformance is linked to it", "requirements_accepted": "every linked requirement is accepted",
-          "bom_resolved": "its bill of materials is resolved"}
+VALIDATORS = ("fields_set", "status_visited", "condition")  # the closed list the graph grammar reads (workstream 7)
 # Roles a record names rather than the org model (who started it, who owns it ...) and the hub itself: always "held".
 FIELD_ROLES = ("assignee", "owner", "author", "requester", "auditor", "chair", "evaluator", "reporter")
 PSEUDO_ROLES = FIELD_ROLES + ("system",)
 SYSTEM_STATUSES = ("failed",)  # the hub moves an item here when an action fails; Retry takes it back
+
+
+def is_system(element: dict | None) -> bool:
+    """A status or transition the hub keeps (the failed status and its Retry loop): drawn, not edited or deleted."""
+    return bool(element) and (bool(element.get("system")) or (element.get("id") in SYSTEM_STATUSES and "category" in element))
 MAX_STATUSES = 25
 OPS = ("add_status", "rename_status", "recategorise_status", "set_sla", "delete_status", "add_transition", "rename_transition",
        "reroute_transition", "delete_transition", "set_gate", "set_validators", "set_actions", "set_fields", "set_global",
@@ -156,7 +163,7 @@ def positions(layout: dict | None) -> dict:
 
 def meaning(g: dict) -> dict:
     """The graph without what does not change how items move (the source citation)."""
-    return {k: v for k, v in g.items() if k not in ("source",)}
+    return {k: v for k, v in g.items() if k not in ("source", "form")}
 
 
 def digest(g: dict) -> str:
@@ -181,27 +188,6 @@ def condition_words(cond: str | None) -> str:
     return f"not ({words})" if neg else words
 
 
-def form_condition_words(cond) -> str:
-    if not isinstance(cond, dict):
-        return "a condition"
-    if "all" in cond:
-        return " and ".join(form_condition_words(c) for c in cond["all"])
-    if "any" in cond:
-        return "(" + " or ".join(form_condition_words(c) for c in cond["any"]) + ")"
-    if "not" in cond:
-        return "not " + form_condition_words(cond["not"])
-    name = str(cond.get("field") or "?").replace("_", " ")
-    op, v = cond.get("op"), cond.get("value")
-    if op == "set":
-        return f"{name} is filled in"
-    if op == "empty":
-        return f"{name} is empty"
-    ops = {"==": "is", "!=": "is not", "in": "is one of", "not in": "is none of", ">": "is over", "<": "is under", ">=": "is at least",
-           "<=": "is at most"}
-    vals = ", ".join(map(str, v)) if isinstance(v, list) else str(v)
-    return f"{name} {ops.get(op, op)} {vals}"
-
-
 def gate_words(g: dict, gate: dict | None, *, initial: bool = False) -> str:
     gate = gate or {}
     kind = gate.get("kind")
@@ -210,9 +196,16 @@ def gate_words(g: dict, gate: dict | None, *, initial: bool = False) -> str:
             return "the hub starts it" if gate.get("role") == "system" else f"{role_words(gate.get('role'))} starts it"
         out = f"{role_words(gate.get('role'))} decides" if gate.get("role") != "system" else "the hub does it"
         nots = []
+        tm = transition_map(g)
         for n in gate.get("not") or []:
-            nots.append("not the author" if n == "author" else f"not whoever took “{(transition_map(g).get(n) or {}).get('name') or n}”")
-        return out + (", " + ", ".join(nots) if nots else "")
+            if n in tm:
+                nots.append(f"not whoever took “{tm[n].get('name') or n}”")
+            elif str(n).startswith("@"):
+                nots.append(f"not whoever took “{str(n)[1:]}”")
+            else:
+                nots.append(f"not the {'item' + chr(39) + 's ' if n in FIELD_ROLES else ''}{str(n).replace('-', ' ')}")
+        also = ", or an approver of the item" if gate.get("also") == "approvers" else ""
+        return out + also + (", " + ", ".join(nots) if nots else "")
     if kind == "cog":
         return (f"the {gate.get('cog') or '?'} cog decides within its approval criteria, otherwise "
                 f"{role_words(gate.get('fallback'))}")
@@ -246,16 +239,47 @@ def validator_words(g: dict, v: dict) -> str:
         if not names:
             return "nothing to check"
         return (", ".join(names[:-1]) + " and " + names[-1] if len(names) > 1 else names[0]) + (" are" if len(names) > 1 else " is") + " filled in"
-    if "form_condition" in v:
-        return form_condition_words(v["form_condition"])
     if "status_visited" in v:
         return f"it has been in “{name_of(g, v['status_visited'])}”"
-    if "linked" in v:
-        return LINKED.get(v["linked"], str(v["linked"]).replace("_", " "))
+    if "condition" in v:
+        return condition_words(v["condition"])
     return "a check"
 
 
-def action_words(a: str) -> str:
+def action_text(a) -> str:
+    """An action as the editor writes it on one line: a step or cog id, ``notify:<role>`` or ``set:<field>=<value>``."""
+    if isinstance(a, dict):
+        if "notify" in a:
+            return "notify:" + str(a["notify"]).split(":", 1)[-1]
+        if "set" in a and isinstance(a["set"], dict) and a["set"]:
+            (f, v), = list(a["set"].items())[:1]
+            return f"set:{f}={str(v).lower() if isinstance(v, bool) else v}"
+        return str(a)
+    return str(a)
+
+
+def action_from_text(text: str, field_roles=FIELD_ROLES):
+    """The action a line of the editor means, in the shape the release carries (workstream 7's grammar): a step or cog
+    id as it is, ``{"notify": "role:<role>"}`` (or ``field:`` for a role the item names), ``{"set": {field: value}}``."""
+    t = str(text).strip()
+    if t.startswith("notify:"):
+        who = t[7:].strip()
+        return {"notify": ("field:" if who in field_roles else "role:") + who}
+    if t.startswith("set:"):
+        f, _, v = t[4:].partition("=")
+        val = {"true": True, "false": False}.get(v.strip().lower(), v.strip())
+        return {"set": {f.strip().replace(" ", "_"): val}}
+    return t
+
+
+def action_words(a) -> str:
+    if isinstance(a, dict):
+        if "notify" in a:
+            return "tells " + role_words(str(a["notify"]).split(":", 1)[-1])
+        if "set" in a and isinstance(a["set"], dict) and a["set"]:
+            (f, v), = list(a["set"].items())[:1]
+            return f"sets {str(f).replace('_', ' ')} to {v}"
+        return str(a)
     a = str(a)
     if a.startswith("notify:"):
         return "tells " + role_words(a[7:])
@@ -275,7 +299,7 @@ def route_words(g: dict, t: dict) -> str:
     if kind == "initial":
         return f"at the start, into {to}"
     if kind == "global":
-        if t.get("except") is None:
+        if t.get("except") is None or sorted(set(t["except"]) - {t.get("to")}) == sorted(set(done_ids(g)) - {t.get("to")}):
             ex = " except done ones"
         elif t["except"]:
             ex = " except " + ", ".join(f"“{name_of(g, x)}”" for x in t["except"])
@@ -310,124 +334,36 @@ def status_words(s: dict) -> str:
 
 
 # ---------------------------------------------------------------- today's workflows in the 10.1 shape
-def _title(text: str) -> str:
-    t = str(text or "").replace("-", " ").strip()
-    return t[:1].upper() + t[1:]
-
-
 def graph_of(bundle: dict, process: str, types: dict | None = None) -> dict:
-    """The graph of a process in a release bundle (section 10.1).
+    """The graph of a process in a release bundle (section 10.1), without the derived keys of the earlier shape.
 
-    When the bundle already holds the graph shape (workstream 7 compiles processes into it) it is returned as it is.
-    Otherwise today's linear workflow (``hubproto.release.render_workflow``) is converted without changing its meaning:
-    the automatic transitions become auto-gated transitions that run their steps; each checkpoint becomes a person gate
-    (a cog gate, falling back to the checkpoint's role, when the routing sends it to a cog with approval criteria for the
-    process; ``not author`` when a segregation-of-duties rule covers the object), with the steps after it as its actions,
-    the fields the type collects at a decision, and the fields the next state requires as a validator; the rejection
-    exit, the returned, failed and cancelled exits become ordinary statuses; Cancel is a global transition and Retry a
-    loop on the system ``failed`` status."""
+    The release carries it at ``workflows[<process>]`` (workstream 7 compiles every process into it,
+    ``hubproto.process_graph``). A release made before processes were graphs holds only the earlier state machine: its
+    process section is compiled the same way, so the graph is the one a release would carry today."""
+    from .process_graph import build, graph_only
+
     wf = (bundle.get("workflows") or {}).get(process)
     if wf is None:
         raise KeyError(f"no workflow {process!r} in the release")
-    if "statuses" in wf:
-        return copy.deepcopy(wf)
-    proc = (bundle.get("processes") or {}).get(process) or {}
-    td = (types or {}).get(wf.get("record_type")) or {}
-    system_fields = set(td.get("system_fields") or [])
-    required = td.get("required_by_state") or {}
-    decision_fields = list(td.get("decision_fields") or [])
-    titles = {s["id"]: s.get("title") or s["id"] for s in proc.get("steps") or []}
-    steps = proc.get("steps") or []
-    cps = {c["id"]: c for c in wf.get("checkpoints") or []}
-    terminal = wf.get("terminal") or "closed"
-
-    statuses = []
-    for st in wf.get("states") or []:
-        if st == "open":
-            statuses.append({"id": st, "name": "Open", "category": "todo"})
-        elif st.startswith("awaiting-") and st[9:] in cps:
-            cp = cps[st[9:]]
-            entry = {"id": st, "name": f"Awaiting: {cp.get('title') or cp['id']}", "category": "in_progress"}
-            if cp.get("sla_days"):
-                entry["sla_days"] = cp["sla_days"]
-            statuses.append(entry)
-        elif st == terminal:
-            statuses.append({"id": st, "name": _title(st), "category": "done", "outcome": "completed"})
-        elif st == "rejected":
-            statuses.append({"id": st, "name": "Rejected", "category": "done", "outcome": "rejected"})
-        elif st == "returned":
-            statuses.append({"id": st, "name": "Returned", "category": "todo"})
-        else:
-            statuses.append({"id": st, "name": _title(st), "category": "in_progress"})
-    have = {s["id"] for s in statuses}
-    if "failed" not in have:
-        statuses.append({"id": "failed", "name": "Failed", "category": "in_progress"})
-    if "cancelled" not in have:
-        statuses.append({"id": "cancelled", "name": "Cancelled", "category": "done", "outcome": "cancelled"})
-
-    def validators_into(state: str) -> list[dict]:
-        need = [f for f in required.get(state) or [] if f not in system_fields]
-        return [{"fields_set": need}] if need else []
-
-    def gate_for(cp: dict) -> dict:
-        role = cp.get("role")
-        cogs = [str(r.get("assignee"))[4:] for r in bundle.get("routing") or []
-                if r.get("process") == process and r.get("step") == cp["id"] and str(r.get("assignee", "")).startswith("cog:")]
-        criteria = {str(c.get("approver"))[4:] for c in bundle.get("approval_criteria") or [] if c.get("process") == process}
-        cog = next((c for c in cogs if c in criteria), None)
-        gate = {"kind": "cog", "cog": cog, "fallback": role} if cog else {"kind": "person", "role": role}
-        if any(s.get("object") == wf.get("object") for s in bundle.get("sod") or []) and gate["kind"] == "person":
-            gate["not"] = ["author"]
-        return gate
-
-    first_role = steps[0].get("role") if steps else "staff"
-    transitions = [{"id": "create", "type": "initial", "to": "open", "name": "Create",
-                    "gate": {"kind": "person", "role": first_role or "staff"}, "validators": [], "actions": [], "fields": []}]
-    autos = [t for t in wf.get("transitions") or [] if t.get("kind") == "automatic"]
-    human = [t for t in wf.get("transitions") or [] if t.get("kind") == "human"]
-    human_pairs = {(t["from"], t["to"]) for t in human}
-    for t in autos:
-        if (t["from"], t["to"]) in human_pairs:
-            continue  # the steps that run after a decision: the decision's actions (below)
-        acts = [s for s in t.get("steps") or [] if not str(s).startswith("reach-")]
-        name = titles.get(acts[0], _title(acts[0])) if acts else "Continue"
-        transitions.append({"id": f"auto-{t['to']}", "type": "directed", "from": [t["from"]], "to": t["to"], "name": name,
-                            "gate": {"kind": "auto", "when": "actions-succeed"}, "validators": validators_into(t["to"]),
-                            "actions": acts, "fields": []})
-    for t in human:
-        cp = cps.get(t.get("step")) or {"id": t.get("step"), "title": t.get("title"), "role": "staff"}
-        after = next((a for a in autos if a["from"] == t["from"] and a["to"] == t["to"]), {})
-        acts = [s for s in after.get("steps") or [] if not str(s).startswith("reach-")]
-        gate = gate_for(cp)
-        transitions.append({"id": cp["id"], "type": "directed", "from": [t["from"]], "to": t["to"], "name": cp.get("title") or cp["id"],
-                            "gate": gate, "validators": validators_into(t["to"]), "actions": acts, "fields": decision_fields})
-        rej = t.get("on_reject")
-        if rej:
-            back = rej != "rejected"
-            transitions.append({"id": f"reject-{cp['id']}", "type": "directed", "from": [t["from"]], "to": rej,
-                                "name": "Return" if back else "Reject", "gate": copy.deepcopy(gate), "validators": [], "actions": [],
-                                "fields": []})
-    if "returned" in {s["id"] for s in statuses}:
-        transitions.append({"id": "resubmit", "type": "directed", "from": ["returned"], "to": "open", "name": "Resubmit",
-                            "gate": {"kind": "person", "role": "owner"}, "validators": [], "actions": [], "fields": []})
-    transitions.append({"id": "retry", "type": "directed", "from": ["failed"], "to": "failed", "name": "Retry",
-                        "gate": {"kind": "person", "role": "owner"}, "validators": [], "actions": [], "fields": []})
-    transitions.append({"id": "cancel", "type": "global", "to": "cancelled", "name": "Cancel",
-                        "gate": {"kind": "person", "role": "owner"}, "validators": [], "actions": [], "fields": []})
-    lines = sorted(s.get("line") for s in steps if isinstance(s.get("line"), int))
-    src = proc.get("source") or {}
-    return {"process": process, "record_type": wf.get("record_type"), "statuses": statuses, "transitions": transitions,
-            "source": {"frame": src.get("frame"), "lines": [src.get("line") or (lines[0] if lines else None), lines[-1] if lines else None]}}
+    if "statuses" not in wf:
+        proc = (bundle.get("processes") or {}).get(process)
+        if not proc:
+            raise KeyError(f"no process {process!r} in the release")
+        slas = dict((wf.get("sla") or {}))
+        wf = build(proc, slas, wf.get("record_type") or proc.get("record_type") or process)
+    return graph_only(copy.deepcopy(wf))
 
 
 # ---------------------------------------------------------------- shape
-def _problem(level: str, code: str, text: str, element: str | None = None, id_: str | None = None, **extra) -> dict:
-    return {"level": level, "code": code, "element": element, "id": id_, "text": text, **extra}
+def _problem(level: str, code: str, text: str, kind: str | None = None, id_: str | None = None, **extra) -> dict:
+    """A check's finding: ``element`` (and ``id``) the id of the status or transition it is about, ``kind`` which of the
+    two (both None for the graph as a whole)."""
+    return {"level": level, "code": code, "kind": kind, "element": id_, "id": id_, "text": text, **extra}
 
 
 def validate(g: dict) -> list[dict]:
     """What is wrong with the graph's shape: ids, references, categories, gates, validators. Each an error naming the
-    element ({"level", "code", "element", "id", "text"})."""
+    element ({"level", "code", "kind", "element" (its id), "id", "text"})."""
     out = []
     if not isinstance(g, dict) or not isinstance(g.get("statuses"), list) or not isinstance(g.get("transitions"), list):
         return [_problem("error", "shape", "a workflow has a list of statuses and a list of transitions")]
@@ -500,17 +436,14 @@ def validate(g: dict) -> list[dict]:
                 w = str(gate.get("when") or "actions-succeed")
                 if (w[4:] if w.startswith("not ") else w) not in AUTO_WHEN or w == "not actions-succeed":
                     out.append(_problem("error", "gate", f"{label}: “{w}” is not a condition the hub can test", "transition", tid))
-            for n in gate.get("not") or []:
-                if n != "author" and n not in tmap:
-                    out.append(_problem("error", "gate", f"{label}: segregation of duties names an unknown transition ({n})", "transition", tid))
         for v in t.get("validators") or []:
             keys = [k for k in (v if isinstance(v, dict) else {}) if k in VALIDATORS]
             if len(keys) != 1:
                 out.append(_problem("error", "validator", f"{label}: a check is one of {', '.join(VALIDATORS)}", "transition", tid))
             elif keys[0] == "status_visited" and v["status_visited"] not in sids:
                 out.append(_problem("error", "validator", f"{label}: checks a visit to a status that is not in the workflow", "transition", tid))
-            elif keys[0] == "linked" and v["linked"] not in LINKED:
-                out.append(_problem("error", "validator", f"{label}: “{v['linked']}” is not a linked-record check the hub knows", "transition", tid))
+            elif keys[0] == "condition" and v["condition"] not in CONDITIONS:
+                out.append(_problem("error", "validator", f"{label}: “{v['condition']}” is not a condition the hub can test", "transition", tid))
         for key in ("actions", "fields"):
             if not isinstance(t.get(key, []), list):
                 out.append(_problem("error", "shape", f"{label}: {key} are a list", "transition", tid))
@@ -579,41 +512,45 @@ def mandatory_gates(g: dict) -> dict[str, bool]:
 
 
 def _auto_conflicts(g: dict) -> list[dict]:
+    """Automatic transitions out of one status are tried in the order they are written (the runner takes the first that
+    applies): one that can never fire (an earlier one always applies, or applies whenever it would) overlaps; conditions
+    that can all fail, with nobody to decide instead and no automatic way after them, leave a gap."""
     out = []
     by_source: dict[str, list[dict]] = {}
     gated_out: set[str] = set()
     for a, t, b in edges(g):
+        if (t.get("type") or "directed") == "global":
+            continue  # a global Cancel is not a way on
         if (t.get("gate") or {}).get("kind") == "auto":
             by_source.setdefault(a, []).append(t)
-        elif gated(t) and a != b and (t.get("type") or "directed") != "global":
-            gated_out.add(a)  # someone decides the way on (a global Cancel is not a way on)
+        elif gated(t) and a != b:
+            gated_out.add(a)  # someone decides the way on
     sm = status_map(g)
     for sid, ts in by_source.items():
         name = (sm.get(sid) or {}).get("name") or sid
-        whens = [str((t.get("gate") or {}).get("when") or "actions-succeed") for t in ts]
-        uncond = [t for t, w in zip(ts, whens) if w == "actions-succeed"]
-        conds = [w for w in whens if w != "actions-succeed"]
-        names = ", ".join(f"“{t.get('name') or t['id']}”" for t in ts)
-        if len(uncond) > 1 or (uncond and conds) or len(set(conds)) < len(conds):
-            out.append(_problem("error", "auto-overlap", f"automatic transitions out of “{name}” overlap: {names} could all fire",
-                                "status", sid, transitions=[t["id"] for t in ts]))
-            continue
-        if not conds:
-            continue
-        pairs = [c for c in conds if ("not " + c) in conds]
-        if pairs and len(conds) > 2:
-            out.append(_problem("error", "auto-overlap", f"automatic transitions out of “{name}” overlap: {names}", "status", sid,
-                                transitions=[t["id"] for t in ts]))
-        elif not pairs and sid not in gated_out:
+        seen: list[str] = []
+        covered = False  # an earlier transition always applies (no condition, or a condition and its negation)
+        for t in ts:
+            w = str((t.get("gate") or {}).get("when") or "actions-succeed")
+            label = f"“{t.get('name') or t['id']}”"
+            if covered or w in seen:
+                out.append(_problem("error", "auto-overlap", f"automatic transitions out of “{name}” overlap: {label} can never fire, an "
+                                    "earlier one always applies first", "status", sid, transitions=[x["id"] for x in ts]))
+                continue
+            neg = w[4:] if w.startswith("not ") else "not " + w
+            covered = w == "actions-succeed" or neg in seen
+            seen.append(w)
+        if not covered and sid not in gated_out:
+            conds = [c for c in seen if c != "actions-succeed"]
             out.append(_problem("error", "auto-gap", f"items can be stuck in “{name}”: when none of {', '.join(condition_words(c) for c in conds)} "
-                                f"holds, no transition leaves it", "status", sid, transitions=[t["id"] for t in ts]))
+                                f"holds, no transition leaves it", "status", sid, transitions=[x["id"] for x in ts]))
     return out
 
 
 def checks(g: dict, *, bundle: dict | None = None, old: dict | None = None, items: dict | None = None,
            state_map: dict | None = None) -> list[dict]:
-    """Section 10.3: errors and warnings, each naming the element it is about (``element`` "status" or "transition" and
-    its ``id``; none for the graph as a whole). ``bundle`` (the release in force) checks roles and cogs; ``old`` (the
+    """Section 10.3: errors and warnings, each naming the element it is about (``element``, the id of a status or a
+    transition, with ``kind`` saying which; none for the graph as a whole). ``bundle`` (the release in force) checks roles and cogs; ``old`` (the
     graph in force) finds widenings, including a mandatory gate bypassed (with the ``path``); ``items`` ({status id:
     count}) and ``state_map`` ({old status id: new status id}) check that items in a removed status have a place to go."""
     out = validate(g)
@@ -628,11 +565,11 @@ def checks(g: dict, *, bundle: dict | None = None, old: dict | None = None, item
             out.append(_problem("error", "two-initial", f"“{t.get('name')}” is a second start: an item is created one way", "transition", t["id"]))
     reach = reachable(g)
     for s in g["statuses"]:
-        if inits and s["id"] not in reach and s["id"] not in SYSTEM_STATUSES:
+        if inits and s["id"] not in reach and not is_system(s):
             out.append(_problem("error", "unreachable", f"no transition leads to “{s['name']}”", "status", s["id"]))
     leaves = {a for a, t, b in edges(g) if a != b and (t.get("type") or "directed") != "global"}
     for s in g["statuses"]:
-        if s.get("category") != "done" and s["id"] not in SYSTEM_STATUSES and s["id"] not in leaves:
+        if s.get("category") != "done" and not is_system(s) and s["id"] not in leaves:
             out.append(_problem("error", "dead-end", f"“{s['name']}” is not done but no transition leaves it", "status", s["id"]))
     out += _auto_conflicts(g)
     if bundle:
@@ -880,10 +817,10 @@ def tidy(g: dict) -> dict:
             if indeg[b] == 0:
                 ready.append(b)
                 ready.sort(key=lambda s: idx[s])
-    last_side = [sid for sid in order if sm[sid].get("category") != "done" and sid not in SYSTEM_STATUSES]
+    last_side = [sid for sid in order if sm[sid].get("category") != "done" and not is_system(sm[sid])]
     top = max((layer[s] for s in last_side), default=-1)
     for sid in order:
-        if sm[sid].get("category") == "done" or sid in SYSTEM_STATUSES:
+        if sm[sid].get("category") == "done" or is_system(sm[sid]):
             layer[sid] = top + 1
     cols: dict[int, list[str]] = {}
     for sid in order:
@@ -905,7 +842,7 @@ def tidy(g: dict) -> dict:
         def rank(sid: str) -> tuple:
             w = want(sid)
             done_rank = ({"completed": 0}.get(sm[sid].get("outcome") or "completed", 1) if sm[sid].get("category") == "done" else 0)
-            return (1 if sid in SYSTEM_STATUSES else 0, done_rank, 1 if w is None else 0, w or 0, idx[sid])
+            return (1 if is_system(sm[sid]) else 0, done_rank, 1 if w is None else 0, w or 0, idx[sid])
 
         last = None
         for sid in sorted(cols[c], key=rank):
@@ -1114,7 +1051,8 @@ def apply_op(doc: dict, op: dict) -> dict:
             s["sla_days"] = n
     elif kind == "delete_status":
         sid = op.get("id")
-        _status(g, sid)
+        if is_system(_status(g, sid)):
+            raise ValueError(f"the hub keeps “{_status(g, sid)['name']}”: an item goes there when an action fails")
         g["statuses"] = [s for s in g["statuses"] if s["id"] != sid]
         keep = []
         for t in g["transitions"]:
@@ -1189,7 +1127,8 @@ def apply_op(doc: dict, op: dict) -> dict:
             t["from"] = list(dict.fromkeys(frm))
     elif kind == "delete_transition":
         tid = op.get("id")
-        _transition(g, tid)
+        if is_system(_transition(g, tid)):
+            raise ValueError(f"the hub keeps “{_transition(g, tid)['name']}”: it is how a failed item is tried again")
         g["transitions"] = [t for t in g["transitions"] if t["id"] != tid]
         for t in g["transitions"]:
             gate = t.get("gate") or {}
@@ -1202,6 +1141,8 @@ def apply_op(doc: dict, op: dict) -> dict:
         if not isinstance(gate, dict) or gate.get("kind") not in GATE_KINDS:
             raise ValueError("a gate is a person's role, a cog or automatic")
         clean = {"kind": gate["kind"]}
+        if gate.get("also"):
+            clean["also"] = gate["also"]
         if gate["kind"] == "person":
             clean["role"] = gate.get("role")
             if gate.get("not"):
@@ -1219,7 +1160,7 @@ def apply_op(doc: dict, op: dict) -> dict:
         t["validators"] = copy.deepcopy(vs)
     elif kind == "set_actions":
         t = _transition(g, op.get("id"))
-        t["actions"] = [str(a).strip() for a in op.get("actions") or [] if str(a).strip()]
+        t["actions"] = [a if isinstance(a, dict) else str(a).strip() for a in op.get("actions") or [] if isinstance(a, dict) or str(a).strip()]
     elif kind == "set_fields":
         t = _transition(g, op.get("id"))
         t["fields"] = list(dict.fromkeys(str(f).strip() for f in op.get("fields") or [] if str(f).strip()))

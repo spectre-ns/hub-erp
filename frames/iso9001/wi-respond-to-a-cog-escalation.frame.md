@@ -3,7 +3,7 @@ type: frame [0.2]
 name: wi-respond-to-a-cog-escalation
 description: "Work instruction for approvers: what to do when a cog escalates an item to you instead of deciding it."
 visibility: internal
-version: "0.1.0"
+version: "0.2.0"
 scope: department
 maintainer: carol
 inherits: org-model
@@ -12,7 +12,7 @@ compile: none
 ---
 # WI: respond to a cog escalation
 
-For: anyone who receives an item a cog could not decide.
+For: anyone holding the `staff` role who receives an item a cog could not decide.
 
 1. A reviewer cog (doc-reviewer, quality-assistant) approves only within the
    approval criteria written in the SOP. When the item is outside them, the

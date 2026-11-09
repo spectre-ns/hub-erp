@@ -26,6 +26,9 @@ def bundle(tmp_path_factory):
     return {"bundle": b, "types": hub.kernel.types}
 
 
+AWAIT = "awaiting-disposition-the-nonconformance"
+
+
 def ncr(bundle) -> dict:
     return wm.graph_of(bundle["bundle"], "nonconformance", bundle["types"])
 
@@ -62,34 +65,41 @@ def test_every_process_in_the_release_converts_and_checks_clean(bundle):
         assert sum(1 for t in g["transitions"] if t["type"] == "initial") == 1
 
 
-def test_the_nonconformance_workflow_keeps_its_meaning(bundle):
+def test_the_graph_is_the_compiled_one_without_the_earlier_view(bundle):
+    """graph_of gives workstream 7's compiled graph (hubproto.process_graph) without the derived keys of the earlier
+    state-machine shape; the hub's own failed status and Retry loop are marked system."""
+    b = bundle["bundle"]
     g = ncr(bundle)
+    assert not set(g) & {"object", "states", "checkpoints", "terminal", "reject_to", "sla"}
+    assert {k: v for k, v in b["workflows"]["nonconformance"].items() if k in g} == g
     sm, tm = wm.status_map(g), wm.transition_map(g)
-    assert sm["awaiting-disposition-the-nonconformance"] == {"id": "awaiting-disposition-the-nonconformance", "category": "in_progress",
-                                                             "name": "Awaiting: Disposition the nonconformance", "sla_days": 5}
-    assert sm["closed"]["outcome"] == "completed" and sm["rejected"]["outcome"] == "rejected" and sm["cancelled"]["outcome"] == "cancelled"
-    auto = tm["auto-awaiting-disposition-the-nonconformance"]
-    assert auto["gate"] == {"kind": "auto", "when": "actions-succeed"} and auto["actions"][0] == "open-the-nonconformance"
-    decide = tm["disposition-the-nonconformance"]
-    # The routing sends low-risk dispositions to the quality-assistant cog, which has approval criteria for the process.
-    assert decide["gate"] == {"kind": "cog", "cog": "quality-assistant", "fallback": "quality-manager"}
-    assert decide["actions"] == ["apply-the-disposition", "open-corrective-action", "render-the-record"]
-    assert decide["validators"] == [{"fields_set": ["disposition", "disposition_rationale"]}] and "disposition" in decide["fields"]
-    assert tm["reject-disposition-the-nonconformance"]["to"] == "rejected" and tm["cancel"]["type"] == "global"
-    assert tm["retry"]["from"] == ["failed"] and tm["retry"]["to"] == "failed", "Retry is a loop on the system failed status"
-    assert g["source"]["frame"] == "ncr-sop"
+    assert sm[AWAIT]["category"] == "in_progress" and sm[AWAIT]["sla_days"] == 5
+    assert wm.is_system(sm["failed"]) and wm.is_system(tm["retry"]) and not wm.is_system(sm["closed"])
+    assert tm["disposition-the-nonconformance"]["from"] == [AWAIT] and tm["cancel"]["type"] == "global"
+    with pytest.raises(ValueError, match="the hub keeps"):
+        wm.apply_op(g, {"op": "delete_status", "id": "failed"})
+    with pytest.raises(ValueError, match="the hub keeps"):
+        wm.apply_op(g, {"op": "delete_transition", "id": "retry"})
 
 
-def test_segregation_of_duties_and_a_bill_cog_gate(bundle):
-    bill = wm.graph_of(bundle["bundle"], "purchase-to-pay", bundle["types"])
-    gate = wm.transition_map(bill)["approve-the-bill"]["gate"]
-    assert gate == {"kind": "cog", "cog": "ap-reviewer", "fallback": "payables-reviewer"}
-    capa = wm.graph_of(bundle["bundle"], "capa", bundle["types"])
-    decisions = [t["id"] for t in capa["transitions"] if t.get("type") == "directed" and wm.gated(t) and not t["id"].startswith(("reject-", "retry"))]
-    assert decisions == ["verify-the-actions", "verify-effectiveness"]
-    doc = wm.graph_of(bundle["bundle"], "design-release", bundle["types"])
-    assert "returned" in wm.status_map(doc) and wm.transition_map(doc)["resubmit"]["to"] == "open"
-    assert wm.transition_map(doc)["review-the-design"]["gate"].get("not") == ["author"], "a design's designer does not approve it"
+def test_a_release_from_before_graphs_is_compiled_the_same_way(bundle):
+    b = bundle["bundle"]
+    old_shape = {k: v for k, v in b["workflows"]["nonconformance"].items() if k not in ("statuses", "transitions", "source", "form", "process")}
+    earlier = {**b, "workflows": {"nonconformance": old_shape}}
+    assert wm.graph_of(earlier, "nonconformance") == {k: v for k, v in ncr(bundle).items()}
+    with pytest.raises(KeyError):
+        wm.graph_of({"workflows": {"x": {"states": []}}, "processes": {}}, "x")
+
+
+def test_actions_as_the_editor_writes_them_and_as_the_release_carries_them():
+    assert wm.action_from_text("notify:quality-manager") == {"notify": "role:quality-manager"}
+    assert wm.action_from_text("notify:owner") == {"notify": "field:owner"}
+    assert wm.action_from_text("set:priority=high") == {"set": {"priority": "high"}}
+    assert wm.action_from_text("set:locked=true") == {"set": {"locked": True}}
+    assert wm.action_from_text(" capa-opener ") == "capa-opener"
+    for a in ({"notify": "role:quality-manager"}, {"set": {"priority": "high"}}, "capa-opener"):
+        assert wm.action_from_text(wm.action_text(a)) == a
+    assert wm.action_words({"notify": "role:quality-manager"}) == "tells the quality manager"
 
 
 def test_a_bundle_already_in_the_graph_shape_is_returned_as_it_is():
@@ -106,7 +116,7 @@ def test_validate_names_each_bad_element():
     g["statuses"][1]["outcome"] = "completed"
     g["transitions"][1]["from"] = ["nowhere"]
     g["transitions"][2]["gate"] = {"kind": "boss"}
-    g["transitions"][3]["validators"] = [{"fields_set": ["a"], "linked": "no_open_ncr"}]
+    g["transitions"][3]["validators"] = [{"fields_set": ["a"], "condition": "risk_low"}, {"condition": "the moon is full"}]
     g["transitions"][4]["gate"] = {"kind": "auto", "when": "the moon is full"}
     found = {(p["code"], p.get("id")) for p in wm.validate(g)}
     assert ("duplicate", "open") in found and ("outcome", "review") in found and ("reference", "submit") in found
@@ -144,9 +154,10 @@ def test_the_structural_errors(bundle):
 
 def test_automatic_transitions_that_overlap_or_leave_a_gap():
     g = small()
+    # Tried in order: an unconditional one first means a later one can never fire.
     two = wm.apply_op(g, {"op": "add_transition", "id": "skip", "name": "Skip", "from": ["open"], "to": "done", "gate": {"kind": "auto"}})
     p = [x for x in wm.checks(two) if x["code"] == "auto-overlap"]
-    assert p and p[0]["id"] == "open" and set(p[0]["transitions"]) == {"submit", "skip"}
+    assert p and p[0]["id"] == "open" and "“Skip” can never fire" in p[0]["text"] and set(p[0]["transitions"]) == {"submit", "skip"}
     g2 = copy.deepcopy(g)
     wm.transition_map(g2)["submit"]["gate"] = {"kind": "auto", "when": "risk_low"}
     assert "auto-gap" in codes(wm.checks(g2)), "when the risk is not low the item is stuck in Open"
@@ -155,6 +166,9 @@ def test_automatic_transitions_that_overlap_or_leave_a_gap():
     assert not codes(wm.checks(g3)) & {"auto-gap", "auto-overlap"}, "a condition and its negation cover every item once"
     g4 = wm.apply_op(g3, {"op": "add_transition", "id": "also", "name": "Also", "from": ["open"], "to": "done", "gate": {"kind": "auto", "when": "risk_low"}})
     assert "auto-overlap" in codes(wm.checks(g4))
+    # A condition first and an unconditional "otherwise" after it is how the graph grammar writes a fast lane.
+    lane = wm.apply_op(g2, {"op": "add_transition", "id": "else", "name": "Otherwise", "from": ["open"], "to": "review", "gate": {"kind": "auto"}})
+    assert not codes(wm.checks(lane)) & {"auto-gap", "auto-overlap"}
 
 
 def test_widenings_against_the_workflow_in_force():
@@ -223,7 +237,7 @@ def test_diff_in_words_keyed_by_element(bundle):
     assert "now goes from “Review” to “Extra”" in by[("transition:back", "rerouted")]["text"]
     gate = by[("transition:approve", "gate")]
     assert gate["text"] == ("“Approve”: the qa-manager cog decides within its approval criteria, otherwise the quality manager, instead of "
-                            "the quality manager decides, not the author") and gate["widening"]
+                            "the quality manager decides, not the item's author") and gate["widening"]
     assert by[("transition:approve", "validators")]["widening"] and "checks nothing (was verdict is filled in)" in by[("transition:approve", "validators")]["text"]
     assert "then tells the quality manager (was apply it)" in by[("transition:approve", "actions")]["text"]
     assert ("transition:approve", "fields") in by and ("transition:t9", "added") in by and ("transition:submit", "renamed") in by

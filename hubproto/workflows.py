@@ -7,20 +7,23 @@ a change order (change control v2, sections 10.4 to 10.6). The graph itself is p
 * **Drafts.** One per person and process (``state/workflows/drafts/<person>.json``), based on the release in force when
   it was started: the base graph and layout, the operation log, a cursor (undo and redo move it) and the document the
   log makes (``{"graph", "layout", "state_map"}``). Every edit is saved at once.
-* **Change orders.** ``carry`` puts a snapshot of a draft on a change order in its ``workflow_changes`` field, and its
-  state map in the change order's ``state_map`` field (section 8)::
+* **Change orders.** ``carry`` puts a draft on a change order in three parts:
+
+  - what changes how items move: **one direct change** of the process rule (``changecontrol.add_direct_change``, the
+    graph form of the SOP's process section, ``process_rule``). The review round drafts its prose into the SOP
+    (``process_graph.to_sentences`` writes sentences that compile back to the same graph) and checks the round trip;
+  - where items in removed statuses go: the change order's ``state_map`` (``changecontrol.set_state_map``), which the
+    release applies;
+  - the layout (presentation) and a snapshot for the visual diff, in the change order's ``workflow_changes`` field::
 
       workflow_changes: {<process>: {"graph": <10.1 graph>, "layout": {...}, "state_map": {old: new},
-                                     "base": {"release", "graph_digest", "layout_version"},
-                                     "items": {<status id>: count when carried}, "delta": [<delta item>],
+                                     "base": {"release", "graph_digest", "layout_version"}, "direct_id": <direct change id>,
+                                     "items": {<status id>: count when carried}, "delta": [<delta item in words>],
                                      "layout_only": bool, "by", "at", "origin": {"kind": "direct", "by", "at"}}}
-      state_map: {<process>: {<old status id>: <new status id>}}
 
-  The change-order core (workstream 1) calls, as it calls ``hubproto.formlayout`` and ``hubproto.recordtypes``:
-  ``carried_reasons(hub, co)`` (why it cannot be released), ``delta_items(hub, co)`` (each change as a section 8 delta
-  item, origin ``direct``) and ``activate(hub, co, digest)`` (release step: the layouts come into force; only for an
-  approved change order). A change of meaning comes into force through the release that states it: the prose of the SOP
-  that owns the process, drafted from the direct items and compiled into the graph (workstreams 2 and 7).
+  The change-order core calls ``carried_reasons(hub, co)`` with its readiness checks, and the release automation
+  ``activate(hub, co, digest)`` with the form layouts (the layouts come into force; only for an approved change order).
+  ``delta_items(hub, co)`` gives the change in words, element by element (section 8 keys).
 """
 
 from __future__ import annotations
@@ -282,11 +285,60 @@ def _may_carry(hub, co: dict, by: str) -> str:
             "controller change what it carries")
 
 
+def step_cogs(proc: dict) -> dict[str, str]:
+    """{step id: cog id} of a process in force: the actions of its graph are step ids, the prose names cogs."""
+    if proc.get("statuses"):
+        from .process_graph import action_steps
+
+        return {step: cog for step, cog, _ in action_steps(proc)}
+    return {s["id"]: s["cog"] for s in proc.get("steps") or [] if s.get("cog")}
+
+
+def process_rule(bundle: dict, process: str, graph: dict) -> dict:
+    """The process rule (the graph form of the SOP's process section) that states ``graph``: what a direct change of a
+    workflow is (``changecontrol.add_direct_change``). The hub's own status and loop (``failed``, Retry) are left out (the
+    compile puts them back); actions name cogs, as the prose does; the no-op carriers of two checkpoints in a row go."""
+    old = dict((bundle.get("processes") or {}).get(process) or {})
+    cogs = step_cogs(old)
+    statuses = [{k: v for k, v in st.items() if k != "system"} for st in graph.get("statuses") or [] if not wm.is_system(st)]
+    transitions = []
+    for t in graph.get("transitions") or []:
+        if wm.is_system(t):
+            continue
+        tt = {k: v for k, v in t.items() if k not in ("system", "line", "source")}
+        tt["actions"] = [a if isinstance(a, dict) else cogs.get(a, a) for a in t.get("actions") or []
+                         if isinstance(a, dict) or not str(a).startswith("reach-")]
+        transitions.append(tt)
+    done = [st["id"] for st in statuses if st.get("category") == "done" and (st.get("outcome") or "completed") == "completed"]
+    rule = {"kind": "process", "name": process, "folder": old.get("folder"), "object": old.get("object"),
+            "record_type": graph.get("record_type") or old.get("record_type"), "steps": [], "terminal": done[0] if done else None,
+            "reject_to": None, "statuses": statuses, "transitions": transitions}
+    if old.get("files_by_type"):
+        rule["files_by_type"] = dict(old["files_by_type"])
+    return rule
+
+
+def prose_of(bundle: dict, process: str, graph: dict) -> list[str]:
+    """The graph as the sentences of the SOP's process section (``process_graph.to_sentences``): they compile back to the
+    same graph, so this is what the review round writes for a carried workflow change."""
+    from .process_graph import to_sentences
+
+    return to_sentences(process_rule(bundle, process, graph))
+
+
+def _rule_in_force(hub, process: str) -> dict | None:
+    return next((r for r in hub.settings_rules() if r.get("kind") == "process" and r.get("name") == process), None)
+
+
 def carry(hub, co_ref: str, user: str, process: str) -> dict:
-    """Put a snapshot of the person's draft of a process's workflow on a change order (carried again after a later
-    edit). Refused while the draft has errors, is based on a workflow no longer in force, or the change order is past
-    preparing."""
-    from . import eco
+    """Put the person's draft of a process's workflow on a change order (carried again after a later edit replaces it).
+
+    What changes how items move becomes **one direct change** of the process rule on the change order
+    (``changecontrol.add_direct_change``: the review round drafts its prose into the SOP and checks it reads back to the
+    same graph); the answers given at delete time go to the change order's state map (``changecontrol.set_state_map``);
+    the layout and a snapshot for the visual diff go in ``workflow_changes[<process>]``. Refused while the draft has
+    errors, is based on a workflow no longer in force, or the change order is past preparing."""
+    from . import changecontrol, eco
 
     co = eco._co(hub, co_ref)
     if eco.finished(co) or co["state"].startswith("awaiting"):
@@ -300,7 +352,8 @@ def carry(hub, co_ref: str, user: str, process: str) -> dict:
     if stale(hub, d, process):
         raise ValueError(f"the {process} workflow in force changed since your draft was started: discard it and start again")
     doc, base = d["doc"], d["base"]
-    an = analysis(hub, process, doc, base, by=user)
+    _, bundle = bundle_in_force(hub)
+    an = analysis(hub, process, doc, base, by=user, bundle=bundle)
     errors = [c["text"] for c in an["checks"] if c["level"] == "error"]
     if errors:
         raise ValueError("the draft has problems: " + "; ".join(errors[:3]))
@@ -309,35 +362,50 @@ def carry(hub, co_ref: str, user: str, process: str) -> dict:
     at = utcnow()
     for item in an["delta"]:
         item["origin"].update({"by": user, "at": at})
-    entry = {"graph": copy.deepcopy(doc["graph"]), "layout": copy.deepcopy(doc["layout"]), "state_map": dict(doc.get("state_map") or {}),
-             "base": {"release": base.get("release"), "graph_digest": wm.digest(base["graph"]), "layout_version": int(base.get("layout_version") or 0)},
-             "items": an["items"], "delta": an["delta"], "layout_only": wm.layout_only(an["delta"]), "by": user, "at": at,
-             "origin": {"kind": "direct", "by": user, "at": at}}
-    carried = changes_of(co)
-    carried[process] = entry
-    smap = dict(co["fields"].get("state_map") or {})
-    removed = {k: v for k, v in entry["state_map"].items() if k not in wm.status_map(entry["graph"])}
+    layout_only = wm.layout_only(an["delta"])
+    old = changes_of(co).get(process) or {}
+    if old.get("direct_id"):  # carried before: the new snapshot replaces the old one
+        try:
+            changecontrol.remove_direct_change(hub, co["locator"], old["direct_id"], user)
+        except ValueError:
+            pass
+    direct_id = None
+    if not layout_only:
+        was = _rule_in_force(hub, process)
+        rule = process_rule(bundle, process, doc["graph"])
+        items = changecontrol.add_direct_change(hub, co["locator"], {"op": "change" if was else "add", "rule": rule, **({"was": was} if was else {})},
+                                                user, origin={"editor": "workflow", "process": process})
+        direct_id = next((i["id"] for i in reversed(items) if (i.get("origin") or {}).get("process") == process), None)
+    removed = {k: v for k, v in (doc.get("state_map") or {}).items() if k not in wm.status_map(doc["graph"]) and v}
     if removed:
-        smap[process] = removed
-    else:
-        smap.pop(process, None)
-    hub.kernel.set_fields(co["locator"], {"workflow_changes": carried, "state_map": smap}, by=user)
+        changecontrol.set_state_map(hub, co["locator"], process, removed, user)
+    entry = {"graph": copy.deepcopy(doc["graph"]), "layout": copy.deepcopy(doc["layout"]), "state_map": removed,
+             "base": {"release": base.get("release"), "graph_digest": wm.digest(base["graph"]), "layout_version": int(base.get("layout_version") or 0)},
+             "items": an["items"], "delta": an["delta"], "layout_only": layout_only, "direct_id": direct_id, "by": user, "at": at,
+             "origin": {"kind": "direct", "by": user, "at": at}}
+    carried = changes_of(eco._co(hub, co["locator"]))
+    carried[process] = entry
+    hub.kernel.set_fields(co["locator"], {"workflow_changes": carried}, by=user)
     return entry
 
 
 def uncarry(hub, co_ref: str, process: str, *, by: str) -> None:
-    from . import eco
+    """Take a process's workflow change off a change order: its direct change, its state map and its layout."""
+    from . import changecontrol, eco
 
     co = eco._co(hub, co_ref)
     if eco.finished(co) or co["state"].startswith("awaiting"):
         raise ValueError(f"{co['number']} is {co['state'].replace('-', ' ')}: change what it carries while it is being prepared")
-    why = _may_carry(hub, co, by)
-    if why and by not in (co["fields"].get("requested_by"), co.get("created_by")):
-        raise ValueError(why)
     carried = changes_of(co)
     if process not in carried:
         raise ValueError(f"{co['number']} carries no change to the {process} workflow")
-    carried.pop(process)
+    c = carried.pop(process)
+    if c.get("direct_id"):
+        try:
+            changecontrol.remove_direct_change(hub, co["locator"], c["direct_id"], by)
+        except ValueError:
+            pass
+    co = eco._co(hub, co["locator"])
     smap = dict(co["fields"].get("state_map") or {})
     smap.pop(process, None)
     hub.kernel.set_fields(co["locator"], {"workflow_changes": carried, "state_map": smap}, by=by)
@@ -353,17 +421,18 @@ def _base_changed(hub, process: str, c: dict) -> bool:
 
 
 def carried_reasons(hub, co: dict) -> list[str]:
-    """Why the workflow changes a change order carries cannot be released as they stand (empty when they can): checks
-    with errors, a workflow or layout released since they were carried, items in a removed status with nowhere to go,
-    and a change of meaning that no carried revision of the SOP owning the process can state."""
-    from . import eco
+    """Why the workflow changes a change order carries cannot be released as they stand (empty when they can): a
+    workflow or layout released since they were carried, checks with errors (against the release in force), a direct
+    change taken off the change order since. (The review round states each change of meaning in the SOP and checks it
+    reads back: that is the change-order core's.)"""
+    from . import changecontrol
 
     out = []
     carried = changes_of(co)
     if not carried:
         return out
     _, bundle = bundle_in_force(hub)
-    sops = {c["name"] for c in eco.carried(hub, co)}
+    ids = {i.get("id") for i in changecontrol._items(co)}
     for process, c in sorted(carried.items()):
         label = f"{process} workflow"
         if _base_changed(hub, process, c):
@@ -372,35 +441,28 @@ def carried_reasons(hub, co: dict) -> list[str]:
         base = graph_in_force(hub, process, bundle)
         problems = wm.checks(c["graph"], bundle=bundle, old=base, items=items_by_status(hub, base), state_map=c.get("state_map"))
         out += [f"{label}: {p['text']}" for p in problems if p["level"] == "error"]
-        frame = (c["graph"].get("source") or {}).get("frame") or (base.get("source") or {}).get("frame")
-        if not c.get("layout_only") and frame and frame not in sops:
-            n = len([i for i in c.get("delta") or [] if not i.get("no_effect")])
-            out.append(f"{label}: {n} change(s) of how items move come into force only through {frame}, the SOP that states the process: "
-                       f"carry its revision so the change is written there")
+        if c.get("direct_id") and c["direct_id"] not in ids:
+            out.append(f"{label}: its change of how items move is no longer on the change order; carry the draft again")
     return out
 
 
 def delta_items(hub, co: dict) -> list[dict]:
-    """Each workflow change the change order carries as a section 8 delta item (origin direct), marked stale when the
-    workflow or its layout changed since it was carried."""
+    """Each workflow change the change order carries as section 8 delta items in words (origin direct), keyed by element
+    id, marked stale when the workflow or its layout changed since it was carried. The changes of meaning are one direct
+    change of the process on the change order (``direct_id``); these words say what that change does, element by element."""
     out = []
     for process, c in sorted(changes_of(co).items()):
         st = _base_changed(hub, process, c)
         for item in c.get("delta") or []:
-            out.append({**copy.deepcopy(item), "stale": st})
+            out.append({**copy.deepcopy(item), "stale": st, "direct_id": c.get("direct_id")})
     return out
 
 
-def state_maps(co: dict) -> dict:
-    """{process: {old status: new status}} the change order carries (the release moves the items, workstream 7)."""
-    return {p: dict(m) for p, m in (co["fields"].get("state_map") or {}).items()}
-
-
 def activate(hub, co: dict, digest: str) -> list[str]:
-    """The release step: each carried layout comes into force as the next version of that process's layout. Safe to
-    repeat; refuses a change order that is not approved (hubproto.closure). A carried change of meaning is not applied
-    here: the release states it (workstream 7 compiles it from the SOP); this says whether the release in force now has
-    the graph that was carried. Returns what it did."""
+    """The release step (with the form layouts): each carried layout comes into force as the next version of that
+    process's layout. Safe to repeat; refuses a change order that is not approved (hubproto.closure). The graph itself
+    comes into force with the release (its direct change, compiled from the SOP); this says whether the release now
+    has the graph that was carried. Returns what it did."""
     carried = changes_of(co)
     if not carried:
         return []
@@ -425,6 +487,6 @@ def activate(hub, co: dict, digest: str) -> list[str]:
                 live = wm.graph_of(bundle, process, hub.kernel.types)
             except KeyError:
                 live = None
-            same = live is not None and wm.digest(live) == wm.digest(c["graph"])
+            same = live is not None and not [i for i in wm.diff(live, c["graph"]) if not i.get("no_effect")]
             done.append(f"{process} workflow " + ("in force as carried" if same else "as the release states it (compare with what was carried)"))
     return done

@@ -120,54 +120,42 @@ class Hub:
         return out
 
     def rules_to_change_order(self, user: str, new_rules: list[dict], reason: str = "") -> dict:
-        """Rule changes (the rules in force -> ``new_rules``) written into the SOP documents they belong to, as draft
-        revisions on the person's open settings change order. The Frame is derived from those documents: nothing
-        changes until the revisions are approved and the change order is released."""
-        from . import eco, sop_settings
+        """Rule changes (the rules in force -> ``new_rules``) recorded as direct changes on the person's open settings
+        change order (change control v2: hubproto.changecontrol). Settings does not write the prose: the change order's
+        first review round drafts it. Nothing changes until the change order is approved and released."""
+        from . import changecontrol
 
-        meta = self.releases.current()
-        bundle = self.releases.bundle(meta["digest"])
-        planned = sop_settings.plan(self.settings_rules(), new_rules, bundle.get("processes") or {})
-        if not planned:
-            raise ValueError("that changes nothing")
-        co = next((r for r in self.kernel.query(type_="change-order") if r["state"] in eco.OPEN_STATES
-                   and r["fields"].get("requested_by") == user and r["fields"].get("from_settings")), None)
-        if co is None:
-            co = self.kernel.create("change-order", "Quality/Changes",
-                                    {"title": f"Policy changes by {user}", "description": reason or "Changes to the policy.",
-                                     "requested_by": user, "from_settings": True}, by=user)
-        report = sop_settings.apply_plan(self, co["locator"], planned, by=user)
-        return {"change_order": co["number"], "locator": co["locator"], "report": report}
+        return changecontrol.rules_to_change_order(self, user, new_rules, reason=reason)
 
     def extractor(self, calls: bool = False):
         """How this hub reads SOPs (hubproto.extract.get_extractor), with its cache and the names a model may use.
         ``calls``: may ask the local model (background jobs, the command line); a page uses only what was read before."""
-        from .llm_extract import baseline_for, context_for, hosted_reader
+        from .llm_extract import baseline_for, context_for
 
         ex = get_extractor(cache_dir=Path(self.root) / "state" / "extract-cache", context=context_for(self), gateway=self.model, calls=calls)
         if getattr(ex, "name", "") != "hybrid":
             return ex
-        # Diff-based reading against the release in force; Claude Opus reads only when switched on for compilation.
-        baseline, hosted = (lambda: baseline_for(self)), hosted_reader()
+        baseline = lambda: baseline_for(self)  # noqa: E731  diff-based reading against the release in force
         committee = self.compile_committee()
         if committee:
             from .llm_extract import CommitteeExtractor
 
-            members = [(n, hosted["model"]) for n, _ in committee["members"]] if hosted else committee["members"]
-            return CommitteeExtractor(members, committee["quorum"], cache_dir=Path(self.root) / "state" / "extract-cache",
+            # Each member cog reads with its own bundled model, through the gateway (Ollama, or the Anthropic API where
+            # hosted models are switched on); a member without one is a question, not skipped.
+            return CommitteeExtractor(committee["members"], committee["quorum"], cache_dir=Path(self.root) / "state" / "extract-cache",
                                       context=context_for(self), gateway=self.model, calls=calls, baseline=baseline,
-                                      **({"call": hosted["call"], "budget": hosted["budget"]} if hosted else {}))
+                                      unavailable=committee.get("unavailable"), perspectives=committee.get("perspectives"))
         ex.baseline = baseline
-        if hosted:
-            ex.model, ex.call, ex.budget = hosted["model"], hosted["call"], hosted["budget"]
-        elif not __import__("os").environ.get("HUBPROTO_EXTRACTOR_MODEL"):
+        if not __import__("os").environ.get("HUBPROTO_EXTRACTOR_MODEL"):
             ex.model = self.compiler_model() or ex.model
         return ex
 
     def compile_committee(self) -> dict | None:
-        """The compile-frame committee of the release in force: {"members": [(cog, its model)], "quorum"}; each member
-        reads with the model its profile names (when the hub can reach it)."""
-        from .model import backend_for
+        """The compile-frame committee of the release in force: {"members": [(cog, its model, or "" when it cannot read
+        here)], "quorum", "unavailable": {cog: why}, "perspectives": {cog: its own view}}. Each member reads with the model its profile bundles it with: an
+        Ollama model, or a Claude model only where hosted models are switched on (``model.backend_for``). The committee
+        reads by consensus, so ``quorum`` is every member (the release's ``Agree:`` is kept as ``agree``)."""
+        from .model import backend_for, hosted_allowed, resolve_model
 
         meta = self.releases.current()
         if not meta:
@@ -176,11 +164,26 @@ class Hub:
         c = (b.get("committees") or {}).get("compile-frame")
         if not c:
             return None
-        members = []
+        members, unavailable = [], {}
         for name in c.get("members") or []:
             m = ((b.get("cogs") or {}).get(name) or {}).get("model") or ""
-            members.append((name, m if m and backend_for(m) not in ("none", "stand-in") else ""))
-        return {"members": members, "quorum": int(c.get("quorum") or 1)}
+            if not m:
+                why = "its profile names no model"
+            elif m.startswith("claude") and not hosted_allowed():
+                why = f"{m} is a hosted model, and hosted models are switched off here (HUBPROTO_HOSTED_MODELS)"
+            elif backend_for(m) == "stand-in":
+                why = f"{m} is not reachable here (only a development stand-in would answer)"
+            else:
+                res = resolve_model(m)
+                why = "" if res["available"] else res["note"]
+            members.append((name, "" if why else m))
+            if why:
+                unavailable[name] = why
+        from .llm_extract import perspective_of
+
+        # Each member reads from its own perspective (its identity, persona and roles); the material is the same for all.
+        return {"members": members, "quorum": len(members), "agree": int(c.get("quorum") or 1), "unavailable": unavailable,
+                "perspectives": {n: perspective_of(b, n) for n, _ in members}}
 
     def compiler_model(self) -> str:
         """The model of the organization cog, which reads SOPs in the Compile the Frame Op when no committee is set: its
@@ -353,6 +356,10 @@ class Hub:
                                     record_types=self.kernel.types, config_digests=self.kernel.config_digests,
                                     resolve_document=self.resolve_document)
         proposal["overrides"] = {n: {"text": t, "draft": docs.get(n), "path": store.get(n).relpath} for n, t in texts.items()}
+        from .runner import state_map_questions  # statuses this change removes while items are in them (change control 5.2)
+
+        asked = {q.get("id") for q in proposal.get("questions") or []}
+        proposal["questions"] = list(proposal.get("questions") or []) + [q for q in state_map_questions(self, proposal) if q["id"] not in asked]
         # Explicit: what each Frame was compiled from (the SOP document and revision, or the Frame file).
         if self.sop_source():
             from . import sopdocs
@@ -561,18 +568,19 @@ class Hub:
         people come from the identity provider; their roles still come from this Frame.)"""
         return self.propose_new_member(kind="person", name=name, roles=roles, by=by)
 
-    def propose_new_cog(self, *, name: str, roles: list[str], model: str, prompt: str, follows: list[str], autonomy: str,
-                        duties: list[str], by: str) -> dict:
-        """A new cog as one policy proposal: the member in the organization model and its profile, drafted as changes
-        to those two Frames. The policy owners review and release it; on release the hub installs it."""
-        return self.propose_new_member(kind="cog", name=name, roles=roles, model=model, prompt=prompt, follows=follows,
-                                       autonomy=autonomy, duties=duties, by=by)
+    def propose_new_cog(self, *, name: str, roles: list[str], model: str, about: str, persona: str, by: str) -> dict:
+        """A new cog as one policy proposal: the member and its roles in the organization model and its identity (what it
+        does, its model, its persona) in the cog profiles, drafted as changes to those two Frames. What it follows, what
+        it may do and its duties come from the SOPs that name it or its roles. The policy owners review and release it;
+        on release the hub installs it."""
+        return self.propose_new_member(kind="cog", name=name, roles=roles, model=model, about=about, persona=persona, by=by)
 
-    def propose_new_member(self, *, kind: str, name: str, roles: list[str], by: str, model: str = "", prompt: str = "",
-                           follows: list[str] | None = None, autonomy: str = "propose", duties: list[str] | None = None) -> dict:
+    def propose_new_member(self, *, kind: str, name: str, roles: list[str], by: str, model: str = "", about: str = "",
+                           persona: str = "") -> dict:
         import re as _re
 
-        follows, duties = list(follows or []), list(duties or [])
+        about = " ".join((about or "").split())
+        persona = (persona or "").strip().removeprefix("persona-")
         if self.sop_source():
             # The Frame is derived from the SOPs: the member goes into the organization model, a cog's profile into
             # the cog profiles, both as revisions on a change order.
@@ -581,8 +589,7 @@ class Hub:
                 raise ValueError(f"{name} is already a member")
             new = rules + [{"kind": "member", "principal": name, "principal_type": kind, "roles": list(roles)}]
             if kind == "cog":
-                new.append({"kind": "cog", "name": name, "model": model, "prompt": prompt, "prompt_from": "", "follows": follows,
-                            "reviews": [], "references": [], "autonomy": autonomy, "duties": duties})
+                new.append({"kind": "cog", "name": name, "about": about, "model": model, "persona": persona, "prompt_from": "", "references": []})
             return self.rules_to_change_order(by, new, reason=f"add {name} ({kind})")
         meta = self.releases.current()
         bundle = self.releases.bundle(meta["digest"]) if meta else {}
@@ -594,11 +601,13 @@ class Hub:
         unknown = [r for r in roles if r not in (bundle.get("roles") or [])]
         if unknown or not roles:
             raise ValueError("choose at least one role" if not roles else f"no such role: {', '.join(unknown)}")
-        bad = [f for f in follows if f not in self.frames.frames]
-        if bad:
-            raise ValueError(f"no such Frame: {', '.join(bad)}")
-        if kind == "cog" and autonomy not in ("read", "propose", "act"):
-            raise ValueError("autonomy is read, propose or act")
+        personas = sorted((bundle.get("personas") or {}))
+        if kind == "cog" and not about:
+            raise ValueError("say in one paragraph what the cog does (about)")
+        if kind == "cog" and persona and personas and persona not in personas:
+            raise ValueError(f"no such persona: {persona}; the personas are: {', '.join(personas)}")
+        if kind == "cog" and not persona:
+            persona = "reviewer" if "reviewer" in personas else (personas[0] if personas else "")
         org = self.frames.get("org-model")
         cogs_frame = next((f for f in self.frames.frames.values() if "## Cog:" in f.text), None) if kind == "cog" else None
         if kind == "cog" and cogs_frame is None:
@@ -620,9 +629,12 @@ class Hub:
         org_text = "\n".join(lines) + ("\n" if org.text.endswith("\n") else "")
         texts = {"org-model": org_text}
         if kind == "cog":
-            prof = [f"## Cog: {name}", f"Model: {model or 'claude-sonnet-5-5'}", f"Prompt: {' '.join((prompt or '').split()) or f'You are {name}.'}",
-                    f"Follows: {', '.join(follows)}" if follows else "Follows:", f"Autonomy: {autonomy}"] + [f"Duty: {d.strip()}" for d in duties if d.strip()]
-            texts[cogs_frame.name] = cogs_frame.text.rstrip("\n") + "\n\n" + "\n".join(prof) + "\n"
+            prof = [f"## Cog: {name}", f"About: {about}", f"Model: {model or 'claude-sonnet-5-5'}"] + ([f"Persona: {persona}"] if persona else [])
+            text = cogs_frame.text.rstrip("\n")
+            # The profile goes before the committees, with the other profiles.
+            at = text.find("\n## Committee:")
+            texts[cogs_frame.name] = (text[:at].rstrip("\n") + "\n\n" + "\n".join(prof) + "\n" + text[at:] + "\n") if at >= 0 else \
+                (text + "\n\n" + "\n".join(prof) + "\n")
         drafts = {}
         for frame_name, text in texts.items():
             d = self.frame_draft(frame_name, by=by)
@@ -949,15 +961,13 @@ class Hub:
 
     def chat_tools(self, cog: str, sender: str, run_id: str, text: str, about: str | None = None):
         """The cog's governed tools for one chat turn, recorded as an agent run (so /agent-run shows what it did and a
-        person confirms what it proposed): the look tools and, within its Autonomy, the write tools. Every write goes
-        through the same checks as anywhere else: what the cog may do and what the person asking may do."""
+        person confirms what it proposed): the look tools and the write tools, each write decided from the SOPs (act,
+        propose or refuse). Every write goes through the same checks as anywhere else: what the cog may do and what the
+        person asking may do."""
         from .agent import AgentStore, AgentTools, act_specs, agents_enabled, look_specs
 
         meta = self.releases.current()
-        bundle = self.releases.bundle(meta["digest"]) if meta else {}
-        mode = ((bundle.get("cogs") or {}).get(cog) or {}).get("autonomy") or "propose"
-        if not agents_enabled():
-            mode = "read"
+        mode = "derived" if agents_enabled() else "read"  # each write is decided from the SOPs (hubproto.agent)
         actions = int(os.environ.get("HUBPROTO_CHAT_ACTIONS") or 5)
         store = AgentStore(self.root / "state" / "agents")
         store.append(run_id, {"type": "started", "cog": cog, "goal": text, "by": sender, "trigger": "chat", "mode": mode, "about": about,
