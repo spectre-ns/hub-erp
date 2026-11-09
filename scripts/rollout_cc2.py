@@ -16,18 +16,23 @@ Steps (docs/rollout/cc2.md is the runbook):
 2. co       the migration change order, prepared by alice (staff): a revision of every SOP, policy, cog-profile,
             persona and org-model document whose text differs from the repository's Frames, a new document for each
             Frame that has none, the retirement of each document whose Frame the repository dropped, and the
-            record-type changes config/record-types.json needs. Revisions are alice's.
+            record-type changes config/record-types.json needs. alice writes every text; bob opens each draft and
+            retires the dropped ones (carol, who signs and decides, opens nothing).
 3. review   a review round (compile with the extractor in HUBPROTO_EXTRACTOR, panel, reviews); every question and
-            finding is logged verbatim; the compile committee's blocking questions are answered by its chair.
+            finding is logged verbatim; carol, a policy owner, answers the blocking unread-rule questions with
+            "narrative, no rule" only where the paragraph was read as narrative (READ); the others wait for the
+            product owner's decisions (--decisions).
 4. validate a passing test record (the suite's result on the commit) for the high-risk items, and a test note for
             the medium-risk ones, through hubproto.validation.record_evidence.
 5. decide   bob and carol decide every item (both, so widenings have their two owners), accepting each warning; the
             CO is sent for approval; carol (quality manager) signs it; the release automation runs.
 6. verify   new release in force, revisions effective, record types activated, the waiting runs still waiting and
-            decidable, a sample decided on a further copy, signatures, chains, the delta record and status --check.
+            decidable, a sample decided on a further copy, the next compile (new Frames in, retired out), the senior
+            cogs unavailable with hosted models off and available with them on, signatures, chains, the delta record
+            and status --check.
 
 Exit codes: 0 done (or, with --dry-run, nothing stops it); 1 a check failed; 3 a step needs a code change (named in the
-log with file and line); 2 a mistake in the command.
+log with file and line); 4 a question needs the product owner's decision; 2 a mistake in the command.
 """
 
 from __future__ import annotations
@@ -59,6 +64,36 @@ NOTE = "migration to change control v2, carried by Claude at the product owner's
 MEANING = ("Approved by Claude at the user's instruction: migration to change control v2 "
            "(rollout rehearsed on a copy of the live data)")
 ANSWER = "Answered by Claude at the product owner's instruction: "
+NARRATIVE = ANSWER + "narrative, no rule"
+OPENER = "bob"     # opens each revision and new document for alice, and retires: never carol, who signs and decides
+ANSWERER = "carol"  # a policy owner who contributed nothing answers the compile committee's blocking questions under v9
+# Each unread-rule paragraph of the repository's texts, read one by one (key: Frame, first line, sha256 of the quoted
+# words, first 16 hex). "narrative": it explains rules the sentence sections, the code or its guards already state, so
+# "narrative, no rule" is true. "decide": it states an obligation the hub does not configure from it (a procedure for
+# people, or a rule with no sentence); answering "no rule" would not be true, so the product owner decides (record it as a
+# divergence, or have the text rewritten). A paragraph not in this table is never answered.
+READ = {
+    ("org-model", 14, "e847750e6236f814"): ("narrative", "cogs as members; what they may do comes from the role, group and name sentences"),
+    ("org-model", 20, "cb8b16eadc055d3e"): ("narrative", "what groups and committees are; stated in ## Groups and ## Committee"),
+    ("cog-profiles", 13, "d2f1066589e5d810"): ("narrative", "what a profile holds; a profile change is a widening by the compiler's guard"),
+    ("cog-profiles", 21, "390da034acdab7cb"): ("narrative", "derived follows, autonomy, duties and criteria; a cog never signs its own work is a guard"),
+    ("change-control-sop", 15, "39f53e3ecebcc5bc"): ("narrative", "what a CR, a CO and the delta are"),
+    ("change-control-sop", 22, "16f537b856e5a572"): ("narrative", "the change-order loop, which the code runs; widenings by two owners is a guard"),
+    ("change-control-sop", 80, "fb9e5ce03832fd58"): ("narrative", "says itself that it is not a rule the hub enforces"),
+    ("document-control-sop", 20, "3dd418f055a722d2"): ("narrative", "restates the three 'when ... confirms' sentences and its criteria (lines 42-44, 55)"),
+    ("it-sop", 15, "aa8da55d97b8e59d"): ("narrative", "what configuration is and what this SOP covers"),
+    ("it-sop", 24, "88dc75451b78299f"): ("narrative", "closure is the code's; system administrators creating change orders is a sentence"),
+    ("it-sop", 30, "bfd6c2ed50cf5a85"): ("narrative", "no approval sentence for the role; the it-admin deny and the SoD sentence state the rest"),
+    ("it-sop", 37, "72a2cf53230b1a16"): ("decide", "the quarterly access review by the system administrators is a duty for people that no sentence configures (only the 90-day interval is a threshold)"),
+    ("it-sop", 45, "b540cd7b837873c5"): ("narrative", "validation, stated in ## Validation and enforced by the code"),
+    ("it-sop", 62, "dedfdecc068d207c"): ("decide", "hosted models: an installation switch recorded under the SOP and a supplier approval; procedures for people, not configured from this text"),
+    ("it-sop", 76, "175b614cc9c8769c"): ("decide", "daily backups kept off the host, recorded restore tests, restores only by a system administrator on a task: procedures the hub does not configure"),
+    ("it-sop", 82, "46520643a4ee0751"): ("decide", "incidents reported as tasks, the agents switch, an incident as a nonconformance: procedures the hub does not configure"),
+    ("it-sop", 88, "dfe9e7fe288e5412"): ("decide", "the first sentence is in ## Segregation of duties, but 'an internal auditor does not audit system administration they perform' has no sentence"),
+    ("ncr-sop", 15, "65b8e40eeed1554c"): ("narrative", "summarises the permissions, routing, criteria, SLA, duty and steps below"),
+    ("training-sop", 15, "5d5f53d755d2420e"): ("narrative", "summarises the permissions, SLA, overdue routing and steps below"),
+}
+NEEDS_DECISION = 4
 REVIEW = "the repository's change-control SOP (Review of changes): "
 PANEL = (("it-admin", REVIEW + "a change that touches permissions, record types or forms is reviewed by the it-admin cog"),
          ("management", REVIEW + "a change to roles, limits or segregation of duties is reviewed by the management cog"),
@@ -74,6 +109,10 @@ class NeedsCode(Exception):
 
 class CheckFailed(Exception):
     pass
+
+
+class NeedsDecision(Exception):
+    """A question only the product owner can answer: the log lists each."""
 
 
 # ---------------------------------------------------------------- logging
@@ -113,6 +152,11 @@ class Log:
         except NeedsCode as e:
             status = "stopped (needs a code change)"
             self.needs_code(str(e))
+            raise
+        except NeedsDecision as e:
+            status = "stopped (needs the product owner's decision)"
+            self.report.setdefault("needs_decision", []).append(str(e))
+            self.line("NEEDS A DECISION: " + str(e))
             raise
         except CheckFailed as e:
             status = "failed"
@@ -573,13 +617,6 @@ def capability(hub, p: dict) -> list[str]:
                     "name, *, by, reason) (the requester or a document controller; a 'retires' link on the change order), "
                     "Hub.compile leaving a retired Frame out (hubproto/app.py:326-328), the delta listing its rules as removed, and "
                     "the release making the document obsolete and dropping the Frame from the release's texts (eco.publish_revisions).")
-    disk = set(hub.frames.frames)
-    missing = sorted(n for n in sop_docs(hub) if n not in disk and n not in p["retire"])
-    if missing:
-        gaps.append("the Frame store is built from the files on disk (hubproto/app.py:914-929 released_frames: the names of "
-                    "self.frames, the texts of the release), so a document in force whose file is not on disk breaks every compile "
-                    "('unknown Frame ...'): " + ", ".join(missing) + ". On a converted hub it should take the names from the release "
-                    "(and the documents), not from the files.")
     return gaps
 
 
@@ -600,8 +637,23 @@ def carry_text(hub, draft: dict, frame, log: Log) -> bool:
     return True
 
 
+WHERE = {"add_sop": "hubproto/eco.py:171-172", "add_new_sop": "hubproto/eco.py:76-77", "retire_sop": "hubproto/eco.py:114-115"}
+
+
+def refused_needs_code(fn, what: str, who: str):
+    """Run an eco call as ``who``; a refusal of who may ask is a code question, not a data one."""
+    try:
+        return fn()
+    except ValueError as e:
+        if "document controller" in str(e):
+            raise NeedsCode(f"eco.{what} refuses {who}: “{e}” ({WHERE[what]}: only the change order's requester or a document "
+                            f"controller may; under v9 {who} is neither, and carol, the only document controller, must not open "
+                            "or retire anything because she signs the change order and is one of its two owners)") from None
+        raise
+
+
 def change_order(hub, args, log: Log) -> dict | None:
-    from hubproto import authz, eco, recordtypes
+    from hubproto import authz, eco, recordtypes, sopdocs
 
     p = plan(hub, args)
     rt_changes, rt_skipped = p["record_types"]
@@ -629,13 +681,18 @@ def change_order(hub, args, log: Log) -> dict | None:
     bundle = hub.current_bundle()
     if not authz.check(bundle, PREPARER, "create", "change-order", "Quality/Changes")["allowed"]:
         raise CheckFailed(f"{PREPARER} may not prepare change orders under the release in force")
-    controllers = sorted(m for m in bundle["members"] if "document-controller" in authz.roles_of(bundle, m)
-                         and bundle["members"][m].get("type") == "person")
-    starter = next((c for c in controllers if c not in OWNERS), None) or (controllers[0] if controllers else None)
+    starter = OPENER
+    if starter != PREPARER and "document-controller" not in authz.roles_of(bundle, starter) and not getattr(eco, "OPENERS_MAY_BE_OWNERS", False):
+        # eco.add_sop, add_new_sop and retire_sop take the requester or a document controller (eco.py:171-172, 76-77,
+        # 114-115). Checked before anything is written, so a refusal leaves no half-made change order. (A code change
+        # that lets a policy owner open drafts for the requester should set eco.OPENERS_MAY_BE_OWNERS = True.)
+        refused_needs_code(lambda: (_ for _ in ()).throw(ValueError(
+            f"{starter} is neither {PREPARER} (the requester) nor a document controller: they or a document controller add SOPs to it")),
+            "add_sop", starter)
     if args.dry_run:
         log.line(f"dry run: would prepare '{TITLE}' as {PREPARER}, carrying {len(p['revise'])} revision(s), {len(p['create'])} new "
                  f"document(s), {len(p['retire'])} retirement(s) and {len(rt_changes)} record-type change(s); each revision "
-                 f"started by {starter} (a document controller) with {PREPARER} as its author")
+                 f"opened by {starter} with {PREPARER} as its author, the retirements by {OPENER}")
         return None
     co = find_co(hub)
     if co is None:
@@ -660,21 +717,36 @@ def change_order(hub, args, log: Log) -> dict | None:
             continue
         draft = carried.get(name)
         if draft is None:
-            # alice owns no SOP, so a document controller starts each revision for her (eco.add_sop's rule); alice is
-            # its author and writes its only version, so she is the revision's author and the controller is not.
-            draft = eco.add_sop(hub, co["number"], name, by=starter, author=PREPARER)
+            # alice owns no SOP, so bob opens each revision for her; alice is its author and writes its only version.
+            # bob counts as a contributor (started_by); carol, who signs and decides, opens nothing.
+            draft = refused_needs_code(lambda: eco.add_sop(hub, co["number"], name, by=starter, author=PREPARER), "add_sop", starter)
+        bom = {f["name"]: f for f in (hub.releases.current() or {}).get("frames") or []}
+        if name not in bom and hasattr(sopdocs, "_relpath"):
+            # A document no release compiles (the reference guide) has its Frame's path only on the document: the
+            # revision must keep it, or the release writes a second file for the same Frame.
+            rel = sopdocs._relpath(hub, name, hub.kernel.get(draft["locator"]), bom)
+            if rel != store.get(name).relpath:
+                raise NeedsCode(f"the revision {draft['number']} of {name} would be written to frames/{rel}, beside "
+                                f"frames/{store.get(name).relpath}: eco.add_sop keeps no Frame path (hubproto/eco.py:189 copies "
+                                "neither converted_from nor frame_relpath) and sopdocs._relpath falls back to documents/<name> "
+                                "(hubproto/sopdocs.py:305-311). Rehearsed: the release then fails at 'Publish the revisions' "
+                                "(duplicate Frame name) with the new release already in force and the change order approved but "
+                                "not released. The change order is prepared but nothing is released; run again after the fix.")
         if carry_text(hub, hub.kernel.get(draft["locator"]), store.get(name), log):
             n_new += 1
             log.line(f"  {name}: {draft['number']} rev {draft['fields'].get('revision')} carries the repository's text")
         else:
             n_same += 1
     for name in p["create"]:
-        draft = carried.get(name) or eco.add_new_sop(hub, co["number"], name, store.get(name).text, by=starter, author=PREPARER,
-                                                     relpath=store.get(name).relpath)
+        draft = carried.get(name) or refused_needs_code(lambda: eco.add_new_sop(
+            hub, co["number"], name, store.get(name).text, by=starter, author=PREPARER, relpath=store.get(name).relpath), "add_new_sop", starter)
         carry_text(hub, hub.kernel.get(draft["locator"]), store.get(name), log)
         log.line(f"  {name}: new document {draft['number']}")
     for name in p["retire"]:
-        eco.retire_sop(hub, co["number"], name, by=PREPARER, reason=f"the repository dropped its Frame (change control v2): {NOTE}")
+        if name in eco.retirements(hub.kernel.get(co["locator"])):
+            continue
+        refused_needs_code(lambda: eco.retire_sop(hub, co["number"], name, by=OPENER,
+                                                  reason=f"the repository dropped its Frame (change control v2): {NOTE}"), "retire_sop", OPENER)
         log.line(f"  {name}: retired with {co['number']}")
     log.line(f"revisions written: {n_new}; already carrying the repository's text: {n_same}")
     co = hub.kernel.get(co["locator"])
@@ -769,44 +841,35 @@ def review(hub, args, log: Log, co: dict) -> dict:
 
     bundle = hub.current_bundle()
     admins = [m for m in bundle["members"] if "system-administrator" in authz.roles_of(bundle, m)]
-    contribs = set(cc.contributors(hub, co["number"]))
-    owners = [o for o in cc.owners(hub) if o not in contribs]
+    import hashlib
+
+    undecided = []
     for q in cc.questions(hub, co["number"]):
         if q.get("code") not in cc.COMMITTEE_CODES or q.get("status", "open") != "open":
             continue
-        # Who may answer is the code's to say: the chair, then a system administrator, then (where the code allows it
-        # when the release in force names neither) a policy owner who contributed nothing. The first it accepts answers.
-        candidates = [w for w in dict.fromkeys([q.get("chair") or cmt.get("chair")] + admins + owners) if w and w not in contribs]
-        text = ANSWER + answer_for(q)
-        refusals = []
-        for who in candidates:
-            try:
-                cc.answer_question(hub, co["number"], q["id"], text, who)
-            except ValueError as e:
-                refusals.append(f"{who}: {e}")
-                continue
-            log.line(f"  {who} answered {q['id']} [{q.get('code')}]: {text}")
-            break
-        else:
-            raise NeedsCode(f"nobody may answer the {q.get('code')} question {q['id']} ({'; '.join(refusals) or 'no candidate'}): under the "
-                            "release in force the compile-frame committee has no chair and nobody holds system-administrator (both come with "
-                            "the organization model this change order carries), and hubproto/changecontrol.py:1878-1879 lets only them answer; "
-                            f"a blocking question stops approval (changecontrol.py:2589-2591). The question: {q.get('text')}")
+        t = q.get("text") or ""
+        quote = t[t.find("“") + 1:t.find("”")] if "“" in t else ""
+        first = (q.get("lines") or [q.get("line")])[0]
+        verdict, why = READ.get((q.get("frame"), first, hashlib.sha256(quote.encode()).hexdigest()[:16]), ("unread", "not read for this rollout"))
+        po = (args.decisions or {}).get(f"{q.get('frame')}:{first}")
+        if po and q.get("code") == "unread-rule" and po.get("answer") in ("narrative", "divergence"):
+            # The product owner's decision on this paragraph (--decisions): its words, as the answer
+            text = ANSWER + po["meaning"]
+            cc.answer_question(hub, co["number"], q["id"], text, ANSWERER, record_divergence=po["answer"] == "divergence")
+            log.line(f"  {ANSWERER} answered {q['id']} ({q.get('frame')} line {first}) as the product owner decided "
+                     f"({po['answer']}): {text}")
+            continue
+        if q.get("code") != "unread-rule" or verdict != "narrative":
+            undecided.append(f"[{q.get('code')}] {q.get('frame')} line {first} ({verdict}: {why}): {quote or t}")
+            continue
+        cc.answer_question(hub, co["number"], q["id"], NARRATIVE, ANSWERER)
+        log.line(f"  {ANSWERER} answered {q['id']} ({q.get('frame')} line {first}): {NARRATIVE} [read: {why}]")
+    if undecided:
+        for u in undecided:
+            log.line(f"  NEEDS THE PRODUCT OWNER'S DECISION: {u}")
+        raise NeedsDecision(f"{len(undecided)} blocking question(s) are not narrative and stay open (each blocks approval): the product "
+                            "owner decides each (record it as a divergence, or rewrite the text); then run the script again")
     return hub.kernel.get(co["locator"])
-
-
-def answer_for(q: dict) -> str:
-    code = q.get("code")
-    if code == "member-unavailable":
-        return ("the senior cogs cannot read here (hosted models are off). The changed SOPs are the repository's texts for "
-                "change control v2, written in the grammar's sentence shapes; the convention reader compiled them, the new "
-                "suite passed on that commit, and the policy owners decide every item of the delta as compiled.")
-    if code == "unread-rule":
-        return ("these lines are the repository's text for change control v2, prose that explains the rules stated in the "
-                "sentence shapes; a hub bootstrapped from the same Frames configures nothing from them either. Nothing beyond "
-                "what the grammar read comes into force from them; the rules in force are the delta items the policy owners decide.")
-    return ("the line is the repository's text for change control v2; the policy owners decide the delta items as "
-            "compiled, and nothing else comes into force from it.")
 
 
 # ---------------------------------------------------------------- step 4: validation evidence
@@ -948,6 +1011,37 @@ def verify(hub, args, log: Log, root: Path, co: dict, before: dict) -> None:
         problems = cc.verify_delta(hub, co["number"])
         log.line(f"verify_delta: {len(problems)} problem(s)")
         fails += [f"verify_delta: {p}" for p in problems]
+    if co:
+        # The next compile (not saved) reads the documents in force: the new Frames are in it, the retired ones are not.
+        nxt = hub.compile(save=False)
+        names = {f["name"] for f in nxt.get("frames") or []}
+        created = [c["name"] for c in eco.carried(hub, co) if c["draft"]["fields"].get("revision") == "A" and c["name"] not in names]
+        back = sorted(set(eco.retirements(co)) & names)
+        live = [c for c in nxt.get("changes") or [] if c.get("op") != "text"]
+        log.line(f"next compile: {len(names)} Frames; new ones missing: {created or 'none'}; retired ones present: {back or 'none'}; "
+                 f"changes against the release in force: {len(live)}")
+        fails += [f"the next compile lacks the new Frame {n}" for n in created] + [f"the next compile still has the retired {n}" for n in back]
+        fails += [f"the next compile changes something: {c.get('reason')}" for c in live[:5]]
+        # The senior cogs: unavailable with hosted models off, available with them on and a key (a fake one: availability
+        # is decided without calling the API).
+        saved = {k: os.environ.get(k) for k in ("HUBPROTO_HOSTED_MODELS", "ANTHROPIC_API_KEY")}
+        try:
+            os.environ.pop("HUBPROTO_HOSTED_MODELS", None)
+            off = hub.compile_committee() or {}
+            os.environ["HUBPROTO_HOSTED_MODELS"], os.environ["ANTHROPIC_API_KEY"] = "on", "sk-ant-fake-rollout-check"
+            on = hub.compile_committee() or {}
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        log.line(f"compile committee ({off.get('group')}, chair {off.get('chair')}): hosted models off: "
+                 + ", ".join(f"{n} {'available' if m else 'unavailable'}" for n, m in off.get("members") or [])
+                 + "; on with a key: " + ", ".join(f"{n} {m or 'unavailable'}" for n, m in on.get("members") or []))
+        seniors = [n for n, _ in off.get("members") or []]
+        if not seniors or any(m for _, m in off.get("members") or []) or not all(m for _, m in on.get("members") or []):
+            fails.append("the senior cogs are not unavailable with hosted models off and available with them on")
     chain = [p for p in hub.kernel.verify_chain() if "not chained" not in p]
     log.line(f"kernel verify_chain: {len(chain)} problem(s)")
     fails += [f"verify_chain: {p}" for p in chain]
@@ -1000,9 +1094,12 @@ def main(argv=None) -> int:
     ap.add_argument("--test-result", default="", help="the suite's summary line on that commit, e.g. '1029 passed in 41.2s'")
     ap.add_argument("--rehearsal-note", default="see docs/rollout/cc2.md and the rehearsal logs",
                     help="what the rehearsals showed (the medium-risk items' test note)")
+    ap.add_argument("--decisions", default="", help="JSON file of the product owner's decisions on the paragraphs this script does not "
+                    "answer itself: {\"<frame>:<first line>\": {\"answer\": \"divergence\"|\"narrative\", \"meaning\": \"...\"}}")
     ap.add_argument("--_sample-decide", default="", help=argparse.SUPPRESS)
     ap.add_argument("--_sample-out", default="", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
+    args.decisions = json.loads(Path(args.decisions).read_text()) if args.decisions else {}
     root = Path(args.root).resolve()
     if not (root / "state" / "kernel.db").exists():
         print(f"error: no hub at {root}", file=sys.stderr)
@@ -1057,6 +1154,8 @@ def main(argv=None) -> int:
                     verify(hub, args, log, root, co, before)
     except NeedsCode:
         code = NEEDS_CODE
+    except NeedsDecision:
+        code = NEEDS_DECISION
     except CheckFailed:
         code = 1
     except Exception:

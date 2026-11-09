@@ -7,51 +7,37 @@ configuration changes, and the live configuration (its SOP documents and record 
 it through one change order. `scripts/rollout_cc2.py` makes and releases that change order, and checks the hub before
 and after. This page is the runbook; the rehearsals and their findings are in `cc2-rehearsal.md` beside it.
 
-## Status: not ready
+## Status at `change-control-v2` 769d2e0 (cc/rollout 870e401): no-go
 
-The script stops at step 2 (exit 3) on the live data until these code changes are on `change-control-v2`. It writes
-nothing when it stops there. Each was found by rehearsing on fresh restores of the live backup.
+The fixes for the earlier blockers are in: new documents and retirements on a change order, the documents in force
+deciding which Frames compile, the earlier code's waiting runs decidable and digested, system fields carryable, policy
+owners answering when there is no human chair or system administrator, and restore inside the container. The final
+rehearsal (fresh restores, the new Frames on disk as after the merge) still stops:
 
-1. **A change order cannot carry a new SOP document.** `it-sop`, `persona-advisor` and `persona-executor` have no
-   document on the live hub. `eco.add_sop` refuses them (hubproto/eco.py:91-92). `FrameStore.with_overrides` also
-   refuses a Frame that is not in the store (hubproto/frames.py:194-195), and Hub.compile calls it (app.py:359, 361).
-   The release writes each Frame to `self.frames.get(name).path` (app.py:737), and a new Frame has no path. The script
-   expects `eco.add_new_sop(hub, co_ref, name, text, *, by, author=None, relpath=None) -> draft`.
-2. **A change order cannot retire a document.** The 19 role and cog personas the repository dropped
-   (`persona-ap-reviewer` ... `persona-stores`) are documents in force. The new grammar refuses them as errors
-   (hubproto/extract.py:666-671), so **every compile on the live hub fails until they are retired**, whatever a
-   change order carries. The script expects `eco.retire_sop(hub, co_ref, name, *, by, reason)`: compile without that
-   Frame, make the document obsolete at release, and drop the Frame from the release.
-3. **Nobody may answer the compile committee's blocking questions under v9.** The round raises 19 blocking
-   `unread-rule` questions, one for each prose paragraph of the new texts. Only the committee's chair or a system
-   administrator may answer one (changecontrol.py:1878-1879), and an open one stops approval
-   (changecontrol.py:2589-2591). Under v9 the committee has no chair and nobody holds `system-administrator`; both
-   arrive with this change order. One possible fix is that a policy owner who contributed nothing may answer when the
-   release in force names neither. That is a governance decision for the product owner.
-4. **After the merge, the Frame files on disk decide which Frames are compiled.** `Hub.released_frames` takes the
-   Frame names from the files (app.py:914-929). After `git merge` the bind-mounted `./frames` holds the new Frames, so
-   the 19 retired personas are missing from disk, and any compile that does not retire them fails with
-   `unknown Frame 'persona-ap-reviewer'`. This was verified on a restore with the new Frames on disk. On a converted
-   hub the names should come from the release and the documents.
+1. **bob may not open the drafts or retire.** `eco.add_sop`, `add_new_sop` and `retire_sop` take only the change
+   order's requester or a document controller (hubproto/eco.py:171-172, 76-77, 114-115). Under v9 bob is neither, and
+   carol (the only document controller) must open nothing, because opening and retiring now count as contributing
+   and she signs. The script checks this before it writes anything, and exits 3. Possible fixes: let a policy owner
+   open drafts for the requester, then set `eco.OPENERS_MAY_BE_OWNERS = True`, which the script reads; or let alice
+   retire and add the new documents herself (she is the requester and already a contributor), which leaves only the
+   30 revisions needing an opener.
+2. **Releasing a revision of a document no release compiles fails half-way.** `eco.add_sop` keeps neither
+   `converted_from` nor `frame_relpath` (hubproto/eco.py:189), and `sopdocs._relpath` then falls back to
+   `documents/<name>.frame.md` (hubproto/sopdocs.py:305-311). This hits `writing-policy-frames`, the reference guide.
+   Its release writes `frames/documents/writing-policy-frames.frame.md` beside `frames/reference/...`, and the release
+   automation stops at "Publish the revisions" (duplicate Frame name). By then the new release is **already in force**
+   and the change order is approved but not released. Rehearsed with a scratch patch for item 1. The script now stops
+   before the review round when it sees this.
+3. **Five unread-rule paragraphs are not narrative**, so the script does not answer them: it-sop lines 37 (quarterly
+   access review), 62 (hosted models), 76 (backup and restore), 82 (incidents) and 88 ("an internal auditor does not
+   audit system administration they perform"). Each states an obligation the hub does not configure. The product owner
+   decides each one: record it as a divergence, or rewrite the text. Pass the decisions with
+   `--decisions FILE` (`{"it-sop:37": {"answer": "divergence", "meaning": "..."}}`); until then the script exits 4.
+   carol answers the other 14 with "Answered by Claude at the product owner's instruction: narrative, no rule". The
+   script's `READ` table gives the reading of each paragraph, keyed by the hash of its words, so a changed text is
+   never answered.
 
-These should be fixed too. They do not stop the change order.
-
-5. **15 of the 129 waiting runs cannot be decided by the person they wait for**, before or after the rollout: 13
-   tasks, 1 training acknowledgement and 1 audit. Each is routed to a named field (assignee, auditor) who is also the
-   run's owner. The earlier code saved their pending decision without a `route`, so the new runner uses `role:`
-   (runner.py:2403) and keeps the owner out as the item's preparer (runner.py:823-826). Fix: for a pending saved
-   without a route, derive it from `pending["route_rule"]`.
-6. **58 waiting runs have no `seen_digest` from `runner.load`.** Their pending has no `kind` (runner.py:108), so
-   `hubproto decide` without `--seen` is refused (cli.py:855). The shell works: it computes the digest itself.
-   Fix: `pending.get("kind", "decision")`.
-7. **The change-order and change-request `system_fields` cannot be carried.** `from_file_changes` skips them
-   (recordtypes.py:695-698), and activation then adopts the file's hash (recordtypes.py:760-763), so `status --check`
-   is clean while `stage`, `rounds`, `contributor`, `state_map`, `rejected` and others stay settable through the
-   shell's JSON box (shell/actions.py:51-60). `contributor` is the field that keeps contributors off the approval
-   Gate.
-8. **The README's container restore probably fails.** `restore` renames `state/` aside (cli.py:1365, and the same in
-   the earlier code). In the container `/hub/state` is the volume's mount point, so the rename should fail. This was
-   not tried: the rehearsal has no Docker. The rollback below avoids it.
+One thing still to look at: decisions take about three minutes (430 `decide_item` calls).
 
 ## What the script does
 
@@ -60,14 +46,14 @@ These should be fixed too. They do not stop the change order.
 | Step | What it does |
 |---|---|
 | 1 health | Reports the release in force and the run counts. Reads each waiting run with the new runner: its graph, status, deciders, whether an approval resolves, the fields it needs, and the release it will follow. Draws every decider's inbox (all pages) and a sample's record pages, on 127.0.0.1 with a free port. Decides a sample (one per process and status) on a throwaway copy. |
-| 2 co | Prepares `Migration to change control v2` (CO, marked `[rollout:cc2]`) as **alice**. It carries a revision of every document whose text differs from `--frames-from` (header and body; carol, a document controller, opens each draft because alice owns no SOP, eco.py:66-67, and alice is its author and writes its only version). It also adds a new document for each Frame without one, retires each document whose Frame was dropped, and carries `record-types carry --from-file` (12 field additions). There are no form layouts in force and none shipped. It stops before writing anything when the code lacks a path it needs. |
-| 3 review | alice requests review, and the round compiles with `HUBPROTO_EXTRACTOR` (default `convention`). The v9 change-control SOP has no "Review of changes", so the suggested panel is empty. alice then adds the reviewers the repository's section names who are members under v9 (qa-manager, quality-assistant). The it-admin and management cogs arrive with this CO. Every question, finding and suggestion is logged verbatim. Blocking committee questions are answered by the first person the code accepts (chair, system administrator, then a policy owner who contributed nothing), with "Answered by Claude at the product owner's instruction: ...". |
+| 2 co | Prepares `Migration to change control v2` (CO, marked `[rollout:cc2]`) as **alice**. It carries a revision of every document whose text differs from `--frames-from` (header and body; bob opens each draft because alice owns no SOP, eco.py:67, and alice is its author and writes its only version; carol opens and retires nothing). It also adds a new document for each Frame without one, retires each document whose Frame was dropped (bob), and carries `record-types carry --from-file` (14 changes, system fields included). There are no form layouts in force and none shipped. It stops before writing anything when the code lacks a path it needs. |
+| 3 review | alice requests review, and the round compiles with `HUBPROTO_EXTRACTOR` (default `convention`). The v9 change-control SOP has no "Review of changes", so the suggested panel is empty. alice then adds the reviewers the repository's section names who are members under v9 (qa-manager, quality-assistant). The it-admin and management cogs arrive with this CO. Every question, finding and suggestion is logged verbatim. carol (policy owner, no contribution) answers each blocking unread-rule question with "Answered by Claude at the product owner's instruction: narrative, no rule" only where `READ` says the paragraph is narrative; the rest wait for `--decisions`. |
 | 4 validate | `validation.record_evidence`: a passing test record (the suite on `--commit`) for the high-risk items, and a test note for the medium-risk ones. |
 | 5 decide | bob and carol each approve every item, so every widening has two owners, accepting each warning with "Approved by Claude at the user's instruction: migration to change control v2 (rollout rehearsed on a copy of the live data)". carol accepts the CO-level warnings and alice sends the CO for approval. carol (quality manager) signs it, and the release automation runs. |
-| 6 verify | Checks that a new release is in force from this CO, that every carried revision is effective and reads as the repository's text (a version line raised by the compile is allowed), that the retired documents are out and the record types activated, and that the waiting runs are still waiting and decidable. The step-1 sample is decided again on a further copy and compared outcome by outcome. Then `verify_chain`, `verify_signatures`, `verify_delta` and `status --check`. |
+| 6 verify | Checks that a new release is in force from this CO, that every carried revision is effective and reads as the repository's text (a version line raised by the compile is allowed), that the retired documents are out and the record types activated, and that the waiting runs are still waiting and decidable. The step-1 sample is decided again on a further copy and compared outcome by outcome. It also checks that the next compile has the new Frames and none of the retired personas, and that the senior cogs are unavailable with hosted models off and available with them on (a fake key: nothing is called). Then `verify_chain`, `verify_signatures`, `verify_delta` and `status --check`. |
 
 It is idempotent: a second run finds the CO by its mark and only verifies. Exit codes: 0 done, 1 a check failed,
-3 a code change is needed (named in the log), 2 a command mistake. Logs go to `<root>/state/rollout-cc2/<time>.log`,
+3 a code change is needed (named in the log), 4 a question needs the product owner's decision, 2 a command mistake. Logs go to `<root>/state/rollout-cc2/<time>.log`,
 with a JSON report beside each. The script works its own queue (`HUBPROTO_COG_QUEUE=inline`). In the container the
 junior cogs' reviews therefore call Ollama (qwen3:14b) during step 3. The senior cogs are unavailable until hosted
 models are switched on.
@@ -106,7 +92,7 @@ docker compose run --rm --no-deps -v "$PWD/scripts:/hub/scripts:ro" --entrypoint
 # 6. The rollout.
 docker compose run --rm --no-deps -v "$PWD/scripts:/hub/scripts:ro" --entrypoint python hub \
   /hub/scripts/rollout_cc2.py --root /hub --frames-from /hub/frames --commit $NEW \
-  --test-result "<the summary line from step 2>"
+  --test-result "<the summary line from step 2>" --decisions /hub/scripts/cc2-decisions.json   # the product owner's, in scripts/
 
 # 7. Start the hub. The entrypoint runs init and status --check: it must print no drift.
 docker compose up -d hub && docker compose logs --tail 30 hub
@@ -125,7 +111,7 @@ git status frames                                       # the release writes the
 ```
 
 Then open http://localhost:8080/inbox?as=carol, ?as=bob and ?as=dave: the waiting items are there and decide as
-before. The 15 runs in finding 5 are the exception, until it is fixed. The release also assigns about 97 training
+before (all 129 are decidable at 769d2e0). The release also assigns about 97 training
 acknowledgements for the new revisions.
 
 The script runs in a one-off container of the hub image with the hub volume, while the shell is stopped, so no
@@ -134,9 +120,9 @@ read-only.
 
 ## Rollback
 
-The backup from step 1 is the earlier code's state, so restore it with the earlier image. Do not use the README's
-`restore --force` inside the container (finding 8). Restore into a temporary root, then swap the volume's contents
-and keep the rolled-back state on the volume:
+The backup from step 1 is the earlier code's state, so restore it with the earlier image. The earlier code's
+`restore --force` renames the volume's mount point, which fails in the container; 769d2e0 fixes this for the new code
+only. So restore into a temporary root, then swap the volume's contents and keep the rolled-back state on the volume:
 
 ```bash
 docker compose stop hub
