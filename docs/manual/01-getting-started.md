@@ -117,7 +117,9 @@ The page ends with the policy in force: "Policy in effect: policy version *n*, r
 | Section | Shows |
 |---|---|
 | **Waiting for me** | every item that waits for your decision, overdue first, then soonest due; 25 per page; a **Show only** filter by type when there are several |
-| **Policy proposals waiting for your decision** | policy owners only: open proposals with changes you have not decided (chapter 7) |
+| **Policy proposals waiting for your decision** | policy owners only, on a hub that kept its Frame files: open proposals with changes you have not decided (chapter 7.5) |
+| **Change orders** | change-order work for you: "Review CO-...", "Answer *n* question(s)", "Accept or reject *n* suggested change(s)", "the baseline changed", "Decide *n* item(s) of CO-..." (chapter 7.9) |
+| **Committees waiting for you to intervene** | a chair's paused committee decisions (chapter 7.6) |
 | **Returned or stopped, mine** | items rejected back to you for rework (with the reason and a rework form) and your runs that stopped (with a "Fix and retry" form) |
 | **Waiting on others (mine)** | your items that wait for someone else, where and until when |
 | **Your items that moved** | items you own, wrote or filed that someone else moved in the last seven days |
