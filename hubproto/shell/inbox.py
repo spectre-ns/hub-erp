@@ -471,6 +471,14 @@ class InboxMixin:
             add("Person", "person")
             add("Document", "document", link=True)
             risk()
+        elif t == "change-order":  # what it changes is on its page: the delta, item by item
+            add("Title", "title")
+            add("What it changes and why", "description")
+            add("Requested by", "requested_by")
+            if f.get("implements"):
+                rows.append(("Implements", ", ".join(esc(x) for x in f["implements"])))
+            if f.get("contributor"):
+                rows.append(("Contributors (may not sign it)", esc(", ".join(f["contributor"]))))
         else:
             for k, v in sorted(f.items()):
                 if k in BLOB_FIELDS or k in ("conditions",) or isinstance(v, (dict, list)) or v in (None, ""):
@@ -719,9 +727,10 @@ class InboxMixin:
                     out.append(("baseline", "git-merge", f"<b>{esc(co['number'])}: the baseline changed</b> ({esc(bc.get('by'))} was released, related "
                                 f"{'by definition' if bc.get('kind') == 'definition' else 'by meaning'}): run another review round", link("co-related")))
             if stage == "awaiting-approval" and not eco.finished(co) and not cc._may_decide(self.hub, co, user):
-                todo = [c for c in cc.delta(self.hub, co) if c.get("op") != "text" and c.get("state") == "pending"
-                        and not any(d["by"] == user and not d.get("stale") for d in c.get("decisions") or [])
-                        and not (c.get("op") == "remove" and c.get("changed_to"))]
+                from .change_order_ui import group_state, groups
+
+                todo = [g for g in groups(cc.delta(self.hub, co)) if group_state(g) == "pending"
+                        and not any(d["by"] == user and not d.get("stale") for d in g[0].get("decisions") or [])]
                 if todo:
                     out.append(("decide", "check-circle", f"<b>Decide {len(todo)} item{'s' if len(todo) != 1 else ''}</b> of {esc(co['number'])}: {title}", link("delta")))
         return out
@@ -740,16 +749,20 @@ class InboxMixin:
         """On the change order's approval card: what still stops the signature, and the link to the delta."""
         from .. import changecontrol as cc
 
+        from .change_order_ui import group_state, groups
+
         reasons = cc.approval_reasons(self.hub, rec["locator"])
-        items = [c for c in cc.delta(self.hub, rec["locator"]) if c.get("op") != "text"]
-        pending = sum(1 for c in items if c.get("state") == "pending")
+        delta = cc.delta(self.hub, rec["locator"])
+        gs = groups(delta)
+        pending = sum(1 for g in gs if group_state(g) == "pending")
         link = href("/record/" + rec["locator"], self.user) + "#delta"
         head = (f"<p><a class='button secondary' href='{esc(link)}'>{icon('layers')}Decide the delta item by item</a> "
-                f"<span class='why'>{len(items)} item(s), {pending} pending. Signing approves the change order and every revision it carries.</span></p>")
+                f"<span class='why'>{len(gs)} item(s), {pending} pending. Signing approves the change order and every revision it carries.</span></p>")
         if not reasons:
             return f"<div class='card quiet'>{head}<p class='ok'>{icon('check')}Every item is decided and every warning accepted: it may be signed.</p></div>"
-        return (f"<div class='card warn'>{head}<b>Before it can be signed:</b><ul class='blockers'>" + "".join(f"<li>{esc(r)}</li>" for r in reasons[:6]) + "</ul>"
-                + (f"<p class='why'>and {len(reasons) - 6} more on the change order's page.</p>" if len(reasons) > 6 else "") + "</div>")
+        lines = self._co_ready_lines(rec, delta, reasons)
+        return (f"<div class='card warn'>{head}<b>Before it can be signed:</b><ul class='blockers'>" + "".join(f"<li>{x}</li>" for x in lines[:6]) + "</ul>"
+                + (f"<p class='why'>and {len(lines) - 6} more on the change order's page.</p>" if len(lines) > 6 else "") + "</div>")
 
     def _stale_card(self, run_id: str) -> str:
         """The card an approver pressed was stale: say what happened to the item instead of an error page."""

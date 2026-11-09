@@ -1022,7 +1022,7 @@ class ChangeOrderMixin:
         mine = next((d for d in c.get("decisions") or [] if d["by"] == self.user and not d.get("stale")), None)
         inner = "".join(f"<input type='hidden' name='item' value='{esc(x['id'])}'>" for x in g)
         if mine:
-            inner += f"<p class='why'>You {esc(mine['verdict'])}d it: decide again to change your decision.</p>"
+            inner += f"<p class='why'>You {esc(mine['verdict'])}d it: deciding again replaces your decision.</p>"
         if boxes:
             inner += (f"<fieldset class='co-accept'><legend>To approve it, accept each warning</legend>{boxes}</fieldset>")
         inner += ("<div class='row2'>"
@@ -1044,7 +1044,10 @@ class ChangeOrderMixin:
                           f"may then differ from the prose, which the release records as a divergence with a change request to the SOP's owner.</p>"
                           f"<div class='fields'>{ctl}</div><div class='actions'><button name='verdict' value='override' class='secondary'>"
                           f"{icon('edit')}Approve item {n} with these values</button></div></details>")
-        return self._co_form(act, co, fid, inner, cls="co-decide", label=f"Decide item {n}")
+        form = self._co_form(act, co, fid, inner, cls="co-decide", label=f"Decide item {n}")
+        if mine and not (self.err and self.route == act and self.vals.get("form") == fid):
+            return details(f"Change your decision on item {n}", form, cls="co-redecide")
+        return form
 
     def _co_not_decided_html(self, ctx: dict) -> str:
         """Items shown but not decided: wording changes (approved with the change order), rules that only moved in their file,
@@ -1172,6 +1175,36 @@ class ChangeOrderMixin:
                     f"{esc(fl.get('approver'))} has reviewed it again" + (f" ({esc(fl['task'])})" if fl.get("task") else "") + ".</div>")
         return out + "</section>"
 
+    # ------------------------------------------------------------ readiness in words
+    ITEM_REASONS = ("not decided yet:", "widening:", "decided before the baseline changed", "accept the warning on “")
+
+    def _co_ready_lines(self, co: dict, delta: list[dict], reasons: list[str]) -> list[str]:
+        """What still stops the signature, as HTML lines: one per item of the delta (numbered as on the page, linked), then
+        the change order's own reasons (readiness, warnings on it as a whole, the state map)."""
+        out = []
+        base = self._co_href(co)
+        owners = set(cc._owners(self.hub))
+        for n, g in enumerate(groups(delta), 1):
+            c = g[0]
+            link = f"<a href='{base}#{anchor(c['id'])}'>item {n}</a>"
+            words = esc(short(self._co_group_words(g), 140))
+            st = group_state(g)
+            if st == "pending":
+                if any(x.get("stale") for x in g):
+                    out.append(f"{link} was decided before the baseline changed: decide it again ({words})")
+                elif any(cc._widening(x) for x in g):
+                    have = sorted({d["by"] for d in c.get("decisions") or [] if d["verdict"] == "approve" and not d.get("stale")} & owners)
+                    out.append(f"{link} widens authority: both policy owners approve it" + (f" (approved by {esc(', '.join(have))})" if have else "") + f": {words}")
+                else:
+                    out.append(f"{link} is not decided yet: {words}")
+            elif st == "approved":
+                for x in g:
+                    for w in x.get("warnings") or []:
+                        if not w.get("accepted"):
+                            out.append(f"{link}: accept the warning “{esc(short(w['text'], 160))}”")
+        out += [esc(r) for r in reasons if not r.startswith(self.ITEM_REASONS)]
+        return out
+
     # ------------------------------------------------------------ 9. approval
     def _co_approval_html(self, ctx: dict) -> str:
         co, stage = ctx["co"], ctx["stage"]
@@ -1195,7 +1228,8 @@ class ChangeOrderMixin:
         # awaiting approval
         reasons = ov["approval_reasons"]
         if reasons:
-            out += "<h3>Before it can be approved</h3><ul class='blockers'>" + "".join(f"<li>{esc(b)}</li>" for b in reasons) + "</ul>"
+            lines = self._co_ready_lines(co, ov["delta"], reasons)
+            out += "<h3>Before it can be approved</h3><ul class='blockers'>" + "".join(f"<li>{b}</li>" for b in lines) + "</ul>"
         else:
             out += "<p class='ok'>" + icon("check") + "Every item is decided and every warning accepted: it may be signed at its Gate.</p>"
         ws = ov["warnings"]
@@ -1458,7 +1492,9 @@ class ChangeOrderMixin:
             raise self._co_refused(e) from None
         log_line(f"change order {co['number']} item {ids[0]} {verdict} by={self.user}")
         words = {"approve": "Approved", "reject": "Rejected", "override": "Approved with your override"}[verdict]
-        self._co_done(co, f"{words}: {short(self._co_group_words(group), 120)}", anchor(group[0]["id"]))
+        done = next((c for c in cc.delta(self.hub, co["locator"]) if c["id"] == group[0]["id"]), group[0])
+        said = self._say(cc._effective(done)) if done.get("op") != "remove" else "no longer: " + self._say(done["rule"])
+        self._co_done(co, f"{words}: {short(said, 140)}", anchor(group[0]["id"]))
 
     def post_co_accept_warning(self):
         co = self._co_post()

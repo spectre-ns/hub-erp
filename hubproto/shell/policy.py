@@ -339,7 +339,7 @@ proposal <code>{esc(meta.get('proposal_id') or '-')}</code>{(' reviewed by ' + e
         return [[esc(d.get("id")), self._co_frame_line(d.get("frame"), d.get("line")) + (f"<div class='why'>“{esc(d.get('prose') or '')}”</div>" if d.get("prose") else ""),
                  esc(self._say(d.get("in_force")) if d.get("in_force") else "nothing (the rule the line states is not in force)"),
                  f"{esc(d.get('accepted_by') or '-')} on {self._co_number_link(d.get('co'))}" + (f"<div class='why'>“{esc(d.get('meaning') or '')}”</div>" if d.get("meaning") else ""),
-                 esc(d.get("change_request") or "-"), chip(d.get("status", "open"), "warn" if d.get("status", "open") == "open" else "ok")] for d in divs]
+                 esc(d.get("change_request") or "-"), "<span style='white-space:nowrap'>" + chip(d.get("status", "open"), "warn" if d.get("status", "open") == "open" else "ok") + "</span>"] for d in divs]
 
     def _release_divergences_html(self, meta: dict) -> str:
         """On the release diff: the change order that released it, its divergences (configuration differing from the prose)."""
