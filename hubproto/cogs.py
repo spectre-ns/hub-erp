@@ -1226,6 +1226,41 @@ def stand_in_chat(cog_id: str, text: str, rec: dict | None, sops: list[str]) -> 
             + about + follows + " Set a model for me and I'll be more useful; for reviews or edits, ask me in the item's chatter.")
 
 
+# ---------------------------------------------------------------- model and competence record
+def provenance(bundle: dict, cog: str, *, release: str = "", releases=None, model: str | None = None, stand_in: bool | None = None) -> dict:
+    """What produced a cog's work, kept with the work: the model (and whether a stand-in answered), the cog's persona
+    and its version, its profile's version, and the release that gave it its context (its training)."""
+    prof = (bundle.get("cogs") or {}).get(cog) or {}
+    persona = (bundle.get("personas") or {}).get(prof.get("persona") or "") or {}
+    n = None
+    if releases is not None and release:
+        try:
+            n = next((i + 1 for i, m in enumerate(releases.list()) if m["digest"] == release), None)
+        except Exception:
+            n = None
+    return {"cog": cog, "model": model or prof.get("model") or "stand-in", "stand_in": bool(stand_in) if stand_in is not None else None,
+            "persona": prof.get("persona") or "", "persona_version": str((persona.get("source") or {}).get("version") or ""),
+            "profile_version": str((prof.get("source") or {}).get("version") or ""), "release": release, "release_n": n}
+
+
+def record_provenance(kernel, ref: str | None, prov: dict, *, kind: str, run_id: str = "", detail: str = "") -> None:
+    """Keep the provenance of a cog's decision, review or drafted text on the item's history ("cog.worked")."""
+    if not ref or kernel is None:
+        return
+    try:
+        rec = kernel.get(ref)
+        if rec is None:
+            return
+        kernel.append("cog.worked", rec["locator"], {"kind": kind, **prov, **({"detail": detail[:200]} if detail else {})},
+                      run_id=run_id, release=prov.get("release") or "", by=prov.get("cog") or "")
+    except Exception:
+        pass  # the record of who produced it never stops the work
+
+
+def _work_kernel(ctx: RunContext):
+    return getattr(ctx.runner, "kernel", None) or ctx.kernel
+
+
 class ReviewerCog(Cog):
     """A Cog that is also a team member: reviews, approves within criteria,
     answers its inbox, and files records it is asked to file."""
@@ -1300,6 +1335,8 @@ class ReviewerCog(Cog):
             out.update({"paragraphs": ops[0]["lines"][:120], "position": ops[0]["at"]})
         elif len(ops) == 1 and ops[0]["op"] == "rewrite":
             out.update({"paragraphs": ops[0]["lines"][:400], "position": "replace"})
+        out["provenance"] = provenance(ctx.bundle or {}, self.id, release=ctx.release, releases=getattr(ctx.runner, "releases", None),
+                                       model=model, stand_in=stand_in)
         return self.ok("edit-document", out)
 
     def task_chat(self, input: dict, ctx: RunContext) -> dict:
@@ -1351,9 +1388,26 @@ class ReviewerCog(Cog):
                               "findings": [f"[{p.get('severity')}] {p.get('detail')}" for p in (r.get("findings") or [])][:6]}} \
             if input.get("judgment_key") else None
         doc = _review.file_review(ctx, rec, [r], input.get("question") or "", by=self.id, fields=extra) if input.get("file", True) else None
-        return self.ok("review-document", {**r, "evidence": doc["locator"] if doc else None})
+        prov = provenance(ctx.bundle or {}, self.id, release=ctx.release, releases=getattr(ctx.runner, "releases", None),
+                          model=r.get("model"), stand_in=r.get("stand_in"))
+        for ref in [rec["locator"]] + ([doc["locator"]] if doc else []):
+            record_provenance(_work_kernel(ctx), ref, prov, kind="review", run_id=ctx.run_id, detail=f"verdict {r.get('verdict')}")
+        return self.ok("review-document", {**r, "evidence": doc["locator"] if doc else None, "provenance": prov})
 
     def task_review(self, input: dict, ctx: RunContext) -> dict:
+        """Its turn at a Gate (see _decide), with what produced the decision kept on the item's history."""
+        env = self._decide(input, ctx)
+        p = env.get("payload") or {}
+        if ctx.record and p.get("verdict") in ("approve", "reject", "escalate"):
+            judged = p.get("judged")
+            record_provenance(_work_kernel(ctx), ctx.record, provenance(ctx.bundle or {}, self.id, release=ctx.release,
+                                                                        releases=getattr(ctx.runner, "releases", None),
+                                                                        stand_in=None if judged else False,
+                                                                        model=None if judged else "no model (fixed criteria)"),
+                              kind="decision", run_id=ctx.run_id, detail=f"{p['verdict']}: " + "; ".join(p.get("reasons") or [])[:180])
+        return env
+
+    def _decide(self, input: dict, ctx: RunContext) -> dict:
         payload = input.get("payload") or {}
         process = input.get("process", "")
         routing_ctx = input.get("routing_ctx") or {}

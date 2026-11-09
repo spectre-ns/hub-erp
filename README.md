@@ -15,13 +15,16 @@ single Docker image.
 docker compose up --build        # http://localhost:8080/ asks who you are; e.g. /?as=alice
 ```
 
-First start seeds the kernel, installs the ISO 9001 profile, and compiles and
+First start seeds the kernel, installs the ISO 9001 profile, compiles and
 releases the first policy release with the two seeded policy owners (bob and
-carol). If that first release fails (for example an org model with nobody in a
-routed role) the container prints the Frame to fix, notes it in
-`state/.bootstrap-failed`, and still serves the shell with no release in
-effect; fix the Frame and run
-`docker compose exec hub hubproto bootstrap-release --as bob --second carol`.
+carol), and then makes the SOPs documents: from then on **every configuration
+change goes through a change order** (Quality > Change orders); see "Once the
+SOPs are documents" below. If that first release fails (for example an org
+model with nobody in a routed role) the container prints the Frame to fix,
+notes it in `state/.bootstrap-failed`, and still serves the shell with no
+release in effect; fix the Frame and run
+`docker compose exec hub hubproto bootstrap-release --as bob --second carol`
+(run again on a released hub whose SOPs are not documents yet, it converts them).
 State lives in the `hub-state` volume. Frames are bind-mounted from `./frames`.
 
 Without Docker (`--root` is the directory holding `frames/` and `state/`;
@@ -39,13 +42,19 @@ refused or the outcome is a failure (error findings, `DENIED`, a failed run);
 2 a mistake in the command (unknown id, bad JSON, missing file, wrong root).
 A wrong `--root` is refused ("no hub at ..."), never filled with an empty hub.
 
-## After changing Frames
+## After changing Frames (a hub that keeps the Frame files)
 
-Edit a sentence in `frames/` on the host, then compile, have it reviewed and
-release it. Until the release, the shell and every run keep applying the
-release in force (the Frames as they were released), and on its next start
-the container says so: `hubproto status --check` lists the files that differ
-and prints these commands.
+A hub bootstrapped with `hubproto bootstrap-release --as bob --second carol
+--keep-frame-files "<why>"` (or `sopdocs.keep_frame_files`) skips the
+conversion: the Frame files stay the source and the policy owners release
+changes without change orders. It is recorded and `status` shows it on every
+run; it is meant for work on the Frames themselves and for the test suites
+(`tests/conftest.py`'s `release_all` opts out this way), and it ends with
+`hubproto sops convert`. On such a hub, edit a sentence in `frames/` on the
+host, then compile, have it reviewed and release it. Until the release, the
+shell and every run keep applying the release in force (the Frames as they
+were released), and on its next start the container says so: `hubproto status
+--check` lists the files that differ and prints these commands.
 
 ```bash
 docker compose exec hub hubproto compile                                  # exit 1 and no release while there are error findings
@@ -74,7 +83,11 @@ fit the model's window. Every change on a proposal says where it came from (`ori
 reader) and, for a rule a model read, what it means in the hub's own words (`origin.explained`); a reading that drops
 or adds a "not" carries a `negation` warning. A rule that only moved in its file (a process below inserted lines) is
 listed as moved, not as a change to decide. Direct changes on a change order are put into prose by the qa-manager cog
-and compiled back to check they give the same rule (`hubproto/prose_drafting.py`).
+and compiled back to check they give exactly that rule and nothing else (`hubproto/prose_drafting.py`); the lines it
+drafts are credited to it. A reading may touch only the lines that changed: anything else is refused as an `outside-diff`
+question (the SOP text is fenced as data in the readers' prompts, so words aimed at the readers are ignored and reported).
+A changed sentence that reads like a rule and from which nothing was read, by the grammar or the committee, is a
+blocking `unread-rule` question for the committee's chair, also when no model reads here (`convention`).
 
 **The committee reads by consensus.** It is defined on the `senior-cogs` group (organization model, `## Groups`):
 the **senior** cogs `senior-organization` and `senior-qa-manager`, bundled with Claude Opus (`claude-opus-5-5`); the
@@ -99,14 +112,17 @@ review sentence may name a committee as reviewers. See DEV-NOTES.md, "Groups and
 
 | Compiler setting | Default | Effect |
 |---|---|---|
-| `HUBPROTO_EXTRACTOR` | `hybrid` with an Ollama (or with hosted models on and a key), else `convention` | `convention` reads the sentence shapes only; `hybrid` has the committee read the prose too |
+| `HUBPROTO_EXTRACTOR` | `hybrid` with an Ollama (or with hosted models on and a key), else `convention` | `convention` reads the sentence shapes only (tests, offline use); `hybrid` has the compile-frame committee's cogs read the prose, each with its bundled model. There is no global model override (the old `claude` value is gone and is read as unset) |
 | `HUBPROTO_MODEL_MAX_CHARS` | the model's window | the most characters one reading may send; a larger diff is read in parts |
 
 ## Once the SOPs are documents: change orders only
 
-After `hubproto sops convert --as <policy owner>` (or Policy > Convert in the
-shell) the Frame is compiled from the SOP documents, and configuration changes
-only through a change order (Quality > Change orders): `compile`, `review` and
+The first release converts the SOPs into documents (a hub that kept the Frame
+files converts with `hubproto sops convert --as <policy owner>` or Policy >
+Convert in the shell). The Frame is then compiled from the SOP documents, and
+configuration changes only through a change order (Quality > Change orders);
+`status --check` exits 1 on a released hub whose SOPs are not documents and
+that did not say it keeps the Frame files. `compile`, `review` and
 `release` of a proposal no change order staged, `bootstrap-release --force` and
 `seed` are refused (exit 1) with that sentence, and so are the shell's Frame
 drafts and proposal actions. The record types in force are kept by the hub from

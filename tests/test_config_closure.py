@@ -258,8 +258,8 @@ def test_the_policy_verbs_refuse_on_the_command_line(closed):
 
 
 def test_sops_convert_refuses_what_the_shell_refuses(fresh, monkeypatch):
-    rc, out = run_cli(fresh.root, "bootstrap-release", "--as", "bob", "--second", "carol")
-    assert rc == 0
+    rc, out = run_cli(fresh.root, "bootstrap-release", "--as", "bob", "--second", "carol", "--keep-frame-files", "convert later, by hand")
+    assert rc == 0 and "the Frame files stay the source (kept by bob: convert later, by hand)" in out
     monkeypatch.setattr(sopdocs, "roundtrip_problems", lambda hub, frames=None: ["finance-policy"])
     rc, out = run_cli(fresh.root, "sops", "convert", "--as", "carol")
     assert rc == 1 and "not converted" in out and "would not read back exactly" in out
@@ -538,3 +538,59 @@ def test_form_layouts_come_into_force_only_for_an_approved_change_order(closed):
         formlayout.activate(closed, co, closed.releases.current()["digest"])
     assert formlayout.active_entry(closed, "ncr") is None
     assert formlayout.activate(closed, approved(closed, co), closed.releases.current()["digest"]) == ["ncr v1"]
+
+
+# ------------------------------------------------------------------ the first release converts (a new hub is closed at once)
+def test_bootstrap_converts_the_sops_so_every_later_change_needs_a_change_order(fresh):
+    rc, out = run_cli(fresh.root, "bootstrap-release", "--as", "bob", "--second", "carol")
+    assert rc == 0 and "the SOPs are documents now (" in out and "configuration changes only through a change order" in out
+    hub = Hub(fresh.root)
+    assert hub.sop_source() and recordtypes.governed(hub)
+    rc, out = run_cli(fresh.root, "compile")
+    assert rc == 1 and CO_SENTENCE in out
+    rc, out = run_cli(fresh.root, "status", "--check")
+    assert rc == 0 and "configuration changes only through change orders" in out
+    rc, out = run_cli(fresh.root, "bootstrap-release", "--as", "bob", "--second", "carol", "--if-needed")
+    assert rc == 0 and "nothing to do" in out
+
+
+def test_the_first_release_converts_however_it_is_made(fresh):
+    release_all(fresh, keep_frame_files=False)  # compile, review and release by hand (README, the shell's release button)
+    assert fresh.sop_source() and fresh.last_conversion["made"]
+    with pytest.raises(closure.ChangeOrderRequired):
+        fresh.compile()
+
+
+def test_the_seeded_iso9001_profile_converts_after_its_first_release(fresh):
+    rc, out = run_cli(fresh.root, "seed", "iso9001")
+    assert rc == 0, out
+    rc, out = run_cli(fresh.root, "bootstrap-release", "--as", "bob", "--second", "carol")
+    assert rc == 0 and "the SOPs are documents now" in out, out
+    assert Hub(fresh.root).sop_source()
+
+
+def test_keeping_the_frame_files_is_explicit_recorded_and_ends_with_a_conversion(fresh):
+    rc, out = run_cli(fresh.root, "bootstrap-release", "--as", "bob", "--second", "carol", "--keep-frame-files", "")
+    assert rc == 1 and "say why" in out and not Hub(fresh.root).releases.list()
+    rc, out = run_cli(fresh.root, "bootstrap-release", "--as", "bob", "--second", "carol", "--keep-frame-files", "editing the Frames")
+    assert rc == 0 and "the Frame files stay the source (kept by bob: editing the Frames)" in out
+    rc, out = run_cli(fresh.root, "status", "--check")
+    assert rc == 0 and "the Frame files are the source (kept by bob: editing the Frames)" in out
+    rc, out = run_cli(fresh.root, "compile")
+    assert rc == 0, "the pre-conversion mode, chosen on the record"
+    rc, out = run_cli(fresh.root, "sops", "convert", "--as", "carol")
+    assert rc == 0 and sopdocs.frame_files_kept(Hub(fresh.root)) is None, "converting ends it"
+    with pytest.raises(ValueError):
+        sopdocs.keep_frame_files(Hub(fresh.root), by="bob", reason="back again")
+
+
+def test_a_bootstrap_whose_conversion_is_blocked_says_so_and_finishes_when_run_again(fresh, monkeypatch):
+    monkeypatch.setattr(sopdocs, "roundtrip_problems", lambda hub, frames=None: ["finance-policy"])
+    rc, out = run_cli(fresh.root, "bootstrap-release", "--as", "bob", "--second", "carol")
+    assert rc == 1 and "release v1 (" in out and "not converted to documents" in out and "would not read back exactly" in out
+    rc, out = run_cli(fresh.root, "status", "--check")
+    assert rc == 1 and "the SOPs are not documents yet, so changes are released without change orders" in out
+    monkeypatch.undo()
+    rc, out = run_cli(fresh.root, "bootstrap-release", "--as", "bob", "--second", "carol", "--if-needed")
+    assert rc == 0 and "converting the SOPs to documents" in out and "the SOPs are documents now" in out
+    assert Hub(fresh.root).sop_source()

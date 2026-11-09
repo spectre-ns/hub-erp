@@ -1,7 +1,7 @@
 """Processes: sentence grammar -> rendered workflows -> the runner (Gates, SLAs, rejections, children)."""
 
 import shutil
-from datetime import date, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -17,7 +17,6 @@ from hubproto.track import Track
 TEST_FRAMES = Path(__file__).resolve().parent / "frames"
 P = "widget-request"
 G = "gadget-request"
-TODAY = date.today()
 
 
 def rules_of(name: str) -> list[dict]:
@@ -319,10 +318,10 @@ def test_submit_checks_the_owner_role_and_create_permission(widgets):
     assert widgets.kernel.query(type_="task") == []
 
 
-def test_first_checkpoint_waits_with_assignees_due_date_and_inbox(widgets):
+def test_first_checkpoint_waits_with_assignees_due_date_and_inbox(widgets, today):
     run_id = widgets.runner.submit(P, {"record": {"title": "w"}}, owner="erin")
     state = widgets.runner.load(run_id)
-    due = (TODAY + timedelta(days=3)).isoformat()
+    due = (today + timedelta(days=3)).isoformat()
     assert state["status"] == "waiting" and state["grant"] is None
     pending = state["pending"]
     assert pending["checkpoint"] == "check-the-widget" and pending["step"] == "request-the-widget"
@@ -339,12 +338,12 @@ def test_first_checkpoint_waits_with_assignees_due_date_and_inbox(widgets):
     assert [r["number"] for r in widgets.kernel.query(overdue_at="2999-01-01")] == [rec["number"]]
 
 
-def test_role_route_puts_an_approval_in_every_assignees_inbox(widgets):
+def test_role_route_puts_an_approval_in_every_assignees_inbox(widgets, today):
     run_id = widgets.runner.submit(P, {"record": {"title": "w"}}, owner="erin")
     widgets.runner.decide(run_id, "erin", "approve", meaning="ok", payload_digest=seen(widgets.runner, run_id))
     pending = widgets.runner.load(run_id)["pending"]
     assert pending["checkpoint"] == "approve-the-widget" and pending["assignees"] == ["hank", "jack"]
-    assert pending["due"] == (TODAY + timedelta(days=5)).isoformat()
+    assert pending["due"] == (today + timedelta(days=5)).isoformat()
     rec = record_of(widgets, run_id)
     assert rec["state"] == "awaiting-approve-the-widget" and rec["assignees"] == ["hank", "jack"]
     for p in ("hank", "jack"):
@@ -449,10 +448,10 @@ def test_rejection_without_reject_to_ends_the_run(widgets):
 
 # -------------------------------------------------------------------------- tick
 
-def test_tick_escalates_overdue_items_once(widgets):
+def test_tick_escalates_overdue_items_once(widgets, today):
     run_id = widgets.runner.submit(P, {"record": {"title": "w"}}, owner="erin")
-    due = (TODAY + timedelta(days=3)).isoformat()
-    assert widgets.runner.tick(today=TODAY.isoformat()) == [], "not yet due"
+    due = (today + timedelta(days=3)).isoformat()
+    assert widgets.runner.tick(today=today.isoformat()) == [], "not yet due"
     escalated = widgets.runner.tick(today="2999-01-01")
     assert [(e["run"], e["record"], e["to"]) for e in escalated] == [(run_id, widgets.runner.load(run_id)["record"], ["ivy"])]
     state = widgets.runner.load(run_id)

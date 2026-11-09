@@ -175,9 +175,33 @@ def _released_frames(tools) -> list:
     return out
 
 
+def may_look(tools, frame) -> bool:
+    """A cog reads a procedure it is trained on (in its context), or one filed where its roles and groups may read, as
+    a person may look it up in the library; working for someone, only what that person may read too."""
+    from .sopdocs import kind_of
+
+    from .tools import RecordTools
+
+    prof = (tools.bundle.get("cogs") or {}).get(getattr(tools, "cog", "")) or {}
+    folder = kind_of(frame)[1]
+    try:
+        mine = frame.name in (prof.get("follows") or []) or RecordTools.may_read(tools, folder)
+        theirs = getattr(tools, "_requester_tools", None)
+        return bool(mine and (theirs is None or theirs.may_read(folder)))
+    except Exception:
+        return False
+
+
+def _readable_frames(tools) -> list:
+    return [f for f in _released_frames(tools) if may_look(tools, f)]
+
+
 def read_procedure(tools, a: dict) -> dict:
     name = str(a.get("name") or "").strip()
-    frames = {f.name: f for f in _released_frames(tools)}
+    released = {f.name: f for f in _released_frames(tools)}
+    if name in released and not may_look(tools, released[name]):
+        return {"error": f"you may not read {name!r}: your roles may not read where it is filed"}
+    frames = {f.name: f for f in _readable_frames(tools)}
     frame = frames.get(name)
     if frame is None:
         near = difflib.get_close_matches(name, list(frames), n=3, cutoff=0.4)
@@ -221,7 +245,7 @@ def read_sop_section(tools, a: dict) -> dict:
     if frame is None:
         return {"error": f"no SOP named {name!r} in the release"}
     folder = kind_of(frame)[1]
-    if not trained and not tools.may_read(folder):
+    if not may_look(tools, frame):
         return {"error": f"you may not read {name!r} (it is filed in {folder}, which your roles may not read)"}
     lines = frame.file_lines
     heads = [(i, ln.lstrip("#").strip()) for i, ln in enumerate(lines, 1) if i >= frame.body_start and ln.startswith("## ")]
@@ -297,7 +321,7 @@ def search_procedures(tools, a: dict) -> dict:
         return {"error": "say what to look for, in a few words"}
     k = max(1, min(int(a.get("k") or 5), 10))
     scored = []
-    for frame in _released_frames(tools):
+    for frame in _readable_frames(tools):  # only what the cog (and whoever it works for) may read
         heading = ""
         for lo, hi, text in _passages(frame):
             if text.startswith("#"):

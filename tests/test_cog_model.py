@@ -129,9 +129,10 @@ def test_a_persons_required_reading_is_derived_the_same_way(released):
     assert "it-sop" not in dave and "audit-sop" not in dave and "document-control-sop" not in dave
     assert next(r for r in reading if r["frame"] == "finance-policy")["responsibilities"] == ["Reviews and approves bills within their limits."]
     bob = {r["frame"]: r["roles"] for r in sc.required_reading(b, "bob")}
-    assert bob["it-sop"] == ["internal-auditor", "system-administrator"] and "wi-run-an-audit" in bob
+    assert bob["it-sop"] == ["internal-auditor", "policy-owner", "system-administrator"] and "wi-run-an-audit" in bob
     assert sorted({r["who"] for r in b["responsibilities"] if r["frame"] == "it-sop"}) == [
-        "cog:it-admin", "cog:management", "role:internal-auditor", "role:management-reviewer", "role:quality-manager", "role:system-administrator"]
+        "cog:it-admin", "cog:management", "group:senior-cogs", "role:internal-auditor", "role:management-reviewer", "role:policy-owner",
+        "role:quality-manager", "role:system-administrator"]
 
 
 # ---------------------------------------------------------------- derived autonomy

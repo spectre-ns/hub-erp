@@ -1,19 +1,14 @@
 """Rule extraction from Frame prose.
 
-Two extractors share one output shape (see ``rules.py``):
-
-* ``ConventionExtractor`` is deterministic. It reads the sentence patterns
-  described in the ``writing-policy-frames`` Frame. It needs no model and is
-  the default.
-* ``ClaudeExtractor`` asks Claude to produce the same statements from
-  free-form prose. It is optional (``HUBPROTO_EXTRACTOR=claude``) and its
-  output passes through the same Guards, so a mis-extracted rule is caught by
-  the Source-Grounding Guard before any person reviews it.
+``ConventionExtractor`` is deterministic. It reads the sentence patterns
+described in the ``writing-policy-frames`` Frame and needs no model. The
+prose is read by the compile-frame committee's cogs, each with its bundled
+model (``hubproto.llm_extract``); both share one output shape (see
+``rules.py``) and pass through the same Guards.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import difflib
 import re
@@ -289,7 +284,8 @@ _GRAPH_AUTO = re.compile(r"^automatically(?: when (?P<cond>.+?))?(?:,? after (?P
 _GRAPH_COG = re.compile(r"^the (?P<cog>[a-z][\w -]*?) cog decides(?: within its approval criteria)?, else (?P<fallback>the [\w -]+)$")
 # "the design-review committee decides": every member of the committee agrees (consensus), or the item goes back (groups)
 _GRAPH_COMMITTEE = re.compile(r"^the (?P<committee>[a-z][\w -]*?) committee decides(?: by consensus)?$")
-_GRAPH_PERSON = re.compile(r"^(?P<who>the [\w -]+?|anyone)(?: decides)?(?:, not (?P<not>.+))?$")
+# "the owner or an approver": the owner, or anyone who may approve the process's object (numbered steps' Cancel and Retry).
+_GRAPH_PERSON = re.compile(r"^(?P<who>the [\w -]+?|anyone)(?P<approvers> or an approver)?(?: decides)?(?:, not (?P<not>.+))?$")
 _GRAPH_CATEGORY = {"to do": "todo", "in progress": "in_progress", "done": "done"}
 _GRAPH_OUTCOMES = ("completed", "rejected", "cancelled", "superseded")
 _GRAPH_FIELD_ROLES = {"the assignee": "assignee", "the owner": "owner", "the author": "author", "the requester": "requester",
@@ -356,6 +352,8 @@ def _graph_gate(text: str) -> tuple[dict, list, str]:
     m = _GRAPH_PERSON.match(text)
     if m:
         gate = {"kind": "person", "role": _role_of(m.group("who"))}
+        if m.group("approvers"):
+            gate["also"] = "approvers"
         if m.group("not"):
             nots = []
             for part in _words_list(m.group("not")):
@@ -379,9 +377,13 @@ def _graph_actions(text: str) -> tuple[list, str]:
             v = m.group("value").strip()
             out.append({"set": {m.group("field").strip().replace(" ", "_"): {"true": True, "false": False}.get(v, v)}})
             continue
+        if part.lower().startswith("the ") and " with the " in part:
+            # Several cogs review together and their findings merge ("the quality assistant with the purchasing assistant").
+            out.append({"swarm": [slug(c) for c in re.split(r" with the ", part[4:], flags=re.I)]})
+            continue
         m = re.match(r"^the (?P<cog>[\w -]+)$", part, re.I)
         if not m:
-            return [], f"“{part}” is not an action (the <cog>, notify the <role>, or set <field> to <value>)"
+            return [], f"“{part}” is not an action (the <cog>, the <cog> with the <cog>, notify the <role>, or set <field> to <value>)"
         out.append(slug(m.group("cog")))
     return out, ""
 
@@ -563,7 +565,7 @@ class ConventionExtractor:
             return out
         if mode == "guided":
             out.notes.append({"frame": frame.name, "line": 0, "text": "",
-                              "note": "guided mode requested; the convention extractor read this Frame (set HUBPROTO_EXTRACTOR=claude for model extraction)"})
+                              "note": "guided mode requested; the convention extractor read this Frame (the compile-frame committee reads prose with models)"})
         section = ""
         process: dict | None = None
 
@@ -969,102 +971,17 @@ class ConventionExtractor:
         return False
 
 
-_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "rules": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "kind": {"type": "string"},
-                    "fields_json": {"type": "string"},
-                    "line": {"type": "integer"},
-                    "text": {"type": "string"},
-                },
-                "required": ["kind", "fields_json", "line", "text"],
-                "additionalProperties": False,
-            },
-        }
-    },
-    "required": ["rules"],
-    "additionalProperties": False,
-}
-
-_PROMPT = """You extract governance rules from a policy document written in Markdown.
-Return every rule the document states, as JSON matching the schema. For each rule:
-- kind: one of role, member, folder, permission, threshold, routing, approval_criteria, sod, process
-- fields_json: a JSON object string with the rule's fields, using exactly these shapes:
-  role {{"name"}}; member {{"principal","principal_type","roles"}}; folder {{"path"}};
-  permission {{"subject":"role:<slug>","action","object","resource":"folder:<Path>","effect":"allow"|"deny"}};
-  threshold {{"name","value","unit"}}; routing {{"process","step":"approve","condition":null or
-  {{"field":"amount","op","value","currency"}} or {{"field":"risk","op":"==","value"}},"assignee":"role:x"|"cog:x"|"person:x"}};
-  approval_criteria {{"approver":"cog:<slug>","process","max_amount","currency","conditions":[ids]}} where ids are from {vocab};
-  sod {{"object","roles":[a,b]}}; process {{"name","folder","object","steps":[{{"n","id","title","role","cog","kind":"cog"|"checkpoint"}}]}}
-- line: the 1-based line number of the sentence the rule comes from (lines are numbered below)
-- text: that line, copied verbatim and stripped of surrounding whitespace
-Only state rules the document states. Do not invent roles, amounts or conditions.
-
-Document "{name}" (version {version}):
-{numbered}
-"""
-
-
-class ClaudeExtractor:
-    """Model-backed extraction through the Anthropic SDK (optional)."""
-
-    name = "claude"
-
-    def __init__(self, model: str | None = None):
-        import anthropic  # imported lazily so the prototype runs without the SDK
-
-        self.client = anthropic.Anthropic()
-        self.model = model or os.environ.get("HUBPROTO_MODEL", "claude-opus-5-5")
-
-    def extract(self, frame: Frame) -> Extraction:
-        numbered = "\n".join(f"{i:4d}: {line}" for i, line in enumerate(frame.lines, start=frame.body_start))
-        prompt = _PROMPT.format(name=frame.name, version=frame.version, numbered=numbered,
-                                vocab=sorted(CONDITION_VOCABULARY.values()))
-        with self.client.beta.messages.stream(
-            model=self.model,
-            max_tokens=64000,
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
-            output_config={"format": {"type": "json_schema", "schema": _SCHEMA}},
-            messages=[{"role": "user", "content": prompt}],
-        ) as stream:
-            message = stream.get_final_message()
-        if message.stop_reason == "refusal":
-            raise RuntimeError("extraction refused by the model")
-        text = next(b.text for b in message.content if b.type == "text")
-        data = json.loads(text)
-        out = Extraction()
-        for item in data["rules"]:
-            try:
-                fields = json.loads(item["fields_json"])
-            except json.JSONDecodeError:
-                out.notes.append({"frame": frame.name, "line": item["line"], "text": item["text"],
-                                  "note": "model returned unparsable fields"})
-                continue
-            out.rules.append({"kind": item["kind"], **fields,
-                              "source": {"frame": frame.name, "version": frame.version,
-                                         "line": item["line"], "text": item["text"].strip()}})
-        return out
-
-
 def get_extractor(cache_dir=None, context: dict | None = None, gateway=None, calls: bool = False):
-    """How SOPs are read: "convention" (the sentence shapes only) or "hybrid" (those, then a local model for the prose,
-    behind the guards and approvals; hubproto.llm_extract). Hybrid by default when the hub has an Ollama. ("claude",
-    a hosted model for everything, only when hosted models are switched on.)"""
+    """How SOPs are read: "convention" (the sentence shapes only: tests and offline use) or "hybrid" (those, then the
+    compile-frame committee's cogs read the prose, each with its own bundled model, behind the guards and approvals;
+    hubproto.llm_extract). Hybrid by default when the committee's cogs can have a model here: an Ollama, or hosted
+    models switched on with a key. There is no global model override: compilation is done by the committee's cogs."""
+    from .llm_extract import GrammarReader, ModelExtractor
     from .model import hosted_allowed, ollama_url
 
-    # Hybrid when the committee's cogs can have a model here: an Ollama, or hosted models switched on with a key.
-    mode = os.environ.get("HUBPROTO_EXTRACTOR") or ("hybrid" if ollama_url() or (hosted_allowed() and os.environ.get("ANTHROPIC_API_KEY"))
-                                                    else "convention")
-    if mode == "claude" and hosted_allowed():
-        return ClaudeExtractor()
-    if mode in ("hybrid", "claude"):
-        from .llm_extract import ModelExtractor
-
+    mode = (os.environ.get("HUBPROTO_EXTRACTOR") or "").strip().lower()
+    if mode not in ("convention", "hybrid"):  # unset, or a value no longer offered (``claude``): the default
+        mode = "hybrid" if ollama_url() or (hosted_allowed() and os.environ.get("ANTHROPIC_API_KEY")) else "convention"
+    if mode == "hybrid":
         return ModelExtractor(cache_dir=cache_dir, context=context, gateway=gateway, calls=calls)
-    return ConventionExtractor()
+    return GrammarReader()

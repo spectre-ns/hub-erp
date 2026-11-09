@@ -310,6 +310,62 @@ def conversion_blockers(hub) -> list[str]:
     return out
 
 
+# ---------------------------------------------------------------- the first release converts
+FRAME_FILES_KEPT = "frame-files-kept.json"  # state/: the explicit opt-out below
+
+
+def _kept_path(hub):
+    from pathlib import Path
+
+    return Path(hub.root) / "state" / FRAME_FILES_KEPT
+
+
+def frame_files_kept(hub) -> dict | None:
+    """{"by", "at", "reason"} when this hub was told to keep the Frame files as the source (no conversion after the
+    first release); None otherwise. Only meaningful before conversion."""
+    import json
+
+    path = _kept_path(hub)
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+    except ValueError:
+        return {"by": "?", "at": "", "reason": f"{path.name} does not parse"}
+
+
+def keep_frame_files(hub, *, by: str, reason: str) -> dict:
+    """Opt out, explicitly and on the record, of converting the SOPs right after the first release: the Frame files
+    stay the source and the policy owners release changes without change orders (the pre-conversion mode, for working
+    on the Frames themselves and for the suites that test that workflow). ``status`` says so. Converting later
+    (``sops convert``) ends it. Refused once the SOPs are documents: there is no way back."""
+    import json
+
+    from .release import utcnow
+
+    if converted(hub.kernel):
+        raise ValueError("the SOPs are documents already: configuration changes only through change orders")
+    if not (reason or "").strip():
+        raise ValueError("say why the Frame files stay the source (it is shown with the hub's status)")
+    entry = {"by": by, "at": utcnow(), "reason": reason.strip()}
+    path = _kept_path(hub)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(entry, indent=1), encoding="utf-8")
+    return entry
+
+
+def convert_after_release(hub, *, by: str) -> dict:
+    """Bootstrap: right after the first release, the SOPs become documents, so every later change needs a change order.
+    Not when the hub keeps the Frame files (``keep_frame_files``). Returns {"made": [documents], "blockers": [why not],
+    "kept": the opt-out or None}; a blocked conversion leaves the hub as it is, and ``status`` and ``bootstrap-release``
+    say why until it is converted."""
+    kept = frame_files_kept(hub)
+    if kept or converted(hub.kernel):
+        return {"made": [], "blockers": [], "kept": kept}
+    blockers = conversion_blockers(hub)
+    if blockers:
+        return {"made": [], "blockers": blockers, "kept": None}
+    return {"made": convert(hub, by=by), "blockers": [], "kept": None}
+
+
 def convert_from_ui(hub, *, by: str) -> dict:
     """Convert, for a policy owner, after the checks; the other policy owners are told. Returns {"made", "changes"}."""
     from . import authz

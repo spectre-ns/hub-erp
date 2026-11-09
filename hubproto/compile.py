@@ -37,7 +37,7 @@ def _reviewers(rules: list[dict]) -> set[str]:
 
 # ---------------------------------------------------------------- questions (change control v2, section 8)
 # Raised by compiling: a recompile that no longer raises one closes it.
-COMPILE_QUESTION_CODES = ("ambiguous", "unread", "disagreement", "member-unavailable")
+COMPILE_QUESTION_CODES = ("ambiguous", "unread", "disagreement", "member-unavailable", "outside-diff", "unread-rule")
 _NEGATION = re.compile(r"\b(?:not|never|no|none|nobody|nothing|unless|except|without|cannot|neither|nor)\b|n't\b", re.I)
 
 

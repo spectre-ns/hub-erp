@@ -3,7 +3,7 @@ type: frame [0.2]
 name: it-sop
 description: "IT and configuration: the hub's configuration changes only by change order; who is given which roles (cogs included); risk-based validation of configuration changes; backup and restore; incidents; what system administrators may do."
 visibility: internal
-version: "0.1.0"
+version: "0.2.0"
 scope: department
 maintainer: bob
 inherits: org-model
@@ -26,8 +26,13 @@ the forms editor or the workflow editor is recorded on a change order as a
 direct change, and the prose that states it is drafted into the SOP it belongs
 to; nothing reaches the release in force until the change order is approved and
 released. Any other path that would change configuration refuses and says to
-use a change order. The system administrators prepare configuration changes;
-they do not approve them, and neither does a cog.
+use a change order. The system administrators prepare configuration changes.
+The system administrator role grants no approval of its own: a change order is
+approved by the roles the SOPs name for that (the quality manager signs it, the
+policy owners decide its items), so a system administrator who also holds one
+of those roles approves in that role, never as a system administrator, and
+whoever made a direct configuration change on a change order is not its only
+approver. No cog approves a configuration change.
 
 Access is managed through the organization model. A person or a cog is given a
 role by a change order to the organization model that says why; a cog is given
@@ -47,7 +52,26 @@ presentation only (form layouts, wording). A high-risk item is tested with a
 recorded scripted check before approval; a medium-risk item is tried out in an
 unscripted test whose outcome is noted on the change order; a low-risk item is
 validated by the review of the delta itself. The evidence is attached to the
-change order and kept with it.
+change order and kept with it: a test record (a document of type test-evidence,
+or a test record entered on the change order: what was run, what was expected,
+what happened, pass or fail) or a test note. The change order cannot be
+approved until each item has the evidence its class needs, and a failed test
+stops it. The classes and what each needs are stated in the Validation section
+below; a change to them is a change order like any other.
+
+Hosted models. The cogs run on the local models the installation provides. A
+hosted model (Claude, from Anthropic) is used only when a system administrator
+switches it on, as an installation change recorded under this SOP (who, when,
+why, and the provider, which is evaluated and approved as a supplier under the
+supplier evaluation SOP), and only by the senior cogs, for compilation: reading
+the SOPs into rules on the compile-frame committee. Other cogs keep their
+bundled models. What may leave the hub to the provider is the SOP and policy
+text being compiled, its diff against the release in force, the rules in force
+it is read against, and the item the senior cog is working on; no other record,
+document or person's data. Each use is recorded: every decision, review and
+drafted text a cog produces keeps the model that produced it, the cog's persona
+and its version, and the release that gave it its context; each compile
+reading names the cogs that read it.
 
 The hub is backed up every day (the kernel, the releases, the proposals, the
 documents and the messages) and the backup is kept off the host. A restore is
@@ -78,6 +102,16 @@ The it-admin cog may not approve change orders in Quality/Changes.
 The management cog may not approve documents in Policy.
 The management cog may not approve change orders in Quality/Changes.
 
+## Validation
+Widenings are high risk.
+Changes to permissions, approval criteria, segregation of duties, members, roles, groups, committees, cog profiles and personas are high risk.
+Changes to record types and workflow gates are high risk.
+Changes to routing, due dates, processes, thresholds, required fields, duties, folders, scopes and responsibilities are medium risk.
+Changes to form layouts and wording are low risk.
+High-risk changes need a test record.
+Medium-risk changes need a test note.
+Low-risk changes need the review of the delta.
+
 ## Thresholds
 The restore test interval is 90 days.
 The access review interval is 90 days.
@@ -91,9 +125,11 @@ Every week the it-admin cog reviews the open change orders that touch permission
 ## Roles and responsibilities
 | Role | Responsibilities |
 |---|---|
-| System administrator | Prepares configuration changes as change orders, manages access, backs up and restores the hub, and handles incidents. |
+| System administrator | Prepares configuration changes as change orders, manages access, backs up and restores the hub, handles incidents, and switches hosted models on or off as a recorded installation change; approves nothing as a system administrator. |
 | Management reviewer | Reviews changes to roles, limits and segregation of duties. |
-| Quality manager | Approves the change orders that carry configuration changes. |
+| Quality manager | Approves the change orders that carry configuration changes, once each item has the validation evidence its class needs. |
+| Policy owner | Decides the items of a change order, widenings by both policy owners. |
+| the senior-cogs group | Compiles the SOPs, on a hosted model only when it is switched on, and sends only what this SOP allows. |
 | Internal auditor | Audits system administration they did not perform. |
 | the it-admin cog | Reviews open change orders that touch permissions, record types or forms; changes no configuration itself. |
 | the management cog | Reviews changes to roles, limits and segregation of duties; approves nothing. |

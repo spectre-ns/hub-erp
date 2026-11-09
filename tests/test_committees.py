@@ -5,7 +5,7 @@ compile-frame committee of senior cogs. No model is called: cogs answer with the
 
 import json
 import shutil
-from datetime import date, timedelta
+from datetime import timedelta
 
 import pytest
 
@@ -18,7 +18,6 @@ from hubproto.groups import committee, group_members, groups_of
 from hubproto.runner import RunError
 
 P = "design-review"
-TODAY = date.today()
 
 DESIGN = '''---
 type: frame [0.2]
@@ -235,14 +234,14 @@ def test_the_committee_gate_reads_and_writes_back(tmp_path):
     assert [c["id"] for c in pg.gated_checkpoints(proc)] == ["submit", "release", "return"]
 
 
-def test_every_member_agrees_and_the_item_moves(tmp_path):
+def test_every_member_agrees_and_the_item_moves(tmp_path, today):
     hub = design_hub(tmp_path)
     run_id = submit(hub, **LOW)
     state = hub.runner.load(run_id)
     cm = state["pending"]["committee"]
     assert state["at"] == "review" and cm["name"] == "design-review" and cm["chair"] == "sam"
     assert cm["members"] == ["kim", "doc-reviewer"] and state["pending"]["assignee_type"] == "committee"
-    assert cm["due"] == (TODAY + timedelta(days=3)).isoformat()
+    assert cm["due"] == (today + timedelta(days=3)).isoformat()
     # The cog member took its turn at once: its criteria hold (low risk), so it agrees; kim's vote is still wanted.
     assert cm["votes"]["doc-reviewer"]["verdict"] == "agree" and "within its approval criteria" in cm["votes"]["doc-reviewer"]["meaning"]
     assert state["pending"]["assignees"] == ["kim"] and hub.runner.waits_for(state, "kim")
@@ -320,10 +319,10 @@ def test_the_chair_may_return_the_item_instead(tmp_path):
     assert d["verdict"] == "reject" and d["returned_by"] == "sam" and "sam, chair of the design-review committee" in d["meaning"]
 
 
-def test_a_late_member_pauses_for_the_chair_who_may_extend_the_due_date(tmp_path):
+def test_a_late_member_pauses_for_the_chair_who_may_extend_the_due_date(tmp_path, today):
     hub = design_hub(tmp_path)
     run_id = submit(hub, **LOW)
-    later = (TODAY + timedelta(days=5)).isoformat()
+    later = (today + timedelta(days=5)).isoformat()
     [out] = hub.runner.tick(today=later)
     assert out["paused"] == ["kim"] and out["to"] == ["sam"]
     state = hub.runner.load(run_id)
@@ -331,8 +330,8 @@ def test_a_late_member_pauses_for_the_chair_who_may_extend_the_due_date(tmp_path
     assert p["member"] == "kim" and p["kind"] == "late" and "has not answered by" in p["reason"]
     assert set(state["pending"]["assignees"]) == {"kim", "sam"}, "kim may still answer; the chair is asked to intervene"
     with pytest.raises(RunError, match="new due date"):
-        hub.runner.intervene(run_id, "sam", "extend", member="kim", due=TODAY.isoformat(), meaning="on leave")
-    new_due = (TODAY + timedelta(days=10)).isoformat()
+        hub.runner.intervene(run_id, "sam", "extend", member="kim", due=today.isoformat(), meaning="on leave")
+    new_due = (today + timedelta(days=10)).isoformat()
     state = hub.runner.intervene(run_id, "sam", "extend", member="kim", due=new_due, meaning="kim is on leave this week")
     assert state["pending"]["committee"]["paused"] == [] and state["pending"]["due"] == new_due and state["pending"]["assignees"] == ["kim"]
     assert hub.kernel.get(state["record"])["due"] == new_due
@@ -340,17 +339,17 @@ def test_a_late_member_pauses_for_the_chair_who_may_extend_the_due_date(tmp_path
     assert vote(hub, run_id, "kim")["status"] == "completed"
 
 
-def test_a_late_member_answering_clears_the_pause(tmp_path):
+def test_a_late_member_answering_clears_the_pause(tmp_path, today):
     hub = design_hub(tmp_path)
     run_id = submit(hub, **LOW)
-    hub.runner.tick(today=(TODAY + timedelta(days=5)).isoformat())
+    hub.runner.tick(today=(today + timedelta(days=5)).isoformat())
     assert vote(hub, run_id, "kim", meaning="sorry, late: fine")["status"] == "completed"
 
 
-def test_when_the_chair_is_the_member_in_question_it_escalates_under_the_overdue_rule(tmp_path):
+def test_when_the_chair_is_the_member_in_question_it_escalates_under_the_overdue_rule(tmp_path, today):
     hub = design_hub(tmp_path, {"Chair: sam": "Chair: kim"})
     run_id = submit(hub, **LOW)
-    [out] = hub.runner.tick(today=(TODAY + timedelta(days=5)).isoformat())
+    [out] = hub.runner.tick(today=(today + timedelta(days=5)).isoformat())
     state = hub.runner.load(run_id)
     [p] = state["pending"]["committee"]["paused"]
     assert p["member"] == "kim" and "the chair, kim, is the member in question" in p["who"] and "Overdue items in design-review" in p["who"]
@@ -564,13 +563,14 @@ def test_the_compile_frame_committee_is_the_senior_cogs_each_reading_with_its_ow
         reader.call = fake(name)
     asked.clear()
     out = ex.extract(frame)
-    [q] = out.questions
-    assert asked == [] and q["code"] == "member-unavailable" and q["member"] == "senior-qa-manager" and q["chair"] == "carol"
+    [q] = [q for q in out.questions if q["code"] == "member-unavailable"]
+    assert asked == [] and q["member"] == "senior-qa-manager" and q["chair"] == "carol"
+    assert {x["code"] for x in out.questions} == {"member-unavailable", "unread-rule"}, "and the sentence nobody read is the chair's too"
     assert not [r for r in out.rules if (r.get("source") or {}).get("read_by")], "nothing read without consensus"
 
 
 # ---------------------------------------------------------------------------------------------- no private memories
-def test_a_cogs_judgment_is_a_review_record_on_the_item_and_read_back_from_there(tmp_path, monkeypatch):
+def test_a_cogs_judgment_is_a_review_record_on_the_item_and_read_back_from_there(tmp_path, monkeypatch, today):
     """Cogs have no private memories (change control 13): the cog's judgment for an approval is filed on the item, with
     the version it judged, and a failed one binds for that version because it is read back from the item."""
     from hubproto import review as review_mod
@@ -583,7 +583,7 @@ def test_a_cogs_judgment_is_a_review_record_on_the_item_and_read_back_from_there
         calls.append(cog_id)
         return {"cog": cog_id, "verdict": "fail", "findings": [{"check": "content", "detail": "the tolerance stack is not shown",
                                                                 "severity": "error"}],
-                "summary": "fails", "routing_notes": [], "model": "fake", "sops": [], "stand_in": False, "date": TODAY.isoformat()}
+                "summary": "fails", "routing_notes": [], "model": "fake", "sops": [], "stand_in": False, "date": today.isoformat()}
     monkeypatch.setattr(review_mod, "review", failing)
     run_id = submit(hub)
     state = hub.runner.load(run_id)
@@ -595,13 +595,13 @@ def test_a_cogs_judgment_is_a_review_record_on_the_item_and_read_back_from_there
     assert j["verdict"] == "fail" and j["key"].startswith(state["record"]) and "tolerance stack" in j["findings"][0]
     assert not list((tmp_path / "state").glob("judgments/doc-reviewer.json")), "no private store of the cog's own"
     # Asked again on the same version (the chair asks it again), it does not judge again: the record on the item binds.
-    hub.runner.intervene(run_id, "sam", "extend", member="doc-reviewer", due=(TODAY + timedelta(days=9)).isoformat(),
+    hub.runner.intervene(run_id, "sam", "extend", member="doc-reviewer", due=(today + timedelta(days=9)).isoformat(),
                          meaning="look again, please")
     [p] = hub.runner.load(run_id)["pending"]["committee"]["paused"]
     assert calls == ["doc-reviewer"] and "the tolerance stack is not shown" in p["reason"], "read back from the item, not judged again"
     # The item changes: the record no longer applies and it judges again.
     hub.kernel.set_fields(state["record"], {"description": "tolerance stack added"}, by="maya")
-    hub.runner.intervene(run_id, "sam", "extend", member="doc-reviewer", due=(TODAY + timedelta(days=10)).isoformat(),
+    hub.runner.intervene(run_id, "sam", "extend", member="doc-reviewer", due=(today + timedelta(days=10)).isoformat(),
                          meaning="changed: look again")
     assert calls == ["doc-reviewer", "doc-reviewer"]
 
