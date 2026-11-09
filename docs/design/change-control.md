@@ -22,6 +22,14 @@ in the PR.
    delta item, may override with an accepted warning, and sign the CO.
 6. **Cogs are members like people.** They hold roles; their authority is what the SOPs give their
    roles (and them by name), within the guards. Be explicit: never hand a cog outsized permissions.
+7. **When in question, treat a cog as a person with training and a personality** (product owner,
+   2026-11-09): its training is what the Roles and responsibilities tables require it to read and
+   acknowledge; its personality is its persona. Design questions about cogs are settled by asking what
+   the hub would do for a person in the same position. For example: an SOP that gives a cog work its
+   roles do not cover produces a *suggested* role grant on the change order, never an automatic one,
+   as a person's role is granted by an org-model change; a cog acknowledges training on a new revision
+   as a person does; a cog's configuration changes when the compiled SOPs it works under change, and
+   the change order shows what each change does to each cog.
 
 ## 2. What lives where
 
