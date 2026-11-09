@@ -941,9 +941,10 @@ def _narrative(text: str, limit: int = 1500) -> str:
 
 
 def process_context(ctx: RunContext, rec: dict | None, budget: int) -> str:
-    """The cog's working context by process: the governing process's steps, its own part in it (routes, criteria,
-    permissions, due dates, segregation of duties, duties) with the sentences they cite and any divergence, then the
-    SOPs it follows as an index of sections to read on demand. Kept within ``budget`` characters."""
+    """The cog's working context by process: the governing process's prose and steps, its own part in it (its routes,
+    criteria, permissions and duties there) and the rest of the process's routes, criteria and segregation of duties,
+    each with the sentence it cites and any divergence, then the SOPs it follows as an index of sections to read on
+    demand. Kept within ``budget`` characters."""
     from .release import rule_names
 
     bundle = ctx.bundle or {}
@@ -969,7 +970,7 @@ def process_context(ctx: RunContext, rec: dict | None, budget: int) -> str:
         obj, folder = proc.get("object") or "", proc.get("folder") or ""
         mine = []
         for r in bundle.get("routing") or []:
-            if r.get("process") == process and (r.get("assignee") in me or r.get("mode") == "notify" and r.get("assignee") in me):
+            if r.get("process") == process and r.get("assignee") in me:
                 mine.append(r)
         for r in bundle.get("approval_criteria") or []:
             if r.get("process") == process and (r.get("approver") in me or ("role:" + str(r.get("countersign") or "")) in me):
