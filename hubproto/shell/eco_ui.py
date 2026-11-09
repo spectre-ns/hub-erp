@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
-from .. import authz, eco, sopdocs, wopi
+from .. import authz, changecontrol, eco, sopdocs, wopi
 from ..runner import RunError
 from .forms import ShellError
 from .handler import hidden_as, href, log_line, table
@@ -198,19 +198,30 @@ class EcoMixin:
         out += self._forms_co_section(co, mine, preparing)
         # Staged Frame
         out += self._staged_html(co, st)
-        # What blocks it, and Send for approval
+        # The review loop (hubproto.changecontrol; the full page is the shell workstream's): request review, then send
         run = self.hub.runner.run_for_record(co["locator"])
+        stage = changecontrol.stage_of(co)
+        rnd = changecontrol.current_round(co)
+        if rnd:
+            panel = ", ".join(e["who"] + ("" if e.get("member") else " (not a member)") for e in rnd.get("panel") or []) or "nobody"
+            out += f"<p class='why'>Review round {int(rnd['n'])} ({esc(str(rnd.get('status') or ''))}); panel: {esc(panel)}.</p>"
         if co["state"] == "released":
             out += f"<p class='status'>Released: its revisions and Frame are in force (policy {esc((f.get('released_release') or '')[:12])}).</p>"
         elif run and run["status"] in ("waiting", "submitted", "running"):
             out += "<p class='why'>Sent for approval: it is in the change-order process.</p>"
+            blocked = changecontrol.approval_reasons(self.hub, co["locator"])
+            if blocked:
+                out += ("<h3>Before it can be approved</h3><ul class='blockers'>" + "".join(f"<li>{esc(b)}</li>" for b in blocked) + "</ul>")
         else:
-            blocked = eco.check_approval(self.hub, co["locator"])
+            if mine and stage in changecontrol.EDITABLE:
+                out += (f"<form method='post' action='/co-review' class='inline'>{hidden_as(user)}{self._once()}<input type='hidden' name='co' value='{esc(co['locator'])}'>"
+                        f"<button class='secondary'>{icon('users')}Request review</button></form> ")
+            blocked = eco.frame_reasons(self.hub, co)
             if blocked:
                 out += ("<h3>Before it can be sent for approval</h3><ul class='blockers'>" + "".join(f"<li>{esc(b)}</li>" for b in blocked) + "</ul>")
             elif mine:
                 out += (f"<form method='post' action='/co-send' class='inline'>{hidden_as(user)}{self._once()}<input type='hidden' name='co' value='{esc(co['locator'])}'>"
-                        f"<button>{icon('send')}Send for approval</button></form> <span class='why'>Every revision it carries is approved and its Frame is clean.</span>")
+                        f"<button>{icon('send')}Send for approval</button></form> <span class='why'>A review round has run on what it carries and its delta is clean.</span>")
         return out + "</section>"
 
     def _staged_html(self, co: dict, st: dict) -> str:
@@ -221,20 +232,20 @@ class EcoMixin:
             out += ("<div class='card crit' role='alert'><p><b>The staged Frame does not compile.</b> Fix these in the revisions:</p><ul>"
                     + "".join(f"<li>{esc(e)}</li>" for e in f["staged_errors"]) + "</ul></div>")
         p = st.get("proposal")
-        current = p is not None and not [r for r in st.get("reasons") or [] if "compile it again" in r or "not made of the approved" in r]
+        current = p is not None and not [r for r in st.get("reasons") or [] if "request review again" in r or "no review round" in r]
         out += self._automation_line(co)
         if not current:
             pv = eco.preview(self.hub, co["locator"]) if eco.carried(self.hub, co) and self._co_preparing(co) else None
             if pv is None:
-                return out + ("<p class='muted'>Nothing compiled yet: the Frame is compiled when a revision this change order carries is approved.</p>"
+                return out + ("<p class='muted'>Nothing compiled yet: the Frame is compiled in the change order's review rounds.</p>"
                               if not f.get("staged_errors") else "")
             if pv.get("errors"):
                 out += ("<div class='card warn' role='status'><p><b>The drafts do not compile as they stand.</b> Fix these before they go for approval:</p><ul>"
                         + "".join(f"<li>{esc(e)}</li>" for e in pv["errors"]) + "</ul></div>")
             rows = [f"<li><b>{esc(r['verb'])}:</b> {esc(r['text'])}" + (f" <span class='why'>was: {esc(r['was'])}</span>" if r.get("was") else "") + "</li>"
                     for r in self._change_rows(pv)]
-            return out + ("<p class='why'>Preview from the drafts as they stand. The Frame that counts is compiled when each revision is approved "
-                          "(the compile-frame automation), and the change order goes for approval once it is ready.</p>"
+            return out + ("<p class='why'>Preview from the drafts as they stand. The Frame that counts is compiled in each review round "
+                          "(request review), and the change order goes for approval once a round has run on what it carries.</p>"
                           + ("<ul class='staged'>" + "".join(rows) + "</ul>" if rows else "<p class='muted'>No rule changes in the drafts.</p>"))
         from ..compile import change_state
 
@@ -307,6 +318,21 @@ class EcoMixin:
         self.hub.kernel.set_fields(co["locator"], {"implements": current}, by=self.user)
         self._redirect(self._once_finish(self._co_href(co)))
 
+    def post_co_review(self):
+        self._need_release()
+        done = self._once_done()
+        if done:
+            return self._redirect(done)
+        co = self._co_get(self._f("co"))
+        if not self._co_mine(co):
+            raise ShellError("Only its requester or a document controller requests review of a change order.", 403)
+        try:
+            rnd = changecontrol.request_review(self.hub, co["locator"], self.user)
+        except ValueError as e:
+            raise ShellError(str(e)) from None
+        log_line(f"change order review requested {co['number']} round={rnd['n']} by={self.user}")
+        self._redirect(self._once_finish(self._co_href(co) + "&done=" + quote(f"Review round {rnd['n']} of {co['number']} is under way.")))
+
     def post_co_send(self):
         self._need_release()
         done = self._once_done()
@@ -315,14 +341,10 @@ class EcoMixin:
         co = self._co_get(self._f("co"))
         if not self._co_mine(co):
             raise ShellError("Only its requester or a document controller sends a change order for approval.", 403)
-        blocked = eco.check_approval(self.hub, co["locator"])
-        if blocked:
-            raise ShellError("It cannot be sent for approval yet: " + "; ".join(blocked))
         try:
-            run_id = self.hub.runner.submit("change-order", {"record": {}}, owner=self.user, record=co["locator"])
-        except RunError as e:
+            state = changecontrol.send_for_approval(self.hub, co["locator"], self.user)
+        except (ValueError, RunError) as e:
             raise ShellError(str(e)) from None
-        state = self.hub.runner.load(run_id)
         where = (" It waits for " + ", ".join(state["pending"]["assignees"]) + ".") if state.get("pending") else f" It is {state['status']}."
         log_line(f"change order sent {co['number']} by={self.user} -> {state['status']}")
         self._redirect(self._once_finish(self._co_href(co) + "&done=" + quote(f"{co['number']} is sent for approval.{where}")))

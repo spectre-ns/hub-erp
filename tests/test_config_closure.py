@@ -74,13 +74,18 @@ def approved(hub, co) -> dict:
 
 
 def staged_co(hub) -> tuple[dict, dict]:
-    """A change order with an approved revision of the finance policy, its Frame staged by the compile-frame automation."""
+    """A change order with a revision of the finance policy, its Frame staged by a review round (change control v2) and
+    every item of its delta decided by the quality manager."""
+    from hubproto import changecontrol
+
     hub.kernel.set_fields(sopdocs.in_force(hub.kernel, "finance-policy")["locator"], {"owner": "alice"}, by="setup")
     co = new_co(hub, who="alice", title="Lower the AP cog limit")
     draft = eco.add_sop(hub, co["number"], "finance-policy", by="alice")
     write(hub, draft, OLD, NEW, "alice")
-    run = hub.runner.submit("document-control", {"record": {"change_type": "minor"}}, owner="alice", record=draft["locator"])
-    approve(hub, run, hub.runner.load(run)["pending"]["assignees"][0])
+    changecontrol.request_review(hub, co["number"], "alice")
+    for item in changecontrol.delta(hub, co["number"]):
+        if item["op"] != "text":
+            changecontrol.decide_item(hub, co["number"], item["id"], "approve", "carol", "the lower limit is right")
     co = hub.kernel.get(co["locator"])
     assert co["fields"]["staged_proposal"], co["fields"]
     return co, hub.proposals.load(co["fields"]["staged_proposal"])

@@ -144,6 +144,10 @@ def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], re
     findings += scope_guard(rules, set(store.frames), {n: f.scope for n, f in store.frames.items()})
     base = releases.current(now)
     old_rules = releases.rules(base["digest"]) if base else []
+    from .changecontrol import keep_divergences  # an open divergence keeps its rule in force until a change order resolves it
+
+    rules, kept = keep_divergences(rules, base)
+    findings += kept
     changes = drift_guard(old_rules, rules)
     changes += text_changes(base.get("frames") if base else [], store.bill_of_materials(frames), rules)
     for c in changes:
