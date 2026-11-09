@@ -27,8 +27,9 @@ in the PR.
    acknowledge; its personality is its persona. Design questions about cogs are settled by asking what
    the hub would do for a person in the same position. For example: an SOP that gives a cog work its
    roles do not cover produces a *suggested* role grant on the change order, never an automatic one,
-   as a person's role is granted by an org-model change; a cog acknowledges training on a new revision
-   as a person does; a cog's configuration changes when the compiled SOPs it works under change, and
+   as a person's role is granted by an org-model change; a cog's **training is the SOP in its context**
+   when it works (the release that puts a revision in its context is its training record; people
+   acknowledge training tasks, cogs do not); a cog's configuration changes when the compiled SOPs it works under change, and
    the change order shows what each change does to each cog.
 
 ## 2. What lives where
@@ -385,7 +386,8 @@ final report every place you needed another workstream's code and what you assum
 - **A required-training document** (training matrix, Quality/Training) summarises the links: per
   role, each document to read, its revision in force and the responsibility. It is generated from the
   tables and republished by the release automation when a table or a listed revision changes.
-  Training acknowledgement tasks are assigned from the tables when a revision becomes effective.
+  Training acknowledgement tasks are assigned to people from the tables when a revision becomes
+  effective; for a cog, training is the SOP in its context when it works, recorded by the release.
 - **Committees exist to bring differing perspectives with different contexts**: each member works
   from its own persona and responsibilities; the shared material (diff, rules in force, output
   format) is the same, so differences surface as disagreements for a person to resolve.
