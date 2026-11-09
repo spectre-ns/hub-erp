@@ -10,7 +10,7 @@ from conftest import ROOT, release_all, seen
 from hubproto.app import Hub
 from hubproto.extract import ConventionExtractor, object_of, slug
 from hubproto.frames import load_frame
-from hubproto.release import checkpoint_for, render
+from hubproto.release import checkpoint_for, legacy_transitions, render
 from hubproto.runner import RunError
 from hubproto.track import Track
 
@@ -179,11 +179,19 @@ def test_render_workflow_states_and_transitions(bundle):
     assert [(c["id"], c["role"], c["state"], c["sla_days"]) for c in wf["checkpoints"]] == [
         ("check-the-widget", "widget-checker", "awaiting-check-the-widget", 3),
         ("approve-the-widget", "widget-approver", "awaiting-approve-the-widget", 5)]
-    auto = [t for t in wf["transitions"] if t["kind"] == "automatic"]
+    # The workflow is a graph now (change control 10.1); the earlier transition list is a view of it.
+    auto = [t for t in legacy_transitions(wf) if t["kind"] == "automatic"]
     assert [(t["from"], t["to"], t["steps"]) for t in auto] == [
         ("open", "awaiting-check-the-widget", ["request-the-widget"]),
         ("awaiting-check-the-widget", "awaiting-approve-the-widget", ["link-the-widget"])]
-    human = [t for t in wf["transitions"] if t["kind"] == "human"]
+    assert [(t["id"], t.get("from"), t["to"], t["gate"]["kind"], t["actions"]) for t in wf["transitions"] if t["type"] == "directed"] == [
+        ("auto-awaiting-check-the-widget", ["open"], "awaiting-check-the-widget", "auto", ["request-the-widget"]),
+        ("check-the-widget", ["awaiting-check-the-widget"], "awaiting-approve-the-widget", "person", ["link-the-widget"]),
+        ("reject-check-the-widget", ["awaiting-check-the-widget"], "awaiting-check-the-widget", "person", []),
+        ("approve-the-widget", ["awaiting-approve-the-widget"], "done", "person", []),
+        ("reject-approve-the-widget", ["awaiting-approve-the-widget"], "awaiting-check-the-widget", "person", []),
+        ("retry", ["failed"], "failed", "person", [])]
+    human = [t for t in legacy_transitions(wf) if t["kind"] == "human"]
     assert human == [
         {"from": "awaiting-check-the-widget", "to": "awaiting-approve-the-widget", "kind": "human", "step": "check-the-widget",
          "title": "Check the widget", "on_reject": "awaiting-check-the-widget", "sla_days": 3},
@@ -195,7 +203,7 @@ def test_render_workflow_without_reject_to_ends_in_rejected(bundle):
     wf = bundle["workflows"][G]
     assert wf["states"] == ["open", "awaiting-approve-the-gadget", "done", "rejected"]
     assert wf["reject_to"] is None and wf["sla"] == {}
-    human = [t for t in wf["transitions"] if t["kind"] == "human"]
+    human = [t for t in legacy_transitions(wf) if t["kind"] == "human"]
     assert human == [{"from": "awaiting-approve-the-gadget", "to": "done", "kind": "human", "step": "approve-the-gadget",
                       "title": "Approve the gadget", "on_reject": "rejected", "sla_days": None}]
 

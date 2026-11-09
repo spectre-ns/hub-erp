@@ -62,3 +62,6 @@ messages, and are bound by segregation of duties.
 Staff may read Policy.
 Staff may create documents in Policy.
 Policy owners may approve documents in Policy.
+
+## Segregation of duties
+A cog's work is signed by a person.

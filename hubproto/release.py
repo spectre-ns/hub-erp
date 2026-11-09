@@ -30,8 +30,12 @@ def render_manifest(process: dict) -> dict:
     """Turn a process rule into an Op manifest.
 
     Cog steps become steps. A checkpoint step becomes a human Gate on the
-    step before it, routed through the release routing table.
+    step before it, routed through the release routing table. (A process written
+    as a graph: one step per cog action, and the Gates come from the graph; see
+    ``hubproto.process_graph`` and the runner.)
     """
+    if process.get("statuses"):
+        return render_graph_manifest(process)
     steps: list[dict] = []
     prev_id = None
     for step in process["steps"]:
@@ -78,10 +82,50 @@ def render_manifest(process: dict) -> dict:
     }
 
 
+def render_graph_manifest(process: dict) -> dict:
+    """The Op manifest of a process written as a graph: one step per cog action (the actions say which run when; the
+    graph says where the item goes). The first step carries the role that starts the process, as for numbered steps."""
+    from .process_graph import action_steps
+
+    init = next((t for t in process.get("transitions") or [] if t.get("type") == "initial"), None) or {}
+    start_role = (init.get("gate") or {}).get("role") or "system"
+    steps: list[dict] = []
+    prev: dict[str, str] = {}
+    for sid, cog, t in action_steps(process):
+        entry = {"id": sid, "title": cog.replace("-", " ").capitalize(), "role": "system", "cog": {"id": cog, "task": "run"},
+                 "input": {"record": {"$from": "inputs.record"}}, "gate": {"type": "default"}, "transition": t["id"]}
+        if prev.get(t["id"]):
+            entry["input"]["prior"] = {"$from": f"steps.{prev[t['id']]}.payload"}
+            entry["depends_on"] = [prev[t["id"]]]
+        prev[t["id"]] = sid
+        steps.append(entry)
+    if not steps:  # readers take the starting role from the first step
+        steps.append({"id": "start", "title": init.get("name") or "Start", "role": start_role, "cog": {"id": "noop", "task": "run"},
+                      "input": {"record": {"$from": "inputs.record"}}, "gate": {"type": "default"}})
+    steps[0] = {**steps[0], "role": start_role}
+    return {
+        "schema": OP_PROFILE,
+        "id": process["name"],
+        "title": process["name"].replace("-", " "),
+        "folder": process["folder"],
+        **({"files_by_type": dict(process["files_by_type"])} if process.get("files_by_type") else {}),
+        "object": process["object"],
+        "inputs": [{"name": "record", "required": True}],
+        "steps": steps,
+        "start_role": start_role,
+    }
+
+
 def checkpoint_for(process: dict, step: str) -> dict | None:
     """Resolve a routing or SLA step name against a process: a checkpoint id, or the
-    'approve' alias meaning the first checkpoint whose title starts with Approve."""
-    cps = [s for s in process["steps"] if s["kind"] == "checkpoint"]
+    'approve' alias meaning the first checkpoint whose title starts with Approve.
+    In a process written as a graph the checkpoints are its decisions (gated transitions)."""
+    if process.get("statuses"):
+        from .process_graph import gated_checkpoints
+
+        cps = gated_checkpoints(process)
+    else:
+        cps = [s for s in process["steps"] if s["kind"] == "checkpoint"]
     if step == "approve":
         for cp in cps:
             if cp["id"].startswith(("approv", "accept", "confirm", "authori")):
@@ -94,48 +138,18 @@ def checkpoint_for(process: dict, step: str) -> dict | None:
 
 
 def render_workflow(process: dict, slas: dict[str, int], record_type: str) -> dict:
-    """The state machine a record type follows, derived from the process section."""
-    states = ["open"]
-    transitions: list[dict] = []
-    checkpoints: list[dict] = []
-    current = "open"
-    pending_auto: list[str] = []
-    for step in process["steps"]:
-        if step["kind"] == "cog":
-            pending_auto.append(step["id"])
-            continue
-        if checkpoints and not pending_auto:
-            pending_auto.append(f"reach-{step['id']}")
-        waiting = f"awaiting-{step['id']}"
-        states.append(waiting)
-        transitions.append({"from": current, "to": waiting, "kind": "automatic", "steps": pending_auto})
-        checkpoints.append({"id": step["id"], "title": step["title"], "role": step["role"], "state": waiting,
-                            "sla_days": slas.get(step["id"])})
-        pending_auto = []
-        current = waiting
-    terminal = process.get("terminal") or "closed"
-    states.append(terminal)
-    reject_to = process.get("reject_to")
-    cp_ids = {cp["id"] for cp in checkpoints}
-    if reject_to and reject_to in cp_ids:
-        on_reject = f"awaiting-{reject_to}"
-    elif reject_to:
-        on_reject = "returned"  # rejection returns the item to its owner for rework at that step
-        states.append("returned")
-    else:
-        on_reject = "rejected"
-        states.append("rejected")
-    # Close the human transitions: each checkpoint approves into the next waiting state or the terminal.
-    human = []
-    for i, cp in enumerate(checkpoints):
-        nxt = checkpoints[i + 1]["state"] if i + 1 < len(checkpoints) else terminal
-        human.append({"from": cp["state"], "to": nxt, "kind": "human", "step": cp["id"], "title": cp["title"],
-                      "on_reject": on_reject, "sla_days": cp["sla_days"]})
-    if pending_auto or not checkpoints:
-        transitions.append({"from": current, "to": terminal, "kind": "automatic", "steps": pending_auto})
-    return {"record_type": record_type, "object": process["object"], "states": states,
-            "transitions": transitions + human, "checkpoints": checkpoints, "terminal": terminal,
-            "reject_to": reject_to, "sla": {cp["id"]: cp["sla_days"] for cp in checkpoints if cp["sla_days"]}}
+    """The graph a record type follows (change control 10.1), derived from the process section: statuses and
+    transitions, plus the earlier state-machine keys derived from it (``hubproto.process_graph``)."""
+    from .process_graph import build
+
+    return build(process, slas, record_type)
+
+
+def legacy_transitions(wf: dict | None) -> list[dict]:
+    """A workflow's transitions in the earlier shape (kind automatic|human, step, on_reject), for its readers."""
+    from .process_graph import legacy_transitions as _lt
+
+    return _lt(wf)
 
 
 def render(rules: list[dict], record_types: dict | None = None) -> dict:
@@ -206,7 +220,6 @@ def render(rules: list[dict], record_types: dict | None = None) -> dict:
     permissions.sort(key=lambda x: (x["resource"], x["subject"], x["action"], x["object"], x["effect"]))
     criteria.sort(key=lambda x: (x["approver"], x["process"]))
     sod.sort(key=lambda x: (x["object"], x["roles"]))
-    ops = {name: render_manifest(p) for name, p in sorted(processes.items())}
 
     def type_for(obj: str) -> str:
         for tname, td in (record_types or {}).items():
@@ -214,6 +227,10 @@ def render(rules: list[dict], record_types: dict | None = None) -> dict:
                 return tname
         return obj
 
+    for name, p_ in processes.items():  # a process written as a graph without a start sentence: its record type's object
+        if p_.get("statuses") and not p_.get("object") and p_.get("record_type"):
+            p_["object"] = ((record_types or {}).get(p_["record_type"]) or {}).get("object") or p_["record_type"]
+    ops = {name: render_manifest(p) for name, p in sorted(processes.items())}
     workflows = {}
     for name, p_ in sorted(processes.items()):
         sla_map = {x["step"]: x["days"] for x in slas if x["process"] == name}

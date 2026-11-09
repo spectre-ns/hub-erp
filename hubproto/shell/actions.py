@@ -149,7 +149,7 @@ class ActionsMixin:
             verdict = "approve"
             meaning = self._f("meaning")
             fields = {}
-            reserved = {"as", "run", "verdict", "meaning", "digest", "confirm", "reason", "once"}
+            reserved = {"as", "run", "verdict", "meaning", "digest", "confirm", "reason", "once", "transition"}
             given = {k: v for k, v in self.form.items() if k not in reserved and v.strip()}
             if given and state.get("pending") and state["pending"].get("kind", "decision") == "decision" and rec:
                 td = self.hub.kernel.types.get(rec["type"], {}).get("fields", {})
@@ -167,7 +167,9 @@ class ActionsMixin:
                 raise ShellError(f"Tick “I have read the item and the checks above” to approve {number}.", field="confirm")
         queue = [r["id"] for r in self._pending(user, "decision")]
         following = [i for i in queue[queue.index(run_id) + 1:]] if run_id in queue else []
-        result = self.hub.runner.decide(run_id, user, verdict, meaning=meaning, payload_digest=self._f("digest") or None, fields=fields or None)
+        transition = self._f("transition") or None  # a button naming one of the Gate's options (its transition)
+        result = self.hub.runner.decide(run_id, user, None if transition else verdict, meaning=meaning, payload_digest=self._f("digest") or None,
+                                        fields=fields or None, transition=transition)
         log_line(f"decision run={run_id} record={state.get('record')} by={user} verdict={verdict} fields={sorted(fields)} meaning={meaning!r} status={result['status']}")
         rec = self.hub.kernel.get(state["record"]) if state.get("record") else None
         if verdict == "reject":

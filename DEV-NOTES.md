@@ -18,7 +18,8 @@ reason written in the PR. Tests: `python -m pytest -q` (all must pass).
 | `hubproto/routing.py` | routing candidates, approval criteria, thresholds, SLAs | core |
 | `hubproto/kernel.py` | generic record system + ledger command on an event store | core |
 | `hubproto/dms.py` | blob store, document versions, classes, check-out, snapshots, intake | core |
-| `hubproto/runner.py` | Op runner = workflow engine; Gates, grants, Track, tick (SLA escalation) | core |
+| `hubproto/runner.py` | Op runner = workflow engine walking process graphs; derived Gates and options, grants, Track, tick (SLA escalation), following the release in force, state maps | core |
+| `hubproto/process_graph.py` | processes as graphs (change control 10.1): compile numbered steps and graph sentences into one shape, read it (options, verdicts, globals), write it back as sentences, the earlier shape's view | core |
 | `hubproto/cogs.py` | Cog catalog (code cogs, context stand-ins, reviewer cogs) | core |
 | `hubproto/inbox.py` | DMs and email to people and cogs | core |
 | `hubproto/cad.py` | CAD/ECAD: FreeCAD and KiCad stdlib extraction, worker client, cad-exporter, bom-reconciler, part-releaser cogs | core |
@@ -86,12 +87,16 @@ proposal; policy owners (members with role `policy-owner`) approve each
 change (widenings need two); `hub.release()` renders the **policy release**:
 members, roles, folders, permissions, thresholds, routing, approval criteria,
 segregation of duties, processes, generated Op manifests (`ops`) and
-**workflows** (state machines per process). Runs pin the release digest.
-A run creates a record (type from the workflow), executes automatic cog
-steps, and at each checkpoint routes to a person or a cog; the record waits
-in state `awaiting-<checkpoint-id>` with assignees and a due date; a
-decision (`runner.decide`) is the electronic signature; the run continues
-and closes the record in the process's terminal state. Everything is on the
+**workflows** (one graph of statuses and transitions per process). A run
+creates a record (type from the workflow) and walks the graph: an automatic
+transition runs its actions (cog steps) in order; at a status with gated
+transitions the item waits at a Gate routed to a person or a cog (the record's
+state is the status, e.g. `awaiting-<checkpoint-id>` for numbered steps) with
+assignees and a due date; a decision (`runner.decide`, or `runner.choose` with
+a transition id) is the electronic signature and takes one of the Gate's
+options; a failed action moves the item to `failed` (Retry resumes it); a done
+status closes it. From each move on, a run follows the release in force then
+(it no longer pins its starting release); the Track records each change. Everything is on the
 run's Track (`state/runs/<id>/track.jsonl`) and on the record's events.
 
 ## Sentence grammar (convention mode)
@@ -123,6 +128,8 @@ Only inside these sections: `## Roles`, `## Members`, `## Folders`,
                     conditions (closed vocabulary, rules.py CONDITION_VOCABULARY): the three-way match is within tolerance;
                     the supplier is approved; the risk is low; the risk is not high; the change is minor; the document is a minor revision; no open nonconformance exists
 ## Segregation of duties  The preparer and the approver of a bill must be different people.   (object = record object noun)
+                    A cog's work is signed by a person.      (or "A cog's work on a <object> is signed by a person.": a cog never signs an
+                                                              item another cog prepared or wrote; a cog never signs its own work is a guard)
 ## Process: nonconformance
 Records are filed in Quality/Nonconformances.
 The record type is ncr.                      (optional; otherwise derived from the first step's object)
@@ -146,6 +153,48 @@ unless `The record type is X.` says otherwise.
 A checkpoint with no routing sentence routes to the role on its step (warning).
 A routed role with no member is an error ("fill the org model"): this is how
 seed placeholders work.
+
+### Processes as graphs (change control 10.2)
+
+A `## Process:` section may instead state its statuses and transitions (not
+both forms in one section). The fast path reads these sentences exactly:
+
+```
+## Process: nonconformance
+Records are filed in Quality/Nonconformances.
+The record type is ncr.
+Statuses: Open (to do), Awaiting disposition (in progress, due within 5 days), Closed (done, completed), Cancelled (done, cancelled).
+Starts in Open ("Open the nonconformance"): the staff; needs title and description.
+From Open to Awaiting disposition: automatically, after the ncr classifier, the record filer and the risk scorer.
+From Awaiting disposition to Closed ("Disposition"): the quality manager decides, not the author; needs disposition; then the disposition applier and the capa opener run.
+From Awaiting disposition to Open ("Return"): the quality manager.
+From any status except done to Cancelled ("Cancel"): the quality manager.
+```
+
+* `Statuses:` lists `Name [id] (category[, outcome][, due within N days])`, comma-separated. Category: `to do`, `in progress`
+  or `done`; a done status has an outcome `completed` (default), `rejected`, `cancelled` or `superseded`. The id is the
+  name's slug unless `[id]` names it, so a rename keeps its id. It must come before the transitions.
+* `Starts in <status> ("<Name>"): <the role>[; needs <fields>][; then <actions>].` is the initial transition: who starts
+  the process and what the start form needs. Its name gives the object ("Open the nonconformance" -> `nonconformance`);
+  without it the item starts in the first status, anyone who may create the object starts it, and the object is the
+  record type's.
+* `From <status>[, <status> and <status>] to <status>[ ("<Name>"[ [id]])]: <gate>[; needs <fields>][; only if <checks>]
+  [; then <actions>[ run]].` is a directed transition (`from` equal to `to` is a loop); `From any status[ except done |
+  except <statuses>] to <status> ...` is a global one (Cancel, Put on hold). The id is the name's slug, `[id]` when two
+  share a name, or `<from>-to-<to>` (`any-to-<to>`) when unnamed.
+* Gates: `the <role words>[ decides][, not the author | not the <field role> | not whoever decided "<Name>"]` (a person;
+  field roles: the owner, assignee, author, requester, auditor, chair, evaluator, reporter); `the <cog id words> cog
+  decides, else the <role words>` (the cog decides within its approval criteria, else the role); `automatically[ when
+  <condition>][, after <actions>]` (conditions from the closed vocabulary; with no condition it fires when its actions
+  succeed). Auto transitions out of a status are tried in order; the first that holds fires, else the item waits at the
+  Gate there.
+* `needs <fields>` collects those fields at the decision and checks they are set (a validator). `only if <status> was
+  visited` or `only if <condition>` are further checks. A check that fails blocks the move with a sentence.
+* Actions, in order: `the <cog id words>` (a cog step: "the record filer" is `record-filer`), `notify the <role words |
+  owner>`, `set <field> to <value>`. A failed action moves the item to the system status `failed` with a Retry loop.
+* Routing and SLA sentences name a decision by its transition name ("At Disposition in nonconformance with low risk go
+  to the quality-assistant cog."; "Approvals in ..." is the first transition whose id starts approv/accept/confirm/authori).
+* `hubproto.process_graph.to_sentences(graph)` writes a graph back as these sentences (what a direct change says).
 
 ## Record types (`config/record-types.json`)
 
@@ -178,7 +227,10 @@ bundle = hub.current_bundle()        # members, permissions, routing, workflows,
 hub.why(user, action, obj, folder)   # {"allowed", "rule", "why"}
 run_id = hub.runner.submit(process, {"record": {...}}, owner="alice")
 state = hub.runner.load(run_id)      # id, process, owner, release, record (locator), steps, pending{step,checkpoint,assignees,due,payload_digest,title}, grant, status
-hub.runner.decide(run_id, "bob", "approve"|"reject", meaning="...", fields={...})
+hub.runner.decide(run_id, "bob", "approve"|"reject", meaning="...", fields={...})   # or transition="<id>" (verdict None)
+hub.runner.choose(run_id, "bob", "<transition id>", meaning="...", payload_digest=..., fields={...})  # an option, Retry, Resubmit, a global
+state["at"], state["pending"]["options"]   # the status; the Gate's options [{id, name, to, verdict, fields, assignees? (another decider)}]
+from hubproto.runner import apply_state_map, items_in_removed_statuses   # change control 5.2 (the release automation calls the first)
 hub.runner.track(run_id); hub.runner.tick(today=None); hub.runner.run_for_record(locator); hub.runner.list()
 k = hub.kernel
 k.query(type_=, folder=, state=, linked_to=, text=, assignee=, overdue_at=)   # list of records
@@ -203,9 +255,14 @@ capa-opener, ncr-opener, capa-drafter, effectiveness-scheduler,
 audit-checklist-drafter, document-classifier; reviewer cogs (members):
 ap-reviewer, doc-reviewer, quality-assistant.
 
-Workflow bundle shape: `bundle["workflows"][process] = {record_type, object,
-states, transitions[{from,to,kind:automatic|human,steps|step,title,on_reject,sla_days}],
-checkpoints[{id,title,role,state,sla_days}], terminal, reject_to, sla{checkpoint: days}}`.
+Workflow bundle shape (change control 10.1): `bundle["workflows"][process] = {process, record_type, form: steps|graph,
+statuses[{id, name, category: todo|in_progress|done, outcome (done), sla_days?, system? (failed)}],
+transitions[{id, type: initial|directed|global, from[] (directed), except[] (global), to, name,
+gate {kind: person, role, not[]?, also?} | {kind: cog, cog, fallback} | {kind: auto, when: actions-succeed|<condition>},
+validators[{fields_set}|{status_visited}|{condition}], actions[<step id> | {set} | {notify}], fields[], resume_from?, system?}],
+source {frame, lines{element id: line}}}` plus a derived view of the earlier shape for its readers: `object, states,
+checkpoints[{id,title,role,state,sla_days}], terminal, reject_to, sla{checkpoint: days}` (`process_graph.graph_only` drops
+it; `release.legacy_transitions(wf)` gives the earlier `transitions[{from,to,kind,steps|step,title,on_reject,sla_days}]`).
 
 ## CAD and ECAD
 

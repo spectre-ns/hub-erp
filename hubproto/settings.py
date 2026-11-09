@@ -135,6 +135,8 @@ def sentence(rule: dict, processes: dict | None = None) -> str:
         if rule.get("countersign"):
             s += f", countersigned by a {_words(rule['countersign'])}"
         return s + "."
+    if k == "sod" and rule.get("rule") == "cog-work-signed-by-person":
+        return "A cog's work " + ("" if rule.get("object") in (None, "*") else f"on a {rule['object']} ") + "is signed by a person."
     if k == "sod":
         # Written as the grammar reads them: the roles and the object keep their hyphens ("received-by", "stock-adjustment").
         a, b = rule["roles"]
@@ -168,6 +170,10 @@ def sentence(rule: dict, processes: dict | None = None) -> str:
         for st in rule.get("steps") or []:
             cog = f" ({', '.join(st['swarm'])})" if st.get("swarm") else (f" ({st['cog']})" if st.get("cog") else "")
             lines.append(f"{st['n']}. [{st['role']}] {st['title']}{cog}")
+        if rule.get("statuses"):  # a process written as a graph (hubproto.process_graph)
+            from .process_graph import to_sentences
+
+            lines += to_sentences(rule)
         return "\n".join(lines)
     return json.dumps({x: y for x, y in rule.items() if x != "source"})
 

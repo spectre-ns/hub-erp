@@ -32,7 +32,7 @@ def slot(rule: dict) -> tuple:
     if k == "threshold":
         return (k, rule.get("name"))
     if k == "sod":
-        return (k, rule.get("object"), tuple(rule.get("roles") or []))
+        return (k, rule.get("object"), tuple(rule.get("roles") or []), rule.get("rule"))
     if k == "member":
         return (k, rule.get("principal"))
     if k in ("cog", "process", "role"):
