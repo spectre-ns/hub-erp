@@ -69,6 +69,9 @@ def test_the_list_and_the_editor_render_for_editors_and_read_only_for_others(she
     assert 'aria-label="Awaiting disposition the nonconformance, in progress, due within 5 days, 3 ways out, 0 items"' in body
     assert 'class="wf-handle" data-handle="open"' in body and 'id="wfc-t-disposition-the-nonconformance"' in body
     assert "id='live-say'" in body and "role='status' aria-live='polite'" in body
+    assert "id='wf-checks'" in body and "id='wf-panel'" in body and "{side}" not in body, "the side panel is on the page"
+    assert "<details class='wf-items'><summary>Items in each status" in body, "the items table folds away to leave room"
+    assert "…" not in body.split("<svg class=\"wf wf-edit\"")[1].split("</svg>")[0], "no label is cut short"
     status, text = get(shell, "/workflows/" + NCR, **{"as": "dave"})
     body = main_of(text)
     assert status == 200 and "You are reading the workflow in force" in body and 'class="wf-handle"' not in body

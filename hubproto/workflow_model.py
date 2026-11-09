@@ -68,13 +68,17 @@ OPS = ("add_status", "rename_status", "recategorise_status", "set_sla", "delete_
 
 # --- geometry (shared with the editor's script, hubproto.shell.workflow_ui) ---------------------------------------------
 GRID = 8
-W, H = 184, 64  # a status box
-X0, Y0 = 120, 112  # where tidy puts the first column and row (room for start points and "any status" markers)
-COL, ROW = 376, 152  # tidy's column and row pitch (a label fits between two columns)
+W, H = 184, 64  # a status box of a short name (a longer one is wider, and taller past two lines: ``status_size``)
+MIN_W, MAX_W = 152, 304
+X0, Y0 = 160, 96  # where tidy puts the first column and row (room for the start point and its label)
+COL, ROW = 376, 152  # free_spot's grid pitch
+HGAP, VGAP = 112, 64  # tidy: the least room between two columns, and between two statuses of a column
 PAIR_GAP = 80  # control-point spread between transitions joining the same two statuses
 LOOP_H, LOOP_STEP = 44, 28
-GLOBAL_DY, GLOBAL_PITCH = 56, 176
+GLOBAL_DX, GLOBAL_PITCH = 32, 52  # an "any status" marker sits left of its target, markers of one target stacked
 START_DX = 64
+NAME_PX, SUB_PX, LNAME_PX, LBADGE_PX = 7.9, 6.6, 7.1, 6.2  # average glyph advances: a little generous, never cut
+LABEL_CHARS, BADGE_CHARS = 18, 22  # where a transition label's name and badge lines wrap (narrow labels, tight columns)
 
 _SLUG = re.compile(r"[^a-z0-9]+")
 
@@ -334,6 +338,100 @@ def status_words(s: dict) -> str:
 
 
 # ---------------------------------------------------------------- today's workflows in the 10.1 shape
+# ---------------------------------------------------------------- text layout (shared by the drawing and tidy)
+def _ceil8(v: float) -> int:
+    return int(-(-v // GRID) * GRID)
+
+
+def wrap(text: str, width: int) -> list[str]:
+    """Words in lines of about ``width`` characters, never cut: one line when it fits, two balanced lines when that
+    keeps both within half again of the width, more lines otherwise."""
+    text = " ".join(str(text or "").split())
+    words = text.split(" ")
+    if len(text) <= width or len(words) == 1:
+        return [text]
+    best = min(((max(len(" ".join(words[:i])), len(" ".join(words[i:]))), i) for i in range(1, len(words))))
+    if best[0] <= width * 1.5:
+        return [" ".join(words[:best[1]]), " ".join(words[best[1]:])]
+    lines, cur = [], ""
+    for w in words:
+        if cur and len(cur) + 1 + len(w) > width * 1.3:
+            lines.append(cur)
+            cur = w
+        else:
+            cur = (cur + " " + w).strip()
+    return lines + ([cur] if cur else [])
+
+
+def status_sub(s: dict, items: int | None = None, current: bool = False) -> str:
+    """The small line under a status's name: its category (and outcome), due date, items, the hub's own."""
+    sub = [CATEGORY_WORDS.get(s.get("category"), "").capitalize()]
+    if s.get("category") == "done" and (s.get("outcome") or "completed") != "completed":
+        sub[0] += f", {s.get('outcome')}"
+    if s.get("sla_days"):
+        sub.append(f"{s['sla_days']} days")
+    if items:
+        sub.append(plural(int(items), "item"))
+    if current:
+        sub.insert(0, "Current")
+    if is_system(s):
+        sub.append("system")
+    return " · ".join(x for x in sub if x)
+
+
+def status_size(s: dict, sub: str | None = None) -> tuple[int, int, list[str]]:
+    """(width, height, name lines) of a status box sized to its text: the name on up to two lines (more only when it
+    is very long), the sub line under it."""
+    lines = wrap(s.get("name") or s.get("id") or "", 22)
+    sub = status_sub(s) if sub is None else sub
+    w = max(max(len(x) for x in lines) * NAME_PX, len(sub) * SUB_PX) + 32
+    return max(MIN_W, min(MAX_W, _ceil8(w))), H + 16 * max(0, len(lines) - 2), lines
+
+
+def sizes(g: dict, items: dict | None = None, current: str | None = None) -> dict[str, tuple[int, int]]:
+    out = {}
+    for s in g.get("statuses") or []:
+        w, h, _ = status_size(s, status_sub(s, (items or {}).get(s["id"]), s["id"] == current))
+        out[s["id"]] = (w, h)
+    return out
+
+
+def badge(t: dict) -> tuple[str, list[str]]:
+    """(icon kind, parts) of a transition's badge: who decides, then how many checks and actions."""
+    icon_kind, who = gate_badge(t.get("gate"))
+    parts = [who]
+    nv, na = len(t.get("validators") or []), len(t.get("actions") or [])
+    if nv:
+        parts.append(plural(nv, "check"))
+    if na:
+        parts.append(plural(na, "action"))
+    return icon_kind, parts
+
+
+def label_lines(t: dict) -> tuple[list[str], list[str], str]:
+    """(name lines, badge lines, icon kind) of a transition's label: never cut, wrapped."""
+    name = t.get("name") or t["id"]
+    icon_kind, parts = badge(t)
+    blines, cur = [], ""
+    for part in parts:
+        if cur and len(cur) + 3 + len(part) > BADGE_CHARS:
+            blines.append(cur)
+            cur = part
+        else:
+            cur = f"{cur} · {part}" if cur else part
+    blines.append(cur)
+    lines = wrap(name, LABEL_CHARS)
+    if t.get("type") == "global":  # an "any status" marker says so on its own first line
+        lines = ["Any status →"] + lines
+    return lines, blines, icon_kind
+
+
+def label_size(t: dict) -> tuple[int, int]:
+    nl, bl, _ = label_lines(t)
+    w = max(max(len(x) for x in nl) * LNAME_PX, max(len(x) for x in bl) * LBADGE_PX + 16) + 22
+    return max(72, _ceil8(w)), 12 + 15 * len(nl) + 14 * len(bl)
+
+
 def graph_of(bundle: dict, process: str, types: dict | None = None) -> dict:
     """The graph of a process in a release bundle (section 10.1), without the derived keys of the earlier shape.
 
@@ -777,8 +875,10 @@ def layout_only(items: list[dict]) -> bool:
 # ---------------------------------------------------------------- tidy
 def tidy(g: dict) -> dict:
     """A deterministic layered layout: columns by the longest path from the start (loops and backward transitions do not
-    count), done statuses in the last column, the system ``failed`` status last of all; rows ordered by where the statuses
-    they come from sit; every position an integer on the 8 px grid."""
+    count), done statuses in the last column; each column as wide as its widest status and the room between two columns
+    as wide as the labels that sit there (no wider); each status level with the statuses it comes from, so the main path
+    runs straight, the completed outcome first; the hub's own failed status tucked under the first column; every
+    position an integer on the 8 px grid."""
     order = [s["id"] for s in g.get("statuses") or []]
     idx = {sid: i for i, sid in enumerate(order)}
     sm = status_map(g)
@@ -830,16 +930,48 @@ def tidy(g: dict) -> dict:
     for sid in order:
         if sm[sid].get("category") == "done" or is_system(sm[sid]):
             layer[sid] = top + 1
+    system = [sid for sid in order if is_system(sm[sid])]
     cols: dict[int, list[str]] = {}
     for sid in order:
-        cols.setdefault(layer[sid], []).append(sid)
+        if sid not in system:
+            cols.setdefault(layer[sid], []).append(sid)
     preds: dict[str, list[str]] = {sid: [] for sid in order}
     for a in order:
         for b in succ[a]:
             preds[b].append(a)
+    sz = sizes(g)
+    loops_at: dict[str, int] = {}
+    for t in g.get("transitions") or []:
+        if t.get("to") in (t.get("from") or []):
+            loops_at[t["to"]] = loops_at.get(t["to"], 0) + 1
+    # Columns: as wide as their widest status; the room between two columns as wide as the labels that sit in it.
+    ncol = max(cols) + 1 if cols else 1
+    colw = {c: max((sz[s][0] for s in cols.get(c, [])), default=W) for c in range(ncol)}
+    need = {c: 0 for c in range(ncol)}
+    for t in g.get("transitions") or []:
+        lw = label_size(t)[0]
+        to = t.get("to")
+        if to not in layer or to in system:
+            continue
+        if (t.get("type") or "directed") == "global":
+            if layer[to] > 0:
+                need[layer[to] - 1] = max(need[layer[to] - 1], lw + GLOBAL_DX)
+            continue
+        for a in t.get("from") or []:
+            if a in layer and a not in system and a != to and abs(layer[a] - layer[to]) == 1:
+                lo = min(layer[a], layer[to])
+                need[lo] = max(need[lo], lw)
+    xs = {0: X0}
+    for c in range(1, ncol):
+        xs[c] = xs[c - 1] + colw[c - 1] + max(HGAP, need[c - 1] + 2 * 24)
+
+    def below(sid: str) -> int:
+        """The room a status needs under it: a row's gap, more for its loops and their labels."""
+        n = loops_at.get(sid, 0)
+        return VGAP if not n else max(VGAP, LOOP_H + LOOP_STEP * (n - 1) + 56)
 
     # Rows: each status as level as it can be with the statuses it comes from (the main path runs straight), the
-    # completed outcome first, the rest below; at least a row apart in a column.
+    # completed outcome first, the rest below, with room between; nothing above the top row.
     ys: dict[str, int] = {}
     out = {}
     for c in sorted(cols):
@@ -850,18 +982,23 @@ def tidy(g: dict) -> dict:
         def rank(sid: str) -> tuple:
             w = want(sid)
             done_rank = ({"completed": 0}.get(sm[sid].get("outcome") or "completed", 1) if sm[sid].get("category") == "done" else 0)
-            return (1 if is_system(sm[sid]) else 0, done_rank, 1 if w is None else 0, w or 0, idx[sid])
+            return (done_rank, 1 if w is None else 0, w or 0, idx[sid])
 
-        last = None
+        floor = None
         for sid in sorted(cols[c], key=rank):
             w = want(sid)
-            y = snap(w) if w is not None else (Y0 if last is None else last + ROW)
-            if last is not None and y < last + ROW:
-                y = last + ROW
-            y = max(y, Y0)
+            y = snap(w) if w is not None else (Y0 if floor is None else floor)
+            y = max(y, Y0, floor if floor is not None else Y0)
             ys[sid] = y
-            last = y
-            out[sid] = [snap(X0 + c * COL), snap(y)]
+            floor = snap(y + sz[sid][1] + below(sid))
+            out[sid] = [snap(xs[c] + (colw[c] - sz[sid][0]) / 2), y]
+    # The hub's own failed status, tucked under the start of the main flow (the first column, where no transition
+    # runs below it).
+    cs = min(cols) if cols else 0
+    floor = max((ys[s] + sz[s][1] + below(s) for s in cols.get(cs, [])), default=Y0)
+    for sid in system:
+        out[sid] = [snap(xs.get(cs, X0) + (colw.get(cs, W) - sz[sid][0]) / 2), snap(floor)]
+        floor = snap(floor + sz[sid][1] + below(sid))
     return {sid: out[sid] for sid in order}
 
 
@@ -1278,9 +1415,11 @@ def default_move_to(g: dict, sid: str) -> str | None:
 
 
 # ---------------------------------------------------------------- geometry shared with the editor's script
-def box(layout: dict, sid: str) -> tuple[float, float, float, float]:
+def box(layout: dict, sid: str, sz: dict | None = None) -> tuple[float, float, float, float]:
+    """(x, y, width, height) of a status: its place in the layout, its size from ``sz`` (``sizes``)."""
     x, y = (layout or {}).get(sid) or (X0, Y0)
-    return (float(x), float(y), float(W), float(H))
+    w, h = (sz or {}).get(sid) or (W, H)
+    return (float(x), float(y), float(w), float(h))
 
 
 def port(b: tuple, toward: tuple) -> tuple[float, float]:
@@ -1308,7 +1447,7 @@ def _samples(geo_d: str) -> list[tuple]:
             for t in (i / 16 for i in range(2, 15))]
 
 
-def bends(g: dict, layout: dict | None = None) -> dict[str, float]:
+def bends(g: dict, layout: dict | None = None, sz: dict | None = None) -> dict[str, float]:
     """How far each transition between two statuses bows from the straight line, so opposite and parallel transitions
     get separate curves: transitions joining the same pair are spread PAIR_GAP apart around the middle. With a layout,
     a lone transition whose straight line would cross another status bows round it (the side that crosses fewer)."""
@@ -1335,8 +1474,8 @@ def bends(g: dict, layout: dict | None = None) -> dict[str, float]:
             a, b = tm[tid]["from"][0], tm[tid]["to"]
             if a not in layout or b not in layout:
                 continue
-            others = [box(layout, s) for s in positions(layout) if s not in (a, b) and s in status_map(g)]
-            ba, bb = box(layout, a), box(layout, b)
+            others = [box(layout, s, sz) for s in positions(layout) if s not in (a, b) and s in status_map(g)]
+            ba, bb = box(layout, a, sz), box(layout, b, sz)
             if not _hits(_samples(edge_geometry(ba, bb, 0.0)["d"]), others):
                 continue
             best = min(((_hits(_samples(edge_geometry(ba, bb, c)["d"]), others), abs(c), -c) for c in (96.0, -96.0, 176.0, -176.0)))
@@ -1375,9 +1514,10 @@ def loop_geometry(b: tuple, k: int) -> dict:
     return {"d": d, "label": (cx, base + hh * 0.75 + 16)}
 
 
-def global_label(b: tuple, k: int, n: int) -> tuple[float, float]:
+def global_label(b: tuple, k: int, n: int, lw: float) -> tuple[float, float]:
+    """Where an "any status" marker of width ``lw`` sits: just left of its target, the k-th of n stacked."""
     x, y, w, h = b
-    return (x + w / 2 + (k - (n - 1) / 2) * GLOBAL_PITCH, y - GLOBAL_DY)
+    return (x - GLOBAL_DX - lw / 2, y + h / 2 + (k - (n - 1) / 2) * GLOBAL_PITCH)
 
 
 def stem(label: tuple, b: tuple) -> dict:
@@ -1399,13 +1539,13 @@ def junction(srcs: list[tuple], b: tuple) -> tuple[float, float]:
     return ((sx + tx) / 2, (sy + ty) / 2)
 
 
-def transition_geometry(g: dict, layout: dict, t: dict, *, bend: float = 0.0, k: int = 0, n: int = 1) -> dict:
+def transition_geometry(g: dict, layout: dict, t: dict, *, bend: float = 0.0, k: int = 0, n: int = 1, sz: dict | None = None) -> dict:
     """The drawing of one transition: {"kind", "parts": [(part name, path d, arrow?)], "label": (x, y)} with the label
-    offset applied. Kinds: initial (a start point), global (an 'any status' marker above the target), loop, edge (one
-    source) and shared (several sources joining at the label)."""
+    offset applied. Kinds: initial (a start point), global (an 'any status' marker beside the target), loop, edge (one
+    source) and shared (several sources joining at the label). ``sz``: the statuses' sizes (``sizes``)."""
     lay = layout or {}
     off = lay.get(label_key(t["id"])) or [0, 0]
-    dst = box(lay, t.get("to"))
+    dst = box(lay, t.get("to"), sz)
     kind = t.get("type") or "directed"
     if kind == "initial":
         sp = start_point(dst)
@@ -1413,9 +1553,10 @@ def transition_geometry(g: dict, layout: dict, t: dict, *, bend: float = 0.0, k:
         return {"kind": "initial", "start": sp, "parts": [("line", f"M{_n(sp[0])},{_n(sp[1])} L{_n(dst[0])},{_n(sp[1])}", True)],
                 "label": (lbl[0] + off[0], lbl[1] + off[1])}
     if kind == "global":
-        base = global_label(dst, k, n)
+        lw = label_size(t)[0]
+        base = global_label(dst, k, n, lw)
         lbl = (base[0] + off[0], base[1] + off[1])
-        return {"kind": "global", "parts": [("line", stem((lbl[0], lbl[1] + 18), dst)["d"], True)], "label": lbl}
+        return {"kind": "global", "parts": [("line", stem((lbl[0] + lw / 2, lbl[1]), dst)["d"], True)], "label": lbl, "lw": lw}
     frm = [x for x in t.get("from") or [] if x in lay]
     loops = [x for x in frm if x == t.get("to")]
     others = [x for x in frm if x != t.get("to")]
@@ -1423,9 +1564,9 @@ def transition_geometry(g: dict, layout: dict, t: dict, *, bend: float = 0.0, k:
         geo = loop_geometry(dst, k)
         return {"kind": "loop", "parts": [("line", geo["d"], True)], "label": (geo["label"][0] + off[0], geo["label"][1] + off[1])}
     if len(others) == 1 and not loops:
-        geo = edge_geometry(box(lay, others[0]), dst, bend)
+        geo = edge_geometry(box(lay, others[0], sz), dst, bend)
         return {"kind": "edge", "parts": [("line", geo["d"], True)], "label": (geo["label"][0] + off[0], geo["label"][1] + off[1])}
-    srcs = [box(lay, x) for x in others] or [dst]
+    srcs = [box(lay, x, sz) for x in others] or [dst]
     j = junction(srcs, dst)
     lbl = (j[0] + off[0], j[1] + off[1])
     parts = []

@@ -292,7 +292,11 @@ def test_tidy_is_deterministic_on_the_grid_with_done_statuses_last(bundle):
     g = ncr(bundle)
     lay = wm.tidy(g)
     assert lay["open"][1] == lay["awaiting-disposition-the-nonconformance"][1] == lay["closed"][1], "the main path runs straight"
-    assert lay["closed"][1] < lay["rejected"][1] < lay["failed"][1], "the completed outcome first, the system status last"
+    assert lay["closed"][1] < lay["rejected"][1], "the completed outcome first"
+    sz = wm.sizes(g)
+    op = lay["open"]
+    assert abs((lay["failed"][0] + sz["failed"][0] / 2) - (op[0] + sz["open"][0] / 2)) <= wm.GRID, "Failed is tucked under the start of the flow"
+    assert lay["failed"][1] - (op[1] + sz["open"][1]) == wm.VGAP
 
 
 def test_tidy_lays_a_cycle_out_by_the_forward_path():
@@ -414,7 +418,11 @@ def test_opposite_transitions_get_separate_curves_and_loops_arcs():
     g2 = wm.apply_op(g, {"op": "add_transition", "id": "again", "name": "Again", "from": ["review"], "to": "review"})
     assert wm.transition_geometry(g2, lay, wm.transition_map(g2)["again"])["kind"] == "loop"
     glob = wm.transition_geometry(g, lay, wm.transition_map(g)["cancel"])
-    assert glob["kind"] == "global" and glob["label"][1] == lay["cancelled"][1] - wm.GLOBAL_DY
+    sz = wm.sizes(g)
+    glob = wm.transition_geometry(g, lay, wm.transition_map(g)["cancel"], sz=sz)
+    lw = wm.label_size(wm.transition_map(g)["cancel"])[0]
+    assert glob["kind"] == "global" and glob["label"] == (lay["cancelled"][0] - wm.GLOBAL_DX - lw / 2, lay["cancelled"][1] + sz["cancelled"][1] / 2), \
+        "an any-status marker sits just left of its target"
     start = wm.transition_geometry(g, lay, wm.transition_map(g)["create"])
     assert start["kind"] == "initial" and start["start"] == (lay["open"][0] - wm.START_DX, lay["open"][1] + wm.H / 2)
     shared = wm.apply_op(g, {"op": "reroute_transition", "id": "cancel", "to": "cancelled"})
