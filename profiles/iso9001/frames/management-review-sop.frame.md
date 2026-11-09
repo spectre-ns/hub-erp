@@ -38,3 +38,11 @@ The record type is management-review.
 1. [management-representative] Prepare the review (record-filer)
 2. [management-representative] Hold the review
 3. [system] Render the record (document-renderer)
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Management representative | Prepares the review record with its inputs and holds the review as its chair. |
+| Quality manager | Approves the review record and receives the overdue ones. |
+| Management reviewer | Reads the quality records the review draws on and comments on the review. |
+| the management cog | Summarises the evidence for the next review every month. |

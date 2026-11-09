@@ -64,7 +64,19 @@ def to_docx(body: str) -> bytes:
 
     blank, _ = blank_document("docx")
     paras = []
-    for line in body_lines(body):
+    lines = body_lines(body)
+    tables = markdown_tables(lines)
+    skip_to = -1
+    for i, line in enumerate(lines):
+        if i < skip_to:
+            continue
+        if i in tables:  # a Markdown table (the Roles and responsibilities table) as a Word table: it reads back as the same rows
+            end = tables[i]
+            paras.append(_docx_table([lines[i]] + lines[i + 2:end]))
+            if end >= len(lines) or not any(x.strip() for x in lines[end:]):
+                paras.append("<w:p/>")  # a body never ends with a table
+            skip_to = end
+            continue
         m = re.match(r"^(#{1,6}) (.*)$", line)
         if m:
             level = min(len(m.group(1)), 3) if len(m.group(1)) <= 3 else len(m.group(1))
@@ -89,6 +101,48 @@ def to_docx(body: str) -> bytes:
                 data = xml.encode("utf-8")
             z.writestr(item, data)
     return out.getvalue()
+
+
+_ROW = re.compile(r"^\|(.+)\|$")
+_RULE = re.compile(r"^\|(?:---\|)+$")
+
+
+def _cells(line: str) -> list[str]:
+    return [c.strip() for c in line.strip()[1:-1].split("|")]
+
+
+def markdown_tables(lines: list[str]) -> dict[int, int]:
+    """{first line: line after the table} for each Markdown table written as docx_lines reads a Word table back: a
+    header row, the rule '|---|---|' (one '---|' per cell), then rows of as many cells, every cell non-empty. Anything
+    else stays paragraphs, so it reads back exactly as written."""
+    out, i = {}, 0
+    while i < len(lines) - 1:
+        head = lines[i]
+        if _ROW.match(head) and not _RULE.match(head) and lines[i + 1] == "|" + "---|" * len(_cells(head)) \
+                and all(_cells(head)) and head == "| " + " | ".join(_cells(head)) + " |":
+            n, j = len(_cells(head)), i + 2
+            while j < len(lines) and _ROW.match(lines[j]) and not _RULE.match(lines[j]) and len(_cells(lines[j])) == n \
+                    and all(_cells(lines[j])) and lines[j] == "| " + " | ".join(_cells(lines[j])) + " |":
+                j += 1
+            out[i] = j
+            i = j
+            continue
+        i += 1
+    return out
+
+
+def _docx_table(rows: list[str]) -> str:
+    from html import escape
+
+    border = "".join(f'<w:{b} w:val="single" w:sz="4" w:space="0" w:color="999999"/>' for b in ("top", "left", "bottom", "right", "insideH", "insideV"))
+    n = len(_cells(rows[0]))
+    out = [f'<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/><w:tblBorders>{border}</w:tblBorders></w:tblPr><w:tblGrid>'
+           + "<w:gridCol/>" * n + "</w:tblGrid>"]
+    for k, row in enumerate(rows):
+        bold = "<w:rPr><w:b/></w:rPr>" if k == 0 else ""
+        out.append("<w:tr>" + "".join(f'<w:tc><w:p><w:r>{bold}<w:t xml:space="preserve">{escape(c, quote=False)}</w:t></w:r></w:p></w:tc>'
+                                      for c in _cells(row)) + "</w:tr>")
+    return "".join(out) + "</w:tbl>"
 
 
 def docx_lines(content: bytes, ext: str = "docx") -> list[str]:
@@ -201,6 +255,10 @@ def convert(hub, *, by: str, frames=None) -> list[dict]:
         rec = hub.kernel.transition(doc["locator"], "effective", by=by,
                                     reason=f"converted from the {name} Frame (version {frame.version}), in force under the release in effect")
         made.append(rec)
+    if made:  # from now on configuration changes only through change orders (hubproto.closure)
+        from . import closure
+
+        closure.on_conversion(hub)
     return made
 
 
@@ -211,10 +269,94 @@ def source_texts(hub, drafts: dict[str, str] | None = None) -> dict[str, str]:
     drafts = drafts or {}
     names = {d["fields"]["sop_name"] for d in hub.kernel.query(type_="document") if str(d["fields"].get("lineage", "")).startswith(LINEAGE)}
     for name in sorted(names):
+        if name in drafts and drafts[name] is None:  # retired by the change order: compiled as absent
+            continue
         rec = hub.kernel.get(drafts[name]) if name in drafts else in_force(hub.kernel, name)
         if rec is not None:
             out[name] = frame_text(hub, rec)
     return out
+
+
+# ---------------------------------------------------------------- the Frames, once the SOPs are documents
+def _store_of(hub, frames: dict[str, tuple[str, str]]):
+    """A Frame store made of texts, never of the files on disk: {name: (text, path relative to the Frames root)}."""
+    from pathlib import Path
+
+    from .frames import FrameError, FrameStore, load_frame_text
+
+    root = Path(hub._frames_dir)
+    store = object.__new__(FrameStore)
+    store.root = root
+    store.frames = {}
+    for name, (text, rel) in sorted(frames.items()):
+        try:
+            f = load_frame_text(text, root / rel)
+        except FrameError:
+            raise
+        except Exception as e:
+            raise FrameError(f"{rel}: {e}") from None
+        if f.name != name:
+            raise FrameError(f"the document of {name} reads as the Frame {f.name!r}; a Frame keeps its name")
+        f.relpath = rel
+        store.frames[name] = f
+    return store
+
+
+def _relpath(hub, name: str, rec: dict | None, bom: dict) -> str:
+    """Where a Frame lives under frames/: as the release in force has it, as its document says, or a new place."""
+    if name in bom and bom[name].get("path"):
+        return bom[name]["path"]
+    seen = set()
+    while rec is not None and rec["locator"] not in seen:  # a revision's place is its own, or the one it revises has
+        seen.add(rec["locator"])
+        f = rec.get("fields") or {}
+        rel = f.get("frame_relpath") or f.get("frame_path") or ((f.get("converted_from") or {}).get("frame") if isinstance(f.get("converted_from"), dict) else None)
+        if rel:
+            return rel
+        rec = hub.kernel.get(f["revises"]) if f.get("revises") else None
+    return f"documents/{name}.frame.md"
+
+
+def released_store(hub, digest: str | None = None):
+    """The Frames exactly as a release has them (its bill of materials and the texts it kept), for a hub whose SOPs
+    are documents: the files on disk decide nothing. Documents in force that no release compiles (reference guides)
+    are read from the document. None when the release kept no texts (an old release)."""
+    meta = hub.releases.current() if digest is None else hub.releases.get(digest)
+    if not meta:
+        return None
+    texts = hub.releases.frame_texts(meta["digest"])
+    bom = {f["name"]: f for f in meta.get("frames") or []}
+    frames = {}
+    for name, entry in bom.items():
+        text = texts.get(name) or hub.releases.text_by_sha(entry.get("sha256"))
+        if text is None:
+            return None
+        frames[name] = (text, entry.get("path") or f"documents/{name}.frame.md")
+    for d in hub.kernel.query(type_="document"):
+        name = d["fields"].get("sop_name")
+        if name and name not in frames and d["state"] == "effective" and str(d["fields"].get("lineage", "")).startswith(LINEAGE):
+            frames[name] = (frame_text(hub, d), _relpath(hub, name, d, bom))
+    return _store_of(hub, frames)
+
+
+def document_store(hub, drafts: dict[str, str | None] | None = None):
+    """The Frames a compile reads once the SOPs are documents: one per document in force, each read from it, with the
+    drafts a change order carries in place of theirs (``eco.drafts_of``: {name: draft locator}; a draft of an SOP with no
+    document in force, ``eco.add_new_sop``, adds that Frame; a name with None, ``eco.retire_sop``, takes it out).
+    Never the disk listing."""
+    drafts = dict(drafts or {})
+    bom = {f["name"]: f for f in (hub.releases.current() or {}).get("frames") or []}
+    frames = {}
+    names = {d["fields"]["sop_name"] for d in hub.kernel.query(type_="document")
+             if str(d["fields"].get("lineage", "")).startswith(LINEAGE) and d["state"] == "effective"} | set(drafts)
+    for name in sorted(names):
+        if name in drafts and drafts[name] is None:
+            continue  # retired by the change order
+        rec = hub.kernel.get(drafts[name]) if name in drafts else in_force(hub.kernel, name)
+        if rec is None:
+            continue
+        frames[name] = (frame_text(hub, rec), _relpath(hub, name, rec, bom))
+    return _store_of(hub, frames)
 
 
 def roundtrip_problems(hub, frames=None) -> list[str]:
@@ -250,6 +392,62 @@ def conversion_blockers(hub) -> list[str]:
     if bad:
         out.append("these Frames would not read back exactly from their documents: " + ", ".join(bad))
     return out
+
+
+# ---------------------------------------------------------------- the first release converts
+FRAME_FILES_KEPT = "frame-files-kept.json"  # state/: the explicit opt-out below
+
+
+def _kept_path(hub):
+    from pathlib import Path
+
+    return Path(hub.root) / "state" / FRAME_FILES_KEPT
+
+
+def frame_files_kept(hub) -> dict | None:
+    """{"by", "at", "reason"} when this hub was told to keep the Frame files as the source (no conversion after the
+    first release); None otherwise. Only meaningful before conversion."""
+    import json
+
+    path = _kept_path(hub)
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+    except ValueError:
+        return {"by": "?", "at": "", "reason": f"{path.name} does not parse"}
+
+
+def keep_frame_files(hub, *, by: str, reason: str) -> dict:
+    """Opt out, explicitly and on the record, of converting the SOPs right after the first release: the Frame files
+    stay the source and the policy owners release changes without change orders (the pre-conversion mode, for working
+    on the Frames themselves and for the suites that test that workflow). ``status`` says so. Converting later
+    (``sops convert``) ends it. Refused once the SOPs are documents: there is no way back."""
+    import json
+
+    from .release import utcnow
+
+    if converted(hub.kernel):
+        raise ValueError("the SOPs are documents already: configuration changes only through change orders")
+    if not (reason or "").strip():
+        raise ValueError("say why the Frame files stay the source (it is shown with the hub's status)")
+    entry = {"by": by, "at": utcnow(), "reason": reason.strip()}
+    path = _kept_path(hub)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(entry, indent=1), encoding="utf-8")
+    return entry
+
+
+def convert_after_release(hub, *, by: str) -> dict:
+    """Bootstrap: right after the first release, the SOPs become documents, so every later change needs a change order.
+    Not when the hub keeps the Frame files (``keep_frame_files``). Returns {"made": [documents], "blockers": [why not],
+    "kept": the opt-out or None}; a blocked conversion leaves the hub as it is, and ``status`` and ``bootstrap-release``
+    say why until it is converted."""
+    kept = frame_files_kept(hub)
+    if kept or converted(hub.kernel):
+        return {"made": [], "blockers": [], "kept": kept}
+    blockers = conversion_blockers(hub)
+    if blockers:
+        return {"made": [], "blockers": blockers, "kept": None}
+    return {"made": convert(hub, by=by), "blockers": [], "kept": None}
 
 
 def convert_from_ui(hub, *, by: str) -> dict:

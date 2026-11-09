@@ -80,7 +80,7 @@ def test_the_stores_cog_keeps_stock_where_the_person_who_asks_may(inv):
 
     k = inv.kernel
     b = inv.releases.bundle(inv.releases.current()["digest"])
-    assert b["cogs"]["stores"]["persona"] == "stores" and "inventory-policy" in b["cogs"]["stores"]["follows"]
+    assert b["cogs"]["stores"]["persona"] == "executor" and "inventory-policy" in b["cogs"]["stores"]["follows"]
     for obj, folder in (("stock-adjustment", "Inventory/Adjustments"), ("stock-release", "Inventory/Releases")):
         assert not authz.check(b, "stores", "approve", obj, folder)["allowed"], f"custody, never the {obj}'s approval"
     part = make_part(k, "WASHER-M4", title="M4 washer", unit_cost=0.05, stock=1000)

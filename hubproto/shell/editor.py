@@ -63,6 +63,9 @@ class EditorMixin:
         bar = f"""<div class="editbar"><a class="button ghost" href="{back}">{icon('chevron-right')}{esc(number)}</a> {icon('edit' if writable else 'eye')} <b>{esc(title)}</b> <span class="chip {'ok' if writable else 'warn'}">{mode}</span>
 {f"<span class='why'>{esc(reason)}</span>" if reason else "<span class='why'>Every save becomes a version; others may join and edit with you; the last to finish releases the document.</span>"} <span class='why' id='editstatus' role='status'></span> <span class='why' id='cogwork' role='status' aria-live='polite'></span>
 <form method="post" action="/finish-edit" class="inline">{hidden_as(user)}<input type="hidden" name="doc" value="{esc(rec['locator'])}"><button class="{'primary' if writable else 'secondary'}">{icon('check' if writable else 'x')}{'Finish editing' if writable else 'Close'}</button></form></div>"""
+        name = rec["fields"].get("sop_name") if str(rec["fields"].get("lineage", "")).startswith("sop:") else None
+        if name and rec["state"] == "effective":  # the viewer of an SOP in force says where the configuration differs from its lines
+            bar += self._divergence_card(name)
         if not (browser_url and host_url):
             body = bar + ("<div class='card'><b>No online editor is configured.</b> Set <code>HUBPROTO_COLLABORA_URL</code> (the editor's address for the browser, "
                           "e.g. http://localhost:9980) and <code>HUBPROTO_WOPI_BASE</code> (this hub's address as the editor reaches it, e.g. http://hub:8080); "

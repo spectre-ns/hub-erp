@@ -85,10 +85,11 @@ def test_a_cog_takes_its_prompt_and_references_from_documents_pinned_by_the_rele
     ctx = RunContext(run_id="t", release="", bundle=b, owner="quality-assistant", kernel=hub.kernel, dms=hub.dms,
                      frames=lambda: hub.frames, extras={"cog_profile": prof})
     system = cog_context(ctx, None)
-    assert system.startswith("You are the quality assistant of Example Instruments.") and "M5: 4 Nm" in system and "REFERENCE DOCUMENTS" in system
+    assert system.startswith("== WHO YOU ARE ==\nYou are the quality assistant of Example Instruments.") and "M5: 4 Nm" in system
+    assert "Reference documents your profile pins" in system.split("== REFERENCE: THE KNOWLEDGE BASE ==")[1]
     # A newer version of the brief is not used until a release pins it, and pinning it is a reviewed change.
     hub.dms.add_version(prompt["locator"], b"You are the quality assistant. Be gentle.", by="hub", filename="qa-brief.md", mime="text/markdown", system=True)
-    assert cog_context(ctx, None).startswith("You are the quality assistant of Example Instruments.")
+    assert cog_context(ctx, None).startswith("== WHO YOU ARE ==\nYou are the quality assistant of Example Instruments.")
     proposal = hub.compile()
     change = next(c for c in proposal["changes"] if c["rule"]["kind"] == "cog" and c["rule"]["name"] == "quality-assistant" and c["op"] == "add")
     assert change["widening"] is True and change["rule"]["prompt_doc"]["version"] == 2
@@ -135,3 +136,12 @@ def test_a_retired_frame_document_comes_back_when_its_frame_is_released(released
     hub.kernel.transition(doc["locator"], "obsolete", by="test", reason="as if its Frame had been dropped")
     again = hub.frame_document("finance-policy")
     assert again["locator"] == doc["locator"] and again["state"] == "effective"
+
+
+def test_the_stdlib_frontmatter_parser_reads_a_one_line_json_value(monkeypatch):
+    """Without PyYAML (the container has none) the hub's own parser reads workflow_ids the drafter writes."""
+    import hubproto.frames as frames
+
+    monkeypatch.setattr(frames, "yaml", None)
+    data, _ = frames.parse_frontmatter('---\nname: x\nworkflow_ids: {"gizmo-review": {"in-review": "review"}}\n---\nbody\n')
+    assert data["workflow_ids"] == {"gizmo-review": {"in-review": "review"}}

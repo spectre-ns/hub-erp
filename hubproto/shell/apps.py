@@ -37,9 +37,11 @@ APP_PAGES: dict[str, list[tuple[str, str, str]]] = {
     "engineering": [("Archived items", "/items/item", "archive")],
     "quality": [("Change orders", "/change-orders", "layers"), ("Forms", "/forms", "form")],
     "people": [("Members and cogs", "/people", "users")],
-    "settings": [("Your changes", "/settings", "edit"), ("People and roles", "/settings/people", "users"), ("Permissions", "/settings/permissions", "lock"),
+    "settings": [("Your changes", "/settings", "edit"), ("People and roles", "/settings/people", "users"), ("Groups and committees", "/settings/groups", "group"),
+                 ("Permissions", "/settings/permissions", "lock"),
                  ("Limits and due dates", "/settings/limits", "clock"), ("Cog rails", "/settings/rails", "robot"),
-                 ("Segregation of duties", "/settings/sod", "shield"), ("Workflows", "/settings/workflows", "activity"), ("Forms", "/forms", "form")],
+                 ("Segregation of duties", "/settings/sod", "shield"), ("Workflows and routing", "/settings/workflows", "activity"), ("Forms", "/forms", "form"),
+                 ("Record types", "/record-types", "grid")],
     "policy": [("Policy versions", "/releases", "layers"), ("Policies", "/frames", "book"), ("Scopes and personas", "/scopes", "layers"), ("Automation", "/automation", "activity"), ("Why", "/why", "help"),
                ("Conformance", "/conformance", "check-circle"), ("People and roles", "/admin", "users")],
 }
@@ -105,7 +107,7 @@ def app_for_route(apps: list[dict], route: str, rt: str = "") -> dict | None:
     """Which app the current page belongs to."""
     if rt:
         return app_for_type(apps, rt)
-    if route == "/forms" or route.startswith("/forms/"):  # listed in Quality too; it belongs to Settings
+    if route in ("/forms", "/workflows") or route.startswith(("/forms/", "/workflows/")):  # Forms is listed in Quality too; both are Settings
         return next((a for a in apps if a["key"] == "settings"), None)
     for app in apps:
         for _, path, _ in app["pages"]:

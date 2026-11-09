@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import difflib
 import re
+from html import unescape
 from urllib.parse import quote
 
+from ..closure import release_blocker
 from ..sopdocs import is_frame_doc
 from ..compile import CompileError, change_state
 from ..frames import FrameError
@@ -95,6 +97,8 @@ class PolicyDocsMixin:
             draft = self.hub.frame_draft(name, by=self.user)
         except (FrameError, KeyError):
             raise ShellError(f"There is no policy Frame {name!r}.", 404) from None
+        except ValueError as e:  # the SOPs are documents: a Frame changes through a change order (hubproto.closure)
+            raise ShellError(friendly(str(e)), 409) from None
         log_line(f"frame draft frame={name} by={self.user} doc={draft['number']}")
         self._redirect(self._once_finish(href("/text-edit/" + quote(draft["locator"], safe=":"), self.user,
                                               done=f"{draft['number']} is your draft of {name}. Write the change, then check it and propose it for release.")))
@@ -305,6 +309,9 @@ class PolicyDocsMixin:
     def _blocking_reasons(self, p: dict) -> list[str]:
         """Why a proposal cannot be released yet, in words (no ids)."""
         out = []
+        closed = release_blocker(self.hub, p) if p.get("status") == "open" else ""
+        if closed:  # the SOPs are documents: only an approved change order brings a proposal into force
+            out.append(esc(closed))
         cur = self.hub.releases.current()
         if p.get("status") == "open" and (cur["digest"] if cur else None) != p.get("base"):
             out.append("The policy in force changed after this proposal was made, so it would undo that change. Propose the drafts again "
@@ -397,7 +404,11 @@ class PolicyDocsMixin:
             body += (f"<details><summary>Other warnings in the policy ({len(other_w)}), not caused by this proposal</summary><ul>"
                      + "".join(f"<li>{self._human(x['detail'])}</li>" for x in other_w) + "</ul></details>")
         rows = self._change_rows(p)
-        can_decide = status == "open" and owner
+        can_decide = status == "open" and owner and not p.get("eco")
+        if p.get("eco") and status == "open":  # a change order's delta is decided on the change order, with its warnings
+            body += (f"<div class='card info' role='status'>{icon('layers')} This is the compiled delta of {self._staged_by(p).replace('staged by ', '')}. "
+                     "Its items are decided on the change order's page, each with its origin and the warnings an approver accepts; "
+                     "the change order's release brings it into force.</div>")
         trs = ""
         for r in rows:
             c = r["change"]
@@ -433,7 +444,7 @@ class PolicyDocsMixin:
                      f"<span class='why'>A rejected change is left out when the rest is released; it can be proposed again.</span></div></form>")
         else:
             body += "<h2>Changes</h2>" + changes_table
-        if status == "open" and owner:
+        if status == "open" and owner and not p.get("eco"):
             if not blocking:
                 body += (f"<form method='post' action='/proposal-release' class='card ok'>{hidden_as(user)}{self._once()}<input type='hidden' name='proposal' value='{esc(p['id'])}'>"
                          f"<p>Every change has the decisions it needs. Releasing makes the approved changes the policy in force (rejected ones are left out)"
@@ -491,8 +502,8 @@ class PolicyDocsMixin:
         """Open proposals with a change still waiting for this policy owner's decision."""
         out = []
         for q in self.hub.proposals.list():
-            if q.get("status") != "open" or self.user not in (q.get("reviewers") or []):
-                continue
+            if q.get("status") != "open" or self.user not in (q.get("reviewers") or []) or q.get("eco"):
+                continue  # a change order's delta is decided on the change order (the inbox lists it under Change orders)
             todo = [c for c in q.get("changes") or [] if change_state(c) == "pending" and not any(d["by"] == self.user for d in c.get("decisions") or [])]
             if todo:
                 out.append({"proposal": q, "todo": todo})
@@ -537,7 +548,7 @@ class PolicyDocsMixin:
         self.arg = p["id"]
         blocking = self._blocking_reasons(p)
         if blocking:
-            raise ShellError("Proposal #" + str(p.get("number")) + " cannot be released yet: " + " ".join(re.sub(r"<[^>]+>", "", b) for b in blocking[:3]))
+            raise ShellError("Proposal #" + str(p.get("number")) + " cannot be released yet: " + " ".join(unescape(re.sub(r"<[^>]+>", "", b)) for b in blocking[:3]))
         try:
             meta = self.hub.release(p["id"], self.user)
         except CompileError as e:

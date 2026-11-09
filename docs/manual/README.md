@@ -13,32 +13,50 @@ point in chapter 10. Where the manual could not tell what happens, it says that 
 |---|---|
 | [1. Getting started](01-getting-started.md) | Choosing who you are ("Acting as"), the top bar, app launcher and rail, light and dark, the home dashboard, the inbox, and the "Why?" page |
 | [2. Records and views](02-records-and-views.md) | Record types and numbers; list, kanban and form views; the status bar; chatter, comments and @mentions; assigning; withdrawing a draft; Ops buttons and hotkeys; holds, links, snapshots; history and the audit trail |
-| [3. Business processes](03-business-processes.md) | How every process runs (including what a retry does to an approval), then each one step by step: purchasing, goods receipt into stock, part requests, supplier bills, journal reversals, supplier evaluation, nonconformances and the stock they hold, CAPA, complaints, audits, calibration, management review, training, tasks, design control and requirements, change requests |
+| [3. Business processes](03-business-processes.md) | How every process runs: processes as graphs of statuses and transitions, gates (person, cog, committee, automatic), committee tallies, what a retry does to an approval, and how items in flight follow the release in force from their next move; then each process step by step: purchasing, goods receipt into stock, part requests, supplier bills, journal reversals, supplier evaluation, nonconformances and the stock they hold, CAPA, complaints, audits, calibration, management review, training, tasks, design control and requirements, change requests |
 | [4. Inventory](04-inventory.md) | Who may do what with stock; parts, manufacturer parts and supplier parts; stock locations; lots and the stock ledger; the inventory pages; free movements (transfers, counts, splits, merges, marks, quarantine); stock adjustments, releases from quarantine, dispositions and part requests; receiving into stock; the stores cog; hubs that had inventory items |
 | [5. Documents](05-documents.md) | The library, its folders and adding folders, document classes, creating and uploading, versions, the online editor (Collabora), check-out, comments and cog replies, comparing versions, controlled-document approval (also from the document's page), revisions and obsolete versions, review dates, the documents that carry Frames, templates |
-| [6. Cogs](06-cogs.md) | The AI team members: what each one does and works from (its persona), local models, autonomy, queues and cog boards, how to ask one, the messenger chat, approvals within rails, adversarial reviews, countersignatures, agent runs and confirming actions, what a cog refuses, changing a cog's model |
-| [7. Policy and configuration](07-policy-and-configuration.md) | Frames, scopes and personas, policy owners, releases and what they record, compiling with the compile-frame committee, proposals, widenings and stale proposals, the Settings app, SOPs as documents, change orders, the compile-frame and release automations, form layouts |
-| [8. Administration](08-administration.md) | Docker setup and first start, settings (environment variables), local models (Ollama) and a cog's model, backup, restore and verify, queue health, the command line |
-| [9. Glossary](09-glossary.md) | Frame, cog, Op, Gate, Track, release, proposal, rail, lens, change order, scope, persona, committee, part, supplier part, lot, stock location, stale proposal and other terms |
-| [10. Workflow review notes](10-workflow-review-notes.md) | Observations for the product owner: unclear, inconsistent or surprising behaviour, per area, with which earlier notes are resolved |
+| [6. Cogs](06-cogs.md) | The AI team members: how a cog is made from the SOPs, identity profiles and personas, roles and groups, derived autonomy, queues and cog boards, how to ask one, the messenger and its context, approvals within rails, committees, adversarial reviews, countersignatures, agent runs, what a cog refuses, profiles and models, training as context and the knowledge base, the prompt, senior and junior cogs, what is recorded of a cog's work |
+| [7. Policy and configuration](07-policy-and-configuration.md) | What the hub reads from the SOPs, releases, compiling by the senior cogs' committee, widenings, no configuration change outside a change order (and the first-start conversion), groups and committees, Settings as direct changes, the change-order workflow (stages, review rounds and the panel, questions, findings and suggestions, the delta and item decisions, freezing, approval and segregation of duties, release, divergences, related changes, state maps, the per-cog view, validation), the automations, forms, the workflow editor, record types, Roles and responsibilities and the training matrix, the IT SOP |
+| [8. Administration](08-administration.md) | Docker setup and first start, settings (environment variables), models and the hosted-models switch, backup, restore and verify, queue health, the command line, development hubs (`hubproto dev`) and running the tests |
+| [9. Glossary](09-glossary.md) | Frame, cog, Gate, release, change order, delta, direct change, divergence, review round, panel, state map, group, committee, chair, senior and junior cog, persona, Roles and responsibilities table, validation class, widening, part, lot and other terms |
+| [10. Workflow review notes](10-workflow-review-notes.md) | Observations for the product owner: what is still open in change control v2 (10.9), and unclear, inconsistent or surprising behaviour per area, with which earlier notes are resolved |
 
 ## What this manual is based on
 
-* The repository at `/home/dahubley/source/hub-erp-proto` at commit `6af5a46`, its HEAD on 8 November 2026. The manual
-  was first written from commit `26962fa` (7 November 2026) and has been brought up to date with the 21 commits since:
-  inventory after InvenTree, the stores and organization cogs, scopes and personas, the compile-frame committee, local
-  models only, releases that record the compiled texts, SOPs filed as quality documents, library folders, form
-  layouts, and the fixes made after the first review.
+* Branch `change-control-v2` of the repository at `/home/dahubley/source/hub-erp-proto`, at commit `2c99c4d` (9 November
+  2026): change control v2, built from the design agreed that day (docs/design/change-control.md;
+  docs/design/jira-workflow-study.md for the workflow editor). The edition before this one described commit `6af5a46`
+  (8 November 2026) and carried the design as a Preview chapter; that chapter is now folded into chapters 3, 6 and 7.
 * The SOPs and work instructions in `frames/` (the policy Frames), `config/record-types.json`, the web shell in
-  `hubproto/shell/`, the engine (`hubproto/runner.py`, `hubproto/cogs.py`, `hubproto/inventory.py` and others) and the
-  tests in `tests/` (731 pass at `6af5a46`).
-* Pages of the running hub at `http://localhost:8080`, read only, to check wording. That hub runs `6af5a46`; its
-  release in force is policy version 9 (digest `2dcbfc780b93`, released 8 November 2026), which carries everything this
-  manual describes, and its SOPs have been converted to documents (chapter 7.8). It also holds test data from earlier
-  review sessions.
-* Behaviours checked by running the code against a throwaway copy of the hub (never the live one), with the
-  repository's Frames and the tests' stand-in in place of the models. Those are marked "checked by running the code"
-  where they matter; "read the code" marks what follows from the code cited but was not run.
+  `hubproto/shell/`, the engine (`hubproto/runner.py`, `hubproto/changecontrol.py`, `hubproto/cogs.py` and others),
+  DEV-NOTES.md and the tests in `tests/` (1,029 pass at `2c99c4d`).
+* Behaviours checked by running the code on development hubs (`hubproto dev serve`, chapter 8.10), never the live hub,
+  with the repository's Frames, the demo data, the cogs' stand-in in place of models, and hosted models off. Those are
+  marked "checked by running the code" or "ran the code" where they matter; "read the code" marks what follows from the
+  code cited but was not run. The change-order runs of chapter 7.9 were made at `bf3602d`, the commit before the last
+  four of the branch, and the approval rule they changed was run again at `2c99c4d`.
+* Screenshots: those of change control v2 were taken on 9 November 2026 from a development hub at `bf3602d` with the
+  demo data and the runs of chapter 7.9; the older ones on 8 November 2026 from the live hub at `6af5a46`, by a
+  headless browser that only opened pages, and they show that hub's review data. Where a page has changed since, the
+  caption says so.
+
+## What changed in this edition
+
+Change control v2 is built, and this edition describes it as behaviour, not as a preview:
+
+* **Change orders** carry every configuration change, prose revisions and direct changes alike, through review rounds
+  with a panel of cogs and people, item-by-item decisions with accepted warnings, segregation of duties, and a release
+  that records divergences and sends related changes back (chapter 7.9). No configuration changes any other way, and a
+  new hub's SOPs become documents at its first release (chapter 7.5).
+* **Processes are graphs** of statuses and transitions, with person, cog, committee and automatic gates; items follow
+  the release in force from their next move (chapter 3.1); the **workflow editor** changes them on a change order
+  (chapter 7.13).
+* **Cogs** are identity profiles with shared personas; what they follow, may do and are trained on comes from the SOPs'
+  Roles and responsibilities tables; senior cogs compile, junior cogs do the day-to-day work (chapter 6).
+* **Groups and committees**, the **required-training matrix**, record types under change control and the **IT SOP**
+  (chapter 7.6, 7.14 to 7.16); development hubs and the hosted-models switch (chapter 8).
+* What is still open is in chapter 10.9.
 
 ## The example company
 
@@ -46,17 +64,24 @@ The prototype ships with the Frames of a fictional company, Example Instruments 
 
 | Member | Kind | Roles (from all Frames together) |
 |---|---|---|
-| alice | person | finance clerk, author, process owner, staff, design engineer |
-| bob | person | controller, reviewer, policy owner, management representative, internal auditor, staff, design review committee, design authority |
-| carol | person | quality manager, reviewer, policy owner, document controller, staff, design review committee |
-| dave | person | payables reviewer, staff, buyer, storekeeper |
-| ap-reviewer | cog | payables reviewer, finance clerk |
-| doc-reviewer | cog | reviewer, author |
-| quality-assistant | cog | quality manager, author, reviewer, staff, design review committee |
+| alice | person | author, design engineer, finance clerk, process owner, staff |
+| bob | person | controller, design authority, design review committee, internal auditor, management representative, policy owner, reviewer, staff, system administrator |
+| carol | person | design review committee, document controller, policy owner, quality manager, reviewer, staff |
+| dave | person | buyer, payables reviewer, staff, storekeeper |
+| ap-reviewer | cog | finance clerk, payables reviewer |
+| doc-reviewer | cog | author, reviewer |
+| quality-assistant | cog | design review committee, staff |
 | purchasing-assistant | cog | buyer, staff, stock reviewer |
-| qa-manager | cog | quality manager, reviewer, author, staff |
-| organization | cog | staff |
-| stores | cog | storekeeper, staff |
+| qa-manager | cog | author, reviewer, staff |
+| organization | cog | policy reader |
+| stores | cog | staff, storekeeper |
+| it-admin | cog | system administrator |
+| management | cog | management reviewer |
+| senior-organization | cog (senior) | policy reader |
+| senior-qa-manager | cog (senior) | policy reader |
+
+The cogs are in the groups **junior-cogs** (all but the seniors, the purchasing-assistant and stores) and
+**senior-cogs**; the compile-frame committee is defined on senior-cogs, chaired by carol (chapters 6 and 7.6).
 
 (`frames/company/org-model.frame.md`; `buyer` for dave and the purchasing-assistant come from
 `frames/purchasing/purchasing-policy.frame.md`; `storekeeper` for dave, `stock-reviewer` for the purchasing-assistant

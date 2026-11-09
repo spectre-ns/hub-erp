@@ -10,7 +10,7 @@ import pytest
 from conftest import ROOT, release_all
 from hubproto.app import Hub
 from hubproto.rules import rule_key
-from hubproto.shell import free_port, serve_in_thread
+from hubproto.shell import serve_in_thread
 from test_shell_views import get, post
 
 SECTIONS = ("overview", "people", "permissions", "limits", "rails", "sod", "workflows")
@@ -23,8 +23,8 @@ def shell(tmp_path_factory):
     hub = Hub(root)
     hub.kernel.seed()
     release_all(hub)
-    port = free_port()
-    server = serve_in_thread(hub, "127.0.0.1", port)
+    server = serve_in_thread(hub, "127.0.0.1", 0)  # port 0: bound at once, no race with other test workers
+    port = server.server_address[1]
     yield {"hub": hub, "root": root, "base": f"http://127.0.0.1:{port}", "port": port, "server": server}
     server.shutdown()
     server.server_close()
@@ -54,7 +54,7 @@ def test_every_section_renders_for_a_person(shell, clean):
     status, text = get(shell, "/settings/permissions", **{"as": "bob"})
     assert "Staff may read Policy." in text and "finance-policy line" in text
     status, text = get(shell, "/settings/workflows", **{"as": "bob"})
-    assert "## Process: purchase-to-pay" in text and "workflow builder" in text
+    assert "## Process: purchase-to-pay" in text and "workflow editor" in text and "/workflows/purchase-to-pay" in text and "<svg class=\"wf wf-view\"" in text
     status, text = get(shell, "/", **{"as": "bob"})
     assert "/settings" in text  # in the launcher
 

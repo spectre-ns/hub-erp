@@ -86,12 +86,25 @@ class Kernel:
         self.db.commit()
         cfg = Path(config_dir) if config_dir else CONFIG_DIR
         self.config_dir = cfg
-        self.types: dict[str, dict] = _load(cfg / "record-types.json")
+        # The record types: the file, until the hub keeps the record types in force under change control
+        # (hubproto.recordtypes); then the hub installs those and ``types_hook`` picks up a newer version.
+        self.types_hook = None
+        self.types = _load(cfg / "record-types.json")
         self.link_vocab: dict[str, str] = _load(cfg / "links.json")
         self.retention: dict[str, dict] = _load(cfg / "retention.json")
         self.config_digests = {p.name: sha256_of(_load(p)) for p in sorted(cfg.glob("*.json"))}
         self._cache: dict[str, dict] | None = None
         self._cache_version: tuple | None = None
+
+    @property
+    def types(self) -> dict[str, dict]:
+        if self.types_hook is not None:
+            self.types_hook()
+        return self._types
+
+    @types.setter
+    def types(self, value: dict[str, dict]) -> None:
+        self._types = value
 
     def _data_version(self) -> tuple:
         """Changes whenever any connection (this or another process) commits to the file."""
@@ -409,6 +422,8 @@ class Kernel:
         missing = self.required_missing(rec, to_state)
         if missing:
             raise KernelGuardError("required-fields", f"{rec['number']} cannot enter {to_state!r} without {', '.join(missing)}")
+        if to_state == "effective" and rec["type"] == "document" and rec["fields"].get("revises"):
+            self.check_sop_publish(rec)  # a revision of an SOP takes effect only with its change order's release
         data = {"from": rec["state"], "to": to_state, "reason": reason, "assignees": assignees or [], "due": due}
         if decision:
             data["decision"] = decision
@@ -574,6 +589,17 @@ class Kernel:
         rec = self.create("document", folder, fields, by=by, run_id=run_id, release=release, state="draft")
         return rec["number"]
 
+    def check_sop_publish(self, rec: dict) -> None:
+        """Once the SOPs are documents, an SOP, work instruction, policy, cog profile or persona (a document of an SOP
+        lineage, or a revision of one) becomes effective only through a change order's release (change control v2)."""
+        f = rec["fields"]
+        revised = self.get(f"document:{f['revises']}") if f.get("revises") else None
+        lineage = str(f.get("lineage") or "") or str(((revised or {}).get("fields") or {}).get("lineage") or "")
+        if lineage.startswith("sop:") and not (f.get("change_order") and f.get("released_in")):
+            raise KernelGuardError("change-order", f"{rec['number']} is a revision of an SOP or policy ({lineage[4:]}): it comes into force "
+                                   "only with the change order that carries it, when that change order is released. Carry it on a change "
+                                   "order (Quality > Change orders) instead of approving it through document control")
+
     def publish_document(self, doc_id: str, *, run_id: str, release: str, grant: dict | None, approved_by: str,
                          by: str) -> None:
         if not grant or grant.get("run_id") != run_id:
@@ -581,6 +607,7 @@ class Kernel:
         rec = self.require(f"document:{doc_id}")
         if rec["fields"].get("author") == approved_by:
             raise KernelGuardError("segregation-of-duties", f"{approved_by} authored and approved {doc_id}")
+        self.check_sop_publish(rec)
         today = date.today()
         try:
             review = today.replace(year=today.year + 1).isoformat()

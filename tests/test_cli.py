@@ -72,6 +72,18 @@ def released(tmp_path_factory) -> Path:
     return root
 
 
+def ensure_bills(root: Path, n: int = 2) -> None:
+    """At least ``n`` bills on the module's hub: the tests that file bills may have run before (serially) or not at all
+    in this process (the test run alone, or another pytest-xdist worker took them); bills already there are used."""
+    hub = Hub(root)
+    for i in range(len(hub.kernel.query(type_="bill")), n):  # under the ap-reviewer limit: posted, in nobody's queue
+        po, amount = f"PO-{3100 + i}", 1500 + 10 * i
+        hub.kernel.append("po.issued", f"po:{po}", {"supplier": "acme-metals", "amount": amount, "currency": "USD",
+                                                    "description": "ensure_bills", "received": True}, by="seed")
+        hub.kernel._cache = None
+        hub.runner.submit("purchase-to-pay", {"record": dated({**SMALL_BILL, "po_ref": po, "amount": amount})}, owner="alice")
+
+
 @pytest.fixture
 def fresh(tmp_path) -> Path:
     """A hub with Frames and a seeded kernel but no release."""
@@ -195,7 +207,7 @@ def test_proposals_list_and_proposal_show_status_base_changes_and_decisions(fres
     assert len(rows) == 2
     released_row = next(l for i, l in rows.items() if i != pid)
     assert "released as v1 (" in released_row and "decisions by bob, carol" in released_row
-    assert rows[pid].split()[0] == num.lstrip("#") and " open" in rows[pid] and "v1 (" in rows[pid] and rows[pid].split()[5] == "6"  # 5 rule changes and the wording change
+    assert rows[pid].split()[0] == num.lstrip("#") and " open" in rows[pid] and "v1 (" in rows[pid] and rows[pid].split()[5] == "2"  # the rule change and the wording change; the processes only moved
     rc, out = run_cli(fresh, "review", num, "--as", "bob", "--approve-all", "--meaning", "reviewers may file too")
     assert rc == 0 and "needs:" in out
     rc, out = run_cli(fresh, "proposal", pid[:6])
@@ -359,6 +371,7 @@ def test_decide_needs_a_meaning_and_quotes_the_seen_digest(released):
 
 
 def test_runs_listing_has_a_header_and_12_char_digests(released):
+    ensure_bills(released, 1)
     rc, out = run_cli(released, "runs")
     header, *rows = out.splitlines()
     assert header.startswith("run") and "created" in header and "record" in header
@@ -392,6 +405,7 @@ def test_mail_in_to_a_non_member_is_refused(released, tmp_path):
 
 
 def test_link_lists_the_vocabulary_on_a_bad_relation(released):
+    ensure_bills(released, 2)
     rc, out = run_cli(released, "records", "--type", "bill")
     numbers = [l.split()[0] for l in out.splitlines()[1:]]
     assert len(numbers) >= 2

@@ -1,6 +1,7 @@
-"""Which Frames depend on which SOPs, and who layers them: scopes compile Frames and layer on wider scopes; personas
-(cogs and job roles) layer scopes and Frames; a cog follows what its persona layers; a role's persona is required
-reading; the release names each Frame's source; the pages show it all both ways."""
+"""Which Frames depend on which SOPs, and who works from them: scopes compile Frames and layer on wider scopes; a cog
+follows the company scope and every SOP whose rules name it or its roles; a person's required reading is derived the same
+way (and from the work instructions written for their roles); the release names each Frame's source; the pages show it all
+both ways."""
 
 import shutil
 
@@ -10,7 +11,7 @@ from conftest import ROOT, release_all
 from hubproto import scopes as sc
 from hubproto import sopdocs
 from hubproto.app import Hub
-from hubproto.shell import free_port, serve_in_thread
+from hubproto.shell import serve_in_thread
 from test_shell_views import get, main_of
 
 
@@ -20,8 +21,8 @@ def shell(tmp_path):
     hub = Hub(tmp_path)
     hub.kernel.seed()
     release_all(hub)
-    port = free_port()
-    server = serve_in_thread(hub, "127.0.0.1", port)
+    server = serve_in_thread(hub, "127.0.0.1", 0)  # port 0: bound at once, no race with other test workers
+    port = server.server_address[1]
     yield {"hub": hub, "base": f"http://127.0.0.1:{port}"}
     server.shutdown()
     server.server_close()
@@ -31,17 +32,19 @@ def bundle(hub):
     return hub.releases.bundle(hub.releases.current()["digest"])
 
 
-def test_scopes_layer_and_personas_decide_what_cogs_follow(shell):
+def test_scopes_layer_and_the_sops_that_name_a_cog_decide_what_it_follows(shell):
     b = bundle(shell["hub"])
     assert b["scopes"]["quality"]["layers_on"] == ["company"]
     assert b["scopes"]["quality"]["frames"][:3] == ["org-model", "quality-manual", "tasks-sop"], "a department scope brings the company's"
-    assert b["cogs"]["qa-manager"]["persona"] == "qa-manager"
+    assert b["cogs"]["qa-manager"]["persona"] == "author"
     assert "document-control-sop" in b["cogs"]["qa-manager"]["follows"] and "org-model" in b["cogs"]["qa-manager"]["follows"]
     d = sc.dependents(b, "document-control-sop")
-    assert "quality" in d["direct_scopes"] and {"name": "qa-manager", "of": "cog"} in d["personas"]
-    assert {"name": "document-controller", "of": "role"} in d["personas"]
+    assert "quality" in d["direct_scopes"] and "qa-manager" in d["cogs"] and "doc-reviewer" in d["cogs"]
+    assert "document-controller" in d["roles"] and "ap-reviewer" not in d["cogs"]
     im = sc.impact(b, ["finance-policy"])
-    assert {p["name"] for p in im["personas"]} >= {"ap-reviewer", "finance-clerk", "controller"}
+    assert {p["name"] for p in im["readers"]} >= {"ap-reviewer", "finance-clerk", "controller"}
+    persona = sc.dependents(b, "persona-reviewer")
+    assert persona["persona"] == "reviewer" and set(persona["behave"]) == {"ap-reviewer", "doc-reviewer", "quality-assistant"}
 
 
 def test_the_release_names_each_frames_source(shell):
@@ -54,10 +57,15 @@ def test_the_release_names_each_frames_source(shell):
     assert fin["source"]["document"].startswith("DOC-") and fin["source"]["revision"] == "A"
 
 
-def test_a_role_persona_is_required_reading(shell):
+def test_required_reading_is_derived_from_the_roles(shell):
     b = bundle(shell["hub"])
     reading = {r["frame"]: r["roles"] for r in sc.required_reading(b, "carol")}
     assert "document-control-sop" in reading and "quality-manager" in reading["ncr-sop"]
+    assert reading["org-model"] and list(reading)[:3] == ["org-model", "quality-manual", "tasks-sop"]
+    assert "wi-review-a-document" in reading and "reviewer" in reading["wi-review-a-document"], "a work instruction's table"
+    assert reading["it-sop"] == ["policy-owner", "quality-manager"], "she approves the change orders that carry configuration"
+    assert "system-administrator" in {r["frame"]: r["roles"] for r in sc.required_reading(b, "bob")}["it-sop"], "bob administers the hub"
+    assert "it-sop" not in {r["frame"] for r in sc.required_reading(b, "dave")}
     status, text = get(shell, "/user/carol", **{"as": "carol"})
     assert "Required reading" in main_of(text) and "document-control-sop" in main_of(text)
 
@@ -65,30 +73,30 @@ def test_a_role_persona_is_required_reading(shell):
 def test_the_pages_show_the_links_both_ways(shell):
     status, text = get(shell, "/scopes", **{"as": "carol"})
     body = main_of(text)
-    assert status == 200 and "scope-quality" in body and "Cog personas" in body and "Role personas" in body
+    assert status == 200 and "scope-quality" in body and "<h2>Personas" in body and "<h2>Cogs" in body and "<h2>Roles" in body
+    assert "persona-reviewer" in body and "scope-it" in body
     status, text = get(shell, "/frame/document-control-sop", **{"as": "carol"})
     body = main_of(text)
-    assert "Depends and depended on" in body and "Layered by" in body and "qa-manager" in body and "quality" in body
+    assert "Depends and depended on" in body and "Followed by" in body and "qa-manager" in body and "quality" in body
+    assert "Required reading for" in body and "document controller" in body
 
 
-def test_a_persona_may_only_layer_what_exists(shell):
+def test_personas_must_be_used_and_scopes_refer_to_what_exists(shell):
     from hubproto.guards import scope_guard
 
     rules = [{"kind": "scope", "name": "s", "level": "department", "compiles": ["nope"], "layers_on": ["missing"], "source": {"frame": "x", "line": 1}},
-             {"kind": "persona", "name": "ghost", "of": "cog", "layers": ["s", "zzz"], "reads": [], "source": {"frame": "x", "line": 2}}]
+             {"kind": "persona", "name": "ghost", "stance": "reviewer", "behaviour": "b", "source": {"frame": "x", "line": 2}}]
     found = [f.detail for f in scope_guard(rules, {"x"})]
     assert any("compiles 'nope'" in d for d in found) and any("layers on 'missing'" in d for d in found)
-    assert any("for a cog the organization does not have" in d for d in found) and any("'zzz'" in d for d in found)
+    assert any("persona ghost is used by no cog" in d for d in found)
 
 
-def test_a_cog_with_a_persona_is_not_warned_that_it_follows_nothing(shell):
-    """The cog profiles carry no Follows lines: each cog follows its persona's Frames. Only a cog with neither is warned
-    that it will be routed nothing."""
+def test_a_cog_listed_in_no_table_is_warned_that_it_will_be_routed_nothing(shell):
     hub = shell["hub"]
     p = hub.compile(save=False)
-    assert not [f for f in p["findings"] if "follows no SOP" in f["detail"]], [f["detail"] for f in p["findings"] if "follows no SOP" in f["detail"]]
+    assert not [f for f in p["findings"] if "listed in no Roles" in f["detail"]], [f["detail"] for f in p["findings"] if "listed in no Roles" in f["detail"]]
     from hubproto.guards import consistency_guard
 
-    rules = [r for r in p["rules"] if not (r["kind"] == "persona" and r["name"] == "qa-manager")]
+    rules = [r for r in p["rules"] if not (r["kind"] == "responsibility" and r["who"] == "cog:organization")]
     found = [f.detail for f in consistency_guard(rules, set(hub.registry.ids()))]
-    assert any("cog qa-manager follows no SOP and has no persona" in d for d in found)
+    assert any("cog organization is listed in no Roles and responsibilities table" in d for d in found)

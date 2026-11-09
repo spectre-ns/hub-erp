@@ -10,7 +10,7 @@ import pytest
 from conftest import BIG_BILL, ROOT, dated, release_all
 from hubproto import wopi
 from hubproto.app import Hub
-from hubproto.shell import free_port, serve_in_thread
+from hubproto.shell import serve_in_thread
 from hubproto.shell.forms import coerce, widget
 from hubproto.shell.text import humanize, notification_sentence
 from test_shell_views import get, post
@@ -23,8 +23,8 @@ def shell(tmp_path_factory):
     hub = Hub(root)
     hub.kernel.seed()
     release_all(hub)
-    port = free_port()
-    server = serve_in_thread(hub, "127.0.0.1", port)
+    server = serve_in_thread(hub, "127.0.0.1", 0)  # port 0: bound at once, no race with other test workers
+    port = server.server_address[1]
     yield {"hub": hub, "root": root, "base": f"http://127.0.0.1:{port}", "port": port, "server": server}
     server.shutdown()
     server.server_close()
@@ -98,7 +98,8 @@ def test_ops_hotkeys_focus_and_confirm_and_can_be_switched_off(shell):
     page = get(shell, "/document/" + quote(doc["locator"], safe=":"), **{"as": "carol"})[1]
     assert "data-hotkeys-toggle" in page and "hk-armed" in page and "el.click()" not in page and "Enter confirms" in page
     assert 'name="change_type" required' in page  # Send for approval asks minor or major
-    assert "Ask quality-assistant to review" not in page  # only cogs that follow the item's SOP
+    # Only cogs that follow the item's SOP (derived: its rules name them or their roles): not the payables reviewer.
+    assert "Ask ap-reviewer to review" not in page and "Ask doc-reviewer to review" in page
 
 
 def test_the_messenger_never_takes_the_focus_on_page_load(shell):

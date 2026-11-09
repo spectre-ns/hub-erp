@@ -12,7 +12,7 @@ import pytest
 from conftest import ROOT, SMALL_BILL, dated, release_all
 from hubproto import model, wopi
 from hubproto.app import Hub
-from hubproto.shell import free_port, serve_in_thread
+from hubproto.shell import serve_in_thread
 from hubproto.workqueue import CogQueue, CogWorker
 from test_editor import docx_with_comment, wopi_call
 from test_shell_views import get, post
@@ -25,8 +25,8 @@ def shell(tmp_path_factory):
     hub = Hub(root)
     hub.kernel.seed()
     release_all(hub)
-    port = free_port()
-    server = serve_in_thread(hub, "127.0.0.1", port)
+    server = serve_in_thread(hub, "127.0.0.1", 0)  # port 0: bound at once, no race with other test workers
+    port = server.server_address[1]
     yield {"hub": hub, "root": root, "base": f"http://127.0.0.1:{port}", "port": port, "server": server}
     server.shutdown()
     server.server_close()
@@ -230,7 +230,7 @@ def test_a_cog_has_a_kanban_board_of_its_work(tmp_path):
 
     from conftest import ROOT, release_all
     from hubproto.app import Hub
-    from hubproto.shell import free_port, serve_in_thread
+    from hubproto.shell import serve_in_thread
     from test_shell_views import get, main_of
 
     shutil.copytree(ROOT / "frames", tmp_path / "frames")
@@ -240,8 +240,8 @@ def test_a_cog_has_a_kanban_board_of_its_work(tmp_path):
     hub.queue.mode = "service"
     hub.queue.submit("quality-assistant", "task", by="carol", title="Check the open NCRs", payload={"goal": "x"})
     hub.queue.submit("quality-assistant", "chat", by="dave", title="where is the test document?", payload={"text": "?"})
-    port = free_port()
-    server = serve_in_thread(hub, "127.0.0.1", port)
+    server = serve_in_thread(hub, "127.0.0.1", 0)  # port 0: bound at once, no race with other test workers
+    port = server.server_address[1]
     try:
         shell = {"hub": hub, "base": f"http://127.0.0.1:{port}"}
         status, text = get(shell, "/board/quality-assistant", **{"as": "carol"})

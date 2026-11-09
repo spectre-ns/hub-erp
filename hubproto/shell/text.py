@@ -80,7 +80,8 @@ MEANING_EXAMPLES = {
     "stock-release": ("certificate of conformance received; release", "re-inspected 20 of 200, all within drawing"),
     "part": ("approved: datasheet checked, two sources", "approved as a purchased component"),
 }
-NOTIFICATION_KINDS = ("escalation", "failure", "returned", "rejection", "auto-decided", "request", "review", "mention", "agent-run")
+NOTIFICATION_KINDS = ("escalation", "failure", "returned", "rejection", "auto-decided", "request", "review", "mention", "agent-run", "withdrawn", "moved",
+                      "intervention", "automation", "task")
 MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 _LOCATOR = re.compile(r"rec:[a-z-]+:([A-Z]+-[0-9A-Z-]+)")
 _TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:\+00:00|Z)?")
@@ -468,6 +469,13 @@ def event_sentence(ev: dict, link_number=None, type_word: str = "item") -> str:
         return f"{by} checked it out"
     if t.startswith("document."):
         return f"{by}: {esc(t.split('.', 1)[1].replace('_', ' '))}" + (f" version {esc(d.get('version'))}" if d.get("version") else "")
+    if t == "cog.worked":  # what produced a cog's decision, review or drafted text (its model and competence record)
+        what = {"decision": "decided at its turn", "review": "reviewed it", "draft": "wrote it"}.get(d.get("kind"), "worked on it")
+        stand = " (stand-in)" if d.get("stand_in") else ""
+        rel = f"release v{d['release_n']}" if d.get("release_n") else (f"release {esc(str(d.get('release'))[:12])}" if d.get("release") else "no release")
+        return (f"{by} {what}" + (f": {esc(d.get('detail'))}" if d.get("detail") else "")
+                + f" &middot; model {esc(d.get('model'))}{stand}, persona {esc(d.get('persona') or '-')} {esc(d.get('persona_version') or '')}, "
+                  f"trained by {rel}")
     return f"{by}: {esc(t)}"
 
 
@@ -546,7 +554,10 @@ def notification_sentence(m: dict, link_number=None) -> str:
     lead = {"failure": "Stopped", "returned": "Returned to you", "rejection": "Rejected", "escalation": "Escalated",
             "auto-decided": "Decided by a cog", "approval": "Waiting for you", "request": "Asked of you", "review": "Review posted",
             "mention": "Mention", "agent-run": "A cog finished a task", "cog-task": "A cog could not do a task", "cog-done": "A cog finished",
-            "handed-back": "Handed back to you", "proposal": "Policy proposal"}.get(kind, kind.replace("-", " ").capitalize())
+            "handed-back": "Handed back to you", "proposal": "Policy proposal", "automation": "Change order", "task": "Task for you",
+            "intervention": "A committee needs you", "withdrawn": "Withdrawn", "moved": "Moved"}.get(kind, kind.replace("-", " ").capitalize())
+    if kind == "review" and str(m.get("subject", "")).startswith("Review "):
+        lead = "Asked to review"
     out = f"<b>{lead}:</b> {subj}" + (f" <span class='muted'>{body}</span>" if body and body != subj else "")
     if rest:
         out += f"<details class='more'><summary>more</summary><span class='muted'>{rest}</span></details>"
@@ -599,3 +610,65 @@ def summary_of_record(rec: dict) -> str:
 def owner_of(rec: dict) -> str:
     f = rec.get("fields", {})
     return str(f.get("owner") or f.get("author") or f.get("filed_by") or rec.get("created_by") or "")
+
+
+# ---------------------------------------------------------------- a small Markdown subset (generated documents)
+_MD_LINK = re.compile(r"(?<![\w/\"'=])(/(?:document|frame|record)/[A-Za-z0-9:._-]+)")
+
+
+def markdown_html(text: str, link=None) -> str:
+    """Headings, paragraphs, bullet lists and pipe tables of a generated Markdown document (the training matrix) as HTML,
+    escaped. ``link(path)`` makes a site path ("/document/rec:document:DOC-0008") an href; tables scroll on their own."""
+    def inline(t: str) -> str:
+        out = esc(t)
+        out = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", out)
+        out = re.sub(r"`([^`]+)`", r"<code>\1</code>", out)
+        out = re.sub(r"(?<![\w/:-])([A-Za-z0-9]+(?:-[A-Za-z0-9]+)+)(?![\w/:-])", r"<span class='nw'>\1</span>", out)  # names break at spaces
+        if link:
+            out = _MD_LINK.sub(lambda m: f"<a href='{esc(link(m.group(1)))}'>{esc(m.group(1).rsplit(':', 1)[-1].rsplit('/', 1)[-1])}</a>", out)
+        return out
+
+    def cells(line: str) -> list[str]:
+        return [c.strip() for c in line.strip().strip("|").split("|")]
+
+    lines = (text or "").splitlines()
+    out, para, i = [], [], 0
+
+    def flush():
+        if para:
+            out.append("<p>" + inline(" ".join(para)) + "</p>")
+            para.clear()
+    while i < len(lines):
+        ln = lines[i]
+        st = ln.strip()
+        if not st:
+            flush()
+        elif st.startswith("#"):
+            flush()
+            level = min(len(st) - len(st.lstrip("#")) + 1, 4)
+            out.append(f"<h{level}>{inline(st.lstrip('#').strip())}</h{level}>")
+        elif st.startswith("|") and i + 1 < len(lines) and re.match(r"^\|?\s*:?-{3,}", lines[i + 1].strip()):
+            flush()
+            head = cells(st)
+            i += 2
+            rows = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                rows.append(cells(lines[i]))
+                i += 1
+            out.append("<div class='tbl'><table><thead><tr>" + "".join(f"<th scope='col'>{inline(h)}</th>" for h in head) + "</tr></thead><tbody>"
+                       + "".join("<tr>" + "".join(f"<td{'' if ' ' in c.strip() else ' class=nw'}>{inline(c)}</td>" for c in r) + "</tr>" for r in rows)
+                       + "</tbody></table></div>")
+            continue
+        elif st.startswith(("- ", "* ")):
+            flush()
+            items = []
+            while i < len(lines) and lines[i].strip().startswith(("- ", "* ")):
+                items.append(f"<li>{inline(lines[i].strip()[2:])}</li>")
+                i += 1
+            out.append("<ul>" + "".join(items) + "</ul>")
+            continue
+        else:
+            para.append(st)
+        i += 1
+    flush()
+    return "<div class='md'>" + "".join(out) + "</div>"

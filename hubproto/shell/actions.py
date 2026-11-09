@@ -100,6 +100,8 @@ class ActionsMixin:
         if process not in bundle["ops"]:
             raise ShellError(f"There is no process '{process}' in the release.", 404)
         rt = bundle["ops"][process].get("record_type", "")
+        if rt == "change-order":  # a change order is prepared first, then goes round the review loop
+            return self._co_prepare_from_start()
         record = self._collect_fields(rt)
         self._check_required(process, rt, record)
         attachments = list(record.get("attachments") or []) + self._attachments()
@@ -129,6 +131,20 @@ class ActionsMixin:
             msg = f"Filed {number}; the run is {state['status']}."
         self._redirect(self._once_finish(href("/run/" + run_id, user, done=msg)))
 
+    def _co_prepare_from_start(self):
+        """A start of the change-order process from a form: the change order is created in preparing, on its page."""
+        from .eco_ui import CHANGES
+
+        user = self.user
+        d = authz.check(self.bundle, user, "create", "change-order", CHANGES)
+        if not d["allowed"]:
+            raise ShellError(f"You cannot prepare a change order: {d['why']}", 403)
+        title = self._f("title") or "New change order"
+        rec = self.hub.kernel.create("change-order", CHANGES, {"title": title, "description": self._f("description"), "implements": [],
+                                                              "requested_by": user, "stage": "preparing"}, by=user)
+        log_line(f"change order prepared {rec['number']} by={user} (from a start form)")
+        return self._redirect(self._once_finish(self._co_href(rec) + "&done=" + quote(f"{rec['number']} is being prepared: carry what it changes, then request review.")))
+
     # ----------------------------------------------------------------- decide
     def post_decide(self):
         user = self.user
@@ -149,7 +165,7 @@ class ActionsMixin:
             verdict = "approve"
             meaning = self._f("meaning")
             fields = {}
-            reserved = {"as", "run", "verdict", "meaning", "digest", "confirm", "reason", "once"}
+            reserved = {"as", "run", "verdict", "meaning", "digest", "confirm", "reason", "once", "transition"}
             given = {k: v for k, v in self.form.items() if k not in reserved and v.strip()}
             if given and state.get("pending") and state["pending"].get("kind", "decision") == "decision" and rec:
                 td = self.hub.kernel.types.get(rec["type"], {}).get("fields", {})
@@ -167,7 +183,9 @@ class ActionsMixin:
                 raise ShellError(f"Tick “I have read the item and the checks above” to approve {number}.", field="confirm")
         queue = [r["id"] for r in self._pending(user, "decision")]
         following = [i for i in queue[queue.index(run_id) + 1:]] if run_id in queue else []
-        result = self.hub.runner.decide(run_id, user, verdict, meaning=meaning, payload_digest=self._f("digest") or None, fields=fields or None)
+        transition = self._f("transition") or None  # a button naming one of the Gate's options (its transition)
+        result = self.hub.runner.decide(run_id, user, None if transition else verdict, meaning=meaning, payload_digest=self._f("digest") or None,
+                                        fields=fields or None, transition=transition)
         log_line(f"decision run={run_id} record={state.get('record')} by={user} verdict={verdict} fields={sorted(fields)} meaning={meaning!r} status={result['status']}")
         rec = self.hub.kernel.get(state["record"]) if state.get("record") else None
         if verdict == "reject":
@@ -443,6 +461,12 @@ class ActionsMixin:
             raise ShellError(f"There is no process '{process}' in the release.", 404)
         rec = self.hub.kernel.require(self._f("record"))
         self._require_read(rec["folder"])
+        if rec["type"] == "change-order" or (bundle["ops"][process].get("record_type") == "change-order"):
+            co = rec if rec["type"] == "change-order" else None
+            msg = ("A change order goes for approval through its own page: request review, then send it for approval."
+                   if co else "A change order is prepared first: start one under Quality > Change orders.")
+            return self._redirect(self._once_finish((self._co_href(co) + "&done=" + quote(msg) + "#co-stage") if co else
+                                                    href("/change-orders", self.user, done=msg) + "#new"))
         op = bundle["ops"][process]
         wanted = op.get("record_type") or op.get("object")
         if wanted and rec["type"] != wanted:
@@ -560,7 +584,13 @@ class ActionsMixin:
             return self._redirect(done)
         rec = self.hub.kernel.require(self._f("record"))
         self._require_read(rec["folder"])
-        doc = self.hub.dms.render_snapshot(rec["locator"], by=user)
+        body = None
+        if rec["type"] == "change-order":  # the change order as a complete record: the decided delta, the panel, the signatures
+            from ..co_record import co_record_markdown
+
+            body = co_record_markdown(self.hub, rec["locator"])
+        doc = self.hub.dms.render_snapshot(rec["locator"], by=user, members=(self.bundle or {}).get("members"), body=body,
+                                           title=f"{rec['number']} change order record at {rec['state']}" if body else "")
         self._redirect(self._once_finish(href("/document/" + quote(doc["locator"], safe=":"), user, done=f"Saved a snapshot of {rec['number']} as {doc['number']}.")))
 
     def post_folder_new(self):

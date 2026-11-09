@@ -10,10 +10,10 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
-from .. import authz, eco, sopdocs, wopi
+from .. import authz, changecontrol, eco, sopdocs
 from ..runner import RunError
 from .forms import ShellError
-from .handler import hidden_as, href, log_line, table
+from .handler import details, hidden_as, href, log_line, table
 from .icons import icon
 from .text import esc, state_name
 
@@ -61,14 +61,22 @@ class EcoMixin:
             who = ", ".join(((run or {}).get("pending") or {}).get("assignees") or [])
             return "<span class='chip warn'>waiting for approval</span>" + (f" <span class='why'>by {esc(who)}</span>" if who else "")
         if d["state"] in ("draft", "open", "returned"):
-            return "<span class='chip'>being written</span>"
+            versions = self.hub.dms.versions(d["locator"]) if hasattr(self.hub.dms, "versions") else []
+            last = versions[-1] if versions else {}
+            reviewed = ""
+            rnd = changecontrol.current_round(co) or {}
+            seen = ((rnd.get("reviewed_from") or {}).get("drafts") or {}).get(d["fields"].get("sop_name"))
+            if seen is not None:
+                same = seen == str(d["fields"].get("content_sha") or "")
+                reviewed = f"; round {rnd.get('n')} reviewed {'it as it stands' if same else 'an earlier version'}"
+            return ("<span class='chip'>being written</span>" + (f" <span class='why'>version {len(versions)} by {esc(last.get('by'))}{reviewed}</span>" if versions else ""))
         return f"<span class='chip'>{esc(state_name(d['state']).lower())}</span>"
 
     def _change_requests(self) -> list[dict]:
         return [r for r in self.hub.kernel.query(type_="change-request") if self._can_read(r["folder"])["allowed"]]
 
     # ------------------------------------------------------------ the list and the new form
-    def page_change_orders(self):
+    def page_change_orders(self, status: int = 200):
         user = self.user
         self._need_release()
         if not self._is_member():
@@ -81,18 +89,33 @@ class EcoMixin:
                 continue
             f = co["fields"]
             carried = eco.carried(self.hub, co)
-            rows.append([f"<a href='{self._co_href(co)}'>{esc(co['number'])}</a>", esc(f.get("title") or ""), self._state_chip(co["state"]),
+            stage = changecontrol.stage_of(co)
+            rows.append([f"<a href='{self._co_href(co)}'>{esc(co['number'])}</a>", esc(f.get("title") or ""),
+                         f"<span class='chip {'ok' if stage == 'released' else 'warn' if stage == 'awaiting-approval' else 'info' if stage in ('in-review', 'revising') else ''}'>"
+                         f"{esc(stage.replace('-', ' '))}</span>" + (" <span class='chip warn'>baseline changed</span>" if (f.get("baseline_changed") or {}) and not
+                                                                     (f.get("baseline_changed") or {}).get("dismissed") else ""),
                          esc(", ".join([c["name"] for c in carried] + [f"{t} form" for t in sorted(f.get("form_changes") or {})]) or "-"),
                          esc(", ".join(f.get("implements") or []) or "-"),
                          (f"<span class='chip warn'>{len(f['staged_errors'])} error(s)</span>" if f.get("staged_errors") else
-                          (f"{int(f.get('staged_changes') or 0)} change(s)" if f.get("staged_proposal") else "-"))])
+                          (self._co_item_count(co) if f.get("staged_proposal") else "-"))])
         body = (f"<h1>{icon('layers', cls='lg')} Change orders</h1>"
-                "<p class='why'>A change request asks for a change and says why. A change order carries it out: a draft revision of every SOP and "
-                "policy it changes, each approved through document control, and the Frame those revisions compile into. The revisions and the "
-                "Frame come into force together when the change order is released.</p>")
-        body += table(["Change order", "Title", "State", "Carries", "Implements", "Staged Frame"], rows, "No change orders yet.")
+                "<p class='why'>A change request asks for a change and says why. A change order carries it out: revisions of the SOPs and "
+                "policies it changes, direct changes made in Settings and the editors, form, record-type and workflow changes. Review rounds "
+                "compile the configuration delta and ask a panel; people decide each item; the quality manager signs; the release puts the "
+                "configuration and the revised texts in force together.</p>")
+        body += table(["Change order", "Title", "Stage", "Carries", "Implements", "Delta"], rows, "No change orders yet.")
         body += self._co_new_form()
-        self._page("Change orders", body, crumbs=[("Quality", href("/app/quality", user)), ("Change orders", None)])
+        self._page("Change orders", body, status=status, crumbs=[("Quality", href("/app/quality", user)), ("Change orders", None)])
+
+    def _co_item_count(self, co: dict) -> str:
+        """The delta's items as the change order's page numbers them (a change and the removal it replaces are one)."""
+        from .change_order_ui import groups
+
+        try:
+            n = len(groups(changecontrol.delta(self.hub, co["locator"])))
+        except Exception:
+            n = int(co["fields"].get("staged_changes") or 0)
+        return f"{n} item" + ("" if n == 1 else "s")
 
     def _co_new_form(self) -> str:
         user = self.user
@@ -100,14 +123,22 @@ class EcoMixin:
         if not d["allowed"]:
             return f"<p class='why'>You cannot prepare a change order: {self._why_html(d, 'create', 'change-order', CHANGES)}</p>"
         crs = [r for r in self._change_requests() if cr_approved(r)]
-        checks = "".join(f"<label class='check'><input type='checkbox' name='implements' value='{esc(r['number'])}'> {esc(r['number'])} "
+        picked = set(self._multi("implements")) if self.route == "/co-new" else set()
+        checks = "".join(f"<label class='check'><input type='checkbox' name='implements' value='{esc(r['number'])}'{' checked' if r['number'] in picked else ''}> {esc(r['number'])} "
                          f"{esc((r['fields'].get('title') or '')[:80])}</label>" for r in crs)
-        return (f"<h2 id='new'>{icon('plus')}New change order</h2><form method='post' action='/co-new' class='card'>{hidden_as(user)}{self._once()}"
-                "<div class='fields'><label class='f'><span>Title <b>*</b></span><input name='title' required></label>"
-                "<label class='f'><span>What it changes and why</span><textarea name='description'></textarea></label></div>"
+        mine = self.route == "/co-new"
+        err = self._form_error(["title", "description"]) if mine else ""
+        terr = self._field_error("title") if mine else None
+        title = esc(self._val("title")) if mine else ""
+        desc = esc(self._val("description")) if mine else ""
+        return (f"<h2 id='new'>{icon('plus')}New change order</h2><form method='post' action='/co-new' class='card'>{hidden_as(user)}{self._once()}{err}"
+                f"<div class='fields'><label class='f{' bad' if terr else ''}'><span>Title <b>*</b></span><input name='title' required value='{title}'"
+                + (" aria-invalid='true' aria-describedby='err-title'" if terr else "") + ">"
+                + (f"<span class='err' id='err-title'>{esc(terr)}</span>" if terr else "") + "</label>"
+                f"<label class='f'><span>What it changes and why</span><textarea name='description'>{desc}</textarea></label></div>"
                 + (f"<fieldset class='checks'><legend>Implements these approved change requests</legend>{checks}</fieldset>" if checks
                    else "<p class='why'>No approved change request to implement yet; you can add them later.</p>")
-                + "<p class='why'>It is prepared first: add the SOPs and policies it changes, then send it for approval.</p>"
+                + "<p class='why'>It is prepared first: carry what it changes, then request review.</p>"
                 f"<div class='actions'><button>{icon('plus')}Prepare the change order</button></div></form>")
 
     def post_co_new(self):
@@ -134,127 +165,8 @@ class EcoMixin:
 
     # ------------------------------------------------------------ the change order page
     def _eco_panel(self, co: dict) -> str:
-        """The change order's own section on its record page: what it carries, what it implements, the staged Frame,
-        what blocks it, and Send for approval."""
-        user = self.user
-        st = eco.status(self.hub, co["locator"])
-        co = st["co"]
-        f = co["fields"]
-        mine, preparing = self._co_mine(co), self._co_preparing(co)
-        out = "<section class='card eco' id='change-order'>"
-        # Carries
-        rows = []
-        for c in st["carried"]:
-            dft = c["draft"]
-            versions = self.hub.dms.versions(dft["locator"]) if hasattr(self.hub.dms, "versions") else []
-            links = []
-            if wopi.is_editable(dft) and dft["state"] in ("draft", "open", "returned"):
-                links.append(f"<a href='{href('/edit/' + quote(dft['locator'], safe=':'), user)}'>{icon('edit')}Edit</a>")
-            if len(versions) > 1:
-                links.append(f"<a href='{href('/compare/' + quote(dft['locator'], safe=':'), user, a=1, b=len(versions))}'>compare with the version in force</a>")
-            if preparing and mine and dft["state"] in ("draft", "open", "returned"):
-                links.append(f"<form method='post' action='/co-remove-sop' class='inline'>{hidden_as(user)}{self._once()}"
-                             f"<input type='hidden' name='co' value='{esc(co['locator'])}'><input type='hidden' name='sop' value='{esc(c['name'])}'>"
-                             f"<button class='ghost'>{icon('x')}Remove</button></form>")
-            kind = {"policy": "Policy", "sop": "SOP", "wi": "Work instruction"}.get(dft["fields"].get("doc_type"), "Document")
-            rows.append([f"{esc(c['name'])} <span class='why'>{esc(kind)}</span>",
-                         f"<a href='{self._doc_page(dft)}'>{esc(dft['number'])}</a> rev {esc(dft['fields'].get('revision') or '')}"
-                         + (f" <span class='why'>revises {esc(dft['fields'].get('revises'))}</span>" if dft["fields"].get("revises") else ""),
-                         self._draft_words(dft, co), " ".join(links)])
-        out += f"<h2>{icon('file-text')}Carries</h2>" + table(["SOP or policy", "Revision", "Where it stands", ""], rows,
-                                                               "Nothing yet: add the SOPs and policies this change order changes.")
-        if preparing and mine:
-            carried = {c["name"] for c in st["carried"]}
-            opts = []
-            for d in self.hub.kernel.query(type_="document"):
-                fd = d["fields"]
-                name = fd.get("sop_name")
-                if (d["state"] == "effective" and str(fd.get("lineage", "")).startswith(sopdocs.LINEAGE) and name not in carried
-                        and self._can_read(d["folder"])["allowed"] and not eco.may_change_sop(self.bundle or {}, d, user)):
-                    opts.append((name, f"{name} ({d['number']}, rev {fd.get('revision') or ''})"))
-            if opts:
-                sel = "".join(f"<option value='{esc(v)}'>{esc(t)}</option>" for v, t in sorted(opts))
-                out += (f"<form method='post' action='/co-add-sop' class='sform row'>{hidden_as(user)}{self._once()}<input type='hidden' name='co' value='{esc(co['locator'])}'>"
-                        f"<label class='f'><span>Add an SOP or policy</span><select name='sop'>{sel}</select></label>"
-                        f"<button class='secondary'>{icon('plus')}Start its revision here</button></form>")
-        # Implements
-        crs = {r["number"]: r for r in self._change_requests()}
-        imp_rows = []
-        for n in f.get("implements") or []:
-            r = crs.get(n)
-            rm = (f"<form method='post' action='/co-implements' class='inline'>{hidden_as(user)}{self._once()}<input type='hidden' name='co' value='{esc(co['locator'])}'>"
-                  f"<input type='hidden' name='cr' value='{esc(n)}'><input type='hidden' name='action' value='remove'><button class='ghost'>{icon('x')}Remove</button></form>"
-                  if preparing and mine else "")
-            imp_rows.append([self._record_link(r["locator"]) if r else esc(n), self._state_chip(r["state"]) if r else "<span class='muted'>not found</span>", rm])
-        out += f"<h2>{icon('workflow')}Implements</h2>" + table(["Change request", "State", ""], imp_rows, "No change request named.")
-        if preparing and mine:
-            cands = [r for r in crs.values() if cr_approved(r) and r["number"] not in (f.get("implements") or [])]
-            if cands:
-                sel = "".join(f"<option value='{esc(r['number'])}'>{esc(r['number'])} {esc((r['fields'].get('title') or '')[:60])}</option>" for r in cands)
-                out += (f"<form method='post' action='/co-implements' class='sform row'>{hidden_as(user)}{self._once()}<input type='hidden' name='co' value='{esc(co['locator'])}'>"
-                        f"<input type='hidden' name='action' value='add'><label class='f'><span>Add an approved change request</span><select name='cr'>{sel}</select></label>"
-                        f"<button class='secondary'>{icon('plus')}Add</button></form>")
-        # Forms
-        out += self._forms_co_section(co, mine, preparing)
-        # Staged Frame
-        out += self._staged_html(co, st)
-        # What blocks it, and Send for approval
-        run = self.hub.runner.run_for_record(co["locator"])
-        if co["state"] == "released":
-            out += f"<p class='status'>Released: its revisions and Frame are in force (policy {esc((f.get('released_release') or '')[:12])}).</p>"
-        elif run and run["status"] in ("waiting", "submitted", "running"):
-            out += "<p class='why'>Sent for approval: it is in the change-order process.</p>"
-        else:
-            blocked = eco.check_approval(self.hub, co["locator"])
-            if blocked:
-                out += ("<h3>Before it can be sent for approval</h3><ul class='blockers'>" + "".join(f"<li>{esc(b)}</li>" for b in blocked) + "</ul>")
-            elif mine:
-                out += (f"<form method='post' action='/co-send' class='inline'>{hidden_as(user)}{self._once()}<input type='hidden' name='co' value='{esc(co['locator'])}'>"
-                        f"<button>{icon('send')}Send for approval</button></form> <span class='why'>Every revision it carries is approved and its Frame is clean.</span>")
-        return out + "</section>"
-
-    def _staged_html(self, co: dict, st: dict) -> str:
-        user = self.user
-        f = co["fields"]
-        out = f"<h2>{icon('layers')}Staged Frame</h2>" + self._impact_html([c["name"] for c in st.get("carried") or [] if c.get("name")])
-        if f.get("staged_errors"):
-            out += ("<div class='card crit' role='alert'><p><b>The staged Frame does not compile.</b> Fix these in the revisions:</p><ul>"
-                    + "".join(f"<li>{esc(e)}</li>" for e in f["staged_errors"]) + "</ul></div>")
-        p = st.get("proposal")
-        current = p is not None and not [r for r in st.get("reasons") or [] if "compile it again" in r or "not made of the approved" in r]
-        out += self._automation_line(co)
-        if not current:
-            pv = eco.preview(self.hub, co["locator"]) if eco.carried(self.hub, co) and self._co_preparing(co) else None
-            if pv is None:
-                return out + ("<p class='muted'>Nothing compiled yet: the Frame is compiled when a revision this change order carries is approved.</p>"
-                              if not f.get("staged_errors") else "")
-            if pv.get("errors"):
-                out += ("<div class='card warn' role='status'><p><b>The drafts do not compile as they stand.</b> Fix these before they go for approval:</p><ul>"
-                        + "".join(f"<li>{esc(e)}</li>" for e in pv["errors"]) + "</ul></div>")
-            rows = [f"<li><b>{esc(r['verb'])}:</b> {esc(r['text'])}" + (f" <span class='why'>was: {esc(r['was'])}</span>" if r.get("was") else "") + "</li>"
-                    for r in self._change_rows(pv)]
-            return out + ("<p class='why'>Preview from the drafts as they stand. The Frame that counts is compiled when each revision is approved "
-                          "(the compile-frame automation), and the change order goes for approval once it is ready.</p>"
-                          + ("<ul class='staged'>" + "".join(rows) + "</ul>" if rows else "<p class='muted'>No rule changes in the drafts.</p>"))
-        from ..compile import change_state
-
-        items = []
-        for row in self._change_rows(p):
-            c = row["change"]
-            chips = ""
-            if c.get("widening") and c.get("op") != "text":
-                have = sorted({d["by"] for d in c.get("decisions") or [] if d["verdict"] == "approve"})
-                chips = ("<span class='chip ok'>both policy owners approved</span>" if change_state(c) == "approved" else
-                         "<span class='chip warn'>widening: needs both policy owners</span>" + (f" <span class='why'>approved by {esc(', '.join(have))}</span>" if have else ""))
-            elif change_state(c) == "rejected":
-                chips = "<span class='chip crit'>rejected</span>"
-            items.append(f"<li><b>{esc(row['verb'])}:</b> {esc(row['text'])}" + (f" <span class='why'>was: {esc(row['was'])}</span>" if row.get("was") else "")
-                         + (f" {chips}" if chips else "") + "</li>")
-        link = f"<a href='{href('/proposal/' + p['id'], user)}'>proposal #{esc(p.get('number'))}</a>"
-        out += (f"<p class='why'>What the policy becomes when this change order is released ({link}"
-                + ("; the policy owners approve each widening there" if any(c.get("widening") and c.get("op") != "text" for c in p["changes"]) else "")
-                + ").</p>" + ("<ul class='staged'>" + "".join(items) + "</ul>" if items else "<p class='muted'>No rule changes.</p>"))
-        return out
+        """The change order's own section on its record page: the whole loop (hubproto.shell.change_order_ui)."""
+        return self._co_page(co)
 
     # ------------------------------------------------------------ actions
     def post_co_add_sop(self):
@@ -268,7 +180,7 @@ class EcoMixin:
         except ValueError as e:
             raise ShellError(str(e), 403) from None
         log_line(f"change order {co['number']} carries {draft['number']} ({self._f('sop')}) by={self.user}")
-        self._redirect(self._once_finish(self._co_href(co) + "&done=" + quote(f"{draft['number']} is the draft revision of {self._f('sop')}: edit it, then send it for approval.")))
+        self._redirect(self._once_finish(self._co_href(co) + "&done=" + quote(f"{draft['number']} is the draft revision of {self._f('sop')}: edit it, then request review on {co['number']}.")))
 
     def post_co_remove_sop(self):
         self._need_release()
@@ -307,6 +219,37 @@ class EcoMixin:
         self.hub.kernel.set_fields(co["locator"], {"implements": current}, by=self.user)
         self._redirect(self._once_finish(self._co_href(co)))
 
+    def post_co_review(self):
+        self._need_release()
+        done = self._once_done()
+        if done:
+            return self._redirect(done)
+        co = self._co_get(self._f("co"))
+        if not self._co_mine(co):
+            raise ShellError("Only its requester or a document controller requests review of a change order.", 403)
+        panel = None
+        plus = [n for n in self._multi("panel")] if self._f("choose") == "plus" else []
+        if self._f("choose") == "own":
+            members = (self.bundle or {}).get("members") or {}
+            panel = [n for n in self._multi("panel") if n in members]
+            if not panel:
+                raise ShellError("Tick at least one reviewer, or let the quality-assistant cog suggest the panel.", field="panel")
+        try:
+            rnd = changecontrol.request_review(self.hub, co["locator"], self.user, panel=panel)
+        except ValueError as e:
+            raise ShellError(str(e)[:1].upper() + str(e)[1:] + ("" if str(e).endswith(".") else ".")) from None
+        added, later = [], []
+        for who in plus:  # the suggested panel and the ones ticked: added to the round
+            try:
+                changecontrol.add_reviewer(self.hub, co["locator"], who, self.user, reason=f"added by {self.user}")
+                added.append(who)
+            except ValueError:
+                later.append(who)
+        log_line(f"change order review requested {co['number']} round={rnd['n']} by={self.user}")
+        msg = f"Review round {rnd['n']} of {co['number']} is under way." + (f" Added {', '.join(added)}." if added else "") \
+            + (f" Add {', '.join(later)} under Review once the round is compiled." if later else "")
+        self._redirect(self._once_finish(self._co_href(co) + "&done=" + quote(msg) + "#co-review"))
+
     def post_co_send(self):
         self._need_release()
         done = self._once_done()
@@ -315,14 +258,10 @@ class EcoMixin:
         co = self._co_get(self._f("co"))
         if not self._co_mine(co):
             raise ShellError("Only its requester or a document controller sends a change order for approval.", 403)
-        blocked = eco.check_approval(self.hub, co["locator"])
-        if blocked:
-            raise ShellError("It cannot be sent for approval yet: " + "; ".join(blocked))
         try:
-            run_id = self.hub.runner.submit("change-order", {"record": {}}, owner=self.user, record=co["locator"])
-        except RunError as e:
+            state = changecontrol.send_for_approval(self.hub, co["locator"], self.user)
+        except (ValueError, RunError) as e:
             raise ShellError(str(e)) from None
-        state = self.hub.runner.load(run_id)
         where = (" It waits for " + ", ".join(state["pending"]["assignees"]) + ".") if state.get("pending") else f" It is {state['status']}."
         log_line(f"change order sent {co['number']} by={self.user} -> {state['status']}")
         self._redirect(self._once_finish(self._co_href(co) + "&done=" + quote(f"{co['number']} is sent for approval.{where}")))
@@ -330,9 +269,30 @@ class EcoMixin:
     # ------------------------------------------------------------ SOP and policy documents
     def _sop_doc_html(self, rec: dict) -> str:
         """On an SOP or policy document: compiled into the Frame, changed through a change order; or, on a carried draft,
-        which change order carries it."""
-        return self._sop_doc_html_inner(rec) + (self._dependency_html(rec["fields"].get("sop_name"))
-                                                 if str(rec["fields"].get("lineage", "")).startswith(sopdocs.LINEAGE) else "")
+        which change order carries it. Divergences (the configuration in force differs from a line) are marked at the line."""
+        if not str(rec["fields"].get("lineage", "")).startswith(sopdocs.LINEAGE):
+            return self._sop_doc_html_inner(rec)
+        return self._sop_doc_html_inner(rec) + self._sop_lines_html(rec) + self._dependency_html(rec["fields"].get("sop_name"))
+
+    def _sop_lines_html(self, rec: dict) -> str:
+        """The document's text line by line (the line numbers rules and divergences cite), each divergence marked under its
+        line; on a draft revision, the divergences of the revision in force."""
+        name = rec["fields"].get("sop_name") or ""
+        divs = self._divergences_of(name)
+        if rec["state"] != "effective":
+            if not divs:
+                return ""
+            return (f"<div class='card warn' role='status'>{icon('alert')} The revision in force has {len(divs)} line(s) where the configuration in force "
+                    "differs. A revision that states what is in force (or a change order that changes the configuration back) resolves each:"
+                    + "".join(self._divergence_marker(d, with_line=True) for d in divs) + "</div>")
+        try:
+            lines = sopdocs.frame_text(self.hub, rec).splitlines()
+        except Exception:
+            return self._divergence_card(name)
+        body = self._lines_with_markers(name, lines)
+        return self._divergence_card(name) + details(f"The text, line by line ({len(lines)} lines" + (f", {len(divs)} marked" if divs else "") + ")",
+                                                     "<p class='why'>Line numbers count the header too, as citations do (“line 34”).</p>" + body,
+                                                     open_=bool(divs), cls="sop-lines")
 
     def _sop_doc_html_inner(self, rec: dict) -> str:
         user, f = self.user, rec["fields"]
@@ -352,7 +312,7 @@ class EcoMixin:
                "stages the Frame it makes.")
         why = eco.may_change_sop(self.bundle or {}, rec, user)
         if why:
-            return out + f" <span class='why'>{esc(why)}.</span></div>"
+            return out + f" <span class='why'>{esc(why[:1].upper() + why[1:])}.</span></div>"
         mine = [c for c in self.hub.kernel.query(type_="change-order")
                 if self._co_preparing(c) and user in (c["fields"].get("requested_by"), c.get("created_by"))]
         opts = "".join(f"<option value='{esc(c['locator'])}'>{esc(c['number'])} {esc((c['fields'].get('title') or '')[:60])}</option>" for c in mine)

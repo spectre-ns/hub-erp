@@ -15,13 +15,16 @@ single Docker image.
 docker compose up --build        # http://localhost:8080/ asks who you are; e.g. /?as=alice
 ```
 
-First start seeds the kernel, installs the ISO 9001 profile, and compiles and
+First start seeds the kernel, installs the ISO 9001 profile, compiles and
 releases the first policy release with the two seeded policy owners (bob and
-carol). If that first release fails (for example an org model with nobody in a
-routed role) the container prints the Frame to fix, notes it in
-`state/.bootstrap-failed`, and still serves the shell with no release in
-effect; fix the Frame and run
-`docker compose exec hub hubproto bootstrap-release --as bob --second carol`.
+carol), and then makes the SOPs documents: from then on **every configuration
+change goes through a change order** (Quality > Change orders); see "Once the
+SOPs are documents" below. If that first release fails (for example an org
+model with nobody in a routed role) the container prints the Frame to fix,
+notes it in `state/.bootstrap-failed`, and still serves the shell with no
+release in effect; fix the Frame and run
+`docker compose exec hub hubproto bootstrap-release --as bob --second carol`
+(run again on a released hub whose SOPs are not documents yet, it converts them).
 State lives in the `hub-state` volume. Frames are bind-mounted from `./frames`.
 
 Without Docker (`--root` is the directory holding `frames/` and `state/`;
@@ -33,19 +36,41 @@ hubproto init && hubproto seed iso9001 && hubproto bootstrap-release --as bob --
 hubproto shell
 ```
 
+For development, run as many hubs as you like beside the Docker one, each from a
+worktree's code, released and with a little demo data, on its own port from 8100
+(never 8080, 9980 or 11434), with stand-in models; see DEV-NOTES.md, "Running hubs
+for development and for agents" (in a worktree, `python -m hubproto dev ...` runs
+that worktree's command line):
+
+```bash
+hubproto dev serve --detach --name ws12   # prints http://127.0.0.1:81xx/; open it with ?as=carol
+hubproto dev list                         # what runs: name, port, pid, branch, commit, url
+hubproto dev stop ws12 && hubproto dev clean ws12
+```
+
+Tests: `pip install -r requirements-dev.txt` (pytest and pytest-xdist, development
+only), then `python -m pytest -q -n auto` (parallel; without `-n auto` the suite runs
+serially and passes that way too).
+
 `hubproto --help` lists every verb in the order an operator uses them, and
 `hubproto <verb> --help` explains each flag. Exit codes: 0 done; 1 the hub
 refused or the outcome is a failure (error findings, `DENIED`, a failed run);
 2 a mistake in the command (unknown id, bad JSON, missing file, wrong root).
 A wrong `--root` is refused ("no hub at ..."), never filled with an empty hub.
 
-## After changing Frames
+## After changing Frames (a hub that keeps the Frame files)
 
-Edit a sentence in `frames/` on the host, then compile, have it reviewed and
-release it. Until the release, the shell and every run keep applying the
-release in force (the Frames as they were released), and on its next start
-the container says so: `hubproto status --check` lists the files that differ
-and prints these commands.
+A hub bootstrapped with `hubproto bootstrap-release --as bob --second carol
+--keep-frame-files "<why>"` (or `sopdocs.keep_frame_files`) skips the
+conversion: the Frame files stay the source and the policy owners release
+changes without change orders. It is recorded and `status` shows it on every
+run; it is meant for work on the Frames themselves and for the test suites
+(`tests/conftest.py`'s `release_all` opts out this way), and it ends with
+`hubproto sops convert`. On such a hub, edit a sentence in `frames/` on the
+host, then compile, have it reviewed and release it. Until the release, the
+shell and every run keep applying the release in force (the Frames as they
+were released), and on its next start the container says so: `hubproto status
+--check` lists the files that differ and prints these commands.
 
 ```bash
 docker compose exec hub hubproto compile                                  # exit 1 and no release while there are error findings
@@ -64,6 +89,72 @@ read (a `grammar` error with the file and line), a stale proposal (compiled
 against an older release than the one in force) is refused with "compile
 again", and a release that only re-renders a process is reported as
 "re-rendered, no semantic change" instead of a pair of add/remove changes.
+
+Prose that is not in the sentence shapes is read by the compile-frame committee, **as a diff**: an SOP whose text
+is the one in force keeps the rules the release read from it, with no model call; a changed SOP's readers get the
+unified diff (with line numbers) and the rules in force from it, and answer with rules to add, remove or change and
+with **questions** where the changed prose is ambiguous (`proposal["questions"]`; members asking the same thing about
+a line make one question; a question the next compile no longer raises is closed). A large diff is read in parts that
+fit the model's window. Every change on a proposal says where it came from (`origin`: the SOP, line, words and
+reader) and, for a rule a model read, what it means in the hub's own words (`origin.explained`); a reading that drops
+or adds a "not" carries a `negation` warning. A rule that only moved in its file (a process below inserted lines) is
+listed as moved, not as a change to decide. Direct changes on a change order are put into prose by the qa-manager cog
+and compiled back to check they give exactly that rule and nothing else (`hubproto/prose_drafting.py`); the lines it
+drafts are credited to it. A reading may touch only the lines that changed: anything else is refused as an `outside-diff`
+question (the SOP text is fenced as data in the readers' prompts, so words aimed at the readers are ignored and reported).
+A changed sentence that reads like a rule and from which nothing was read, by the grammar or the committee, is a
+blocking `unread-rule` question for the committee's chair, also when no model reads here (`convention`).
+
+**The committee reads by consensus.** It is defined on the `senior-cogs` group (organization model, `## Groups`):
+the **senior** cogs `senior-organization` and `senior-qa-manager`, bundled with Claude Opus (`claude-opus-5-5`); the
+**junior** cogs (`organization`, `qa-manager` and the others, group `junior-cogs`) stay on the local model for
+day-to-day work. Each member reads with the model its profile bundles it with,
+from its own perspective (its About text, its persona's behaviour and the roles it holds); the diff, the rules in force
+and the answer format are the same for every member, so their readings stay comparable.
+A rule goes in only when every member reads it the same way; where members read a line differently, the proposal gets
+a `disagreement` question quoting the line and each member's reading, for a person to decide. A member whose model is
+not available here (not installed, Ollama down, or a `claude-*` model while hosted models are off) is a
+`member-unavailable` question naming the committee's chair (`Chair: carol`), who intervenes: the prose of a changed SOP
+is not read until it is. **The senior cogs are available only where the administrator has switched hosted models on**
+(`HUBPROTO_HOSTED_MODELS=on` with `ANTHROPIC_API_KEY`, under the IT SOP); the call goes through the hub's model gateway
+to the Anthropic Messages API. Without them the compiler reads the sentence shapes only and asks about changed prose.
+The committee's members change through a change order (the `senior-cogs` group, or a cog's `Model:` line).
+
+**Groups and committees** (change control 11) are also used in processes and on change orders: a process step written
+`the design-review committee decides` waits for every member of the committee (people and cogs) and moves only when all
+agree; an objection with its reason returns the item; when a cog member's criteria do not hold or a member is late, the
+committee's chair intervenes (decide in that member's place, extend the due date, or return the item). A change-control
+review sentence may name a committee as reviewers. See DEV-NOTES.md, "Groups and committees".
+
+| Compiler setting | Default | Effect |
+|---|---|---|
+| `HUBPROTO_EXTRACTOR` | `hybrid` with an Ollama (or with hosted models on and a key), else `convention` | `convention` reads the sentence shapes only (tests, offline use); `hybrid` has the compile-frame committee's cogs read the prose, each with its bundled model. There is no global model override (the old `claude` value is gone and is read as unset) |
+| `HUBPROTO_MODEL_MAX_CHARS` | the model's window | the most characters one reading may send; a larger diff is read in parts |
+
+## Once the SOPs are documents: change orders only
+
+The first release converts the SOPs into documents (a hub that kept the Frame
+files converts with `hubproto sops convert --as <policy owner>` or Policy >
+Convert in the shell). The Frame is then compiled from the SOP documents, and
+configuration changes only through a change order (Quality > Change orders);
+`status --check` exits 1 on a released hub whose SOPs are not documents and
+that did not say it keeps the Frame files. `compile`, `review` and
+`release` of a proposal no change order staged, `bootstrap-release --force` and
+`seed` are refused (exit 1) with that sentence, and so are the shell's Frame
+drafts and proposal actions. The record types in force are kept by the hub from
+then on (`state/record-types`): an edited or newly shipped
+`config/record-types.json` is reported by `status --check` and not used until a
+change order carries what it adds:
+
+```bash
+docker compose exec hub hubproto record-types status                       # version in force, history, what the file says differently
+docker compose exec hub hubproto record-types carry CO-2026-0004 --from-file --as carol
+docker compose exec hub hubproto record-types carry CO-2026-0004 --as carol \
+    --changes '[{"op": "add_field", "type": "ncr", "field": "batch", "spec": "text"}]'
+```
+
+`docs/design/config-paths.md` lists every path that changes configuration and
+what happens on it.
 
 ## Who may do what
 
@@ -292,8 +383,12 @@ docker compose start hub
 
 `restore` refuses a partial set (every part must be present) and refuses to
 overwrite a live state without `--force`; with it the previous state is moved
-beside the new one (`state.before-restore-<time>`). `hubproto status` then
-shows the release in force and the run counts.
+beside the new one (`state.before-restore-<time>`), or, when `state/` cannot be
+renamed (in the container it is the volume's mount point) or holds the backup
+being restored (`/hub/state/backups/...` above), into
+`state/.before-restore-<time>/`, leaving the backups folder where it is; the
+command above works in the container as written. `hubproto status` then shows
+the release in force and the run counts.
 
 ## What it demonstrates
 

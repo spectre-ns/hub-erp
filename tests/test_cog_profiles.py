@@ -1,5 +1,5 @@
-"""Cog profiles (model, prompt, the SOPs a cog follows), @mentions in an item's chatter, committees, and
-swarm reviews. Models draft; they never sign."""
+"""Cog profiles (what a cog does, its model and persona; what it follows is derived), @mentions in an item's chatter,
+committees, and swarm reviews. Models draft; they never sign."""
 
 import pytest
 
@@ -16,39 +16,48 @@ def bundle_of(hub):
 def test_profiles_compile_into_the_release_and_change_as_a_widening(released):
     b = bundle_of(released)
     prof = b["cogs"]["ap-reviewer"]
-    company = ["org-model", "quality-manual", "tasks-sop"]  # the company scope every persona layers first
-    assert prof["model"] == "ollama/qwen3:14b" and "payables reviewer" in prof["prompt"] and prof["follows"] == company + ["finance-policy"]
-    assert prof["persona"] == "ap-reviewer", "what a cog follows comes from its persona"
-    assert b["cogs"]["quality-assistant"]["follows"] == company + ["ncr-sop", "capa-sop", "training-sop", "design-control-sop"]
-    edit_frame(released, "persona-ap-reviewer", "Layers: company, finance-policy\n", "Layers: company, finance-policy, purchasing-policy\n", bump="1.1.0")
+    company = ["org-model", "quality-manual", "tasks-sop"]  # the company scope every member follows
+    assert prof["model"] == "ollama/qwen3:14b" and "Matches supplier bills" in prof["about"] and prof["follows"] == company + ["finance-policy"]
+    assert prof["persona"] == "reviewer" and prof["stance"] == "reviewer", "its behaviour comes from its persona"
+    assert "You are the ap-reviewer cog" in prof["prompt"] and "say plainly what does not match" in prof["prompt"]
+    assert {"ncr-sop", "capa-sop", "training-sop", "design-control-sop"} <= set(b["cogs"]["quality-assistant"]["follows"])
+    # A new model in its profile is a widening: two policy owners.
+    edit_frame(released, "cog-profiles", "Persona: reviewer\n\n## Cog: doc-reviewer", "Persona: executor\n\n## Cog: doc-reviewer", bump="2.1.0")
     proposal = released.compile()
-    change = next(c for c in proposal["changes"] if c["rule"]["kind"] == "persona" and c["rule"]["name"] == "ap-reviewer" and c["op"] == "add")
-    assert change["widening"] is True and "purchasing-policy" in change["reason"]
+    change = next(c for c in proposal["changes"] if c["rule"]["kind"] == "cog" and c["rule"]["name"] == "ap-reviewer" and c["op"] == "add")
+    assert change["widening"] is True and "persona executor" in change["reason"]
     released.review(proposal["id"], "bob", approve_all=True)
     with pytest.raises(CompileError, match="needs 2 approval"):
         released.release(proposal["id"], "bob")
 
 
-def test_a_cog_profile_must_name_a_cog_member_and_real_frames(released):
-    edit_frame(released, "cog-profiles", "## Cog: ap-reviewer", "## Cog: nobody-cog", bump="1.1.0")
+def test_a_cog_profile_must_name_a_cog_member_and_a_persona_that_exists(released):
+    edit_frame(released, "cog-profiles", "## Cog: ap-reviewer", "## Cog: nobody-cog", bump="2.1.0")
     proposal = released.compile()
     errors = [f["detail"] for f in proposal["findings"] if f["severity"] == "error"]
     assert any("nobody-cog" in d and "no matching cog member" in d for d in errors)
     edit_frame(released, "cog-profiles", "## Cog: nobody-cog", "## Cog: ap-reviewer")
-    edit_frame(released, "persona-ap-reviewer", "Layers: company, finance-policy\n", "Layers: company, finance-policy, no-such-sop\n", bump="1.2.0")
+    edit_frame(released, "cog-profiles", "Persona: reviewer\n\n## Cog: doc-reviewer", "Persona: auditor\n\n## Cog: doc-reviewer", bump="2.2.0")
     proposal = released.compile()
-    assert any("no-such-sop" in f["detail"] and "neither a scope nor a Frame" in f["detail"] for f in proposal["findings"] if f["severity"] == "error")
+    assert any("no persona 'auditor'" in f["detail"] for f in proposal["findings"] if f["severity"] == "error")
+
+
+def test_the_old_profile_lines_are_refused_with_where_they_went(released):
+    edit_frame(released, "cog-profiles", "## Cog: ap-reviewer\n", "## Cog: ap-reviewer\nAutonomy: act\nFollows: finance-policy\n", bump="2.1.0")
+    errors = [f["detail"] for f in released.compile(save=False)["findings"] if f["severity"] == "error"]
+    assert any("autonomy is derived per action" in d for d in errors) and any("follows is derived" in d for d in errors)
 
 
 # ------------------------------------------------------------------ a cog works only from the SOPs it follows
 def test_a_cog_is_not_routed_work_from_an_sop_it_does_not_follow(released):
-    edit_frame(released, "persona-ap-reviewer", "Layers: company, finance-policy\n", "Layers: company, purchasing-policy\n", bump="1.1.0")
-    release_all(released)
-    run_id = released.runner.submit("purchase-to-pay", {"record": dated(SMALL_BILL)}, owner="alice")
-    state = released.runner.load(run_id)
-    skipped = next(e for e in released.runner.track(run_id) if e["type"] == "gate.skipped" and e["candidate"] == "cog:ap-reviewer")
-    assert "does not follow finance-policy" in skipped["reason"] and "purchasing-policy" in skipped["reason"]
-    assert state["status"] == "waiting" and state["pending"]["assignees"] == ["dave"]
+    """What a cog follows is derived from the SOPs that name it, so a route to it always names an SOP it follows; the
+    runner still refuses a cog whose follows (in a release) leave out the process's SOP."""
+    b = bundle_of(released)
+    assert "finance-policy" in b["cogs"]["ap-reviewer"]["follows"], "the routing sentence that names it makes it follow the policy"
+    assert b["cogs"]["ap-reviewer"]["follows_why"]["finance-policy"] == ["cog:ap-reviewer", "role:finance-clerk", "role:payables-reviewer"]
+    narrowed = {**b, "cogs": {**b["cogs"], "ap-reviewer": {**b["cogs"]["ap-reviewer"], "follows": ["org-model", "purchasing-policy"]}}}
+    why = released.runner.cog_follows(narrowed, "ap-reviewer", "purchase-to-pay")
+    assert "does not follow finance-policy" in why and "purchasing-policy" in why
 
 
 # ------------------------------------------------------------------ the model gateway
@@ -200,7 +209,7 @@ def test_the_gateway_uses_ollama_when_configured(monkeypatch):
         srv.shutdown()
 
 
-def test_the_cogs_system_prompt_carries_its_sops_the_whole_document_and_every_thread(released):
+def test_the_cogs_system_prompt_carries_its_process_the_whole_document_and_every_thread(released):
     from hubproto.cogs import RunContext, cog_context
 
     content = b"# WI-12\nTorque the M4 screws to 2 Nm.\nRecord the value."
@@ -214,8 +223,9 @@ def test_the_cogs_system_prompt_carries_its_sops_the_whole_document_and_every_th
     ctx = RunContext(run_id="t", release="", bundle=bundle, owner="quality-assistant", kernel=released.kernel, frames=lambda: released.frames,
                      extras={"cog_profile": bundle["cogs"]["quality-assistant"]})
     system = cog_context(ctx, released.kernel.get(doc["locator"]))
-    assert system.startswith("You are the quality assistant.")
-    assert "# ncr-sop" in system and "# design-control-sop" in system, "the SOPs it follows"
+    assert system.startswith("== WHO YOU ARE ==\nYou are the quality-assistant cog") and "Reviews drawings, designs and nonconformances" in system
+    assert "- ncr-sop: " in system and "- design-control-sop: " in system, "the SOPs it is trained on, as an index of their sections"
+    assert "THE PROCESS THAT GOVERNS THIS WORK: document-control" in system, "the item's process, not whole SOPs"
     assert "DOCUMENT " + doc["number"] in system and "Torque the M4 screws to 2 Nm." in system, "the whole document"
     assert "- [0] carol: @quality-assistant is 2 Nm right?" in system and "  - [1] quality-assistant (reply to 0): Yes" in system and "    - [2] carol (reply to 1): Which procedure?" in system
 

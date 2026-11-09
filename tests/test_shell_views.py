@@ -14,7 +14,7 @@ import pytest
 
 from conftest import BIG_BILL, SMALL_BILL, ROOT, dated, release_all
 from hubproto.app import Hub
-from hubproto.shell import AVATAR_COLOURS, AVATAR_FG, CONTRAST_PAIRS, DARK, LIGHT, free_port, serve_in_thread
+from hubproto.shell import AVATAR_COLOURS, AVATAR_FG, CONTRAST_PAIRS, DARK, LIGHT, serve_in_thread
 from hubproto.shell.apps import app_map, avatar, initials
 from hubproto.shell.charts import day_bars, hbars, sparkline, stacked_bars
 from hubproto.shell.icons import ICONS, file_icon, icon
@@ -27,8 +27,8 @@ def shell(tmp_path_factory):
     hub = Hub(root)
     hub.kernel.seed()
     release_all(hub)
-    port = free_port()
-    server = serve_in_thread(hub, "127.0.0.1", port)
+    server = serve_in_thread(hub, "127.0.0.1", 0)  # port 0: bound at once, no race with other test workers
+    port = server.server_address[1]
     yield {"hub": hub, "root": root, "base": f"http://127.0.0.1:{port}", "port": port, "server": server}
     server.shutdown()
     server.server_close()
@@ -298,6 +298,7 @@ def test_charts_are_plain_svg_with_titles_and_links():
 # ------------------------------------------------------------- 4. inbox layout
 def test_inbox_rows_carry_type_icons_avatars_and_chips_and_the_open_card_sits_in_the_queue(shell):
     hub = shell["hub"]
+    start(shell, "purchase-to-pay", **{k: str(v) for k, v in big_bill(hub).items()})  # a row besides the open card, whatever ran before
     state = start(shell, "purchase-to-pay", **{k: str(v) for k, v in big_bill(hub).items()})
     status, text = get(shell, "/inbox", **{"as": "bob", "open": state["id"]})
     queue = text.split("<ol class='queue'>")[1].split("</ol>")[0]
@@ -345,7 +346,8 @@ def test_people_page_and_cog_profile(shell):
     status, text = get(shell, "/user/ap-reviewer", **{"as": "alice"})
     assert status == 200 and "<h1>ap-reviewer" in text and "payables reviewer" in text and "finance clerk" in text
     about = text.split("About this cog")[1].split("May approve")[0]
-    assert "ollama/qwen3:14b" in about and "You are the payables reviewer" in about and 'href="/frame/finance-policy?as=alice">finance-policy</a>' in about
+    assert "ollama/qwen3:14b" in about and "Matches supplier bills" in about and 'href="/frame/finance-policy?as=alice">finance-policy</a>' in about
+    assert "persona-reviewer" in about and "Derived" in about, "its persona, and what it follows derived from the SOPs"
     assert re.search(r"\d+ model calls? since the hub started", about) and "Version" in about and "Reaches" in about
     assert "up to 2,000.00 USD" in text.split("May approve")[1].split("</ul>")[0]
     decs = text.split("Recent decisions")[1].split("</h2>")[1].split("<h2")[0]
@@ -444,7 +446,7 @@ def test_new_pages_keep_the_accessibility_invariants(shell, path, who):
 
 def test_record_form_prints_and_links_back_to_its_list(shell):
     hub = shell["hub"]
-    rec = hub.kernel.query(type_="bill")[0]
+    rec = hub.kernel.get(start(shell, "purchase-to-pay", **{k: str(v) for k, v in small_bill(hub).items()})["record"])
     status, text = get(shell, "/record/" + quote(rec["locator"], safe=":"), **{"as": "bob"})
     assert 'onclick="print()"' in text and ".formhead .btns,.composer" in text.split("@media print")[1]
     assert re.search(r'<ol class="crumb"[^>]*>.*Supplier bill</a>', text, re.S) and 'href="/items/bill?as=bob">Supplier bill</a>' in text

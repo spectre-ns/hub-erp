@@ -9,6 +9,7 @@ dependencies = []
 yaml = ["pyyaml"]
 claude = ["anthropic"]
 test = ["pytest"]
+dev = ["pytest>=8", "pytest-xdist>=3.5"]  # development only (requirements-dev.txt); never a runtime dependency
 
 [project.scripts]
 hubproto = "hubproto.cli:main"

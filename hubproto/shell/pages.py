@@ -13,6 +13,7 @@ from .apps import FOLDER_APPS, avatars, plural
 from .charts import day_bars, hbars, last_days, median, per_day, sparkline, stacked_bars
 from .editor import new_document_form
 from ..runner import FIELD_ROLES
+from ..release import legacy_transitions  # the workflow is a graph (change control 10.1); these pages read its earlier view
 from .forms import DEFAULT_START_INPUTS, REQUIRED_EXTRA, START_INPUTS, ShellError, file_input, text_input, widget
 from .handler import details, folder_tree, hidden_as, href, kv, table
 from .icons import TYPE_ICONS, file_icon, icon, type_icon
@@ -20,32 +21,7 @@ from .text import (type_name, BLOB_FIELDS, chip, day, days_from, esc, event_sent
                    summary_of_record, tag, track_sentence, type_name, value_text, verb_for, when)
 from .views import BUCKET_WORDS, EXIT_STATES, bucket_of
 
-MERMAID_URL = "https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.4.1/mermaid.min.js"
 EDITABLE_DOC_STATES = ("draft", "open", "returned", "failed")
-
-
-def mermaid_for(wf: dict, current: str | None) -> str:
-    states = list(wf["states"])
-    if current and current not in states:
-        states.append(current)
-    ids = {s: f"s{i}" for i, s in enumerate(states)}
-    lines = ["stateDiagram-v2"]
-    for s, i in ids.items():
-        lines.append(f'    state "{state_name(s, wf)}" as {i}')
-    lines.append(f"    [*] --> {ids[states[0]]}")
-    for t in wf["transitions"]:
-        if t["from"] not in ids or t["to"] not in ids:
-            continue
-        label = ", ".join(t.get("steps") or []) or "automatic" if t["kind"] == "automatic" else f"{t['title']} (approve)"
-        lines.append(f"    {ids[t['from']]} --> {ids[t['to']]} : {label}")
-        if t["kind"] == "human" and t.get("on_reject") in ids:
-            lines.append(f"    {ids[t['from']]} --> {ids[t['on_reject']]} : reject")
-    if wf["terminal"] in ids:
-        lines.append(f"    {ids[wf['terminal']]} --> [*]")
-    if current in ids:
-        lines.append("    classDef current stroke:#0b5f8a,stroke-width:3px")  # a stroke only, so it reads in both themes
-        lines.append(f"    class {ids[current]} current")
-    return "\n".join(lines)
 
 
 def workflow_for(bundle: dict, rec: dict, run: dict | None) -> tuple[str | None, dict | None]:
@@ -61,7 +37,7 @@ def workflow_for(bundle: dict, rec: dict, run: dict | None) -> tuple[str | None,
 
 
 def next_state_for(wf: dict | None, checkpoint: str) -> str | None:
-    for t in (wf or {}).get("transitions", []):
+    for t in legacy_transitions(wf):
         if t["kind"] == "human" and t["step"] == checkpoint:
             return t["to"]
     return None
@@ -291,6 +267,12 @@ class PagesMixin:
                 out += f"<div id='decide'>{self._decision_card(run, standalone=True)}</div>"
             else:
                 out += f"<div class='card warn'>Waiting for {' '.join(self._avatar(a, size='sm', named=True) for a in pending['assignees'])} at <b>{esc(pending['title'])}</b>{' (approval due ' + esc(day(pending['due'])) + ')' if pending.get('due') else ''}.</div>"
+                if pending.get("committee"):  # a committee decides here: everyone who may read the item sees the tally
+                    vote = (pending["committee"].get("votes") or {}).get(user)
+                    if vote:
+                        out += (f"<p class='status'>You {'agreed' if vote.get('verdict') == 'agree' else 'objected'}: “{esc(vote.get('meaning') or '')}”. "
+                                "Waiting for the other members.</p>")
+                    out += self._committee_tally_html(run)
         return out
 
     def _layout_sheet(self, rec: dict, layout: dict | None = None) -> str:
@@ -728,7 +710,7 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
             btns += f'<a class="button" href="#rework">{icon("retry")}Rework and resubmit</a>'
         if run and run["status"] == "failed" and rec["state"] == "failed":
             btns += f'<a class="button" href="#stopped">{icon("retry")}Fix and retry</a>'
-        if may_approve["allowed"]:
+        if may_approve["allowed"] and rec["type"] != "change-order":  # a change order is held back by its own loop, not a hold
             btns += f'<a class="button ghost" href="#hold">{icon("pause")}{"Release the hold" if rec["hold"] else "Put on hold"}</a>'
         if f_may["allowed"]:
             btns += f'<a class="button ghost" href="#attach">{icon("paperclip")}Attach</a><a class="button ghost" href="#new-document">{icon("plus")}New document</a>'
@@ -833,12 +815,11 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
         # Workflow and decisions
         body += '<section class="tab-panel" id="tab-workflow"><h2 id="workflow">Workflow</h2>'
         if wf:
-            diagram = mermaid_for(wf, rec["state"])
             states = list(wf["states"]) + [s for s in ("returned", "failed", "cancelled") if s not in wf["states"]]
-            body += f'<div class="card"><pre class="mermaid" id="wf-diagram">{esc(diagram)}</pre><p class="why">States: ' + " &middot; ".join(self._state_chip(s, wf) + (" (current)" if s == rec["state"] else "") for s in states) \
+            body += f'<div class="card">{self._workflow_card(rec, process)}<p class="why">States: ' + " &middot; ".join(self._state_chip(s, wf) + (" (current)" if s == rec["state"] else "") for s in states) \
                 + "<br>Returned, failed and cancelled are side exits: a rejection that returns the item to its owner, a stopped step, a cancelled run.</p>"
             trows = []
-            for t in wf["transitions"]:
+            for t in legacy_transitions(wf):
                 if t["kind"] == "automatic":
                     trows.append([esc(state_name(t["from"], wf)), esc(state_name(t["to"], wf)), "automatic", esc(", ".join(t.get("steps") or [])), ""])
                 else:
@@ -858,21 +839,32 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
             body += "<h2>Runs</h2>" + table(["Run", "Started by", "Status", "Started", "Waiting for"],
                                              [[self._run_link(r), self._avatar(r["owner"], size="sm", named=True), self._state_chip(r["status"]), esc(when(r["created_at"])),
                                                esc(", ".join((r.get("pending") or {}).get("assignees") or []))] for r in reversed(runs_of)])
-        body += '<h2 id="decisions">Decisions</h2>' + table(["When", "By", "Verdict", "Meaning", "Step", "Under"],
-                                                             [[esc(when(d.get("at", ""))), f"{self._avatar(d.get('by', ''), size='sm', named=True)} ({'cog' if d.get('by_type') == 'cog' else 'person'})", chip(d.get("verdict")),
-                                                               esc(short(d.get("meaning"), 600)) + details("signature", f"<code>{esc(d.get('signature'))}</code> on payload <code>{esc(str(d.get('payload_digest', ''))[:12])}</code>"),
-                                                               esc((d.get("step") or "").replace("-", " ")),
-                                                               self._rule_html(d["delegating_rule"]) if d.get("delegating_rule") else ""]
-                                                              for d in decisions], "No signatures yet.") + "</section>"
+        from ..co_record import CATEGORIES, VERDICTS, when_utc, who_line
+
+        people = [d for d in decisions if d.get("by_type") != "cog"]
+        cogs_ = [d for d in decisions if d.get("by_type") == "cog"]
+        members = (bundle or {}).get("members") or {}
+        body += '<h2 id="decisions">Signatures</h2>' + table(
+            ["Signed by", "Date and time", "Verdict", "Meaning category", "Meaning", "At"],
+            [[f"{self._avatar(d.get('by', ''), size='sm', named=True)} <span class='why'>{esc(who_line(d.get('by') or '', members).partition(', ')[2])}</span>",
+              f"<span style='white-space:nowrap'>{esc(when_utc(d.get('at')))}</span>", chip(VERDICTS.get(d.get("verdict") or "", d.get("verdict"))),
+              esc(d.get("category") or CATEGORIES.get(d.get("verdict") or "", "")),
+              esc(short(d.get("meaning"), 600)) + details("signature", f"<code>{esc(d.get('signature'))}</code> on payload <code>{esc(str(d.get('payload_digest', ''))[:12])}</code>"),
+              esc((d.get("step") or "").replace("-", " "))] for d in people], "No signature yet.")
+        if cogs_:
+            body += ("<h3>Automated decisions <span class='muted'>not electronic signatures</span></h3><p class='why'>A cog decides within approval criteria "
+                     "people approved on a change order; they are accountable for the criteria.</p>"
+                     + table(["Cog", "Date and time", "Outcome", "Under the rule", "At"],
+                             [[self._avatar(d.get("by", ""), size="sm", named=True), esc(when_utc(d.get("at"))), chip(VERDICTS.get(d.get("verdict") or "", d.get("verdict"))),
+                               self._rule_html(d["delegating_rule"]) if d.get("delegating_rule") else "-", esc((d.get("step") or "").replace("-", " "))] for d in cogs_]))
+        body += "</section>"
         body += self._chatter(rec, run)
-        head = (f'<script src="{MERMAID_URL}"></script><script>if(window.mermaid){{mermaid.initialize({{startOnLoad:true,theme:(document.documentElement.getAttribute("data-theme")==="dark"||(document.documentElement.getAttribute("data-theme")==="auto"&&matchMedia("(prefers-color-scheme: dark)").matches))?"dark":"default"}})}}'
-                f'else{{addEventListener("load",function(){{var d=document.getElementById("wf-diagram");if(d&&!window.mermaid){{d.hidden=true}}}})}}</script>')
         parts = rec["folder"].split("/")
         crumbs = [("Files", href("/files", user))] + [(p, href("/files", user, folder="/".join(parts[: i + 1]))) for i, p in enumerate(parts)]
         if process:
             crumbs.append((self._process_name(process), href("/items/" + rec["type"], user)))
         crumbs.append((rec["number"], None))
-        self._page(rec["number"], body, status=status, head=head, crumbs=crumbs, app_type=rec["type"])
+        self._page(rec["number"], body, status=status, crumbs=crumbs, app_type=rec["type"])
 
     OPS_ON_RECORD = {"document-control": "Send for approval", "design-release": "Submit for release", "requirements-capture": "Submit for acceptance",
                      "purchase-request": "Request the purchase", "goods-receipt": "Record the receipt", "nonconformance": "Open the nonconformance",
@@ -903,6 +895,11 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
             for name, wf in sorted((bundle.get("workflows") or {}).items()):
                 if wf.get("record_type") != rec["type"] or is_frame_doc(rec["fields"]) or rec["fields"].get("doc_type") == "frame-draft":
                     continue
+                if rec["type"] == "change-order":  # a change order goes in through Request review and Send for approval only
+                    continue
+                if rec["type"] == "document" and rec["fields"].get("change_order") and rec["state"] != "effective":
+                    continue  # a revision carried on a change order is approved with it, not through document control
+
                 op = bundle["ops"].get(name) or {}
                 d = authz.check(bundle, user, "create", op.get("object", rec["type"]), op.get("folder") or rec["folder"])
                 first = op["steps"][0]["role"] if op.get("steps") else "system"
@@ -922,6 +919,8 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
                 if (p.get("record_type") or p.get("object")) == rec["type"]}
         cogs = [(n, m) for n, m in sorted((bundle.get("members") or {}).items()) if m.get("type") == "cog" and n in self.hub.registry.ids()
                 and sops & set(((bundle.get("cogs") or {}).get(n) or {}).get("follows") or [])]
+        if rec["type"] == "change-order":
+            cogs = []  # its reviewers are its panel (Review), not ad-hoc asks
         for n, m in cogs:
             cog = self.hub.registry.get(n)
             if "review-document" not in getattr(cog, "tasks", []):
@@ -1021,7 +1020,12 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
                                                (f'<a href="{href("/compare/" + quote(loc, safe=":"), user, a=v["version"] - 1, b=v["version"])}">what changed</a>'
                                                 if v["version"] > 1 else "")] for v in versions], "No content yet.")
         if f.get("text"):
-            body += f"<h2>Text</h2><pre>{esc(short(f['text'], 20000))}</pre>"
+            if f.get("mime") == "text/markdown" or str(f.get("filename") or "").endswith(".md"):  # a generated document: rendered
+                from .text import markdown_html
+
+                body += "<h2>Text</h2>" + markdown_html(str(f["text"])[:60000], link=lambda path: href(path, user))
+            else:
+                body += f"<h2>Text</h2><pre>{esc(short(f['text'], 20000))}</pre>"
         body += self._sop_doc_html(rec)
         body += "<h2 id='checkout'>Check-out and check-in</h2><div class='card'>"
         err = self._form_error(["file", "note"]) if self.route in ("/checkout", "/checkin", "/undo-checkout") else ""

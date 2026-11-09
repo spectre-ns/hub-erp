@@ -3,7 +3,7 @@ type: frame [0.2]
 name: design-control-sop
 description: How a mechanical or electrical design is submitted, exported, reconciled against inventory, reviewed and released as a part revision.
 visibility: internal
-version: "1.1.0"
+version: "1.2.0"
 scope: department
 maintainer: engineering
 inherits: org-model
@@ -45,6 +45,9 @@ Design authorities may read Engineering.
 Design engineers may create items in Inventory/Items.
 Design engineers may create purchase requests in Purchasing/Requests.
 Quality managers may read Engineering.
+Quality managers may comment on anything in Engineering.
+The quality-assistant cog may read Engineering.
+The quality-assistant cog may comment on anything in Engineering.
 
 ## Thresholds
 The design rule error limit is 0 percent.
@@ -83,3 +86,13 @@ Closes as accepted.
 2. [system] Score the risk (risk-scorer)
 3. [design-authority] Accept the requirement
 4. [system] Render the record (document-renderer)
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Design engineer | Submits designs and captures requirements. |
+| Design authority | Reviews design packages, accepts requirements and releases parts. |
+| Design review committee | Reviews design packages when asked. |
+| Management representative | Receives the design reviews that are overdue. |
+| the quality-assistant cog | Reviews each design package for risk and traceability. |
+| the purchasing-assistant cog | Reviews each design package for parts, suppliers and stock. |

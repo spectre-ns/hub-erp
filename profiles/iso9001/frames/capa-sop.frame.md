@@ -46,3 +46,12 @@ The record type is capa.
 4. [system] Schedule the effectiveness check (effectiveness-scheduler)
 5. [quality-manager] Verify effectiveness
 6. [system] Render the record (document-renderer)
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Quality manager | Opens corrective actions and verifies their effectiveness. |
+| Process owner | Carries out and verifies the actions in their process. |
+| Management representative | Approves corrective actions where the quality manager may not, and receives the overdue ones. |
+| the quality-assistant cog | Reviews corrective actions for containment and traceability when asked. |
+| the qa-manager cog | Reviews corrective-action plans against the procedures when asked. |

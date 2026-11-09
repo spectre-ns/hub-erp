@@ -276,10 +276,13 @@ class DMS:
         return out
 
     # ------------------------------------------------------------ rendering
-    def render_snapshot(self, record_ref: str, *, by: str, run_id: str = "", release: str = "", title: str = "") -> dict:
-        """Render a record to Markdown and file it as an evidence document attached to the record."""
+    def render_snapshot(self, record_ref: str, *, by: str, run_id: str = "", release: str = "", title: str = "",
+                        members: dict | None = None, body: str | None = None) -> dict:
+        """Render a record to Markdown and file it as an evidence document attached to the record. ``members`` (the
+        release's) names and roles each signer; ``body`` replaces the generic fields section (a change order's record,
+        ``hubproto.co_record``)."""
         rec = self.kernel.require(record_ref)
-        md = render_markdown(self.kernel, rec)
+        md = render_markdown(self.kernel, rec, members=members, body=body)
         doc = self.create(title=title or f"{rec['number']} snapshot at {rec['state']}", doc_class="evidence",
                           folder=rec["folder"], by=by, content=md.encode("utf-8"), filename=f"{rec['number']}-{rec['state']}.md",
                           mime="text/markdown", doc_type="snapshot", run_id=run_id, release=release,
@@ -298,16 +301,25 @@ class DMS:
                            attach_to=attach_to)
 
 
-def render_markdown(kernel: Kernel, rec: dict) -> str:
+def render_markdown(kernel: Kernel, rec: dict, members: dict | None = None, body: str | None = None) -> str:
+    from .co_record import signature_lines, when_utc
+
     lines = [f"# {rec['number']} ({rec['type']})", "", f"State: **{rec['state']}**  ", f"Folder: {rec['folder']}  ",
-             f"Created {rec['created_at']} by {rec['created_by']}  ",
-             f"Policy release: `{(rec.get('release') or '')[:16]}`  Run: `{rec.get('run_id') or ''}`", "", "## Fields", ""]
-    for k, v in sorted(rec["fields"].items()):
-        if k in ("text",) or v in (None, "", [], {}):
-            continue
-        if isinstance(v, (dict, list)):
-            v = json.dumps(v, sort_keys=True, default=str)
-        lines.append(f"- **{k}**: {v}")
+             f"Created {when_utc(rec['created_at'])} by {rec['created_by']}  ",
+             f"Policy release: `{(rec.get('release') or '')[:16]}`  Run: `{rec.get('run_id') or ''}`", ""]
+    if body is not None:
+        lines += [body, ""]
+    else:
+        lines += ["## Fields", ""]
+        system = set((kernel.types.get(rec["type"]) or {}).get("system_fields") or [])
+        for k, v in sorted(rec["fields"].items()):
+            if k in ("text",) or v in (None, "", [], {}):
+                continue
+            if isinstance(v, (dict, list)):
+                if k in system:
+                    continue  # the system's own bookkeeping: not part of the record as people read it
+                v = json.dumps(v, sort_keys=True, default=str)
+            lines.append(f"- **{k}**: {v}")
     links = kernel.links_of(rec["locator"])
     reqs = [kernel.get(l["target"]) for l in links if l["rel"] == "fulfils" and l["direction"] == "out"]
     reqs = [r for r in reqs if r and r["type"] == "requirement"]
@@ -320,12 +332,9 @@ def render_markdown(kernel: Kernel, rec: dict) -> str:
     if links:
         lines += ["", "## Links", ""] + [f"- {l['label']}: {l['target']}" for l in links]
     if rec["transitions"]:
-        lines += ["", "## Transitions", ""] + [f"- {t['at']}: {t['from']} -> {t['to']} by {t['by']} (run {t['run_id']})" for t in rec["transitions"]]
-    if rec["decisions"]:
-        lines += ["", "## Signatures", ""]
-        for d in rec["decisions"]:
-            lines.append(f"- {d.get('by')} ({d.get('by_type')}), {d.get('at')}: **{d.get('meaning')}**; "
-                         f"decision {d.get('signature', '')}; payload {str(d.get('payload_digest', ''))[:16]}")
+        lines += ["", "## Transitions", ""] + [f"- {when_utc(t['at'])}: {t['from']} -> {t['to']} by {t['by']} (run {t['run_id']})" for t in rec["transitions"]]
+    if rec["decisions"] and body is None:  # a change order's record prints its own signatures
+        lines += [""] + signature_lines(rec["decisions"], members)
     lines += ["", f"Rendered {utcnow()}. Printed copies are uncontrolled.", ""]
     return "\n".join(lines)
 

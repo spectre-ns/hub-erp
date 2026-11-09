@@ -25,7 +25,7 @@ def condition_holds(cond: dict | None, ctx: dict) -> bool:
     value = ctx.get(cond["field"])
     if value is None:
         return False
-    if cond["field"] == "amount" and ctx.get("currency") != cond.get("currency"):
+    if cond["field"] == "amount" and ctx.get("currency") not in [cond.get("currency")] + list(cond.get("also_currencies") or []):
         return False
     return _OPS[cond["op"]](value, cond["value"])
 
@@ -49,6 +49,10 @@ def principals_for(bundle: dict, assignee: str) -> list[str]:
     kind, _, name = assignee.partition(":")
     if kind in ("person", "cog"):
         return [name] if name in bundle["members"] else []
+    if kind == "group":  # a route to a group: any of its members (hubproto.groups)
+        from .groups import group_members
+
+        return sorted(group_members(bundle, name))
     return sorted(p for p, m in bundle["members"].items() if name in m["roles"])
 
 
@@ -61,7 +65,7 @@ def evaluate_criteria(crit: dict, ctx: dict) -> tuple[bool, list[str]]:
     reasons = []
     if crit.get("max_amount") is not None:
         amount = ctx.get("amount")
-        if amount is None or ctx.get("currency") != crit.get("currency"):
+        if amount is None or ctx.get("currency") not in [crit.get("currency")] + list(crit.get("also_currencies") or []):
             reasons.append("amount or currency missing")
         elif not amount > 0:
             reasons.append("amount is not positive")

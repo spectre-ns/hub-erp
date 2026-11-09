@@ -28,3 +28,8 @@ For: anyone holding the `staff` role.
    reason; the quality manager will follow up.
 5. Items not acknowledged by the due date are escalated to the quality
    manager at the next tick.
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Staff | Acknowledges each revision they are trained on, as this instruction says. |

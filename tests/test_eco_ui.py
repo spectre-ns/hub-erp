@@ -10,7 +10,7 @@ import pytest
 from conftest import ROOT, release_all
 from hubproto import eco, sopdocs
 from hubproto.app import Hub
-from hubproto.shell import free_port, serve_in_thread
+from hubproto.shell import serve_in_thread
 from test_shell_views import get, main_of, post
 
 OLD = "The ap-reviewer cog may approve purchase-to-pay bills under 2,000 USD when the three-way match is within tolerance and the supplier is approved."
@@ -26,8 +26,8 @@ def shell(tmp_path):
     sopdocs.convert(hub, by="carol")
     policy = sopdocs.in_force(hub.kernel, "finance-policy")
     hub.kernel.set_fields(policy["locator"], {"owner": "alice"}, by="setup")  # alice, an author, owns the policy here
-    port = free_port()
-    server = serve_in_thread(hub, "127.0.0.1", port)
+    server = serve_in_thread(hub, "127.0.0.1", 0)  # port 0: bound at once, no race with other test workers
+    port = server.server_address[1]
     yield {"hub": hub, "base": f"http://127.0.0.1:{port}"}
     server.shutdown()
     server.server_close()
@@ -70,17 +70,17 @@ def test_carrying_an_sop_stages_the_frame_and_shows_what_blocks_approval(shell):
     hub = shell["hub"]
     co = new_co(shell)
     html = page(shell, co, "alice")
-    assert "Carries" in html and "Add an SOP or policy" in html and "finance-policy" in html
+    assert "What it carries" in html and "Add an SOP or policy" in html and "finance-policy" in html
     status, url, body = post(shell, "/co-add-sop", {"as": "alice", "co": co["locator"], "sop": "finance-policy"})
     assert status == 200, body[:400]
     [c] = eco.carried(hub, hub.kernel.get(co["locator"]))
     draft = c["draft"]
     html = page(shell, co, "alice")
-    assert draft["number"] in html and "being written" in html and "Staged Frame" in html
+    assert draft["number"] in html and "being written" in html and "The delta" in html
     write(hub, draft, OLD, NEW, "alice")
     html = page(shell, co, "alice")
     assert "1,500" in html and "was:" in html and "2,000" in html, "the changed rule as a sentence, with what it was"
-    assert "must be approved through document control first" in html and "Send for approval" not in html and "Preview from the drafts" in html
+    assert "no review round has run yet" in html and "Request review" in html and "Send for approval" not in html and "Preview from the drafts" in html
     assert "compare with the version in force" in html
     status, url, body = post(shell, "/co-remove-sop", {"as": "alice", "co": co["locator"], "sop": "finance-policy"})
     assert status == 200 and eco.carried(hub, hub.kernel.get(co["locator"])) == []
@@ -108,18 +108,16 @@ def test_an_sop_page_offers_a_revision_on_a_change_order(shell):
     assert "only alice, its author, a document controller" in page(shell, policy, "dave") or "Revise on a change order" not in page(shell, policy, "dave")
 
 
-def test_send_for_approval_once_every_revision_is_approved(shell):
+def test_send_for_approval_once_a_review_round_has_run(shell):
     hub = shell["hub"]
     co = new_co(shell)
     post(shell, "/co-add-sop", {"as": "alice", "co": co["locator"], "sop": "finance-policy"})
     [c] = eco.carried(hub, hub.kernel.get(co["locator"]))
     write(hub, c["draft"], OLD, NEW, "alice")
-    run = hub.runner.submit("document-control", {"record": {"change_type": "minor"}}, owner="alice", record=c["draft"]["locator"])
-    state = hub.runner.load(run)
-    who = state["pending"]["assignees"][0]
-    hub.runner.decide(run, who, "approve", meaning="ok", payload_digest=hub.runner.seen_digest(state))
+    status, url, body = post(shell, "/co-review", {"as": "alice", "co": co["locator"]})
+    assert status == 200, body[:400]
     html = page(shell, co, "alice")
-    assert "approved, held for this change order" in html and "Send for approval" in html
+    assert "Review round 1" in html and "Send for approval" in html
     status, url, body = post(shell, "/co-send", {"as": "alice", "co": co["locator"]})
     assert status == 200, body[:400]
     cos = hub.runner.run_for_record(co["locator"])
@@ -152,14 +150,14 @@ def test_a_policy_owner_converts_the_sops_from_the_policies_page(tmp_path):
 
     from conftest import ROOT, release_all
     from hubproto.app import Hub
-    from hubproto.shell import free_port, serve_in_thread
+    from hubproto.shell import serve_in_thread
 
     shutil.copytree(ROOT / "frames", tmp_path / "frames")
     hub = Hub(tmp_path)
     hub.kernel.seed()
     release_all(hub)
-    port = free_port()
-    server = serve_in_thread(hub, "127.0.0.1", port)
+    server = serve_in_thread(hub, "127.0.0.1", 0)  # port 0: bound at once, no race with other test workers
+    port = server.server_address[1]
     shell = {"hub": hub, "base": f"http://127.0.0.1:{port}"}
     try:
         status, text = get(shell, "/frames", **{"as": "dave"})

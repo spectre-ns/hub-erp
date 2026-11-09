@@ -3,7 +3,7 @@ type: frame [0.2]
 name: org-model
 description: Roles, members (people and cogs) and folders of Example Instruments Ltd.
 visibility: internal
-version: "1.5.0"
+version: "1.7.0"
 scope: company
 maintainer: operations
 ---
@@ -12,7 +12,17 @@ maintainer: operations
 This Frame is the root of the scope tree. Every other policy Frame inherits
 it. Roles, members and folders named anywhere else must be declared here.
 Cogs are members like anyone else: they hold roles, receive routed work and
-messages, and are bound by segregation of duties.
+messages, and are bound by segregation of duties. What a member may do is
+what the SOPs give their roles, their groups (or them by name); a cog is given
+no role wider than its work needs. A member comments on the items it may read
+where a sentence below or in the SOP that owns them says so.
+
+Groups are named sets of members, people and cogs: listed by name, or
+everyone holding a role (they follow role changes). A group may carry
+permissions as a role does, be named in a Roles and responsibilities table,
+and carry a committee, which decides by consensus. Senior cogs are bundled
+with a hosted model and sit on the compile-frame committee; junior cogs work
+on the local model day to day.
 
 ## Roles
 - finance-clerk
@@ -28,17 +38,28 @@ messages, and are bound by segregation of duties.
 - process-owner
 - staff
 - design-review-committee
+- system-administrator
+- management-reviewer
+- policy-reader
 
 ## Members
 - alice (person): finance-clerk, author, process-owner, staff
-- bob (person): controller, reviewer, policy-owner, management-representative, internal-auditor, staff, design-review-committee
+- bob (person): controller, reviewer, policy-owner, management-representative, internal-auditor, staff, design-review-committee, system-administrator
 - carol (person): quality-manager, reviewer, policy-owner, document-controller, staff, design-review-committee
 - dave (person): payables-reviewer, staff
 - ap-reviewer (cog): payables-reviewer, finance-clerk
 - doc-reviewer (cog): reviewer, author
-- quality-assistant (cog): quality-manager, author, reviewer, staff, design-review-committee
-- qa-manager (cog): quality-manager, reviewer, author, staff
-- organization (cog): staff
+- quality-assistant (cog): staff, design-review-committee
+- qa-manager (cog): reviewer, author, staff
+- organization (cog): policy-reader
+- it-admin (cog): system-administrator
+- management (cog): management-reviewer
+- senior-organization (cog): policy-reader
+- senior-qa-manager (cog): policy-reader
+
+## Groups
+- senior-cogs: senior-organization and senior-qa-manager
+- junior-cogs: ap-reviewer, doc-reviewer, quality-assistant, qa-manager, organization, it-admin and management
 
 ## Folders
 - Finance
@@ -62,3 +83,19 @@ messages, and are bound by segregation of duties.
 Staff may read Policy.
 Staff may create documents in Policy.
 Policy owners may approve documents in Policy.
+Staff may comment on anything in Policy.
+Staff may comment on anything in Quality.
+Staff may comment on anything in Tasks.
+Payables reviewers may comment on anything in Finance.
+Policy readers may read Policy.
+Policy readers may read Quality.
+
+## Segregation of duties
+A cog's work is signed by a person.
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Policy owner | Approves every change to the organization model and the documents filed in Policy. |
+| System administrator | Keeps the members and their roles as intended: who holds which role, cogs included. |
+| Staff | Knows who holds which role and where things are filed; files documents in Policy. |

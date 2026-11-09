@@ -156,6 +156,6 @@ class Track:
             if t == "run.submitted":
                 return "submitted"
             if t in ("step.started", "step.result", "gate.decided", "gate.passed", "grant.issued", "run.retried",
-                     "run.resubmitted"):
+                     "run.resubmitted", "gate.withdrawn", "run.moved", "transition.taken"):
                 return "running"
         return "running"

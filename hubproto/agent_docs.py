@@ -8,7 +8,7 @@ import difflib
 import re
 
 from . import authz, edits, office, wopi
-from .agent import register
+from .agent import intent_new_document, intent_on_document, register
 
 DOC_EXTS = ("docx", "md", "xlsx", "odt", "ods")
 LIVE_STATES = ("open", "draft", "returned", "failed")
@@ -60,7 +60,7 @@ register({"name": "create_document",
               "format": {"type": "string", "enum": list(DOC_EXTS)},
               "text": {"type": "string", "description": "starting content: lines in the writing markup, or '| a | b |' rows for a sheet"}},
               "required": ["title"]}},
-         create_document, write=True)
+         create_document, write=True, intent=intent_new_document)
 
 
 # ---------------------------------------------------------------- apply_document_ops
@@ -106,7 +106,7 @@ register({"name": "apply_document_ops",
                          "(e.g. '@@ replace: shall' then '@@ with: must'; '@@ delete section: Records'; '@@ insert after: <text>' then "
                          "the lines). You get a report per operation.",
           "parameters": {"type": "object", "properties": {"number": {"type": "string"}, "ops": {"type": "string"}}, "required": ["number", "ops"]}},
-         apply_document_ops, write=True)
+         apply_document_ops, write=True, intent=intent_on_document)
 
 
 # ---------------------------------------------------------------- document_versions
@@ -175,9 +175,33 @@ def _released_frames(tools) -> list:
     return out
 
 
+def may_look(tools, frame) -> bool:
+    """A cog reads a procedure it is trained on (in its context), or one filed where its roles and groups may read, as
+    a person may look it up in the library; working for someone, only what that person may read too."""
+    from .sopdocs import kind_of
+
+    from .tools import RecordTools
+
+    prof = (tools.bundle.get("cogs") or {}).get(getattr(tools, "cog", "")) or {}
+    folder = kind_of(frame)[1]
+    try:
+        mine = frame.name in (prof.get("follows") or []) or RecordTools.may_read(tools, folder)
+        theirs = getattr(tools, "_requester_tools", None)
+        return bool(mine and (theirs is None or theirs.may_read(folder)))
+    except Exception:
+        return False
+
+
+def _readable_frames(tools) -> list:
+    return [f for f in _released_frames(tools) if may_look(tools, f)]
+
+
 def read_procedure(tools, a: dict) -> dict:
     name = str(a.get("name") or "").strip()
-    frames = {f.name: f for f in _released_frames(tools)}
+    released = {f.name: f for f in _released_frames(tools)}
+    if name in released and not may_look(tools, released[name]):
+        return {"error": f"you may not read {name!r}: your roles may not read where it is filed"}
+    frames = {f.name: f for f in _readable_frames(tools)}
     frame = frames.get(name)
     if frame is None:
         near = difflib.get_close_matches(name, list(frames), n=3, cutoff=0.4)
@@ -204,6 +228,55 @@ register({"name": "read_procedure",
                                                           "from_line": {"type": "integer"}, "to_line": {"type": "integer"}},
                          "required": ["name"]}},
          read_procedure, write=False)
+
+
+def read_sop_section(tools, a: dict) -> dict:
+    """One section of an SOP, as released, with file line numbers; without a heading, the list of its sections. It
+    serves the procedures the cog is trained on (in its context) and the rest of the knowledge base it may read under
+    its roles' read rights (an SOP is read where its document is filed), as a person looks things up in the library."""
+    from .sopdocs import kind_of
+
+    name = str(a.get("name") or "").strip()
+    heading = str(a.get("heading") or "").strip().lstrip("#").strip()
+    prof = (tools.bundle.get("cogs") or {}).get(getattr(tools, "cog", "")) or {}
+    trained = name in (prof.get("follows") or [])
+    frames = {f.name: f for f in _released_frames(tools)}
+    frame = frames.get(name)
+    if frame is None:
+        return {"error": f"no SOP named {name!r} in the release"}
+    folder = kind_of(frame)[1]
+    if not may_look(tools, frame):
+        return {"error": f"you may not read {name!r} (it is filed in {folder}, which your roles may not read)"}
+    lines = frame.file_lines
+    heads = [(i, ln.lstrip("#").strip()) for i, ln in enumerate(lines, 1) if i >= frame.body_start and ln.startswith("## ")]
+    standing = "trained: it is in your context and binding on you" if trained else "reference: you may look it up; it is not your procedure"
+    if not heading:
+        return {"sop": name, "version": frame.version, "description": frame.description, "standing": standing, "sections": [h for _, h in heads]}
+    want = heading.lower()
+    at = next((i for i, h in heads if h.lower() == want), None) or next((i for i, h in heads if h.lower().startswith(want)), None) \
+        or next((i for i, h in heads if want in h.lower()), None)
+    if at is None:
+        return {"error": f"{name} has no section {heading!r}", "sections": [h for _, h in heads]}
+    end = next((i for i, _ in heads if i > at), len(lines) + 1)
+    text, size = [], 0
+    for n in range(at, end):
+        row = f"{n:4d}: {lines[n - 1]}"
+        if size + len(row) > 12000:
+            text.append(f"[... cut at line {n - 1}; read_procedure({name!r}, from_line={n}) reads on]")
+            break
+        text.append(row)
+        size += len(row) + 1
+    return {"sop": name, "version": frame.version, "standing": standing, "section": lines[at - 1].lstrip("#").strip(), "lines": f"{at}-{end - 1}",
+            "text": "\n".join(text)}
+
+
+register({"name": "read_sop_section",
+          "description": "Read one section of an SOP (as released, with line numbers to cite): one you are trained on, or one you may "
+                         "look up; e.g. name='ncr-sop', heading='Routing'. Without a heading it lists the SOP's sections.",
+          "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "the SOP, e.g. document-control-sop"},
+                                                          "heading": {"type": "string", "description": "the section heading, e.g. Permissions or Process: nonconformance"}},
+                         "required": ["name"]}},
+         read_sop_section, write=False)
 
 
 _STOP = {"the", "and", "for", "who", "what", "which", "when", "where", "how", "does", "are", "with", "that", "this", "from", "into",
@@ -248,7 +321,7 @@ def search_procedures(tools, a: dict) -> dict:
         return {"error": "say what to look for, in a few words"}
     k = max(1, min(int(a.get("k") or 5), 10))
     scored = []
-    for frame in _released_frames(tools):
+    for frame in _readable_frames(tools):  # only what the cog (and whoever it works for) may read
         heading = ""
         for lo, hi, text in _passages(frame):
             if text.startswith("#"):

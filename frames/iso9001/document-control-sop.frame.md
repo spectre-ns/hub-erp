@@ -3,7 +3,7 @@ type: frame [0.2]
 name: document-control-sop
 description: "Lifecycle of controlled documents, who approves them, when the document reviewer cog may, how long a review may take, and the training that follows a release."
 visibility: internal
-version: "2.3.0"
+version: "2.4.0"
 scope: department
 maintainer: carol
 inherits: org-model
@@ -17,6 +17,8 @@ A minor revision is low risk and may be approved by the document reviewer
 cog. A major revision is approved by a human reviewer who is not the author. When asked,
 the QA manager cog may approve on its own review: a minor revision on its
 signature, a major one only with a quality manager's countersignature.
+The document reviewer cog acts on its own only at its own approvals: a comment,
+a draft or a change order it would make waits for a person to confirm it.
 Drawings are approved by the process owner. Document controllers may file
 documents on behalf of authors and receive overdue reviews. When a document
 becomes effective, every person holding one of its training roles receives a
@@ -37,6 +39,9 @@ Document controllers may create documents in Quality/Controlled Documents.
 Document controllers may read Quality.
 Process owners may approve documents in Quality/Controlled Documents.
 Staff may read Quality.
+The doc-reviewer cog may comment on anything in Quality when a person confirms.
+The doc-reviewer cog may create documents in Quality/Controlled Documents when a document controller confirms.
+The doc-reviewer cog may create change orders in Quality/Changes when a document controller confirms.
 
 ## Routing
 Approvals in document-control for policies go to the policy owner.
@@ -63,3 +68,15 @@ Closes as effective.
 3. [system] Score the risk (risk-scorer)
 4. [reviewer] Approve the document
 5. [system] Publish the document (document-publisher)
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Author | Drafts controlled documents and sends them for approval; never approves their own. |
+| Reviewer | Reviews and approves controlled documents they did not write. |
+| Document controller | Files documents for authors, confirms what the doc-reviewer cog proposes and receives overdue reviews. |
+| Policy owner | Approves policies. |
+| Process owner | Approves the drawings of their process. |
+| Quality manager | Countersigns the major changes the qa-manager cog approves. |
+| the doc-reviewer cog | Approves minor revisions within its criteria. |
+| the qa-manager cog | Drafts and revises controlled documents and approves within its criteria after its adversarial reviews. |

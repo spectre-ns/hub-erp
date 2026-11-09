@@ -1,7 +1,9 @@
-"""The automation engine: the hub's own jobs, step by step, with an audit trail. Approving a revision a change order
-carries compiles the Frame; approving the change order releases it; a job that stops says why and can be retried by
-the people involved; the Automation pages show it all, live."""
+"""The automation engine: the hub's own jobs, step by step, with an audit trail. Requesting review of a change order
+runs the compile-frame Op, which carries the review round (compile, prose for direct changes, panel); approving the
+change order releases it; a job that
+stops says why and can be retried by the people involved; the Automation pages show it all, live."""
 
+import html
 import shutil
 
 import pytest
@@ -9,7 +11,7 @@ import pytest
 from conftest import ROOT, release_all
 from hubproto import automation, eco, sopdocs
 from hubproto.app import Hub
-from hubproto.shell import free_port, serve_in_thread
+from hubproto.shell import serve_in_thread
 from test_eco import NEW, OLD, approve, write
 from test_shell_views import get, main_of, post
 
@@ -22,19 +24,20 @@ def shell(tmp_path):
     release_all(hub)
     sopdocs.convert(hub, by="carol")
     hub.kernel.set_fields(sopdocs.in_force(hub.kernel, "finance-policy")["locator"], {"owner": "alice"}, by="setup")
-    port = free_port()
-    server = serve_in_thread(hub, "127.0.0.1", port)
+    server = serve_in_thread(hub, "127.0.0.1", 0)  # port 0: bound at once, no race with other test workers
+    port = server.server_address[1]
     yield {"hub": hub, "base": f"http://127.0.0.1:{port}"}
     server.shutdown()
     server.server_close()
 
 
 def prepared(hub):
+    from hubproto import changecontrol
+
     co = hub.kernel.create("change-order", "Quality/Changes", {"title": "Lower the AP limit", "description": "x", "requested_by": "alice"}, by="alice")
     draft = eco.add_sop(hub, co["number"], "finance-policy", by="alice")
     write(hub, draft, OLD, NEW, "alice")
-    run = hub.runner.submit("document-control", {"record": {"change_type": "minor"}}, owner="alice", record=draft["locator"])
-    approve(hub, run, hub.runner.load(run)["pending"]["assignees"][0])
+    changecontrol.request_review(hub, co["number"], "alice")
     return hub.kernel.get(co["locator"]), draft
 
 
@@ -42,15 +45,15 @@ def test_the_automation_page_shows_each_job_and_its_steps(shell):
     hub = shell["hub"]
     co, draft = prepared(hub)
     [job] = hub.automation.of(co["locator"])
-    assert job["release"] == hub.releases.current()["digest"] and job["started_by"] == "hub" and draft["number"] in job["acting_on"]
+    assert job["release"] == hub.releases.current()["digest"] and job["started_by"] == "alice" and f"round 1 of {co['number']}" in job["acting_on"]
     status, text = get(shell, "/automation", **{"as": "carol"})
     body = main_of(text)
     assert status == 200 and "Compile the Frame" in body and "succeeded" in body and co["number"] in body and "Release the change order" in body
     status, text = get(shell, "/automation/" + job["id"], **{"as": "carol"})
     body = main_of(text)
     for step in automation.AUTOMATIONS["compile-frame"]["steps"]:
-        assert step in body
-    assert body.count("✓") == 5 and "compiled as proposal" in body and "Under policy" in body
+        assert html.escape(step) in body
+    assert body.count("✓") == 8 and "compiled as proposal" in body and "review round 1" in body and "Under policy" in body
     status, text = get(shell, "/automation-status", **{"as": "carol", "job": job["id"]})
     assert status == 200 and job["id"] in text
     status, text = get(shell, "/record/" + co["locator"], **{"as": "alice"})

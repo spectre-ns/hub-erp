@@ -14,8 +14,10 @@ from .rules import rule_key
 from .settings import sentence
 
 SECTION = {"permission": "Permissions", "routing": "Routing", "sla": "Routing", "approval_criteria": "Approval criteria",
-           "sod": "Segregation of duties", "threshold": "Thresholds", "member": "Members", "role": "Roles", "folder": "Folders"}
-SECTIONED = {"cog": "Cog: {name}", "process": "Process: {name}"}  # rules written as a whole section
+           "sod": "Segregation of duties", "threshold": "Thresholds", "member": "Members", "role": "Roles", "folder": "Folders",
+           "duty": "Duties", "group": "Groups", "validation_class": "Validation", "validation_need": "Validation"}
+SECTIONED = {"cog": "Cog: {name}", "process": "Process: {name}", "persona": "Persona: {name}",
+             "committee": "Committee: {name}"}  # rules written as a whole section
 
 
 def slot(rule: dict) -> tuple:
@@ -32,11 +34,13 @@ def slot(rule: dict) -> tuple:
     if k == "threshold":
         return (k, rule.get("name"))
     if k == "sod":
-        return (k, rule.get("object"), tuple(rule.get("roles") or []))
+        return (k, rule.get("object"), tuple(rule.get("roles") or []), rule.get("rule"))
     if k == "member":
         return (k, rule.get("principal"))
-    if k in ("cog", "process", "role"):
+    if k in ("cog", "process", "role", "persona", "group", "committee"):
         return (k, rule.get("name"))
+    if k == "duty":
+        return (k, rule.get("cog"), rule.get("task"))
     if k == "folder":
         return (k, rule.get("path"))
     return (k, rule_key(rule))
@@ -55,7 +59,7 @@ def home_frame(rule: dict, base_rules: list[dict]) -> str:
         return procs[rule["process"]]
     if k == "process":
         return procs.get(rule.get("name")) or next((f for f in procs.values() if f), "")
-    if k in ("member", "role", "folder", "cog"):
+    if k in ("member", "role", "folder", "cog", "group", "committee"):
         same = next((_frame_of(r) for r in base_rules if r.get("kind") == k and _frame_of(r)), "")
         if same:
             return same
@@ -73,6 +77,12 @@ def home_frame(rule: dict, base_rules: list[dict]) -> str:
             return owner
     if k == "threshold":
         same = next((_frame_of(r) for r in base_rules if r.get("kind") == "threshold" and _frame_of(r)), "")
+        if same:
+            return same
+    if k == "duty":  # with the cog's other duties, or in the SOP whose routes or criteria name the cog
+        same = next((_frame_of(r) for r in base_rules if r.get("kind") == "duty" and r.get("cog") == rule.get("cog") and _frame_of(r)), "") or \
+            next((_frame_of(r) for r in base_rules if r.get("kind") in ("routing", "approval_criteria")
+                  and f"cog:{rule.get('cog')}" in (r.get("assignee"), r.get("approver")) and _frame_of(r)), "")
         if same:
             return same
     return next((_frame_of(r) for r in base_rules if r.get("kind") == "member" and _frame_of(r)), "org-model")
@@ -119,17 +129,19 @@ def plan(base_rules: list[dict], new_rules: list[dict], processes: dict) -> dict
     return ops
 
 
-def apply_plan(hub, co_ref: str, plan_ops: dict[str, list[dict]], *, by: str) -> list[dict]:
-    """Write the edits into draft revisions on the change order. Returns a report per edit."""
+def apply_plan(hub, co_ref: str, plan_ops: dict[str, list[dict]], *, by: str, author: str | None = None,
+               note: str = "changes made in Settings") -> list[dict]:
+    """Write the edits into draft revisions on the change order (started by ``by``; the new version is ``author``'s, by
+    default ``by``'s: the qa-manager cog when it drafts the prose for direct changes). Returns a report per edit."""
     from . import edits, eco
 
     report = []
     for frame, ops in sorted(plan_ops.items()):
-        draft = eco.add_sop(hub, co_ref, frame, by=by)
+        draft = eco.add_sop(hub, co_ref, frame, by=by, author=author)  # a drafter's revision is the drafter's
         content, v = hub.dms.content(draft["locator"])
         ext = (v.get("filename") or "x.docx").rsplit(".", 1)[-1].lower()
         for op in ops:
-            clean = {k: x for k, x in op.items() if k not in ("rule", "was")}
+            clean = {k: x for k, x in op.items() if k not in ("rule", "was", "workflow_ids")}
             out, rep = edits.apply_ops(content, ext, [clean])
             if out is None and clean["op"] == "insert" and clean.get("section_end"):
                 # The SOP has no section for this kind of rule yet: add one at the end.
@@ -141,7 +153,7 @@ def apply_plan(hub, co_ref: str, plan_ops: dict[str, list[dict]], *, by: str) ->
             report.append({"sop": frame, "draft": draft["number"], "ok": ok, "detail": (rep[0]["detail"] if rep else ""),
                            "says": " / ".join(op.get("lines") or []) or "(removed)",
                            "was": (op.get("was") or {}).get("source", {}).get("text")})
-        hub.dms.add_version(draft["locator"], content, by=by, filename=v.get("filename") or f"{frame}.docx",
+        hub.dms.add_version(draft["locator"], content, by=author or by, filename=v.get("filename") or f"{frame}.docx",
                             mime=v.get("mime") or "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                            note="changes made in Settings")
+                            note=note)
     return report

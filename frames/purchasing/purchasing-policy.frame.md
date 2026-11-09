@@ -3,7 +3,7 @@ type: frame [0.2]
 name: purchasing-policy
 description: How parts are ordered from approved suppliers, who approves a purchase, when the purchasing cog may order on its own, and how goods are received into stock locations.
 visibility: internal
-version: "1.1.0"
+version: "1.2.0"
 scope: department
 maintainer: dave
 inherits: org-model
@@ -47,6 +47,7 @@ Controllers may approve purchase requests in Purchasing/Requests.
 Controllers may read Purchasing.
 Staff may create receipts in Inventory/Receipts.
 Buyers may approve receipts in Inventory/Receipts.
+Staff may comment on anything in Purchasing.
 
 ## Thresholds
 The purchase approval threshold is 10,000 USD.
@@ -67,6 +68,9 @@ The purchasing-assistant cog may approve purchase-request purchase requests unde
 The requester and the approver of a purchase-request must be different people.
 The received-by and the approver of a receipt must be different people.
 
+## Duties
+Every day the purchasing-assistant cog finds purchase requests waiting for a buyer and tells the buyer which are the oldest, in one message.
+
 ## Process: purchase-request
 Records are filed in Purchasing/Requests.
 Closes as ordered.
@@ -84,3 +88,11 @@ Closes as received.
 2. [system] Check the order (receipt-checker)
 3. [buyer] Confirm the receipt
 4. [system] Book the stock (stock-booker)
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Staff | Raises purchase requests and records the goods received. |
+| Buyer | Approves purchase requests and confirms receipts. |
+| Controller | Approves large purchases and receives the overdue ones. |
+| the purchasing-assistant cog | Approves small purchases within its criteria and tells the buyer which requests wait longest. |

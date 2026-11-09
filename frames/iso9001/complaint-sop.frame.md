@@ -38,3 +38,10 @@ The record type is complaint.
 2. [system] Score the risk (risk-scorer)
 3. [quality-manager] Respond to the complaint
 4. [system] Open the nonconformance (ncr-opener)
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Staff | Logs the complaints customers make. |
+| Quality manager | Responds to each complaint. |
+| Management representative | Approves responses where the quality manager may not, and receives the overdue ones. |

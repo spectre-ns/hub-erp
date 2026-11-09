@@ -1,8 +1,9 @@
 # 3. Business processes
 
-Each business process is written in an SOP or policy Frame as numbered steps, each with the role that performs it.
-The hub compiles those steps into a workflow (chapter 7). A step with a cog name in brackets is done automatically; a
-step without one is a **Gate**: the item waits there for a person (or, where the policy allows, a cog) to decide.
+Each business process is written in the SOP or policy that owns it, either as numbered steps, each with the role that
+performs it, or as statuses and the transitions between them. The hub compiles either form into a **workflow graph**
+(3.1, "Processes as graphs"; chapter 7). An automatic step is done by code; a step that waits for a decision is a
+**Gate**: the item waits there for a person, a cog within its criteria, or a committee.
 
 Section 3.1 explains what every process has in common. Sections 3.2 to 3.17 take each process in turn. Document
 control is in chapter 5.10, change orders in chapter 7.9, and the inventory processes (stock adjustments, releases
@@ -10,11 +11,56 @@ from quarantine and part requests) in chapter 4.7.
 
 ## 3.1 How every process runs
 
+### Processes as graphs
+
+Every process in a release is a graph of **statuses** and **transitions** (hubproto/process_graph.py; DEV-NOTES.md,
+"Processes as graphs"):
+
+* A status has a category, **to do**, **in progress** or **done**; a done status says how the item ended: completed,
+  rejected, cancelled or superseded. It may have a due date ("due within 5 days"). The hub adds a status of its own,
+  **Failed**, where an item goes when an automatic step fails, with a **Retry** way out.
+* A transition goes from one or more statuses (a **directed** transition), from any status except the done ones (a
+  **global** transition, such as **Cancel**), or into the first status (the **start**). It has a **gate**: a person in
+  a role (optionally "not the author", or "not whoever decided *X*"), a cog within its approval criteria (falling back
+  to a role), a committee deciding by consensus (chapter 7.6), or **automatically** (when its steps succeed, or on a
+  condition such as "the risk is low"). It may need fields set or a status visited first, and it may run actions after
+  the move (code steps, a notification, setting a field).
+* The item waits at a status for the gated transitions out of it: the inbox card offers them as its buttons, named by
+  the transitions, and the due date is the status's.
+
+An SOP states a graph in sentences the grammar reads exactly, for example (DEV-NOTES.md):
+
+```
+Statuses: Open (to do), Awaiting disposition (in progress, due within 5 days), Closed (done, completed), Cancelled (done, cancelled).
+Starts in Open ("Open the nonconformance"): the staff; needs title and description.
+From Open to Awaiting disposition: automatically, after the ncr classifier, the record filer and the risk scorer.
+From Awaiting disposition to Closed ("Disposition"): the quality manager decides, not the author; needs disposition; then the disposition applier and the capa opener run.
+From Awaiting disposition to Open ("Return"): the quality manager.
+From any status except done to Cancelled ("Cancel"): the quality manager.
+```
+
+Numbered steps stay valid as the simple, linear case. They compile into the same shape with no change of meaning: Open,
+then "Awaiting *step*" for each Gate (for example "Awaiting disposition the nonconformance"), the closing status,
+Rejected (or Returned, where "Rejections return to *step*"), Failed and Cancelled, with a global Cancel for the owner or
+an approver and Retry from Failed (`from_linear`). Every process of the example company is still written as numbered
+steps. A change made in the workflow editor (chapter 7.13) is written back into the SOP as graph sentences, so that
+process is in the graph form from then on. Status and transition ids are kept across renames, in the document's front
+matter, never in the prose.
+
+<!-- figure: diagram-ncr-graph -->
+
+The record page's **Workflow** tab draws the graph: the current status with a heavy outline, the statuses the item has
+been in shaded, and the transitions it took in the accent colour, with **Open the workflow**. Below the drawing the
+older states table is still shown, and for a committee gate it says "role held by nobody" (seen running).
+
+<!-- figure: c03-record-workflow -->
+
 ### Who may start a process
 
 You may start a process when the policy gives you a `create` permission for its kind of record in the folder it files
-into, and you hold the role of its first step (a first step marked `[system]`, or naming a field of the record such as
-`[author]`, needs no role) (hubproto/runner.py, `submit`). The home page lists what you may start and, under **Not available to you**, what you may not and why.
+into, and you hold the role of its start (the role of the first step, or "Starts in ...: the *role*"; a start for
+`[system]`, "anyone", or a field of the record such as `[author]` needs no role) (hubproto/runner.py, `submit`). A
+process is always started by a person, never automatically, by a cog or by a committee. The home page lists what you may start and, under **Not available to you**, what you may not and why.
 
 **How to start a process with a new record** (anyone allowed, see above)
 
@@ -41,6 +87,8 @@ After you submit, the automatic steps run one after another: filing the record, 
 drafting and so on. Each step's result, with any problems it raised, is on the run's page. A **warning** goes to the
 approver's card under **Checks**. An **error** stops the run (see "Stops" below).
 
+<!-- figure: c03-run -->
+
 The risk scorer (step "Score the risk" in many processes) sets a risk tier of low, medium or high, and the facts the
 cogs' approval criteria test (for example "the supplier is approved"). How it scores each kind of record is given in
 each section below (hubproto/cogs.py, `RiskScorer`).
@@ -50,9 +98,10 @@ each section below (hubproto/cogs.py, `RiskScorer`).
 When the item reaches a Gate, the hub reads the process's routing sentences in the order they are written and gives
 the item to the **first route that someone can take** (hubproto/runner.py, `_human_gate`, `_eligible`):
 
-* A route **to a cog** is taken when the cog may approve that kind of item, follows the SOP that defines the process,
-  is available (its model answers), and did not prepare the item; and no cog prepared or wrote the item ("a person
-  signs a cog's work, never another cog"). The cog then decides within its approval criteria (chapter 6.6). If its
+* A route **to a cog** is taken when the cog may approve that kind of item, follows the SOP that defines the process
+  (its Roles and responsibilities table names the cog, its role or its group), is available (its model answers), and
+  did not prepare the item; and no cog prepared or wrote the item (the organization model's "A cog's work is signed by
+  a person."). The cog then decides within its approval criteria (chapter 6.6). If its
   criteria do not hold it **declines**, and the item goes on to the next route.
 * A route **to a role** gives the item to every *person* holding the role who may approve this kind of item in its
   folder and is not excluded by segregation of duties. Cogs holding the role are not included.
@@ -63,6 +112,20 @@ the item to the **first route that someone can take** (hubproto/runner.py, `_hum
   Amount bands compare only amounts in the currency the sentence names (USD in all the Frames today).
 
 If no route can be taken, the run stops with "Nobody can take “*step*”" and the reasons (see "Stops").
+
+**A committee gate** ("the change-board committee decides") waits for every member of the committee, people and cogs,
+and passes only when every member agrees on the same way forward; one reasoned objection returns the item (chapter
+7.6). The card shows the tally: each member with **agrees**, **objects**, **to vote** or **paused** and the reason ("no
+approval criteria let it-admin agree to nonconformance items"; "segregation of duties: they prepared this item"). A
+member votes with the transition's button and a meaning ("Your vote: the change-board committee decides by consensus;
+one reasoned objection sends it back ... there is no standing aside, and your vote is your signature"); a vote sets no
+fields ("A committee member's vote sets no fields; set them on the item first, then vote."). When every member still to
+vote is paused, the chair gets **The decision is paused: you intervene as its chair**, with **Decide in a member's
+place**, **Extend the due date** and **Return the item** (checked by running the code on a nonconformance after a
+change order made the change-board committee decide dispositions, chapter 7.9). No process of the example company as
+shipped has a committee gate.
+
+<!-- figure: c03-committee-tally -->
 
 **Segregation of duties.** Whoever prepared the item (the person who started the run, and whoever created the
 record) may never decide it on a route to a role or a cog. A segregation sentence such as "The reporter and the
@@ -76,7 +139,9 @@ people. Steps without such a sentence have no due date.
 ### Deciding
 
 The people the item waits for find it under **Waiting for me** in their inbox and decide it on its card (chapter 1.4).
-Any one of them may decide; the first decision counts. Approving may require fields the next state needs (for example
+At a person or cog gate any one of them may decide; the first decision counts. A process in the graph form offers one
+button per transition out of the status; a process written as numbered steps keeps **Approve** and **Reject**. A
+transition that needs fields refuses until they are set ("Approve needs description first"). Approving may require fields the next state needs (for example
 a disposition); the card asks for them. A cog that decides does so through the same signature path, citing the
 approval-criteria sentence that let it decide, and the item's owner is told ("approved automatically by ap-reviewer
 ... No person reviewed it").
@@ -116,9 +181,11 @@ A rejection needs a reason. What follows depends on the process:
 
 ### Stops (failed runs) and Fix and retry
 
-A run stops when an automatic step raises an error, when the item is on hold as a step starts, or when nobody may take
-a Gate. The record goes to state **Failed**, assigned to the person who started it, who is told "*number* stopped at
+A run stops when an automatic step raises an error, when a check an automatic transition needs fails, when none of a
+status's automatic ways out applies, when the item is on hold as a step starts, or when nobody may take a Gate. The record goes to state **Failed**, assigned to the person who started it, who is told "*number* stopped at
 *step*" (hubproto/runner.py, `_fail`). The record page shows **Stopped at *step*** with what the step said.
+
+<!-- figure: c03-bill-stopped -->
 
 * **A data problem** (a missing purchase order, a closed accounting period, an unapproved supplier): the form shows
   the record's fields with the ones the step complained about marked in red.
@@ -144,9 +211,13 @@ a Gate. The record goes to state **Failed**, assigned to the person who started 
   Nobody the policy allows may take this item now", names the policy owners, and offers **Retry now** once they have
   changed who may take it (chapter 7).
 
+In a process written as a graph, **Fix and retry** returns the item to the status it stopped in; in one written as
+numbered steps, to Open.
+
 ### Cancelling
 
-**How to cancel a run** (the person who started it, or anyone who may approve that kind of item): under **Cancel this
+**How to cancel a run** (for numbered steps, the person who started it or anyone who may approve that kind of item;
+for a graph, whoever the Cancel transition names): under **Cancel this
 *type* instead**, give a **Reason for cancelling**, tick **I want to cancel this *type*** and press the button. The
 record stays on file as **Cancelled** and cannot be reopened.
 
@@ -159,6 +230,25 @@ Its owner and whoever it waited for are told (hubproto/runner.py, `restart`).
 **How to send an item back to the start** (its owner, anyone who may approve that kind of item, or for a document a
 document controller): on its page open **Back to the start**, write **Why** and press **Send it back to the start**.
 Not available for an effective, obsolete or superseded item, or one already at its start.
+
+### When the configuration changes: items in flight
+
+A release coming into force does not change any item's status (hubproto/runner.py, `_follow_release`):
+
+* **From its next move** an item follows the release in force at that moment: its routing, limits, checks and next
+  steps. A move is a decision (and a committee's decision when it concludes), choosing a transition, a resubmission, a
+  retry, a cancellation, an escalation, a cog's turn or step-in, and a hand-back. The automatic steps between two moves
+  run under the release the item last moved under.
+* **A Gate already waiting keeps its people** until the item moves; the decision is then taken against the new
+  release's graph, and the next Gate is routed under it. Checked by running the code: the demo nonconformance waiting
+  for carol stayed with carol after a release made the change-board committee decide dispositions; a nonconformance
+  filed afterwards went to the committee.
+* An item stays on its old release when the new one lacks its process or its status, or when it is part-way through a
+  move. A status a change removes is answered by the change order's **state map**: at release the hub moves those
+  items, withdraws their waiting decisions and records "Moved from *X* to *Y* by CO-... (state map)" on each (chapter
+  7.9).
+* The run's history records each change of release, as "run release changed" (or "run release kept"); those lines are
+  not yet worded as sentences.
 
 ### Processes opened by other processes
 
@@ -192,7 +282,7 @@ snapshot of the record (chapter 2.9) with every signature on it.
 | requirements-capture | design engineer | Accept the requirement: design authority | design-control-sop |
 | change-control | staff | Approve the change: quality manager; Verify the change: the requester | change-control-sop |
 | document-control | author | Approve the document: by document type and risk (chapter 5.10) | document-control-sop |
-| change-order | staff | Approve the change order: quality manager (chapter 7.9) | change-control-sop |
+| change-order | staff | Approve the change order: quality manager, after the delta is decided item by item (chapter 7.9) | change-control-sop |
 | part-request | staff | Approve the part: buyer (chapter 4.7.4) | inventory-policy |
 | stock-adjustment | storekeeper | Approve the stock adjustment: purchasing-assistant cog or controller by value (chapter 4.7.1) | inventory-policy |
 | stock-release | staff | Approve the stock release: quality manager (chapter 4.7.2) | inventory-policy |
@@ -557,7 +647,9 @@ Filing a task or change request for each action is done by hand after the review
 Every person assigned a controlled document acknowledges it within 14 days (training-sop; wi-acknowledge-training).
 
 **How it starts.** When a controlled document becomes effective, the hub opens one training sign-off for every
-*person* (not cog) holding one of the document's **Roles that must read it**. The record TRN-*n* ("Read *title* rev
+*person* (not cog) holding one of the document's **Roles that must read it**. For an SOP or policy revision carried by a
+change order, those are the roles and groups its Roles and responsibilities table names, and the release opens the
+sign-offs (chapter 7.15). A cog acknowledges nothing: the document in its context is its training (chapter 6.11). The record TRN-*n* ("Read *title* rev
 *revision*") is filed in Quality/Training, linked to the document, and waits for that person alone. Its run belongs to
 whoever approved the document (chapter 5.10).
 
@@ -665,7 +757,7 @@ products and people are affected and what could go wrong), **Affected documents*
 | 2 | Score the risk | automatic | always medium (a change request cannot be declared minor) |
 | 3 | Approve the change | quality manager (carol) | may set the plan and the verification |
 | 4 | Notify the requester | automatic | tells the requester it was approved |
-| 5 | Verify the change | the requester | must give **Verification** (what was done and how it was checked). Closes as **Closed** |
+| 5 | Verify the change | the requester | must give **Verification** (what was done and how it was checked). When a change order implements the request, this waits until that change order is released ("Verify waits until the change order implementing CR-... is released"; hubproto/runner.py, `_change_request_waits`). Closes as **Closed** |
 
 **Approval criteria:** "The qa-manager cog may approve change-control change-requests when its review passes,
 countersigned by a quality manager." The qa-manager is not on any route: it acts only when asked (chapter 6.6).

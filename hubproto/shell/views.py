@@ -219,6 +219,13 @@ class ViewsMixin:
             crumbs = [(app["name"], href("/app/" + app["key"], user)), (name, None)]
         params = {k: v for k, v in q.items() if v and k not in ("view", "page")}
         body = f"<h1>{type_icon(rt) if rt != 'all' else icon('grid')} {esc(name)} <span class='muted'>{len(recs)}</span></h1>"
+        if rt == "training":  # who must read what: the training matrix, generated from the Roles and responsibilities tables
+            from .. import training as _tr
+
+            mx = _tr.matrix_document(self.hub)
+            if mx and self._can_read(mx["folder"])["allowed"]:
+                body += (f"<p class='card quiet'>{icon('book')} <a href='{href('/document/' + quote(mx['locator'], safe=':'), user)}'>The training matrix</a> "
+                         f"({esc(mx['number'])} rev {esc(mx['fields'].get('revision') or '')}): who must read which document, by role and group.</p>")
         body += self._control_panel(rt, view, q, recs[0] if recs else None, params)
         err = self._form_error(["reason", "sel"]) if (self.err and self.route == "/bulk-hold") else ""
         if view == "kanban":
@@ -514,7 +521,7 @@ class ViewsMixin:
 
     def _user_reading(self, person: str) -> str:
         m = ((self.bundle or {}).get("members") or {}).get(person) or {}
-        return self._required_reading_html(person) if m.get("type") == "person" else ""
+        return self._required_reading_html(person) if m.get("type") == "person" else self._cog_training_html(person)
 
     def page_user(self):
         user = self.user
@@ -576,10 +583,31 @@ class ViewsMixin:
                       f"<input type='hidden' name='cog' value='{esc(name)}'><fieldset><legend class='vh'>Model for {esc(name)}</legend>{''.join(rows)}</fieldset>"
                       + (f"<p class='why'>{esc(avail['ollama_error'])}</p>" if avail["ollama_error"] else "")
                       + f"<div class='actions'><button>{icon('send')}Propose the change</button><span class='why'>A cog comes with its model: the policy owners approve a change.</span></div></form></details>")
-            profile = [("Model", served + picker),
-                       ("Prompt", esc(prof.get("prompt") or "-")),
-                       ("Follows", ", ".join(f'<a href="{href("/frame/" + fr, user)}">{esc(fr)}</a>' for fr in follows) or "<span class='muted'>no procedure: it is routed no work</span>"),
-                       ("Reviews", esc(", ".join(prof.get("reviews") or []) or "-")), ("Written in", self._rule_link(prof.get("source")) if prof.get("source") else "")]
+            from .. import scopes as _sc
+
+            persona = (bundle.get("personas") or {}).get(prof.get("persona") or "") or {}
+            pframe = (persona.get("source") or {}).get("frame")
+            because = {f["frame"]: [x.partition(":")[2] or x for x in f["because"] if x != "company"] for f in _sc.following(bundle, name)}
+            follows_html = ", ".join(f'<a href="{href("/frame/" + fr, user)}">{esc(fr)}</a>'
+                                     + (f" <span class='why'>({esc(', '.join(because[fr]))})</span>" if because.get(fr) else "") for fr in follows)
+            confirms = [r for r in bundle.get("permissions") or [] if r.get("effect") == "propose" and r.get("subject") in
+                        ({"cog:" + name} | {"role:" + x for x in m.get("roles") or []})]
+            acts = ("<p>Derived action by action from the SOPs: it <b>acts</b> where a permission for it or its roles allows it, or the step is "
+                    "its own; it <b>proposes</b> where an SOP says a person confirms; anything else it only reads, and says what should be done.</p>"
+                    + ("<ul>" + "".join(f"<li>{esc(r['source']['text'])} <span class='why'>{self._rule_link(r['source'])}</span></li>" for r in confirms) + "</ul>"
+                       if confirms else ""))
+            profile = [("About", esc(prof.get("about") or "-")),
+                       ("Model", served + picker),
+                       ("Persona", (f"<a href='{href('/frame/' + pframe, user)}'>{esc(prof.get('persona'))}</a> "
+                                    f"<span class='why'>{esc(persona.get('stance') or '')}, {esc(persona.get('tone') or '')}; "
+                                    f"lenses {esc(', '.join(persona.get('lenses') or []) or '-')}</span>") if pframe else esc(prof.get("persona") or "-")),
+                       ("How it behaves", esc(prof.get("prompt") or "-")),
+                       ("Follows", (follows_html or "<span class='muted'>no procedure: it is routed no work</span>")
+                        + "<div class='why'>Derived: the company scope and every document whose Roles and responsibilities table lists it or one of "
+                          "its roles (in brackets).</div>"),
+                       ("What it may do", acts + self._member_permissions_html(name)),
+                       ("Committees", self._member_committees_html(name)),
+                       ("Written in", self._rule_link(prof.get("source")) if prof.get("source") else "")]
             def pin_html(pin):
                 d = self.hub.kernel.get(pin["locator"])
                 latest = (self.hub.dms.versions(pin["locator"]) or [{}])[-1].get("version") if d else None
@@ -588,12 +616,13 @@ class ViewsMixin:
             if prof.get("prompt_doc"):
                 profile.insert(1, ("Prompt from", pin_html(prof["prompt_doc"])))
             if prof.get("reference_docs"):
-                profile.insert(3, ("References", "<br>".join(pin_html(x) for x in prof["reference_docs"])))
+                profile.insert(4, ("References", "<br>".join(pin_html(x) for x in prof["reference_docs"])))
             src_frame = (prof.get("source") or {}).get("frame")
             if src_frame:
                 profile.append(("Change it", f"<a class='button ghost' href='{href('/frame-doc/' + src_frame, user)}'>{icon('edit')}Edit this cog's profile</a> "
-                                             "<span class='why'>model, prompt, documents it reads and the SOPs it follows; roles and permissions are in "
-                                             f"<a href='{href('/frame-doc/org-model', user)}'>the organization model</a></span>"))
+                                             "<span class='why'>what it does, its model and persona; its roles are in "
+                                             f"<a href='{href('/frame-doc/org-model', user)}'>the organization model</a>, and what it may do and "
+                                             "follows in the SOPs that name it or its roles</span>"))
             models = (f"{len(calls)} model call{'s' if len(calls) != 1 else ''} since the hub started"
                       + (f" ({sum(1 for c in calls if c.get('stand_in'))} answered by the stand-in, no model key)" if calls else ""))
             body += (f"<div class='card'><h2 style='margin-top:0;border:0'>{icon('robot')} About this cog</h2><p>{esc(desc)}</p>"

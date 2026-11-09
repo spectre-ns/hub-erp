@@ -12,7 +12,7 @@ import pytest
 from conftest import ROOT, release_all
 from hubproto import formlayout
 from hubproto.app import Hub
-from hubproto.shell import free_port, serve_in_thread
+from hubproto.shell import serve_in_thread
 from test_shell_views import get, main_of, post
 
 
@@ -22,8 +22,8 @@ def shell(tmp_path):
     hub = Hub(tmp_path)
     hub.kernel.seed()
     release_all(hub)
-    port = free_port()
-    server = serve_in_thread(hub, "127.0.0.1", port)
+    server = serve_in_thread(hub, "127.0.0.1", 0)  # port 0: bound at once, no race with other test workers
+    port = server.server_address[1]
     yield {"hub": hub, "base": f"http://127.0.0.1:{port}"}
     server.shutdown()
     server.server_close()
@@ -119,11 +119,12 @@ def test_the_preview_shows_the_draft(shell):
 def test_a_carried_form_comes_into_force_when_its_change_order_is_released(shell):
     hub = shell["hub"]
     ncr = hub.kernel.create("ncr", "Quality/Nonconformances", {"title": "Scratch", "description": "cosmetic", "lot": "L-7", "source": "inspection"}, by="carol")
-    status, url, body = post(shell, "/co-new", {"as": "alice", "title": "NCR traceability", "description": "lot and batch on their own section"})
+    # bob, a policy owner, prepares the change order and the form: who made a change does not approve it (carol does).
+    status, url, body = post(shell, "/co-new", {"as": "bob", "title": "NCR traceability", "description": "lot and batch on their own section"})
     assert status == 200, body[:300]
     co = next(r for r in hub.kernel.query(type_="change-order") if r["fields"]["title"] == "NCR traceability")
-    save(shell, "carol", traceability(hub))
-    status, url, body = post(shell, "/forms-carry", {"as": "carol", "type": "ncr", "co": co["locator"]})
+    save(shell, "bob", traceability(hub))
+    status, url, body = post(shell, "/forms-carry", {"as": "bob", "type": "ncr", "co": co["locator"]})
     assert status == 200 and co["number"] in url, body[:300]
     co = hub.kernel.get(co["locator"])
     assert "ncr" in co["fields"]["form_changes"] and "new section “Traceability”" in co["fields"]["form_changes"]["ncr"]["changes"]
@@ -131,8 +132,12 @@ def test_a_carried_form_comes_into_force_when_its_change_order_is_released(shell
     assert "Forms" in page and "new section “Traceability”" in page and "/forms/ncr" in page
     status, text = get(shell, "/change-orders", **{"as": "alice"})
     assert "ncr form" in main_of(text)
-    # Sent for approval by its requester, approved by the quality manager; the release automation applies the form.
-    status, url, body = post(shell, "/co-send", {"as": "alice", "co": co["locator"]})
+    # Reviewed, sent for approval by its requester, approved by the quality manager; the release automation applies it.
+    status, url, body = post(shell, "/co-send", {"as": "bob", "co": co["locator"]})
+    assert status == 400 and "request review" in body, body[:300]
+    status, url, body = post(shell, "/co-review", {"as": "bob", "co": co["locator"]})
+    assert status == 200, body[:300]
+    status, url, body = post(shell, "/co-send", {"as": "bob", "co": co["locator"]})
     assert status == 200, body[:300]
     run = hub.runner.run_for_record(co["locator"])
     state = hub.runner.load(run["id"])

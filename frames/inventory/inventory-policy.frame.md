@@ -3,7 +3,7 @@ type: frame [0.2]
 name: inventory-policy
 description: "Parts, stock locations and lots: what moves freely, what needs an approval, and how stock is held, counted and released."
 visibility: internal
-version: "1.1.0"
+version: "1.2.0"
 scope: department
 maintainer: dave
 inherits: org-model
@@ -73,6 +73,7 @@ Controllers may approve stock adjustments in Inventory/Adjustments.
 Stock reviewers may approve stock adjustments in Inventory/Adjustments.
 Staff may create stock releases in Inventory/Releases.
 Quality managers may approve stock releases in Inventory/Releases.
+Staff may comment on anything in Inventory.
 
 ## Thresholds
 The count variance tolerance is 2 percent.
@@ -122,3 +123,16 @@ The record type is part.
 Closes as active.
 1. [staff] Request the part (record-filer)
 2. [buyer] Approve the part
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Storekeeper | Keeps the stock: receives, moves, counts and asks for adjustments. |
+| Stock reviewer | Signs small stock adjustments within the tolerance. |
+| Controller | Approves stock adjustments. |
+| Quality manager | Approves releases from quarantine. |
+| Buyer | Approves parts and keeps manufacturer and supplier parts. |
+| Design engineer | Creates parts and manufacturer parts for their designs. |
+| Staff | Asks for parts, quarantines suspect stock and asks for its release. |
+| the purchasing-assistant cog | Signs small stock adjustments within its criteria. |
+| the stores cog | Keeps stock as a storekeeper does, where the person who asks may too. |

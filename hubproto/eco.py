@@ -1,12 +1,15 @@
 """Change orders (ECOs): the way a policy or SOP changes once the SOPs are documents.
 
 A change request (CR) asks for a change and says why; it is approved on its own. A change order (CO) carries the
-work: a draft revision of every SOP or policy it changes, and the change requests it implements. Each time a carried
-draft changes, the hub stages the Frame those drafts compile into (a proposal marked with the change order), so the
-change order always shows the rule changes next to the text changes. A compile error, or a change order staged
-against a release that is no longer in force, blocks it; a staged Frame that widens anyone's authority also needs both
-policy owners on its widening changes. When the change order is approved, it is released: the staged Frame comes into
-force and the carried revisions become effective together, each making its predecessor obsolete.
+work: a draft revision of every SOP or policy it changes, and the change requests it implements. This module keeps
+what a change order carries (its drafts), stages the Frame they compile into (a proposal marked with the change
+order), and releases it: the staged Frame comes into force and the carried revisions become effective together, each
+making its predecessor obsolete.
+
+The loop around it (change control v2: review rounds, the delta and its decisions, approval readiness, the release
+steps) is hubproto.changecontrol: the Frame is compiled in a change order's review rounds from the drafts as they
+stand, no longer when document control approves each revision, and the change order's approval approves the
+revisions it carries. ``frame_reasons`` and ``check_approval`` here answer with its readiness checks.
 """
 
 from __future__ import annotations
@@ -44,8 +47,126 @@ def carried(hub, co: dict) -> list[dict]:
     return sorted(out, key=lambda x: x["name"] or "")
 
 
-def drafts_of(hub, co: dict) -> dict[str, str]:
-    return {c["name"]: c["draft"]["locator"] for c in carried(hub, co) if c["name"]}
+def drafts_of(hub, co: dict) -> dict[str, str | None]:
+    """{SOP name: draft locator} of what the change order carries; a retirement it carries is the name with None (the
+    Frame compiles as absent)."""
+    out = {c["name"]: c["draft"]["locator"] for c in carried(hub, co) if c["name"]}
+    for name in retirements(co):
+        out[name] = None
+    return out
+
+
+def retirements(co: dict) -> dict[str, dict]:
+    """{SOP name: {"document", "locator", "by", "reason", "at"}}: the documents this change order retires."""
+    return dict(co["fields"].get("retires") or {})
+
+
+def _may_carry(bundle: dict, co: dict, by: str, what: str) -> str:
+    """Empty when ``by`` may change what the change order carries: its requester, a document controller or a policy owner
+    (who then contributes to it)."""
+    roles = authz.roles_of(bundle, by)
+    if by in (co["fields"].get("requested_by"), co.get("created_by")) or {"document-controller", "policy-owner"} & set(roles):
+        return ""
+    return (f"{co['number']} is {co['fields'].get('requested_by') or co.get('created_by')}'s change order: they, a document controller or a "
+            f"policy owner {what}")
+
+
+def frame_path_problem(hub, name: str, rel: str) -> str:
+    """Why a Frame named ``name`` may not live at ``rel`` under frames/ (empty when it may): a relative path inside
+    frames/, ending in .frame.md, not another Frame's file, and not a second file for a Frame that has one."""
+    from pathlib import PurePosixPath
+
+    p = PurePosixPath(str(rel or ""))
+    if not rel or p.is_absolute() or ".." in p.parts or any(part.startswith(".") for part in p.parts) or not p.name.endswith(".frame.md"):
+        return f"{rel!r} is not a place for a Frame: a relative path under frames/ ending in .frame.md"
+    for other in hub.frames.frames.values():
+        if str(other.relpath) == str(p) and other.name != name:
+            return f"frames/{p} is the Frame {other.name}"
+        if other.name == name and str(other.relpath) != str(p):
+            return f"the Frame {name} is at frames/{other.relpath}, not frames/{p}: a second file would give two Frames one name"
+    return ""
+
+
+def add_new_sop(hub, co_ref: str, name: str, text: str, *, by: str, author: str | None = None, relpath: str | None = None) -> dict:
+    """A new SOP, work instruction, policy, cog profile or persona document carried by the change order: ``text`` is its
+    whole Frame text (front matter and body, ``name`` its Frame name). It is a draft at revision A until the change
+    order's release makes it effective, like any revision. ``by`` asks (the requester, a document controller or a policy
+    owner);
+    ``author`` writes it (default ``by``). ``relpath`` is where its Frame file goes under frames/ (default
+    ``<name>.frame.md``). Returns the draft (or the one the change order already carries for that name)."""
+    from .frames import load_frame_text
+
+    co = _co(hub, co_ref)
+    if finished(co) or (co.get("state") or "").startswith("awaiting"):
+        raise ValueError(f"{co['number']} is {co['state']}: change what it carries while it is being prepared or revised")
+    bundle = hub.releases.bundle(hub.releases.current()["digest"])
+    why = _may_carry(bundle, co, by, "add documents to it")
+    if why:
+        raise ValueError(why)
+    for c in carried(hub, co):
+        if c["name"] == name:
+            return c["draft"]
+    if sopdocs.of_lineage(hub.kernel, name):
+        raise ValueError(f"{name} already has a document: revise it on the change order (add_sop)")
+    from pathlib import Path
+
+    rel = relpath or f"{name}.frame.md"
+    why = frame_path_problem(hub, name, rel)
+    if why:
+        raise ValueError(why)
+    frame = load_frame_text(text, Path(hub.root) / "frames" / rel)
+    if frame.name != name:
+        raise ValueError(f"the text is the Frame {frame.name!r}, not {name!r}")
+    doc_type, folder = sopdocs.kind_of(frame)
+    writer = author or by
+    head = "\n".join(text.splitlines()[: max(0, frame.body_start - 1)])
+    tail = max(1, len(text) - len(text.rstrip("\n")))
+    draft = hub.dms.create(title=sopdocs.title_of(frame), doc_class="controlled", folder=folder, by=writer, content=sopdocs.to_docx(frame.body),
+                           filename=f"{name}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                           doc_type=doc_type,
+                           fields={"lineage": sopdocs.LINEAGE + name, "sop_name": name, "frame_meta": dict(frame.frontmatter), "frame_header": head,
+                                   "frame_tail": tail, "revision": "A", "owner": frame.maintainer or writer, "author": writer,
+                                   "description": frame.description, "change_order": co["number"], "frame_relpath": rel, "new_document": True,
+                                   **({"started_by": by} if writer != by else {})})
+    hub.kernel.link(co["locator"], CARRIES, draft["locator"], by=by)
+    return hub.kernel.get(draft["locator"])
+
+
+def retire_sop(hub, co_ref: str, name: str, *, by: str, reason: str) -> dict:
+    """The change order retires the document in force for ``name``: the delta compiles without that Frame (a delta item
+    says so), and at release the document becomes obsolete and its Frame leaves the release (its file is moved aside
+    to frames/.retired/). The requester, a document controller or a policy owner, with a reason. Returns the change order."""
+    from .release import utcnow
+
+    co = _co(hub, co_ref)
+    if finished(co) or (co.get("state") or "").startswith("awaiting"):
+        raise ValueError(f"{co['number']} is {co['state']}: change what it carries while it is being prepared or revised")
+    bundle = hub.releases.bundle(hub.releases.current()["digest"])
+    why = _may_carry(bundle, co, by, "retire documents on it")
+    if why:
+        raise ValueError(why)
+    if not (reason or "").strip():
+        raise ValueError("say why the document is retired")
+    if any(c["name"] == name for c in carried(hub, co)):
+        raise ValueError(f"{co['number']} carries a revision of {name}: take it off first, then retire it")
+    d = sopdocs.in_force(hub.kernel, name)
+    if d is None:
+        raise ValueError(f"there is no SOP or policy {name!r} in force to retire")
+    r = retirements(co)
+    if name not in r:
+        r[name] = {"document": d["number"], "locator": d["locator"], "by": by, "reason": reason.strip(), "at": utcnow()}
+        hub.kernel.set_fields(co["locator"], {"retires": r}, by=by)
+    return hub.kernel.get(co["locator"])
+
+
+def unretire_sop(hub, co_ref: str, name: str, *, by: str) -> dict:
+    """Take a retirement off the change order."""
+    co = _co(hub, co_ref)
+    r = retirements(co)
+    if name not in r:
+        raise ValueError(f"{co['number']} does not retire {name}")
+    r.pop(name)
+    return hub.kernel.set_fields(co["locator"], {"retires": r}, by=by)
 
 
 def finished(co: dict) -> bool:
@@ -71,14 +192,17 @@ def _next_revision(rev: str) -> str:
     return rev + "-1"
 
 
-def add_sop(hub, co_ref: str, name: str, *, by: str) -> dict:
-    """Start a draft revision of an SOP or policy on this change order (or return the one it already carries)."""
+def add_sop(hub, co_ref: str, name: str, *, by: str, author: str | None = None) -> dict:
+    """Start a draft revision of an SOP or policy on this change order (or return the one it already carries). ``by``
+    asks for it (and must be allowed to); ``author`` is whose draft it is when someone else writes it (the qa-manager cog
+    drafting the prose for a direct change): its first version and its author field are theirs."""
     co = _co(hub, co_ref)
     if finished(co) or (co.get("state") or "").startswith("awaiting-approve"):
         raise ValueError(f"{co['number']} is {co['state']}: add SOPs while it is being prepared, or send it back to the start")
     bundle = hub.releases.bundle(hub.releases.current()["digest"])
-    if by not in (co["fields"].get("requested_by"), co.get("created_by")) and "document-controller" not in authz.roles_of(bundle, by):
-        raise ValueError(f"{co['number']} is {co['fields'].get('requested_by') or co.get('created_by')}'s change order: they or a document controller add SOPs to it")
+    why = _may_carry(bundle, co, by, "add SOPs to it")
+    if why:
+        raise ValueError(why)
     for c in carried(hub, co):
         if c["name"] == name:
             return c["draft"]
@@ -89,24 +213,36 @@ def add_sop(hub, co_ref: str, name: str, *, by: str) -> dict:
     if why:
         raise ValueError(why)
     for d in sopdocs.of_lineage(hub.kernel, name):
-        if d["state"] in ("draft", "open"):
+        if d["state"] in ("draft", "open", "held"):
             other = next((lk["target"] for lk in hub.kernel.links_of(d["locator"]) if lk["rel"] == CARRIES and lk["direction"] == "in"), None)
             o = hub.kernel.get(other) if other else None
             raise ValueError(f"{current['number']} is already being revised ({d['number']}" + (f", on {o['number']})" if o else ")"))
     content, v = hub.dms.content(current["locator"])
     f = current["fields"]
     keep = {k: f.get(k) for k in ("lineage", "sop_name", "frame_meta", "frame_header", "description", "owner", "review_date") if f.get(k) is not None}
-    draft = hub.dms.create(title=f.get("title") or name, doc_class="controlled", folder=current["folder"], by=by, content=content,
+    bom = {x["name"]: x for x in (hub.releases.current() or {}).get("frames") or []}
+    keep["frame_relpath"] = sopdocs._relpath(hub, name, current, bom)  # the revision's Frame stays where the one in force is
+    writer = author or by
+    draft = hub.dms.create(title=f.get("title") or name, doc_class="controlled", folder=current["folder"], by=writer, content=content,
                            filename=v.get("filename") or f"{name}.docx", mime=v.get("mime") or "application/octet-stream",
                            doc_type=f.get("doc_type") or "sop",
-                           fields={**keep, "revision": _next_revision(f.get("revision")), "revises": current["number"], "author": by,
-                                   "change_order": co["number"]})
+                           fields={**keep, "revision": _next_revision(f.get("revision")), "revises": current["number"], "author": writer,
+                                   "change_order": co["number"], **({"started_by": by} if writer != by else {})})
     hub.kernel.link(co["locator"], CARRIES, draft["locator"], by=by)
     return hub.kernel.get(draft["locator"])
 
 
 def remove_sop(hub, co_ref: str, name: str, *, by: str) -> None:
-    co = _co(hub, co_ref)
+    """Take a revision off the change order (it is withdrawn): its requester or a document controller, while it is being
+    prepared or revised (once sent for approval what it carries is fixed)."""
+    from . import changecontrol
+
+    co = changecontrol.sync(hub, co_ref)
+    why = changecontrol.may_edit(hub, co, by)
+    if why:
+        raise ValueError(why)
+    if changecontrol.stage_of(co) not in changecontrol.EDITABLE:
+        raise ValueError(f"{co['number']} is {changecontrol.stage_of(co).replace('-', ' ')}: what it carries is fixed now")
     for c in carried(hub, co):
         if c["name"] == name:
             if c["draft"]["state"] not in ("draft", "open"):
@@ -128,6 +264,34 @@ def compiled_from(hub, co: dict) -> dict[str, str]:
     return {n: str(d["fields"].get("content_sha") or "") for n, d in sorted(approved_of(hub, co).items())}
 
 
+class carried_record_types:
+    """While the change order's delta is compiled, the record types it carries are the ones in force (so a CO can carry a
+    new record type together with the process that uses it): the record types in force with its record-type changes
+    applied (hubproto.recordtypes.check). Restored afterwards; the release activates them for good."""
+
+    def __init__(self, hub, co: dict):
+        self.hub, self.co, self.saved = hub, co, None
+
+    def __enter__(self):
+        changes = list(self.co["fields"].get("record_type_changes") or [])
+        if not changes:
+            return self
+        try:
+            from . import recordtypes
+        except ImportError:
+            return self
+        k = self.hub.kernel
+        types, _, _ = recordtypes.check(self.hub, changes, k.types)
+        self.saved = (k.types_hook, k._types)
+        k.types_hook, k._types = None, types
+        return self
+
+    def __exit__(self, *exc):
+        if self.saved is not None:
+            self.hub.kernel.types_hook, self.hub.kernel._types = self.saved
+        return False
+
+
 def stage(hub, co_ref: str, drafts: dict[str, str] | None = None, extractor=None) -> dict:
     """Compile the Frame the change order's approved revisions make (or the given ``drafts``: {SOP name: locator}),
     against the release in force, and stage it on the change order as its proposal (replacing the one staged before).
@@ -136,18 +300,26 @@ def stage(hub, co_ref: str, drafts: dict[str, str] | None = None, extractor=None
 
     co = _co(hub, co_ref)
     if drafts is None:
-        drafts = {n: d["locator"] for n, d in approved_of(hub, co).items()}
+        drafts = {**{n: d["locator"] for n, d in approved_of(hub, co).items()}, **{n: None for n in retirements(co)}}
     old = co["fields"].get("staged_proposal")
-    shas = {n: str((hub.kernel.get(loc) or {}).get("fields", {}).get("content_sha") or "") for n, loc in sorted(drafts.items())}
+    shas = {n: (str((hub.kernel.get(loc) or {}).get("fields", {}).get("content_sha") or "") if loc else "retired") for n, loc in sorted(drafts.items())}
     fields: dict = {"staged_from": shas, "staged_base": (hub.releases.current() or {}).get("digest"), "staged_errors": [],
                     "staged_at": __import__("hubproto.release", fromlist=["utcnow"]).utcnow()}
     if not drafts:
         fields.update({"staged_proposal": None, "staged_number": None, "staged_changes": 0, "staged_widenings": 0})
     else:
         try:
-            p = hub.compile(sop_drafts=drafts, save=True, extractor=extractor)
+            with carried_record_types(hub, co):  # a CO may carry a new record type and the process that uses it
+                p = hub.compile(sop_drafts=drafts, save=True, extractor=extractor)
             p["eco"] = co["number"]
             p["source"] = "eco"
+            if old and old != p["id"]:  # the questions of the compile staged before (on any release) carry, or close
+                from .compile import carry_questions
+
+                try:
+                    p["questions"] = carry_questions(hub.proposals.load(old).get("questions") or [], p.get("questions") or [])
+                except Exception:
+                    pass
             hub.proposals.save(p)
             fields.update({"staged_proposal": p["id"], "staged_number": p.get("number"), "staged_changes": len(p["changes"]),
                            "staged_widenings": sum(1 for c in p["changes"] if c.get("widening") and c.get("op") != "text"),
@@ -186,74 +358,45 @@ def preview(hub, co_ref: str) -> dict | None:
 
 
 def frame_reasons(hub, co: dict) -> list[str]:
-    """Why the compiled Frame is not ready (empty when it is): every carried revision approved, compiled from exactly
-    those approved revisions against the release in force, with no problem that stops it."""
-    from . import formlayout
+    """Why the change order may not go for approval yet (empty when it may): hubproto.changecontrol.send_reasons (a
+    review round has run on what it carries now, its delta compiles against the release in force, nothing flagged)."""
+    from . import changecontrol
 
-    reasons = []
-    carried_now = carried(hub, co)
-    forms = co["fields"].get("form_changes") or {}
-    if not carried_now and not forms:
-        return ["it carries no SOP or policy revision and no form change"]
-    if not carried_now:
-        return formlayout.carried_reasons(hub, co)  # forms only: no Frame to compile
-    for c in carried_now:
-        d = c["draft"]
-        if not (d["state"] == "approved" and d["fields"].get("held_for") == co["number"]):
-            reasons.append(f"{d['number']} ({c['name']}) is {d['state'].replace('-', ' ')}: it must be approved through document control first")
-    f = co["fields"]
-    running = [j for j in (hub.automation.of(co["locator"]) if getattr(hub, "automation", None) else [])
-               if j["automation"] == "compile-frame" and j["status"] in ("queued", "running")]
-    if not reasons:
-        if running:
-            reasons.append("the Frame is being compiled (see the automation job)")
-        elif not f.get("staged_proposal") and not f.get("staged_errors"):
-            reasons.append("the Frame has not been compiled yet")
-        elif (f.get("staged_from") or {}) != compiled_from(hub, co):
-            reasons.append("the compiled Frame is not made of the approved revisions: compile it again")
-        elif f.get("staged_base") != (hub.releases.current() or {}).get("digest"):
-            reasons.append("the Frame was compiled against a release no longer in force: compile it again")
-    reasons += list(f.get("staged_errors") or [])
-    return reasons + formlayout.carried_reasons(hub, co)
+    return changecontrol.send_reasons(hub, co)
 
 
 def status(hub, co_ref: str) -> dict:
-    """Where a change order stands: what it carries, what it implements, the compiled Frame and what blocks it."""
-    co = _co(hub, co_ref)
+    """Where a change order stands: what it carries, what it implements, the staged Frame and what blocks it (sending
+    it for approval, or, once it waits at its Gate, signing it)."""
+    from . import changecontrol
+
+    co = changecontrol.sync(hub, co_ref)
     f = co["fields"]
-    reasons = frame_reasons(hub, co) if not finished(co) else []
     proposal = None
     if f.get("staged_proposal"):
-        from .compile import change_state
-
-        proposal = hub.proposals.load(f["staged_proposal"])
-        if not finished(co):
-            for c in proposal["changes"]:
-                # A wording change is the carried revision itself, approved through document control: the change order
-                # covers it. A rule that widens anyone's authority also needs both policy owners.
-                if c.get("widening") and c.get("op") != "text" and change_state(c) != "approved":
-                    have = sorted({d["by"] for d in c["decisions"] if d["verdict"] == "approve"})
-                    reasons.append(f"widening: {c['reason']} needs both policy owners" + (f" (approved by {', '.join(have)})" if have else ""))
-                if change_state(c) == "rejected":
-                    reasons.append(f"rejected by a policy owner: {c['reason']}")
-    implements = []
-    for n in f.get("implements") or []:
-        cr = next((r for r in hub.kernel.query(type_="change-request") if r["number"] == n), None)
-        implements.append(cr)
-        if finished(co):
-            continue
-        if cr is None:
-            reasons.append(f"there is no change request {n}")
-        elif cr["state"] in ("open", "draft", "returned", "failed") or cr["state"].startswith("awaiting-approve"):
-            reasons.append(f"{n} is not approved yet ({cr['state']})")
-    return {"carried": carried(hub, co), "implements": [x for x in implements if x], "proposal": proposal, "ready": not reasons,
-            "reasons": reasons, "co": co}
+        try:
+            proposal = hub.proposals.load(f["staged_proposal"])
+        except Exception:
+            proposal = None
+    if finished(co):
+        reasons = []
+    elif changecontrol.stage_of(co) == "awaiting-approval":
+        reasons = changecontrol.approval_reasons(hub, co)
+    else:
+        reasons = changecontrol.send_reasons(hub, co)
+    crs = {r["number"]: r for r in hub.kernel.query(type_="change-request")}
+    implements = [crs[n] for n in f.get("implements") or [] if n in crs]
+    return {"carried": carried(hub, co), "implements": implements, "proposal": proposal, "ready": not reasons, "reasons": reasons, "co": co,
+            "stage": changecontrol.stage_of(co)}
 
 
 def check_approval(hub, co_ref: str) -> list[str]:
-    """Why the change order may not be approved yet (empty when it may): every revision it carries is approved, the
-    Frame compiled from them is ready, its widenings are signed by both policy owners and what it implements is approved."""
-    return status(hub, co_ref)["reasons"]
+    """Why the change order may not be approved yet (empty when it may): hubproto.changecontrol.approval_reasons
+    (every item of its delta decided, every warning accepted, the delta current, nothing stale or flagged, the state
+    map answered, every change request it implements approved and not flagged)."""
+    from . import changecontrol
+
+    return changecontrol.approval_reasons(hub, co_ref)
 
 
 def _utc():
@@ -268,18 +411,56 @@ def activate_frame(hub, co_ref: str) -> dict:
     co = _co(hub, co_ref)
     if co["fields"].get("released_release"):
         return hub.releases.get(co["fields"]["released_release"]) or {"digest": co["fields"]["released_release"]}
-    if not co["fields"].get("staged_proposal") and not carried(hub, co):
+    if not co["fields"].get("staged_proposal") and not carried(hub, co) and not retirements(co):
         return hub.releases.current()  # it changes forms only: the Frame in force stays
     proposal = hub.proposals.load(co["fields"]["staged_proposal"])
     for c in proposal["changes"]:
         if (not c.get("widening") or c.get("op") == "text") and change_state(c) == "pending":
-            for who in [f"change-order:{co['number']}"] + ([f"document-control:{co['number']}"] if c.get("widening") else []):
-                c["decisions"].append({"by": who, "verdict": "approve", "at": _utc(), "change_digest": "",
-                                       "meaning": f"approved with {co['number']} (the revision was approved through document control)"})
+            signer = (co["fields"].get("signed") or {}).get("by") or "its approver"
+            c["decisions"].append({"by": f"change-order:{co['number']}", "verdict": "approve", "at": _utc(), "change_digest": "",
+                                   "meaning": f"covered by the signature of {co['number']} ({signer}): the change order's approval approves "
+                                              "the revisions it carries"})
     hub.proposals.save(proposal)
     meta = hub.release(proposal["id"], f"change-order:{co['number']}")
     hub.kernel.set_fields(co["locator"], {"released_release": meta["digest"]}, by="hub")
     return meta
+
+
+def release_problems(hub, co_ref: str) -> list[str]:
+    """What would stop the release part-way, checked before anything comes into force (empty when nothing would): each
+    Frame the release writes goes to a sound place that is not another Frame's file and not a second file for its name,
+    no two go to one place, each carried revision may still be published, and each document it retires is in force."""
+    co = _co(hub, co_ref)
+    out = []
+    try:
+        disk = hub.frames
+    except Exception as e:  # the Frames on disk do not load as they are: writing more would not help
+        return [f"the Frames on disk do not load: {e}"]
+    retired = set(retirements(co))
+    pid = co["fields"].get("staged_proposal")
+    p = hub.proposals.load(pid) if pid else None
+    places: dict[str, str] = {}
+    for name, o in sorted(((p or {}).get("overrides") or {}).items()):
+        rel = str(o.get("path") or (disk.get(name).relpath if name in disk.frames else f"{name}.frame.md"))
+        why = frame_path_problem(hub, name, rel)
+        if why:
+            out.append(f"{name}: {why}")
+        if rel in places:
+            out.append(f"{name} and {places[rel]} would both be written to frames/{rel}")
+        places[rel] = name
+    for name in sorted(retired):
+        r = retirements(co)[name]
+        d = hub.kernel.get(r["locator"])
+        if d is None or d["state"] != "effective":
+            out.append(f"{r.get('document')} ({name}) is {(d or {}).get('state') or 'gone'}, not in force: it cannot be retired")
+    for c in carried(hub, co):
+        d = c["draft"]
+        if d["state"] in ("withdrawn", "obsolete", "rejected"):
+            out.append(f"{d['number']} ({c['name']}) is {d['state']}: it cannot be published")
+        cur = c["in_force"]
+        if d["fields"].get("revises") and (cur is None or cur["number"] != d["fields"]["revises"]):
+            out.append(f"{d['number']} revises {d['fields']['revises']}, which is no longer the {c['name']} in force")
+    return out
 
 
 def publish_revisions(hub, co_ref: str, digest: str) -> list[str]:
@@ -302,6 +483,18 @@ def publish_revisions(hub, co_ref: str, digest: str) -> list[str]:
         hub.dms.release_revision(d["locator"], by="hub", release=digest)
         hub.kernel.transition(d["locator"], "effective", by="hub", release=digest, reason=f"released with {co['number']}")
         done.append(d["number"])
+    for name, r in retirements(co).items():  # the documents it retires become obsolete; their Frame file is moved aside
+        old = hub.kernel.get(r["locator"])
+        if old and old["state"] == "effective":
+            hub.kernel.transition(old["locator"], "obsolete", by="hub", release=digest, reason=f"retired with {co['number']}: {r.get('reason')}")
+            done.append(old["number"])
+        frame = hub.frames.frames.get(name)
+        if frame is not None and frame.path.exists():
+            aside = hub.frames.root / ".retired" / frame.relpath
+            aside.parent.mkdir(parents=True, exist_ok=True)
+            frame.path.replace(aside)
+            hub._frames = None
+            hub._released_cache = {}
     return done
 
 
@@ -328,17 +521,21 @@ def assign_revision_training(hub, co_ref: str, digest: str) -> tuple[int, list[s
 
 
 def release(hub, co_ref: str, *, by: str) -> dict:
-    """Release an approved change order at once (the release automation does the same, step by step)."""
+    """Release an approved change order now: the release automation's own job (``release-change-order``), worked at
+    once, so there is one release path. Raises ValueError with the job's reason when it stops."""
+    from . import automation
+
+    co = _co(hub, co_ref)
+    if co["state"] == "released" and co["fields"].get("released_release"):
+        return hub.releases.get(co["fields"]["released_release"])
+    if co["state"] != "approved":
+        raise ValueError(f"{co['number']} is {co['state']}: it is released once its approver signs it")
     blocked = check_approval(hub, co_ref)
     if blocked:
         raise ValueError("the change order cannot be released: " + "; ".join(blocked))
-    from . import formlayout
-
-    meta = activate_frame(hub, co_ref)
-    publish_revisions(hub, co_ref, meta["digest"])
-    formlayout.activate(hub, _co(hub, co_ref), meta["digest"])
-    assign_revision_training(hub, co_ref, meta["digest"])
-    co = _co(hub, co_ref)
-    if co["state"] != "released":
-        hub.kernel.transition(co["locator"], "released", by=by, reason="released: its Frame and revisions are in force")
-    return meta
+    job = automation.start(hub, "release-change-order", subject=co["locator"], trigger=f"{by} released {co['number']}", by=by)
+    if job["status"] in ("queued", "running"):
+        job = automation.run(hub, job["id"])
+    if job["status"] != "success":
+        raise ValueError(f"the release of {co['number']} stopped: {job.get('outcome')}")
+    return hub.releases.get(_co(hub, co_ref)["fields"]["released_release"])

@@ -1,0 +1,5 @@
+# Development and test only; the hub itself is standard-library Python (no runtime dependencies).
+#   pip install -r requirements-dev.txt     (or: pip install -e ".[dev]")
+#   python -m pytest -q -n auto             (the suite in parallel; drop -n auto to run it serially)
+pytest>=8
+pytest-xdist>=3.5
