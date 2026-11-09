@@ -115,7 +115,11 @@ class AutomationMixin:
         steps = ""
         for i, s in enumerate(job["steps"], 1):
             mark, cls = STEP.get(s["status"], ("·", ""))
-            steps += (f"<li class='step {esc(s['status'])}'><span class='mark {cls}' aria-hidden='true'>{mark}</span><div><b>{i}. {esc(s['name'])}</b> "
+            from ..automation import step_model
+
+            who = step_model(job.get("automation") or "", s["name"])
+            kind = (f" <span class='chip info' title='{esc(who)}'>cogs (model)</span>" if who else " <span class='chip'>no model</span>")
+            steps += (f"<li class='step {esc(s['status'])}'><span class='mark {cls}' aria-hidden='true'>{mark}</span><div><b>{i}. {esc(s['name'])}</b>{kind} "
                       f"<span class='why'>{esc(s['status'])}" + (f", {int(s['ms'])} ms" if s.get("ms") else "") + "</span>"
                       + (f"<div class='msg'>{esc(s['detail'])}</div>" if s.get("detail") else "") + "</div></li>")
         retry = ""

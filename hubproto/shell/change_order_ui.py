@@ -839,10 +839,14 @@ class ChangeOrderMixin:
             out += f"<div class='card crit' role='alert'>{esc(rnd['error'])}</div>"
         job = self.hub.automation.load(rnd["job"]) if rnd.get("job") else None
         if job:
+            from ..automation import step_model
             from .automation_ui import STEP, _chip
 
+            def kind(name):
+                who = step_model(job.get("automation") or "", name)
+                return f" <span class='chip info' title='{esc(who)}'>cogs (model)</span>" if who else " <span class='chip'>no model</span>"
             steps = "".join(f"<li><span class='m {STEP.get(s['status'], ('·', ''))[1]}' aria-hidden='true'>{STEP.get(s['status'], ('·', ''))[0]}</span>"
-                            f"<span><span class='vh'>{esc(s['status'])}: </span>{esc(s['name'])}"
+                            f"<span><span class='vh'>{esc(s['status'])}: </span>{esc(s['name'])}{kind(s['name'])}"
                             + (f" <span class='why'>{esc(short(s.get('detail') or '', 200))}</span>" if s.get("detail") else "") + "</span></li>"
                             for s in job.get("steps") or [])
             out += (f"<p>{icon('activity')}<a href='{href('/automation/' + job['id'], self.user)}'>The compile-frame job</a> {_chip(job['status'])}</p>"
