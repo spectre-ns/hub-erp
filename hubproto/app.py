@@ -137,18 +137,25 @@ class Hub:
     def extractor(self, calls: bool = False):
         """How this hub reads SOPs (hubproto.extract.get_extractor), with its cache and the names a model may use.
         ``calls``: may ask the local model (background jobs, the command line); a page uses only what was read before."""
-        from .llm_extract import context_for
+        from .llm_extract import baseline_for, context_for, hosted_reader
 
         ex = get_extractor(cache_dir=Path(self.root) / "state" / "extract-cache", context=context_for(self), gateway=self.model, calls=calls)
         if getattr(ex, "name", "") != "hybrid":
             return ex
+        # Diff-based reading against the release in force; Claude Opus reads only when switched on for compilation.
+        baseline, hosted = (lambda: baseline_for(self)), hosted_reader()
         committee = self.compile_committee()
         if committee:
             from .llm_extract import CommitteeExtractor
 
-            return CommitteeExtractor(committee["members"], committee["quorum"], cache_dir=Path(self.root) / "state" / "extract-cache",
-                                      context=context_for(self), gateway=self.model, calls=calls)
-        if not __import__("os").environ.get("HUBPROTO_EXTRACTOR_MODEL"):
+            members = [(n, hosted["model"]) for n, _ in committee["members"]] if hosted else committee["members"]
+            return CommitteeExtractor(members, committee["quorum"], cache_dir=Path(self.root) / "state" / "extract-cache",
+                                      context=context_for(self), gateway=self.model, calls=calls, baseline=baseline,
+                                      **({"call": hosted["call"], "budget": hosted["budget"]} if hosted else {}))
+        ex.baseline = baseline
+        if hosted:
+            ex.model, ex.call, ex.budget = hosted["model"], hosted["call"], hosted["budget"]
+        elif not __import__("os").environ.get("HUBPROTO_EXTRACTOR_MODEL"):
             ex.model = self.compiler_model() or ex.model
         return ex
 
@@ -237,6 +244,9 @@ class Hub:
         changes = drift_guard(old_rules, rules)
         for c in changes:
             c["decisions"] = []
+        from .compile import stamp_origins
+
+        stamp_origins(changes, kind="direct", by=by)  # made in Settings, not read from prose
         meta = self.releases.current() or {}
         return {"id": uuid.uuid4().hex[:12], "created_at": utcnow(), "extractor": "settings", "source": "settings",
                 "proposed_by": by, "reason": reason, "scopes": [], "frames": meta.get("frames") or [],
@@ -352,6 +362,12 @@ class Hub:
             if o.get("draft") and self.kernel.get(o["draft"]):
                 authors[n] = sorted({v.get("by") for v in self.dms.versions(o["draft"]) if v.get("by")})
         proposal["draft_authors"] = authors
+        writers = {n: ((self.kernel.get(o["draft"]) or {}).get("fields") or {}).get("author") or (authors.get(n) or [None])[-1]
+                   for n, o in proposal["overrides"].items() if o.get("draft")}
+        for c in proposal["changes"]:  # a change read from a draft's prose came from that draft's author
+            o = c.get("origin") or {}
+            if o.get("kind") == "prose" and not o.get("by") and writers.get(o.get("frame")):
+                o["by"] = writers[o["frame"]]
         from .model import resolve_model
 
         for r in proposal["rules"]:  # a cog is bundled with its model: say now if this hub cannot reach it
@@ -378,6 +394,10 @@ class Hub:
                 prior = by_id.get(c["id"])
                 if prior and prior.get("rule") == c["rule"] and prior.get("decisions"):
                     c["decisions"] = [dict(d, carried_from=old["id"]) for d in prior["decisions"]]
+            from .compile import carry_questions
+
+            # A question the recompile no longer raises is closed; one asked again keeps its answer.
+            proposal["questions"] = carry_questions(old.get("questions") or [], proposal.get("questions") or [])
             old["status"] = "superseded"
             old["superseded_by"] = proposal["id"]
             old["superseded_by_number"] = proposal["number"]
@@ -753,6 +773,9 @@ class Hub:
             prior = by_id.get(c["id"])
             if prior and prior.get("rule") == c["rule"] and prior.get("decisions") and not c.get("decisions"):
                 c["decisions"] = [dict(d, carried_from=old["id"]) for d in prior["decisions"]]
+        from .compile import carry_questions
+
+        new["questions"] = carry_questions(old.get("questions") or [], new.get("questions") or [])
         new["proposed_by"] = old.get("proposed_by")
         new["recompiled_from"] = {"id": old["id"], "number": old.get("number"), "note": note}
         self.proposals.save(new)
