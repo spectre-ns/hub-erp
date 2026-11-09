@@ -3,7 +3,7 @@ type: frame [0.2]
 name: calibration-sop
 description: "Monitoring and measuring resources: calibration results are recorded by staff, reviewed by the quality manager, and an out-of-tolerance result opens a nonconformance automatically."
 visibility: internal
-version: "0.1.0"
+version: "0.1.1"
 scope: department
 maintainer: carol
 inherits: org-model

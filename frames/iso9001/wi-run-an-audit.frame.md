@@ -3,7 +3,7 @@ type: frame [0.2]
 name: wi-run-an-audit
 description: "Work instruction for internal auditors: plan an audit, use the generated checklist, record findings."
 visibility: internal
-version: "0.1.0"
+version: "0.1.1"
 scope: department
 maintainer: carol
 inherits: org-model

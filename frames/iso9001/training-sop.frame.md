@@ -3,7 +3,7 @@ type: frame [0.2]
 name: training-sop
 description: "Training and awareness: every person assigned a controlled document acknowledges it within 14 days; the quality manager may file other training records."
 visibility: internal
-version: "0.1.0"
+version: "0.1.1"
 scope: department
 maintainer: carol
 inherits: org-model

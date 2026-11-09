@@ -3,7 +3,7 @@ type: frame [0.2]
 name: quality-manual
 description: "Quality manual of {{COMPANY_NAME}}: context, scope, quality policy, roles, risks and objectives, resources, communication, operational planning and improvement. Narrative only; the SOP Frames carry the rules."
 visibility: internal
-version: "0.1.0"
+version: "0.1.1"
 scope: company
 maintainer: "{{MANAGEMENT_REPRESENTATIVE}}"
 inherits: org-model

@@ -3,7 +3,7 @@ type: frame [0.2]
 name: wi-file-a-nonconformance
 description: "Work instruction for staff: how to open a nonconformance from the shell and what happens next."
 visibility: internal
-version: "0.1.0"
+version: "0.1.1"
 scope: department
 maintainer: carol
 inherits: org-model

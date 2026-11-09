@@ -3,7 +3,7 @@ type: frame [0.2]
 name: complaint-sop
 description: "Customer communication and satisfaction: complaints are logged by staff, risk-scored, answered by the quality manager within 10 days, and a medium or high severity complaint opens a nonconformance."
 visibility: internal
-version: "0.1.0"
+version: "0.1.1"
 scope: department
 maintainer: carol
 inherits: org-model

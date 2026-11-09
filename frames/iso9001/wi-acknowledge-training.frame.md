@@ -3,7 +3,7 @@ type: frame [0.2]
 name: wi-acknowledge-training
 description: "Work instruction for staff: how to acknowledge a document assigned for training from the inbox."
 visibility: internal
-version: "0.1.0"
+version: "0.1.1"
 scope: department
 maintainer: carol
 inherits: org-model

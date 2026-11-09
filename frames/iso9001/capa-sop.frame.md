@@ -3,7 +3,7 @@ type: frame [0.2]
 name: capa-sop
 description: "Corrective and preventive action: root cause, actions, verification by the owner, an effectiveness check after a fixed interval, and closure by the quality manager."
 visibility: internal
-version: "0.1.0"
+version: "0.1.1"
 scope: department
 maintainer: carol
 inherits: org-model

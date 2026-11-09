@@ -3,7 +3,7 @@ type: frame [0.2]
 name: tasks-sop
 description: "Tasks: any member of staff files a task for a person; it waits for that person and closes as done when they complete it. Used for quality objectives, management review actions and improvement suggestions."
 visibility: internal
-version: "0.1.0"
+version: "0.1.1"
 scope: company
 maintainer: operations
 inherits: org-model

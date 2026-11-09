@@ -3,7 +3,7 @@ type: frame [0.2]
 name: supplier-sop
 description: "Control of externally provided processes, products and services: the quality manager evaluates a supplier against fixed criteria and the management representative approves it for a scope and a re-evaluation date."
 visibility: internal
-version: "0.1.0"
+version: "0.1.1"
 scope: department
 maintainer: carol
 inherits: org-model

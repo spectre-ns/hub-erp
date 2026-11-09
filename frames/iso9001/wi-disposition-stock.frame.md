@@ -3,7 +3,7 @@ type: frame [0.2]
 name: wi-disposition-stock
 description: "Work instruction for the quality manager: disposition a nonconformance and the stock it concerns."
 visibility: internal
-version: "0.1.0"
+version: "0.1.1"
 scope: department
 maintainer: carol
 inherits: org-model

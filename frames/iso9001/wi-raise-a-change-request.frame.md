@@ -3,7 +3,7 @@ type: frame [0.2]
 name: wi-raise-a-change-request
 description: "Work instruction for staff: raise a change request, get it approved, verify it."
 visibility: internal
-version: "0.1.0"
+version: "0.1.1"
 scope: department
 maintainer: carol
 inherits: org-model

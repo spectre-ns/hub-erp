@@ -3,7 +3,7 @@ type: frame [0.2]
 name: wi-record-management-review
 description: "Work instruction for the management representative: prepare, hold and record a management review."
 visibility: internal
-version: "0.1.0"
+version: "0.1.1"
 scope: department
 maintainer: carol
 inherits: org-model

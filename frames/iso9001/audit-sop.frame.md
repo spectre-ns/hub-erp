@@ -3,7 +3,7 @@ type: frame [0.2]
 name: audit-sop
 description: "Internal audit: an auditor plans an audit against the processes in the policy release, records the findings, and the quality manager accepts them."
 visibility: internal
-version: "0.1.0"
+version: "0.1.1"
 scope: department
 maintainer: bob
 inherits: org-model
