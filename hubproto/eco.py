@@ -1,12 +1,15 @@
 """Change orders (ECOs): the way a policy or SOP changes once the SOPs are documents.
 
 A change request (CR) asks for a change and says why; it is approved on its own. A change order (CO) carries the
-work: a draft revision of every SOP or policy it changes, and the change requests it implements. Each time a carried
-draft changes, the hub stages the Frame those drafts compile into (a proposal marked with the change order), so the
-change order always shows the rule changes next to the text changes. A compile error, or a change order staged
-against a release that is no longer in force, blocks it; a staged Frame that widens anyone's authority also needs both
-policy owners on its widening changes. When the change order is approved, it is released: the staged Frame comes into
-force and the carried revisions become effective together, each making its predecessor obsolete.
+work: a draft revision of every SOP or policy it changes, and the change requests it implements. This module keeps
+what a change order carries (its drafts), stages the Frame they compile into (a proposal marked with the change
+order), and releases it: the staged Frame comes into force and the carried revisions become effective together, each
+making its predecessor obsolete.
+
+The loop around it (change control v2: review rounds, the delta and its decisions, approval readiness, the release
+steps) is hubproto.changecontrol: the Frame is compiled in a change order's review rounds from the drafts as they
+stand, no longer when document control approves each revision, and the change order's approval approves the
+revisions it carries. ``frame_reasons`` and ``check_approval`` here answer with its readiness checks.
 """
 
 from __future__ import annotations
@@ -186,74 +189,45 @@ def preview(hub, co_ref: str) -> dict | None:
 
 
 def frame_reasons(hub, co: dict) -> list[str]:
-    """Why the compiled Frame is not ready (empty when it is): every carried revision approved, compiled from exactly
-    those approved revisions against the release in force, with no problem that stops it."""
-    from . import formlayout
+    """Why the change order may not go for approval yet (empty when it may): hubproto.changecontrol.send_reasons (a
+    review round has run on what it carries now, its delta compiles against the release in force, nothing flagged)."""
+    from . import changecontrol
 
-    reasons = []
-    carried_now = carried(hub, co)
-    forms = co["fields"].get("form_changes") or {}
-    if not carried_now and not forms:
-        return ["it carries no SOP or policy revision and no form change"]
-    if not carried_now:
-        return formlayout.carried_reasons(hub, co)  # forms only: no Frame to compile
-    for c in carried_now:
-        d = c["draft"]
-        if not (d["state"] == "approved" and d["fields"].get("held_for") == co["number"]):
-            reasons.append(f"{d['number']} ({c['name']}) is {d['state'].replace('-', ' ')}: it must be approved through document control first")
-    f = co["fields"]
-    running = [j for j in (hub.automation.of(co["locator"]) if getattr(hub, "automation", None) else [])
-               if j["automation"] == "compile-frame" and j["status"] in ("queued", "running")]
-    if not reasons:
-        if running:
-            reasons.append("the Frame is being compiled (see the automation job)")
-        elif not f.get("staged_proposal") and not f.get("staged_errors"):
-            reasons.append("the Frame has not been compiled yet")
-        elif (f.get("staged_from") or {}) != compiled_from(hub, co):
-            reasons.append("the compiled Frame is not made of the approved revisions: compile it again")
-        elif f.get("staged_base") != (hub.releases.current() or {}).get("digest"):
-            reasons.append("the Frame was compiled against a release no longer in force: compile it again")
-    reasons += list(f.get("staged_errors") or [])
-    return reasons + formlayout.carried_reasons(hub, co)
+    return changecontrol.send_reasons(hub, co)
 
 
 def status(hub, co_ref: str) -> dict:
-    """Where a change order stands: what it carries, what it implements, the compiled Frame and what blocks it."""
-    co = _co(hub, co_ref)
+    """Where a change order stands: what it carries, what it implements, the staged Frame and what blocks it (sending
+    it for approval, or, once it waits at its Gate, signing it)."""
+    from . import changecontrol
+
+    co = changecontrol.sync(hub, co_ref)
     f = co["fields"]
-    reasons = frame_reasons(hub, co) if not finished(co) else []
     proposal = None
     if f.get("staged_proposal"):
-        from .compile import change_state
-
-        proposal = hub.proposals.load(f["staged_proposal"])
-        if not finished(co):
-            for c in proposal["changes"]:
-                # A wording change is the carried revision itself, approved through document control: the change order
-                # covers it. A rule that widens anyone's authority also needs both policy owners.
-                if c.get("widening") and c.get("op") != "text" and change_state(c) != "approved":
-                    have = sorted({d["by"] for d in c["decisions"] if d["verdict"] == "approve"})
-                    reasons.append(f"widening: {c['reason']} needs both policy owners" + (f" (approved by {', '.join(have)})" if have else ""))
-                if change_state(c) == "rejected":
-                    reasons.append(f"rejected by a policy owner: {c['reason']}")
-    implements = []
-    for n in f.get("implements") or []:
-        cr = next((r for r in hub.kernel.query(type_="change-request") if r["number"] == n), None)
-        implements.append(cr)
-        if finished(co):
-            continue
-        if cr is None:
-            reasons.append(f"there is no change request {n}")
-        elif cr["state"] in ("open", "draft", "returned", "failed") or cr["state"].startswith("awaiting-approve"):
-            reasons.append(f"{n} is not approved yet ({cr['state']})")
-    return {"carried": carried(hub, co), "implements": [x for x in implements if x], "proposal": proposal, "ready": not reasons,
-            "reasons": reasons, "co": co}
+        try:
+            proposal = hub.proposals.load(f["staged_proposal"])
+        except Exception:
+            proposal = None
+    if finished(co):
+        reasons = []
+    elif changecontrol.stage_of(co) == "awaiting-approval":
+        reasons = changecontrol.approval_reasons(hub, co)
+    else:
+        reasons = changecontrol.send_reasons(hub, co)
+    crs = {r["number"]: r for r in hub.kernel.query(type_="change-request")}
+    implements = [crs[n] for n in f.get("implements") or [] if n in crs]
+    return {"carried": carried(hub, co), "implements": implements, "proposal": proposal, "ready": not reasons, "reasons": reasons, "co": co,
+            "stage": changecontrol.stage_of(co)}
 
 
 def check_approval(hub, co_ref: str) -> list[str]:
-    """Why the change order may not be approved yet (empty when it may): every revision it carries is approved, the
-    Frame compiled from them is ready, its widenings are signed by both policy owners and what it implements is approved."""
-    return status(hub, co_ref)["reasons"]
+    """Why the change order may not be approved yet (empty when it may): hubproto.changecontrol.approval_reasons
+    (every item of its delta decided, every warning accepted, the delta current, nothing stale or flagged, the state
+    map answered, every change request it implements approved and not flagged)."""
+    from . import changecontrol
+
+    return changecontrol.approval_reasons(hub, co_ref)
 
 
 def _utc():
@@ -329,16 +303,24 @@ def assign_revision_training(hub, co_ref: str, digest: str) -> tuple[int, list[s
 
 def release(hub, co_ref: str, *, by: str) -> dict:
     """Release an approved change order at once (the release automation does the same, step by step)."""
+    from . import changecontrol, formlayout
+
     blocked = check_approval(hub, co_ref)
     if blocked:
         raise ValueError("the change order cannot be released: " + "; ".join(blocked))
-    from . import formlayout
-
+    co = _co(hub, co_ref)
+    if co["state"] != "approved":
+        raise ValueError(f"{co['number']} is {co['state']}: it is released once its approver signs it")
+    changecontrol.approve_revisions(hub, co_ref)
+    changecontrol.apply_delta(hub, co_ref)
     meta = activate_frame(hub, co_ref)
+    changecontrol.record_release(hub, co_ref, meta["digest"])
     publish_revisions(hub, co_ref, meta["digest"])
     formlayout.activate(hub, _co(hub, co_ref), meta["digest"])
     assign_revision_training(hub, co_ref, meta["digest"])
+    changecontrol.raise_divergence_requests(hub, co_ref, meta["digest"])
     co = _co(hub, co_ref)
     if co["state"] != "released":
         hub.kernel.transition(co["locator"], "released", by=by, reason="released: its Frame and revisions are in force")
+    hub.kernel.set_fields(co["locator"], {"stage": "released"}, by="hub")
     return meta
