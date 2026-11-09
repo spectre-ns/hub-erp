@@ -7,7 +7,7 @@ import re
 
 import pytest
 
-from conftest import release_all
+from conftest import edit_frame, release_all
 from hubproto import authz, validation
 from hubproto import changecontrol as cc
 from hubproto.agent import AgentStore, AgentTools
@@ -47,8 +47,12 @@ def test_hosted_model_use_is_governed_by_the_it_sop(released):
 
 # ---------------------------------------------------------------- validation (QMS A5)
 def test_the_risk_classes_come_from_the_it_sop(released):
+    b = bundle(released)
+    assert b["validation"]["classes"]["permission"] == "high" and b["validation"]["needs"]["medium"] == "test-note"
+    assert all(s_["frame"] == "it-sop" for s_ in b["validation"]["sources"]), "compiled from the IT SOP, each with its line"
     pol = validation.policy(released)
-    assert pol["source"] == "it-sop" and pol["needs"] == {"high": "test-record", "medium": "test-note", "low": "review"}
+    assert pol["source"] == "release" and pol["needs"] == {"high": "test-record", "medium": "test-note", "low": "review"}
+    assert "it-sop" in validation.basis(released)
     perm = {"op": "add", "rule": {"kind": "permission"}, "widening": True}
     assert validation.classify(perm, pol) == "high"
     assert validation.classify({"op": "add", "rule": {"kind": "threshold"}, "widening": False}, pol) == "medium"
@@ -60,10 +64,36 @@ def test_the_risk_classes_come_from_the_it_sop(released):
     same = {**gate, "changes_from": {"kind": "process", "steps": [{"id": "a", "kind": "checkpoint"}], "folder": "X"}}
     assert validation.classify(same, pol) == "medium"
     assert validation.classify({"kind": "form"}, pol) == "low" and validation.classify({"kind": "record_type"}, pol) == "high"
-    # The SOP decides: a release that says limits are low risk makes them so.
-    text = released.frames.get("it-sop").text.replace("processes, thresholds, required fields", "processes, required fields") \
-        .replace("Changes to form layouts and wording are low risk.", "Changes to form layouts, thresholds and wording are low risk.")
-    assert validation.classify({"op": "add", "rule": {"kind": "threshold"}}, validation.policy(text=text)) == "low"
+    # The release decides, never the prose: a released change that makes limits low risk makes them so.
+    edit_frame(released, "it-sop", "processes, thresholds, required fields", "processes, required fields")
+    edit_frame(released, "it-sop", "Changes to form layouts and wording are low risk.", "Changes to form layouts, thresholds and wording are low risk.")
+    assert validation.classify({"op": "add", "rule": {"kind": "threshold"}}, validation.policy(released)) == "medium", "not released yet"
+    p = released.compile()
+    assert any(c["rule"]["kind"] == "validation_class" and c["widening"] for c in p["changes"]), "loosening validation: two policy owners"
+    for r in ("bob", "carol"):
+        released.review(p["id"], r, approve_all=True)
+    released.release(p["id"], "bob")
+    assert validation.classify({"op": "add", "rule": {"kind": "threshold"}}, validation.policy(released)) == "low"
+
+
+def test_without_validation_sentences_the_defaults_apply_and_say_so(released):
+    text = released.frames.get("it-sop").path.read_text()
+    head, rest = text.split("## Validation\n", 1)
+    released.frames.get("it-sop").path.write_text(head + "## " + rest.split("\n## ", 1)[1])  # the section gone
+    released.frames = type(released.frames)(released.frames.root)
+    release_all(released)
+    assert "validation" not in bundle(released)
+    pol = validation.policy(released)
+    assert pol["source"] == "default" and "the release in force states no validation classes" in pol["basis"]
+    assert validation.classify({"op": "add", "rule": {"kind": "permission"}}, pol) == "high"
+    from hubproto.extract import ConventionExtractor
+    from hubproto.frames import load_frame_text
+    from pathlib import Path
+
+    frame = load_frame_text('---\ntype: frame [0.2]\nname: v-sop\ndescription: x\nvisibility: internal\nversion: "1"\nscope: department\n'
+                            'maintainer: bob\n---\n# V\n\n## Validation\nChanges to the weather are high risk.\n', Path("v-sop.frame.md"))
+    notes = ConventionExtractor().extract(frame).notes
+    assert any(n.get("severity") == "error" and "names nothing the hub can class" in n["note"] for n in notes)
 
 
 def test_a_change_order_needs_the_evidence_its_items_risk_class_asks_for(cc_hub):

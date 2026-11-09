@@ -34,6 +34,10 @@ KINDS = {
     # A row of a document's Roles and responsibilities table: who (a role, a cog, a group) has what part in it. The table
     # says who must read the document and what a cog follows.
     "responsibility": {"frame", "who", "text"},
+    # The IT SOP's validation of configuration changes: which kinds of delta item are of which risk, and what evidence
+    # each risk class needs before a change order is approved (hubproto.validation).
+    "validation_class": {"risk", "kinds"},
+    "validation_need": {"risk", "evidence"},
     # A named set of members, people and cogs (hubproto.groups): listed, or everyone holding some roles, or both. A group
     # may carry permissions as a role does and be named in a Roles and responsibilities table.
     "group": {"name", "members", "roles"},
@@ -96,6 +100,12 @@ def validate_rule(rule: dict) -> list[str]:
         errors.append("permission: effect must be allow, deny or propose")
     if kind == "permission" and rule.get("effect") == "propose" and not rule.get("confirmer"):
         errors.append("permission: a proposing permission names who confirms (a role, or a person)")
+    if kind in ("validation_class", "validation_need") and rule.get("risk") not in ("high", "medium", "low"):
+        errors.append(f"{kind}: risk must be high, medium or low")
+    if kind == "validation_class" and not rule.get("kinds"):
+        errors.append("validation_class: name at least one kind of change")
+    if kind == "validation_need" and rule.get("evidence") not in ("test-record", "test-note", "review"):
+        errors.append("validation_need: evidence must be a test record, a test note or the review of the delta")
     if kind == "duty" and rule.get("every") not in ("day", "week", "month"):
         errors.append("duty: every must be day, week or month")
     if kind == "member" and rule.get("principal_type") not in ("person", "cog"):
