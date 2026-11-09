@@ -120,24 +120,12 @@ class Hub:
         return out
 
     def rules_to_change_order(self, user: str, new_rules: list[dict], reason: str = "") -> dict:
-        """Rule changes (the rules in force -> ``new_rules``) written into the SOP documents they belong to, as draft
-        revisions on the person's open settings change order. The Frame is derived from those documents: nothing
-        changes until the revisions are approved and the change order is released."""
-        from . import eco, sop_settings
+        """Rule changes (the rules in force -> ``new_rules``) recorded as direct changes on the person's open settings
+        change order (change control v2: hubproto.changecontrol). Settings does not write the prose: the change order's
+        first review round drafts it. Nothing changes until the change order is approved and released."""
+        from . import changecontrol
 
-        meta = self.releases.current()
-        bundle = self.releases.bundle(meta["digest"])
-        planned = sop_settings.plan(self.settings_rules(), new_rules, bundle.get("processes") or {})
-        if not planned:
-            raise ValueError("that changes nothing")
-        co = next((r for r in self.kernel.query(type_="change-order") if r["state"] in eco.OPEN_STATES
-                   and r["fields"].get("requested_by") == user and r["fields"].get("from_settings")), None)
-        if co is None:
-            co = self.kernel.create("change-order", "Quality/Changes",
-                                    {"title": f"Policy changes by {user}", "description": reason or "Changes to the policy.",
-                                     "requested_by": user, "from_settings": True}, by=user)
-        report = sop_settings.apply_plan(self, co["locator"], planned, by=user)
-        return {"change_order": co["number"], "locator": co["locator"], "report": report}
+        return changecontrol.rules_to_change_order(self, user, new_rules, reason=reason)
 
     def extractor(self, calls: bool = False):
         """How this hub reads SOPs (hubproto.extract.get_extractor), with its cache and the names a model may use.

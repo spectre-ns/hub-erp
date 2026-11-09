@@ -366,7 +366,9 @@
    "plan": "text",
    "verification": "text",
    "requested_by": "principal",
-   "risk": "text"
+   "risk": "text",
+   "flagged": "object",
+   "divergence": "text"
   },
   "required_by_state": {
    "awaiting-approve-the-change": [
@@ -383,6 +385,10 @@
   "defaults": {
    "requested_by": "$owner"
   },
+  "system_fields": [
+   "flagged",
+   "divergence"
+  ],
   "decision_fields": [
    "impact",
    "verification",
@@ -922,7 +928,17 @@
    "from_settings": "bool",
    "staged_from": "object",
    "staged_at": "text",
-   "form_changes": "object"
+   "form_changes": "object",
+   "stage": "enum:preparing,in-review,revising,awaiting-approval,approved,released",
+   "rounds": "list",
+   "direct_changes": "list",
+   "direct_base": "text",
+   "rebase_questions": "list",
+   "state_map": "object",
+   "baseline_changed": "object",
+   "record_type_changes": "object",
+   "contributor": "list",
+   "rejected": "object"
   },
   "required_by_state": {
    "awaiting-approve-the-change-order": [
@@ -947,7 +963,17 @@
    "from_settings",
    "staged_from",
    "staged_at",
-   "form_changes"
+   "form_changes",
+   "stage",
+   "rounds",
+   "direct_changes",
+   "direct_base",
+   "rebase_questions",
+   "state_map",
+   "baseline_changed",
+   "record_type_changes",
+   "contributor",
+   "rejected"
   ],
   "decision_fields": [
    "description",
