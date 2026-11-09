@@ -89,9 +89,13 @@ def same_rule(a: dict | None, b: dict | None) -> bool:
         return True
 
     def norm(r):
-        out = {k: v for k, v in _strip(r).items() if v not in (None, [], {}, "")}
+        out = {k: v for k, v in _strip(r).items() if v not in (None, [], {}, "") and k != "statuses_source"}
         if out.get("kind") == "process":
             out["steps"] = [{k: v for k, v in s.items() if k != "line"} for s in out.get("steps") or []]
+            # A process written as a graph: its statuses and transitions without the lines they sit on.
+            for key in ("statuses", "transitions"):
+                if out.get(key):
+                    out[key] = [{k: v for k, v in x.items() if k not in ("line", "source", "text")} for x in out[key]]
         return out
     return norm(a) == norm(b)
 

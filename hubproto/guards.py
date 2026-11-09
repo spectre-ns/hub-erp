@@ -616,7 +616,7 @@ def _widens_over(old: dict, new: dict) -> bool:
     if new.get("kind") == "process":
         def checkpoints(r):
             return {s.get("id") for s in r.get("steps") or [] if s.get("kind") == "checkpoint"} | {
-                t.get("id") for t in r.get("transitions") or [] if (t.get("gate") or {}).get("kind") in ("person", "cog")}
+                t.get("id") for t in r.get("transitions") or [] if (t.get("gate") or {}).get("kind") in ("person", "cog", "committee")}
         return not checkpoints(old) <= checkpoints(new) or old.get("folder") != new.get("folder")
     if new.get("kind") == "routing":
         return old.get("assignee") != new.get("assignee") or (old.get("mode") or "assign") != (new.get("mode") or "assign")

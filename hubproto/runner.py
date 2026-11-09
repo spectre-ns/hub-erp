@@ -1399,6 +1399,7 @@ class Runner:
         it (``return``). Signed as the committee's, with every vote, and the item moves."""
         pending = state["pending"]
         cm = pending["committee"]
+        self._follow_release(state, track, "a committee decision")  # the decision is a move (change control 5.1)
         wf = self._graph(state)
         votes = [cm["votes"][m] for m in cm["members"] if m in (cm.get("votes") or {})]
         fwd, back = self._committee_ways(state)
@@ -1507,11 +1508,12 @@ class Runner:
         cm = pending.get("committee")
         if state["status"] != "waiting" or not cm:
             raise RunError(f"run {run_id} is not waiting for a committee")
-        if by not in (cm.get("interveners") or []) and by != cm.get("chair"):
-            raise RunError(f"only the chair of the {cm['name']} committee ({cm.get('chair') or 'none'}) intervenes"
-                           + (f", or {', '.join(cm['interveners'])} it was escalated to" if cm.get("interveners") else ""))
-        if not cm.get("paused") and action != "return":
+        if not cm.get("paused"):
             raise RunError(f"the {cm['name']} committee's decision is not paused: its members are still voting")
+        if by not in (cm.get("interveners") or []):
+            whom = sorted(set(p for x in cm["paused"] for p in x.get("interveners") or []))
+            raise RunError(f"only the chair of the {cm['name']} committee ({cm.get('chair') or 'none'}) intervenes"
+                           + (f"; this pause was escalated to {', '.join(whom)}" if whom and whom != [cm.get("chair")] else ""))
         if not (meaning or "").strip():
             raise RunError("an intervention needs its meaning: say why you intervene")
         bundle = self.releases.bundle(state["release"])

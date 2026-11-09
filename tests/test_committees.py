@@ -355,6 +355,8 @@ def test_when_the_chair_is_the_member_in_question_it_escalates_under_the_overdue
     assert p["interveners"] == ["lee"], "the overdue rule sends it to the designers (maya prepared it, so not her)"
     with pytest.raises(RunError, match="only the chair"):
         hub.runner.intervene(run_id, "maya", "return", meaning="x")
+    with pytest.raises(RunError, match="escalated to lee"):  # the chair does not decide in their own place
+        hub.runner.intervene(run_id, "kim", "decide", member="kim", verdict="approve", meaning="fine", payload_digest=seen(hub.runner, run_id))
     done = hub.runner.intervene(run_id, "lee", "decide", member="kim", verdict="approve", meaning="kim is away; I checked it",
                                 payload_digest=seen(hub.runner, run_id))
     assert done["status"] == "completed"
@@ -411,3 +413,294 @@ def test_a_committee_gate_needs_a_way_back_and_a_defined_committee(tmp_path):
     errors = [f["detail"] for f in hub.compile()["findings"] if f["severity"] == "error"]
     assert any("'Release' is decided by the design-review committee, but an objection has no way back" in e for e in errors), errors
     assert any("'Skip' is decided by the design-board committee, which is not defined" in e for e in errors), errors
+
+
+# ---------------------------------------------------------------------------------------------- a committee on a CO panel
+@pytest.fixture
+def board_hub(tmp_path):
+    """The example company with a change board (dave and the it-admin cog, chaired by bob) that the change-control SOP
+    names as the reviewers of changes to limits; the SOPs are documents (change orders only)."""
+    from hubproto import sopdocs
+
+    shutil.copytree(ROOT / "frames", tmp_path / "frames")
+    org = tmp_path / "frames" / "company" / "org-model.frame.md"
+    org.write_text(org.read_text().replace("- junior-cogs:", "- change-board: dave and it-admin\n- junior-cogs:")
+                   .replace("## Folders", "## Committee: change-board\nGroup: change-board\nChair: bob\nPurpose: Reviews changes to limits.\n\n## Folders"))
+    sop = tmp_path / "frames" / "iso9001" / "change-control-sop.frame.md"
+    sop.write_text(sop.read_text().replace("A change to roles, limits or segregation of duties is reviewed by the management cog.",
+                                           "A change to roles, limits or segregation of duties is reviewed by the change-board committee."))
+    h = Hub(tmp_path)
+    h.kernel.seed()
+    p = h.compile()
+    assert not [f for f in p["findings"] if f["severity"] == "error"], [f for f in p["findings"] if f["severity"] == "error"]
+    release_all(h)
+    sopdocs.convert(h, by="carol")
+    for name in ("finance-policy", "document-control-sop", "change-control-sop"):
+        h.kernel.set_fields(sopdocs.in_force(h.kernel, name)["locator"], {"owner": "alice"}, by="setup")
+    return h
+
+
+def _limit_co(hub):
+    from hubproto import eco
+    from test_eco import NEW, OLD, write
+
+    co = hub.kernel.create("change-order", "Quality/Changes", {"title": "Lower the AP cog limit", "description": "why", "requested_by": "alice"},
+                           by="alice")
+    d = eco.add_sop(hub, co["number"], "finance-policy", by="alice")
+    write(hub, hub.kernel.get(d["locator"]), OLD, NEW, "alice")
+    return co
+
+
+def test_every_member_of_a_committee_on_the_panel_reviews_and_it_must_agree(board_hub):
+    from hubproto import changecontrol as cc
+
+    hub = board_hub
+    co = _limit_co(hub)
+    cc.request_review(hub, co["number"], "alice")
+    rnd = cc.current_round(hub.kernel.get(co["locator"]))
+    panel = {e["who"]: e for e in rnd["panel"]}
+    assert panel["dave"]["committee"] == panel["it-admin"]["committee"] == "change-board" and "limits" in panel["dave"]["reason"]
+    assert rnd["results"]["it-admin"]["status"] == "done" and rnd["results"]["dave"]["status"] == "queued"
+    assert any(m["kind"] == "review" for m in hub.inbox.for_principal("dave")), "the person member is asked in their inbox"
+    [c] = cc.committee_reviews(hub, co["number"])
+    assert c["status"] == "waiting" and c["waiting"] == ["dave"] and c["chair"] == "bob"
+    assert "the change-board committee has not agreed yet: waiting for dave" in cc.send_reasons(hub, co["number"])
+    # One objection (a blocking finding) and the committee does not agree: the change goes back for revision.
+    cc.submit_review(hub, co["number"], "dave", findings=[{"severity": "blocking", "text": "1,500 is below the median bill"}])
+    [c] = cc.committee_reviews(hub, co["number"])
+    assert c["status"] == "objected" and c["objections"] == [{"member": "dave", "text": "1,500 is below the median bill"}]
+    assert any("dave objects: 1,500 is below the median bill" in r for r in cc.send_reasons(hub, co["number"]))
+    with pytest.raises(ValueError, match="change-board committee does not agree"):
+        cc.send_for_approval(hub, co["number"], "alice")
+    # The next round: every member reviews again; nobody objects, so the committee agrees and the CO may be sent.
+    cc.request_review(hub, co["number"], "alice")
+    cc.submit_review(hub, co["number"], "dave", findings=[{"severity": "advisory", "text": "keep an eye on volumes"}])
+    [c] = cc.committee_reviews(hub, co["number"])
+    assert c["status"] == "agreed" and cc.overview(hub, co["number"])["committees"][0]["status"] == "agreed"
+    assert cc.send_reasons(hub, co["number"]) == []
+
+
+def test_a_cog_member_that_cannot_review_pauses_the_panel_committee_for_its_chair(board_hub, monkeypatch):
+    from hubproto import changecontrol as cc
+    from hubproto.model import ModelUnavailable
+
+    hub = board_hub
+    real = hub.model.complete
+
+    def complete(**kw):
+        if kw.get("by") == "it-admin":
+            raise ModelUnavailable("its model is down")
+        return real(**kw)
+    monkeypatch.setattr(hub.model, "complete", complete)
+    co = _limit_co(hub)
+    cc.request_review(hub, co["number"], "alice", panel=["dave", "the change-board committee"])
+    cc.submit_review(hub, co["number"], "dave")
+    [c] = cc.committee_reviews(hub, co["number"])
+    assert c["status"] == "paused" and c["paused"][0]["member"] == "it-admin" and "its chair, bob, intervenes" in c["reason"]
+    [note] = [m for m in hub.inbox.for_principal("bob") if m["kind"] == "intervention"]
+    assert "it-admin could not review" in note["subject"]
+    with pytest.raises(ValueError, match="only the chair"):
+        cc.intervene_review(hub, co["number"], "change-board", "it-admin", "carol", "looked at it")
+    cc.intervene_review(hub, co["number"], "change-board", "it-admin", "bob", "I reviewed the limit change myself: fine")
+    rnd = cc.current_round(hub.kernel.get(co["locator"]))
+    assert rnd["results"]["it-admin"]["intervention"]["by"] == "bob" and "in it-admin's place" in rnd["results"]["it-admin"]["summary"]
+    assert cc.committee_reviews(hub, co["number"])[0]["status"] == "agreed"
+
+
+# ---------------------------------------------------------------------------------------------- the compile-frame committee
+def test_the_compile_frame_committee_is_the_senior_cogs_each_reading_with_its_own_model(monkeypatch, tmp_path):
+    from pathlib import Path
+
+    from hubproto.frames import load_frame_text
+
+    shutil.copytree(ROOT / "frames", tmp_path / "frames")
+    hub = Hub(tmp_path)
+    hub.kernel.seed()
+    release_all(hub)
+    monkeypatch.setenv("HUBPROTO_HOSTED_MODELS", "on")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")  # no call is made: each reader's call is a fake
+    c = hub.compile_committee()
+    assert c["members"] == [("senior-organization", "claude-opus-5-5"), ("senior-qa-manager", "claude-opus-5-5")]
+    assert (c["group"], c["chair"], c["unavailable"]) == ("senior-cogs", "carol", {})
+    ex = hub.extractor(calls=True)
+    prose = "Any bill of more than 6,000 USD must be approved by the controller."
+    f = hub.frames.get("finance-policy")
+    frame = load_frame_text(f.text.rstrip("\n") + "\n\n## Notes\n" + prose + "\n", Path(f.path))
+    line = next(i for i, ln in enumerate(frame.lines, start=frame.body_start) if ln.strip() == prose)
+    route = {"kind": "routing", "fields": {"process": "purchase-to-pay", "step": "approve", "assignee": "role:controller", "mode": "assign",
+                                           "condition": {"field": "amount", "op": ">", "value": 6000, "currency": "USD"}},
+             "line": line, "quote": prose}
+    asked = []
+
+    def fake(name):
+        def call(model, system, user):
+            asked.append((name, model))
+            assert f"You are the {name} cog" in system
+            return json.dumps({"changes": [dict(route, op="add")]} if "is being revised" in user else {"rules": [route]})
+        return call
+    for (name, _m), reader in zip(ex.members, ex.readers):
+        reader.call = fake(name)
+        reader.budget = 100000
+    out = ex.extract(frame)
+    assert asked == [("senior-organization", "claude-opus-5-5"), ("senior-qa-manager", "claude-opus-5-5")]
+    [r] = [r for r in out.rules if (r.get("source") or {}).get("read_by")]
+    assert r["source"]["read_by"] == "the compile-frame committee (senior-organization, senior-qa-manager: 2 of 2 agree)"
+    # One senior unavailable (its profile names a model this hub cannot reach): the committee cannot reach consensus;
+    # a member-unavailable question naming the chair, never a skip.
+    real = hub.releases.bundle
+
+    def bundle(digest):
+        b = json.loads(json.dumps(real(digest)))
+        b["cogs"]["senior-qa-manager"]["model"] = "ollama/qwen3:14b"
+        return b
+    monkeypatch.setattr(hub.releases, "bundle", bundle)
+    monkeypatch.delenv("HUBPROTO_ALLOW_STAND_IN", raising=False)
+    c = hub.compile_committee()
+    assert c["members"][1] == ("senior-qa-manager", "") and "needs an Ollama" in c["unavailable"]["senior-qa-manager"]
+    ex = hub.extractor(calls=True)
+    for (name, _m), reader in zip(ex.members, ex.readers):
+        reader.call = fake(name)
+    asked.clear()
+    out = ex.extract(frame)
+    [q] = out.questions
+    assert asked == [] and q["code"] == "member-unavailable" and q["member"] == "senior-qa-manager" and q["chair"] == "carol"
+    assert not [r for r in out.rules if (r.get("source") or {}).get("read_by")], "nothing read without consensus"
+
+
+# ---------------------------------------------------------------------------------------------- no private memories
+def test_a_cogs_judgment_is_a_review_record_on_the_item_and_read_back_from_there(tmp_path, monkeypatch):
+    """Cogs have no private memories (change control 13): the cog's judgment for an approval is filed on the item, with
+    the version it judged, and a failed one binds for that version because it is read back from the item."""
+    from hubproto import review as review_mod
+
+    hub = design_hub(tmp_path, {"The doc-reviewer cog may approve design-review gizmos when the risk is low.":
+                                "The doc-reviewer cog may approve design-review gizmos when its review passes."})
+    calls = []
+
+    def failing(cog_id, profile, ctx, record, question="", judgment=False, lens="", lens_of=(1, 1)):
+        calls.append(cog_id)
+        return {"cog": cog_id, "verdict": "fail", "findings": [{"check": "content", "detail": "the tolerance stack is not shown",
+                                                                "severity": "error"}],
+                "summary": "fails", "routing_notes": [], "model": "fake", "sops": [], "stand_in": False, "date": TODAY.isoformat()}
+    monkeypatch.setattr(review_mod, "review", failing)
+    run_id = submit(hub)
+    state = hub.runner.load(run_id)
+    [p] = state["pending"]["committee"]["paused"]
+    assert p["member"] == "doc-reviewer" and "its review did not pass" in p["reason"] and calls == ["doc-reviewer"]
+    docs = [d for d in hub.dms.documents_of(state["record"]) if d["fields"].get("doc_class") == "evidence"]
+    [doc] = [d for d in docs if (d["fields"].get("judgment") or {}).get("cog") == "doc-reviewer"]
+    j = doc["fields"]["judgment"]
+    assert j["verdict"] == "fail" and j["key"].startswith(state["record"]) and "tolerance stack" in j["findings"][0]
+    assert not list((tmp_path / "state").glob("judgments/doc-reviewer.json")), "no private store of the cog's own"
+    # Asked again on the same version (the chair asks it again), it does not judge again: the record on the item binds.
+    hub.runner.intervene(run_id, "sam", "extend", member="doc-reviewer", due=(TODAY + timedelta(days=9)).isoformat(),
+                         meaning="look again, please")
+    [p] = hub.runner.load(run_id)["pending"]["committee"]["paused"]
+    assert calls == ["doc-reviewer"] and "the tolerance stack is not shown" in p["reason"], "read back from the item, not judged again"
+    # The item changes: the record no longer applies and it judges again.
+    hub.kernel.set_fields(state["record"], {"description": "tolerance stack added"}, by="maya")
+    hub.runner.intervene(run_id, "sam", "extend", member="doc-reviewer", due=(TODAY + timedelta(days=10)).isoformat(),
+                         meaning="changed: look again")
+    assert calls == ["doc-reviewer", "doc-reviewer"]
+
+
+# ---------------------------------------------------------------------------------------------- prose for direct changes
+def _converted(tmp_path):
+    from hubproto import sopdocs
+
+    shutil.copytree(ROOT / "frames", tmp_path / "frames")
+    h = Hub(tmp_path)
+    h.kernel.seed()
+    release_all(h)
+    sopdocs.convert(h, by="carol")
+    return h
+
+
+def _co_with(hub, *items):
+    co = hub.kernel.create("change-order", "Quality/Changes", {"title": "Direct changes", "description": "x", "requested_by": "bob"}, by="bob")
+    hub.kernel.set_fields(co["locator"], {"direct_changes": list(items)}, by="bob")
+    return hub.kernel.get(co["locator"])
+
+
+def test_a_direct_change_that_gives_a_role_or_a_group_a_part_adds_its_table_rows(tmp_path):
+    from hubproto import eco, sopdocs
+    from hubproto.extract import responsibilities_of
+    from hubproto.prose_drafting import direct_item, draft_direct_changes
+    from hubproto.settings import stamp
+
+    hub = _converted(tmp_path)
+    route = stamp({"kind": "routing", "process": "purchase-to-pay", "step": "approve", "mode": "assign", "assignee": "role:internal-auditor",
+                   "condition": {"field": "amount", "op": ">", "value": 50000.0, "currency": "USD"}}, "bob")
+    perm = stamp({"kind": "permission", "subject": "group:senior-cogs", "action": "update", "object": "bill", "resource": "folder:Finance/Payables",
+                  "effect": "allow"}, "bob")
+    co = _co_with(hub, direct_item(route, by="bob"), direct_item(perm, by="bob"))
+    assert draft_direct_changes(hub, co["number"], "bob") == [], "both read back"
+    draft = next(c["draft"] for c in eco.carried(hub, hub.kernel.get(co["locator"])) if c["name"] == "finance-policy")
+    text = sopdocs.frame_text(hub, draft)
+    assert "The senior-cogs group may update bills in Finance/Payables." in text
+    from hubproto.frames import load_frame_text
+    from pathlib import Path
+
+    rows, _ = responsibilities_of(load_frame_text(text, Path("finance-policy.frame.md")))
+    whos = {r["who"]: r["text"] for r in rows}
+    assert whos["role:internal-auditor"].startswith("A route: Approvals in purchase-to-pay over 50,000 USD go to the internal auditor")
+    assert whos["group:senior-cogs"].startswith("'update' on bills: The senior-cogs group may update bills")
+    assert "role:finance-clerk" in whos, "the rows already there stay"
+    items = hub.kernel.get(co["locator"])["fields"]["direct_changes"]
+    assert items[0]["stated"]["rows"] == [{"who": "role:internal-auditor", "what": "a route"}]
+    assert items[1]["stated"]["rows"] == [{"who": "group:senior-cogs", "what": "'update' on bills"}]
+    # Nothing to add the next round, and no warning that the table does not list them.
+    n = len(hub.dms.versions(draft["locator"]))
+    assert draft_direct_changes(hub, co["number"], "bob") == [] and len(hub.dms.versions(draft["locator"])) == n
+    pv = eco.preview(hub, co["number"])
+    assert not [f for f in pv["findings"] if "does not list it" in f["detail"] and "finance-policy" in f["detail"]]
+
+
+def test_a_graph_process_is_drafted_in_the_graph_sentences(tmp_path):
+    from hubproto import eco, sopdocs
+    from hubproto.prose_drafting import direct_item, draft_direct_changes
+
+    hub = design_hub(tmp_path)
+    sopdocs.convert(hub, by="carol")
+    proc = next(r for r in hub.settings_rules() if r["kind"] == "process" and r["name"] == P)
+    new = json.loads(json.dumps({k: v for k, v in proc.items() if k != "source"}))
+    next(s for s in new["statuses"] if s["id"] == "review")["sla_days"] = 5
+    co = _co_with(hub, direct_item(new, by="carol", op="change", was=proc))
+    assert draft_direct_changes(hub, co["number"], "carol") == [], "the graph sentences read back as the same graph"
+    draft = next(c["draft"] for c in eco.carried(hub, hub.kernel.get(co["locator"])) if c["name"] == "design-policy")
+    text = sopdocs.frame_text(hub, draft)
+    assert "Statuses: Draft (to do), Review (in progress, due within 5 days), Released (done, completed), Cancelled (done, cancelled)." in text
+    assert 'From Review to Released ("Release"): the design-review committee decides.' in text
+    assert "1. [" not in text, "not numbered steps"
+    [item] = hub.kernel.get(co["locator"])["fields"]["direct_changes"]
+    assert item["round_trip"]["ok"] and item["stated"]["lines"][0].startswith("Records are filed in Designs.")
+
+
+def test_groups_and_committees_made_in_settings_are_direct_changes_that_read_back(tmp_path):
+    from hubproto import eco, sopdocs
+    from hubproto.prose_drafting import direct_item, draft_direct_changes
+    from hubproto.settings import stamp
+
+    hub = _converted(tmp_path)
+    group = stamp({"kind": "group", "name": "quality-board", "members": ["carol", "qa-manager"], "roles": ["quality-manager"]}, "bob")
+    board = stamp({"kind": "committee", "name": "quality-board", "group": "quality-board", "chair": "carol", "purpose": "Reviews quality changes.",
+                   "members": [], "quorum": 0}, "bob")
+    co = _co_with(hub, direct_item(group, by="bob"), direct_item(board, by="bob"))
+    assert draft_direct_changes(hub, co["number"], "bob") == []
+    draft = next(c["draft"] for c in eco.carried(hub, hub.kernel.get(co["locator"])) if c["name"] == "org-model")
+    text = sopdocs.frame_text(hub, draft)
+    assert "- quality-board: carol, qa-manager and everyone holding quality-manager" in text
+    # A committee goes with the other committee definitions (the cog profiles hold the compile-frame committee).
+    profiles = next(c["draft"] for c in eco.carried(hub, hub.kernel.get(co["locator"])) if c["name"] == "cog-profiles")
+    assert "## Committee: quality-board\nGroup: quality-board\nChair: carol\nPurpose: Reviews quality changes." in sopdocs.frame_text(hub, profiles)
+    assert all(i["round_trip"]["ok"] for i in hub.kernel.get(co["locator"])["fields"]["direct_changes"])
+
+
+def test_why_item_explains_a_committee_decision(tmp_path):
+    hub = design_hub(tmp_path)
+    run_id = submit(hub, risk="high")
+    rec = hub.runner.load(run_id)["record"]
+    assert hub.why_item("kim", rec)["may"] and hub.why_item("kim", rec)["as"] == "member"
+    assert hub.why_item("sam", rec)["as"] == "intervener", "the chair, while it is paused"
+    why = hub.why_item("lee", rec)
+    assert not why["may"] and "not one of its members" in why["reasons"][0] and "chair sam" in why["reasons"][0]

@@ -936,6 +936,25 @@ class Hub:
         bundle = self.releases.bundle(run["release"])
         pending = run["pending"]
         reasons = []
+        cm = pending.get("committee")
+        if cm:  # a committee decides by consensus: its members vote; the chair intervenes when it pauses
+            principal = authz.principal_name(principal)
+            if principal in self.runner.committee_outstanding(pending) and principal in (pending.get("assignees") or []):
+                return {"may": True, "reasons": [], "waiting_for": pending.get("assignees") or [], "gate": pending.get("title"),
+                        "committee": cm["name"], "as": "member"}
+            if principal in (cm.get("interveners") or []) and cm.get("paused"):
+                return {"may": True, "reasons": [], "waiting_for": pending.get("assignees") or [], "gate": pending.get("title"),
+                        "committee": cm["name"], "as": "intervener"}
+            if principal in (cm.get("votes") or {}):
+                reasons.append(f"{principal} has voted on it already ({cm['votes'][principal]['verdict']})")
+            elif principal not in cm.get("members") or []:
+                reasons.append(f"the {cm['name']} committee decides it by consensus, and {principal} is not one of its members "
+                               f"({', '.join(cm.get('members') or [])}; chair {cm.get('chair') or 'none'})")
+            excluded = self.runner.excluded(bundle, run, pending.get("route") or "role:")
+            if principal in excluded:
+                reasons.append(excluded[principal] + "; the chair decides in their place")
+            return {"may": False, "reasons": reasons or ["it does not wait for them now"], "waiting_for": pending.get("assignees") or [],
+                    "gate": pending.get("title"), "committee": cm["name"]}
         perm = authz.check(bundle, principal, "approve", run["manifest"]["object"], run["manifest"]["folder"])
         if not perm["allowed"]:
             reasons.append(perm["why"])
