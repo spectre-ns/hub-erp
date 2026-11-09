@@ -56,3 +56,44 @@ def test_the_run_page_shows_how_its_approval_was_routed_and_automation_steps_say
     job = next(j for j in hub.automation.of(co["locator"]) if j["automation"] == "compile-frame")
     status, text = get(shell, "/automation/" + job["id"], **{"as": "alice"})
     assert status == 200 and "cogs (model)" in text and "no model" in text
+
+
+def test_a_local_model_that_times_out_is_asked_once_more_before_the_call_fails(monkeypatch):
+    import io
+    import json as _json
+
+    from hubproto import model
+
+    calls = []
+
+    def fake_urlopen(req, timeout):
+        calls.append(timeout)
+        if len(calls) == 1:
+            raise TimeoutError("timed out")
+        return io.BytesIO(_json.dumps({"ok": True}).encode())
+
+    monkeypatch.setattr(model.urllib.request, "urlopen", lambda req, timeout: _Ctx(fake_urlopen(req, timeout)))
+    req = model.urllib.request.Request("http://127.0.0.1:11434/api/chat", data=b"{}", method="POST")
+    assert model._fetch_json(req, 10) == {"ok": True} and calls == [10, 15.0]
+    calls.clear()
+
+    def always(req, timeout):
+        calls.append(timeout)
+        raise TimeoutError("timed out")
+    monkeypatch.setattr(model.urllib.request, "urlopen", lambda req, timeout: always(req, timeout))
+    import pytest
+
+    with pytest.raises(TimeoutError):
+        model._fetch_json(req, 10)
+    assert calls == [10, 15.0], "asked twice, then it fails"
+
+
+class _Ctx:
+    def __init__(self, f):
+        self.f = f
+
+    def __enter__(self):
+        return self.f
+
+    def __exit__(self, *a):
+        return False
