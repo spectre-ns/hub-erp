@@ -102,7 +102,7 @@ def test_a_change_order_needs_the_evidence_its_items_risk_class_asks_for(cc_hub)
     revise(hub, co, "finance-policy", OLD, NEW)  # the ap-reviewer cog's approval limit: approval criteria, high risk
     cc.request_review(hub, co["number"], "alice")
     [need] = validation.requirements(hub, co["number"])
-    assert re.match(r"\d+ high-risk item\(s\) need test evidence", need) and "attach a document of type test-evidence" in need
+    assert re.match(r"\d+ high-risk item\(s\) need test evidence", need) and "attach a test report as evidence" in need and "record a test record" in need
     risky = [i for i in validation.annotate(validation.items_of(hub, hub.kernel.get(co["locator"])), validation.policy(hub))
              if i["risk"] == "high"]
     assert risky and risky[0]["validation"] == "test-record"
