@@ -790,7 +790,7 @@ class WorkflowsMixin:
                 raw = json.loads(self._f("op_json") or "")
             except json.JSONDecodeError:
                 raise ShellError("The operation does not parse.") from None
-            if not isinstance(raw, dict) or raw.get("op") not in wm.OPS:
+            if not isinstance(raw, dict) or raw.get("op") not in wm.OPS + ("undo", "redo"):
                 raise ShellError("Unknown operation.")
             return raw, bool(self._f("coalesce"))
         if op in ("undo", "redo", "tidy"):

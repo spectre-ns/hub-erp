@@ -67,7 +67,8 @@ def condition_words(cond) -> str:
     f, op, v = cond.get("field"), cond.get("op"), cond.get("value")
     if f == "amount":
         word = {">": "over", "<": "under", "<=": "at or under", ">=": "at or over"}.get(op, op)
-        return f"{word} {money(v)} {cond.get('currency') or ''}".strip()
+        also = cond.get("also_currencies") or []
+        return f"{word} {money(v)} {cond.get('currency') or ''}".strip() + (f" or the same in {' or '.join(also)}" if also else "")
     if f == "risk" and op == "==":
         return f"with {v} risk"
     if f == "change_type" and op == "==":
@@ -146,6 +147,8 @@ def sentence(rule: dict, processes: dict | None = None) -> str:
         s = f"The {cog} cog may approve {rule['process']} {obj}"
         if rule.get("max_amount") is not None:
             s += f" under {money(rule['max_amount'])} {rule.get('currency') or ''}".rstrip()
+            if rule.get("also_currencies"):
+                s += " or the same in " + " or ".join(rule["also_currencies"])
         conds = [f"{int(rule.get('adversarial_reviews') or 0)} adversarial reviews pass" if c == "adversarial_reviews_pass" else _PHRASE.get(c, _words(c))
                  for c in rule.get("conditions") or []]
         if conds:
@@ -167,6 +170,13 @@ def sentence(rule: dict, processes: dict | None = None) -> str:
         return f"The {a} and the {b} of a {rule['object']} must be different people."
     if k == "duty":
         return f"Every {rule.get('every') or 'day'} the {rule['cog']} cog {rule['task']}"
+    if k in ("validation_class", "validation_need"):
+        from .validation import kind_words
+
+        if k == "validation_need":
+            words = {"test-record": "a test record", "test-note": "a test note", "review": "the review of the delta"}
+            return f"{rule['risk'].capitalize()}-risk changes need {words.get(rule.get('evidence'), rule.get('evidence'))}."
+        return f"Changes to {kind_words(rule.get('kinds') or [])} are {rule['risk']} risk."
     if k == "responsibility":
         kind_, _, name_ = (rule.get("who") or "").partition(":")
         who_ = f"the {name_} cog" if kind_ == "cog" else f"the {name_} group" if kind_ == "group" else _words(name_).capitalize()

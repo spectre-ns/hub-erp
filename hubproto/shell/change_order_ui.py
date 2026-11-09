@@ -290,6 +290,8 @@ class ChangeOrderMixin:
         """A rule as the sentence a person would write (the hub's reading of it)."""
         if not rule:
             return ""
+        if rule.get("kind") == "process" and rule.get("statuses"):  # a workflow: its summary, never its whole process text
+            return cc._sentence(rule)
         from ..settings import sentence
 
         try:
@@ -418,8 +420,9 @@ class ChangeOrderMixin:
             out += (f"<div class='card warn' role='status'>{icon('alert')} <b>The compile-frame committee could not read part of the prose</b> "
                     f"({len(unav)} question(s): its members are not available here). <a href='#co-unavailable'>What to do</a></div>")
         for c in ctx["ov"].get("committees") or []:
-            if c["status"] == "paused" and self.user == c.get("chair"):
-                out += (f"<div class='card warn' role='status'>{icon('users')} <b>The {esc(c['committee'])} committee needs you, its chair:</b> "
+            if c["status"] == "paused" and self.user in (c.get("interveners") or []):
+                role = "its chair" if self.user == c.get("chair") else "in its chair's stead"
+                out += (f"<div class='card warn' role='status'>{icon('users')} <b>The {esc(c['committee'])} committee needs you, {role}:</b> "
                         f"{esc(c['reason'])}. <a href='#co-review'>Intervene</a></div>")
         out += f"<div class='co-next'>{self._co_next_html(ctx)}</div></div>"
         return out
@@ -548,9 +551,15 @@ class ChangeOrderMixin:
             old, new = cc._old_new(it)
             op = item_op(it)
             sign, word, cls = SIGN[op]
-            what = (f"<span class='co-sign {cls}' aria-hidden='true'>{sign}</span><span class='vh'>{word}: </span>"
-                    + (esc(self._say(new)) if new is not None else f"<del>{esc(self._say(old))}</del>")
-                    + (f"<div class='why'>was: {esc(self._say(old))}</div>" if old is not None and new is not None else ""))
+            if (new or old or {}).get("kind") == "process":  # a workflow from the editor: its changes, one line each
+                from ..workflow_model import process_change_words
+
+                what = (f"<span class='co-sign {cls}' aria-hidden='true'>{sign}</span><span class='vh'>{word}: </span>The {esc((new or old).get('name'))} workflow"
+                        + "<ul class='co-parts'>" + "".join(f"<li>{esc(w)}</li>" for w in process_change_words(old, new)) + "</ul>")
+            else:
+                what = (f"<span class='co-sign {cls}' aria-hidden='true'>{sign}</span><span class='vh'>{word}: </span>"
+                        + (esc(self._say(new)) if new is not None else f"<del>{esc(self._say(old))}</del>")
+                        + (f"<div class='why'>was: {esc(self._say(old))}</div>" if old is not None and new is not None else ""))
             if o.get("kind") == "suggested":
                 by = f"suggested by {self._co_who(o.get('by'))}, accepted by {self._co_who(o.get('accepted_by'))}"
             else:
@@ -775,7 +784,7 @@ class ChangeOrderMixin:
                 if obj:
                     where = chip("objects", "crit") + " " + esc("; ".join(o["text"] or "" for o in obj))
                 elif pause:
-                    where = chip("could not review", "warn") + " " + esc(pause["why"])
+                    where = chip("late" if pause.get("kind") == "late" else "could not review", "warn") + " " + esc(pause["why"])
                 elif r.get("status") == "done":
                     where = chip("agrees", "ok") + (f" <span class='why'>{esc(short(r.get('summary') or '', 200))}</span>" if r.get("intervention") else "")
                 else:
@@ -783,19 +792,29 @@ class ChangeOrderMixin:
                 rows.append([self._co_who(m), where])
             out += (f"<div class='card'><p style='margin-top:0'><b>The {esc(c['committee'])} committee</b> {chip(st, cls)} "
                     f"<span class='why'>chair {esc(c.get('chair') or '-')}; decides by consensus: every member agrees, one objection returns it, "
-                    "nothing passes by default</span></p>" + table(["Member", "Where it stands"], rows) + f"<p class='why'>{esc(c['reason'])}.</p>")
-            if st == "paused" and self.user == c.get("chair") and not self._viewing_cog():
-                for pz in c["paused"]:
-                    fid = f"intervene-{anchor(c['committee'] + '-' + pz['member'])}"
-                    act = "/co-intervene-review"
-                    inner = (f"<input type='hidden' name='committee' value='{esc(c['committee'])}'><input type='hidden' name='member' value='{esc(pz['member'])}'>"
-                             f"<p style='margin-top:0'><b>You chair it:</b> {esc(pz['member'])} could not review ({esc(pz['why'])}). Review in its place, "
-                             "recorded as an intervention with your meaning; to return the change instead, post a blocking finding through your own "
-                             "review or ask the requester to revise.</p>"
-                             f"<label class='f'><span>Meaning <b aria-hidden='true'>*</b> <i>(why you review in its place)</i></span>"
-                             f"<input name='meaning' required value='{esc(self._co_cv(act, fid, 'meaning'))}'></label>"
-                             f"<div class='actions'><button class='secondary'>{icon('check')}Review in {esc(pz['member'])}'s place</button></div>")
-                    out += self._co_form(act, co, fid, inner, cls="card warn", label=f"Intervene for {pz['member']}")
+                    "nothing passes by default" + (f"; due {esc(c['due'])}" if c.get("due") else "") + "</span></p>"
+                    + table(["Member", "Where it stands"], rows) + f"<p class='why'>{esc(c['reason'])}.</p>")
+            if self.user in c["waiting"] and not self._viewing_cog():
+                out += f"<p class='co-marker'>{icon('users')} {esc(c['vote'])}</p>"
+            for pz in c["paused"] if not self._viewing_cog() else []:
+                if self.user not in (pz.get("interveners") or []):
+                    continue
+                fid = f"intervene-{anchor(c['committee'] + '-' + pz['member'])}"
+                act = "/co-intervene-review"
+                cv = lambda k, d="": self._co_cv(act, fid, k, d)  # noqa: E731
+                choice = cv("action", "agree")
+                opts = "".join(f"<option value='{v}'{' selected' if choice == v else ''}>{esc(t)}</option>" for v, t in (
+                    ("agree", f"Agree in {pz['member']}'s place"), ("object", f"Object in {pz['member']}'s place"),
+                    ("extend", "Extend the due date"), ("return", "Return the change for revision")))
+                inner = (f"<input type='hidden' name='committee' value='{esc(c['committee'])}'><input type='hidden' name='member' value='{esc(pz['member'])}'>"
+                         f"<p style='margin-top:0'><b>You intervene as {esc(pz.get('who') or 'the chair')}:</b> {esc(pz['member'])} {esc(pz['why'])}. "
+                         "Decide in their place (recorded as an intervention with your meaning), extend the due date, or return the change.</p>"
+                         f"<label class='f'><span>What you do</span><select name='action'>{opts}</select></label>"
+                         f"<label class='f'><span>New due date <i>(to extend)</i></span><input type='date' name='due' value='{esc(cv('due'))}'></label>"
+                         f"<label class='f'><span>Meaning <b aria-hidden='true'>*</b> <i>(why you intervene)</i></span>"
+                         f"<input name='meaning' required value='{esc(cv('meaning'))}'></label>"
+                         f"<div class='actions'><button class='secondary'>{icon('check')}Intervene for {esc(pz['member'])}</button></div>")
+                out += self._co_form(act, co, fid, inner, cls="card warn", label=f"Intervene for {pz['member']}")
             out += "</div>"
         return out
 
@@ -1018,6 +1037,10 @@ class ChangeOrderMixin:
         op = item_op(c)
         new = cc._effective(c) if c.get("op") != "remove" else None
         old = c.get("changes_from") or c.get("was") or (c["rule"] if c.get("op") == "remove" else None)
+        if (new or old or {}).get("kind") == "process":
+            from ..workflow_model import process_change_reason
+
+            return process_change_reason(old, new)
         if op == "change":
             return f"{self._say(old)} → {self._say(new)}"
         if op == "remove":
@@ -1029,6 +1052,14 @@ class ChangeOrderMixin:
         op = item_op(c)
         new = cc._effective(c) if c.get("op") != "remove" else None
         old = c.get("changes_from") or c.get("was") or (c["rule"] if c.get("op") == "remove" else None)
+        if (new or old or {}).get("kind") == "process":  # a workflow: one line per change of meaning (workflow_model), no ids
+            from ..workflow_model import process_change_words
+
+            words = process_change_words(old, new)
+            name = (new or old).get("name")
+            return (f"The <a href='{href('/workflows/' + quote(str(name)), self.user)}'>{esc(name)} workflow</a> "
+                    + (f"changes ({len(words)}):" if old is not None and new is not None else "")
+                    + "<ul class='co-parts'>" + "".join(f"<li>{esc(w)}</li>" for w in words or ["restated, no change of meaning"]) + "</ul>")
         if op == "change":
             return f"{esc(self._say(new))}<span class='was'>was: <del>{esc(self._say(old))}</del></span>"
         if op == "remove":
@@ -1707,14 +1738,19 @@ class ChangeOrderMixin:
             return
         member = self._f("member")
         meaning = self._f("meaning")
+        choice = self._f("action") or "agree"
         if not meaning:
-            raise ShellError("An intervention needs its meaning: say why you review in the member's place.", field="meaning")
+            raise ShellError("An intervention needs its meaning: say why you intervene.", field="meaning")
+        action = {"agree": "decide", "object": "decide"}.get(choice, choice)
         try:
-            cc.intervene_review(self.hub, co["locator"], self._f("committee"), member, self.user, meaning)
+            cc.intervene_review(self.hub, co["locator"], self._f("committee"), member, self.user, meaning, action=action,
+                                verdict="object" if choice == "object" else "agree", due=self._f("due") or None)
         except ValueError as e:
             raise self._co_refused(e) from None
-        log_line(f"change order {co['number']} committee {self._f('committee')} intervention for {member} by={self.user}")
-        self._co_done(co, f"Recorded: you reviewed in {member}'s place.", "co-review")
+        log_line(f"change order {co['number']} committee {self._f('committee')} intervention ({choice}) for {member} by={self.user}")
+        done = {"agree": f"Recorded: you agreed in {member}'s place.", "object": f"Recorded: you objected in {member}'s place.",
+                "extend": f"Recorded: {member}'s vote is now due {self._f('due')}.", "return": "Recorded: the change goes back for revision."}
+        self._co_done(co, done.get(choice, "Recorded."), "co-review")
 
     def post_co_report_unavailable(self):
         co = self._co_post()

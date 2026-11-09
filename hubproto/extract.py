@@ -19,7 +19,7 @@ from .rules import CONDITION_VOCABULARY, NUMBER_WORDS
 
 RULE_SECTIONS = (
     "roles", "members", "groups", "folders", "permissions", "thresholds", "routing",
-    "approval criteria", "segregation of duties", "duties",
+    "approval criteria", "segregation of duties", "duties", "validation",
 )
 
 
@@ -66,6 +66,7 @@ _THRESHOLD = re.compile(
 _ROUTING = re.compile(
     r"^(?:(?P<approvals>Approvals)|At (?P<title>[A-Z][^,]*?)|(?P<overdue>Overdue items)) in (?P<process>[a-z0-9-]+)"
     r"(?: (?P<op>over|above|under|below|at or under|at or over) (?P<amount>[\d,]+(?:\.\d+)?) (?P<cur>[A-Z]{3})"
+    r"(?: or the same in (?P<also>[A-Z]{3}(?:(?:, | or | and )[A-Z]{3})*))?"
     r"| with (?P<risk>low|medium|high) risk"
     r"|(?: for (?P<doctype>[a-z][a-z -]*?)s?)?(?: with a (?P<change>minor|major) change)?)?"
     r" (?P<verb>go to|are reported to) (?P<assignee>the [\w -]+? cog|the [\w -]+?|[a-z][\w-]*)\.$"
@@ -77,7 +78,7 @@ _PROCESS_TYPE = re.compile(r"^The record type is (?P<t>[a-z][a-z-]*)\.$")
 _PROCESS_REJECT = re.compile(r"^Rejections return to (?P<title>[A-Z][^.]+?)\.$")
 _CRITERIA = re.compile(
     r"^The (?P<cog>[a-z][\w-]*) cog may approve (?P<process>[a-z0-9-]+) (?P<object>[a-z][a-z -]*?)"
-    r"(?: under (?P<amount>[\d,]+(?:\.\d+)?) (?P<cur>[A-Z]{3}))?"
+    r"(?: under (?P<amount>[\d,]+(?:\.\d+)?) (?P<cur>[A-Z]{3})(?: or the same in (?P<also>[A-Z]{3}(?:(?:, | or | and )[A-Z]{3})*))?)?"
     r"(?: when (?P<conds>.+?))?"
     r"(?:, at most (?P<perday>\d+) (?:approvals? )?a day)?"
     r"(?:, at most (?P<permonth>[\d,]+(?:\.\d+)?) (?P<mcur>[A-Z]{3}) a month)?"
@@ -119,6 +120,10 @@ _PERSONA_KEY = re.compile(r"^(?P<key>Tone|Stance|Lenses|Reviews|Escalates|Behavi
 STANCES = ("reviewer", "executor", "author", "advisor")
 TONES = ("formal", "informal")
 _PASSES = re.compile(r"^(?P<n>\d+|one|two|three|four|five|six|once|twice) ?(?:adversarial )?(?:pass(?:es)?|times?|reviews?)?\.?$", re.I)
+# The IT SOP's validation classes: "Changes to permissions and approval criteria are high risk."; "High-risk changes need
+# a test record." (hubproto.validation reads them from the release).
+_VCLASS = re.compile(r"^(?:Changes to )?(?P<what>[A-Za-z].+?) are (?P<risk>high|medium|low) risk\.$")
+_VNEED = re.compile(r"^(?P<risk>High|Medium|Low)-risk changes need (?:an? )?(?P<need>.+?)\.$")
 _DUTY = re.compile(r"^Every (?P<every>day|working day|week|month) the (?P<cog>[a-z][\w-]*) cog (?P<task>[a-z].+\.)$")
 # The table every document ends with: who has a part in it (a role, a cog by name, later a group) and what. It says who
 # must read the document (people) and what a cog follows.
@@ -127,6 +132,12 @@ _TABLE_ROW = re.compile(r"^\|(?P<cells>.*)\|$")
 _TABLE_RULE = re.compile(r"^\|(?:\s*:?-{3,}:?\s*\|)+$")
 _DOC_REF = re.compile(r"\b[A-Z]{2,}-\d[\w-]*\b")
 _OPS = {"over": ">", "above": ">", "under": "<", "below": "<", "at or under": "<=", "at or over": ">="}
+
+
+def _also(text: str | None, cur: str | None) -> dict:
+    """"... 1,500 USD or the same in EUR": the same amount limit holds in these currencies too (``also_currencies``)."""
+    found = [c for c in re.findall(r"[A-Z]{3}", text or "") if c != cur]
+    return {"also_currencies": list(dict.fromkeys(found))} if found else {}
 
 
 @dataclass
@@ -838,7 +849,12 @@ class ConventionExtractor:
             matched = self._match_sentence(line, n, section, add)
             if not matched:
                 note = {"frame": frame.name, "line": n, "text": line, "note": f"unparsed sentence in the {section!r} section"}
-                if section == "duties":
+                if section == "validation":
+                    note["severity"] = "error"
+                    note["note"] = ("a validation sentence reads '<Changes to> <permissions, routing, ...> are high|medium|low risk.' or "
+                                    "'High|Medium|Low-risk changes need a test record|a test note|the review of the delta.'; this one names "
+                                    "nothing the hub can class")
+                elif section == "duties":
                     note["severity"] = "error"
                     note["note"] = "a duty reads 'Every day|week|month the <cog> cog <does the task>.'; this one would be silently dropped"
                 elif section == "groups":
@@ -902,6 +918,19 @@ class ConventionExtractor:
                 action="read", object="*", resource="folder:" + m.group("folder").strip(),
                 effect="deny" if m.group("neg") else "allow")
             return True
+        if section == "validation":
+            from .validation import NEEDS, kinds_named
+
+            m = _VNEED.match(line)
+            if m and NEEDS.get(m.group("need").lower()):
+                add("validation_need", n, line, risk=m.group("risk").lower(), evidence=NEEDS[m.group("need").lower()])
+                return True
+            m = _VCLASS.match(line)
+            kinds = sorted(kinds_named(m.group("what"))) if m else []
+            if m and kinds:
+                add("validation_class", n, line, risk=m.group("risk").lower(), kinds=kinds)
+                return True
+            return False
         m = _DUTY.match(line)
         if m and section == "duties":
             # A standing goal the duty runner takes up for the cog ("Every day the quality-assistant cog finds ...").
@@ -917,7 +946,7 @@ class ConventionExtractor:
             conds = []
             if m.group("op"):
                 conds.append({"field": "amount", "op": _OPS[m.group("op")], "value": number(m.group("amount")),
-                              "currency": m.group("cur")})
+                              "currency": m.group("cur"), **_also(m.group("also"), m.group("cur"))})
             if m.group("risk"):
                 conds.append({"field": "risk", "op": "==", "value": m.group("risk")})
             if m.group("doctype"):
@@ -949,7 +978,7 @@ class ConventionExtractor:
                     conds.append(CONDITION_VOCABULARY.get(phrase.strip(), "unknown:" + phrase.strip()))
             add("approval_criteria", n, line, approver="cog:" + m.group("cog"), process=m.group("process"),
                 max_amount=number(m.group("amount")) if m.group("amount") else None,
-                currency=m.group("cur"), conditions=conds,
+                currency=m.group("cur"), conditions=conds, **_also(m.group("also"), m.group("cur")),
                 countersign=singular_role(m.group("counter")) if m.group("counter") else None,
                 **lenses,
                 **({"max_per_day": int(m.group("perday"))} if m.group("perday") else {}),

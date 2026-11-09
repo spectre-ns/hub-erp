@@ -5,7 +5,7 @@ compile-frame committee of senior cogs. No model is called: cogs answer with the
 
 import json
 import shutil
-from datetime import timedelta
+from datetime import date, timedelta
 
 import pytest
 
@@ -18,6 +18,7 @@ from hubproto.groups import committee, group_members, groups_of
 from hubproto.runner import RunError
 
 P = "design-review"
+TODAY = date.today()
 
 DESIGN = '''---
 type: frame [0.2]
@@ -769,3 +770,90 @@ def test_a_group_listed_in_a_table_is_trained_and_has_its_section_in_the_trainin
     assign_training(Runner(), b, Kernel(), {"locator": "rec:document:D", "fields": {"sop_name": "cog-profiles", "title": "Cogs", "revision": "B"}},
                     [], owner="carol", parent_run="", by="hub")
     assert {"dave", "alice"} <= set(asked) and "bob" in asked, "the group's people, and the policy owners the table lists"
+
+
+# ---------------------------------------------------------------------------------------------- usability review (S6)
+def test_a_panel_committee_member_is_told_their_review_is_a_vote_with_a_due_date(board_hub):
+    from hubproto import changecontrol as cc
+
+    hub = board_hub
+    co = _limit_co(hub)
+    cc.request_review(hub, co["number"], "alice")
+    [note] = [m for m in hub.inbox.for_principal("dave") if m["kind"] == "review"]
+    due = (TODAY + timedelta(days=cc.COMMITTEE_REVIEW_DAYS)).isoformat()
+    assert "Your vote: the change-board committee decides by consensus; one reasoned objection sends it back." in note["body"]
+    assert f"due {due}" in note["subject"] and "a review without one is your agreement" in note["body"]
+    [c] = cc.committee_reviews(hub, co["number"])
+    assert c["due"] == due and c["vote"].startswith("Your vote: the change-board committee decides by consensus")
+
+
+def test_the_chair_acts_for_a_late_person_member_of_a_panel_committee(board_hub):
+    from hubproto import changecontrol as cc
+
+    hub = board_hub
+    co = _limit_co(hub)
+    cc.request_review(hub, co["number"], "alice")
+    with pytest.raises(ValueError, match="has until"):
+        cc.intervene_review(hub, co["number"], "change-board", "dave", "bob", "too slow")
+    late = (TODAY + timedelta(days=cc.COMMITTEE_REVIEW_DAYS + 1)).isoformat()
+    [c] = cc.committee_reviews(hub, co["number"], today=late)
+    assert c["status"] == "paused" and c["paused"][0]["kind"] == "late" and c["interveners"] == ["bob"]
+    assert "dave has not responded by" in c["reason"] and "its chair, bob, intervenes" in c["reason"]
+    hub.runner.tick(today=late)  # the runner's tick tells whoever intervenes, once
+    assert cc.tick_panels(hub, today=late) == [], "told once"
+    assert any(m["kind"] == "intervention" and "dave has not responded" in m["subject"] for m in hub.inbox.for_principal("bob"))
+    # Extend: dave is asked again with the new date.
+    later = (TODAY + timedelta(days=20)).isoformat()
+    with pytest.raises(ValueError, match="meaning"):
+        cc.intervene_review(hub, co["number"], "change-board", "dave", "bob", " ", action="extend", due=later, today=late)
+    cc.intervene_review(hub, co["number"], "change-board", "dave", "bob", "dave is on leave", action="extend", due=later, today=late)
+    assert cc.committee_reviews(hub, co["number"], today=late)[0]["status"] == "waiting"
+    assert any("now due " + later in m["subject"] for m in hub.inbox.for_principal("dave"))
+    # Late again: bob decides in dave's place (an objection with its reason sends it back).
+    after = (TODAY + timedelta(days=21)).isoformat()
+    res = cc.intervene_review(hub, co["number"], "change-board", "dave", "bob", "the limit needs the controller's view", verdict="object",
+                              today=after)
+    assert res["intervention"]["by"] == "bob" and res["findings"][0]["severity"] == "blocking"
+    [c] = cc.committee_reviews(hub, co["number"], today=after)
+    assert c["status"] == "objected" and "objects in dave's place" in c["objections"][0]["text"]
+
+
+def test_a_chair_who_contributed_to_the_change_order_escalates(board_hub):
+    from hubproto import changecontrol as cc
+    from hubproto import eco
+    from test_eco import write
+
+    hub = board_hub
+    co = hub.kernel.create("change-order", "Quality/Changes", {"title": "Lower the AP cog limit", "description": "why", "requested_by": "bob"}, by="bob")
+    d = eco.add_sop(hub, co["number"], "finance-policy", by="bob")
+    from test_eco import NEW, OLD
+
+    write(hub, hub.kernel.get(d["locator"]), OLD, NEW, "bob")
+    cc.request_review(hub, co["number"], "bob")
+    late = (TODAY + timedelta(days=cc.COMMITTEE_REVIEW_DAYS + 1)).isoformat()
+    [c] = cc.committee_reviews(hub, co["number"], today=late)
+    [p] = c["paused"]
+    assert "the chair, bob, contributed to" in p["who"] and "bob" not in p["interveners"]
+    with pytest.raises(ValueError, match="only the chair"):
+        cc.intervene_review(hub, co["number"], "change-board", "dave", "bob", "fine by me", today=late)
+
+
+def test_at_a_gate_the_chair_acts_for_a_late_person_once_the_due_date_has_passed(tmp_path, monkeypatch):
+    import hubproto.runner as runner_mod
+
+    hub = design_hub(tmp_path)
+    run_id = submit(hub, **LOW)
+    note = next(m for m in hub.inbox.for_principal("kim") if m["kind"] == "approval" and "committee" in m["subject"])
+    assert note["body"].startswith("Your vote: the design-review committee decides by consensus; one reasoned objection sends it back.")
+
+    class Later(date):
+        @classmethod
+        def today(cls):
+            return TODAY + timedelta(days=5)
+    monkeypatch.setattr(runner_mod, "date", Later)
+    # No tick has run: kim is late all the same, and sam decides in her place.
+    done = hub.runner.intervene(run_id, "sam", "decide", member="kim", verdict="approve", meaning="kim is away; I checked the drawing",
+                                payload_digest=seen(hub.runner, run_id))
+    assert done["status"] == "completed"
+    v = next(e for e in events(hub, run_id, "gate.vote") if e["member"] == "kim")
+    assert v["by"] == "sam" and v["intervention"]["pause"]["kind"] == "late"

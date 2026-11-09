@@ -258,6 +258,18 @@ def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict |
                     out.append(Finding("consistency", "warning", f"checkpoint {cp['title']!r} of {rule['name']} has no routing sentence; it will route to the role on the step", key, frame, cp["line"]))
             out += workflow_checks(rule, key, frame, line, record_types)
     out += responsibilities_guard(rules, roles, roles_with_members, members, groups)
+    classed: dict[str, set[str]] = {}
+    for r in rules:
+        if r["kind"] == "validation_class":
+            for k in r.get("kinds") or []:
+                classed.setdefault(k, set()).add(r["risk"])
+    for k, risks in sorted(classed.items()):
+        if len(risks) > 1:
+            out.append(Finding("consistency", "warning", f"changes to {k} are classed {' and '.join(sorted(risks))} risk; the higher class applies"))
+    needs_stated = {r["risk"] for r in rules if r["kind"] == "validation_need"}
+    if classed and not {"high", "medium"} <= needs_stated:
+        out.append(Finding("consistency", "warning", "the validation section does not say what evidence "
+                           + " and ".join(x for x in ("high", "medium") if x not in needs_stated) + "-risk changes need; the hub's defaults apply"))
     profiled = {r["name"] for r in rules if r["kind"] == "cog"}
     for name, m in members.items():
         if m["principal_type"] == "cog" and name not in profiled:
@@ -596,6 +608,13 @@ def drift_guard(old_rules: list[dict], new_rules: list[dict]) -> list[dict]:
         candidates = [k for k in removed_by_identity.get(rule_identity(rule), []) if k not in paired]
         if candidates:
             paired[candidates[0]] = key
+    # A route whose amount limit moves (2,000 -> 1,500 USD to the same assignee) is one change, judged by its range.
+    for key, rule in added.items():
+        if key in paired.values() or rule.get("kind") != "routing" or _amount(rule.get("condition")) is None:
+            continue
+        cand = next((k for k, r in removed.items() if k not in paired and r.get("kind") == "routing" and _same_route(r, rule)), None)
+        if cand:
+            paired[cand] = key
     for key, rule in added.items():
         change = {"id": "add:" + key, "op": "add", "rule": rule, "widening": _widens(rule, old.values()),
                   "reason": _reason(rule, "add")}
@@ -603,13 +622,18 @@ def drift_guard(old_rules: list[dict], new_rules: list[dict]) -> list[dict]:
         if old_key:
             change["changes_from"] = removed[old_key]
             change["reason"] = _reason(rule, "change") + " (" + (_differences(removed[old_key], rule) or "restated") + ")"
+            if rule.get("kind") == "process":  # a workflow: its changes of meaning in words (workflow_model), never a repr
+                from .workflow_model import process_change_reason
+
+                change["reason"] = "change " + process_change_reason(removed[old_key], rule)
             change["widening"] = _widens_over(removed[old_key], rule)
         changes.append(change)
     for key, rule in removed.items():
         change = {"id": "remove:" + key, "op": "remove", "rule": rule,
                   # Removing a deny, a "when a person confirms" or a segregation sentence lets someone do what they could not
                   # (or do it unconfirmed).
-                  "widening": (rule["kind"] == "permission" and rule["effect"] in ("deny", "propose")) or rule["kind"] == "sod",
+                  "widening": (rule["kind"] == "permission" and rule["effect"] in ("deny", "propose")) or rule["kind"] in (
+                      "sod", "validation_class", "validation_need"),
                   "reason": _reason(rule, "remove")}
         if key in paired:
             change["changed_to"] = added[paired[key]]
@@ -632,12 +656,47 @@ def _widens_over(old: dict, new: dict) -> bool:
                 t.get("id") for t in r.get("transitions") or [] if (t.get("gate") or {}).get("kind") in ("person", "cog", "committee")}
         return not checkpoints(old) <= checkpoints(new) or old.get("folder") != new.get("folder")
     if new.get("kind") == "routing":
-        return old.get("assignee") != new.get("assignee") or (old.get("mode") or "assign") != (new.get("mode") or "assign")
+        cog = str(new.get("assignee") or "").startswith("cog:")
+        if old.get("assignee") != new.get("assignee") or (old.get("mode") or "assign") != (new.get("mode") or "assign"):
+            # Work moving from a cog to a person or role is not more authority for anyone's machine; anything else is.
+            return not (str(old.get("assignee") or "").startswith("cog:") and not cog)
+        if not cog:
+            return False  # the same person or role gets more or fewer items: no one may do more than before
+        return _range_grows(old.get("condition"), new.get("condition"))
+    # A changed threshold stays a widening either way (governance-2/8): whether a lower value allows more or less depends
+    # on what it measures, which the hub cannot tell from its name.
     if new.get("kind") == "member":
         return not set(new.get("roles") or []) <= set(old.get("roles") or [])
     if new.get("kind") == "group":  # someone more is in it (what the group may do reaches them)
         return not (set(new.get("members") or []) <= set(old.get("members") or []) and set(new.get("roles") or []) <= set(old.get("roles") or []))
     return old != {**new, "source": old.get("source")}
+
+
+def _amount(cond) -> tuple | None:
+    """(op, value, currency) of a route condition that is one amount bound, else None."""
+    if isinstance(cond, dict) and cond.get("field") == "amount" and cond.get("op") in ("<", "<=", ">", ">="):
+        try:
+            return cond["op"], float(cond.get("value")), (cond.get("currency"), tuple(sorted(cond.get("also_currencies") or [])))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _same_route(old: dict, new: dict) -> bool:
+    """The same route but for its amount limit (same process, step, assignee, mode, bound direction and currency)."""
+    a, b = _amount(old.get("condition")), _amount(new.get("condition"))
+    return (a is not None and b is not None and a[0][0] == b[0][0] and a[2] == b[2]
+            and all(old.get(k) == new.get(k) for k in ("process", "step", "assignee")) and (old.get("mode") or "assign") == (new.get("mode") or "assign"))
+
+
+def _range_grows(old_cond, new_cond) -> bool:
+    """Whether a route's amount range covers more items than before (a cog then handles more)."""
+    a, b = _amount(old_cond), _amount(new_cond)
+    if a is None or b is None or a[0][0] != b[0][0] or a[2] != b[2]:
+        return old_cond != new_cond
+    if a[0].startswith("<"):  # an upper bound: more when it goes up (or "<" becomes "<=" at the same amount)
+        return b[1] > a[1] or (b[1] == a[1] and b[0] == "<=" and a[0] == "<")
+    return b[1] < a[1] or (b[1] == a[1] and b[0] == ">=" and a[0] == ">")
 
 
 def _limit_raised(o, n) -> bool:
@@ -654,6 +713,8 @@ def _criteria_widens(old: dict, new: dict) -> bool:
         return True
     if (old.get("currency") or None) != (new.get("currency") or None) and old.get("max_amount") is not None:
         return True
+    if not set(new.get("also_currencies") or []) <= set(old.get("also_currencies") or []):
+        return True  # the limit now holds in another currency too: more bills for the cog
     if int(new.get("adversarial_reviews") or 0) < int(old.get("adversarial_reviews") or 0):
         return True  # fewer independent reviews before a cog signs
     return any(_limit_raised(old.get(k), new.get(k)) for k in ("max_amount", "max_per_day", "max_amount_per_month"))
@@ -667,6 +728,8 @@ def _widens(rule: dict, old_rules) -> bool:
         return True
     if kind in ("cog", "persona", "scope", "committee", "duty", "group"):
         return True  # who a cog is and how it behaves (its model, persona), the scopes, a standing duty, who is in a group: two policy owners
+    if kind in ("validation_class", "validation_need"):
+        return True  # what a configuration change must prove before approval: two policy owners
     if kind == "routing":
         return rule["assignee"].startswith("cog:")
     if kind == "approval_criteria":
@@ -723,6 +786,10 @@ def _reason(rule: dict, op: str) -> str:
                 + (f", chaired by {rule['chair']}" if rule.get("chair") else "") + ": decides by consensus")
     if kind == "responsibility":
         return f"{op} in {rule.get('frame')}'s Roles and responsibilities: {rule.get('who')}: {rule.get('text')}"
+    if kind == "validation_class":
+        return f"{op} validation class: changes to {', '.join(rule.get('kinds') or [])} are {rule.get('risk')} risk"
+    if kind == "validation_need":
+        return f"{op} validation: {rule.get('risk')}-risk changes need {str(rule.get('evidence')).replace('-', ' ')}"
     if kind == "scope":
         return f"{op} scope {rule['name']} ({rule.get('level')}): compiles {', '.join(rule.get('compiles') or [])}" + (
             f", layers on {', '.join(rule['layers_on'])}" if rule.get("layers_on") else "")

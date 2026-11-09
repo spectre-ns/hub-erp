@@ -479,3 +479,17 @@ def test_from_a_committee_to_one_person_is_a_widening_and_set_gate_keeps_only_th
     back = wm.apply_op(new, {"op": "set_gate", "id": "approve", "gate": {"kind": "committee", "committee": "compile-frame", "role": "x", "when": "y"}})
     assert wm.transition_map(back)["approve"]["gate"] == {"kind": "committee", "committee": "compile-frame"}
     assert not [p for p in wm.checks(back, old=new) if p["code"] == "widening" and p["id"] == "approve"], "a committee is stronger"
+
+
+def test_a_process_rule_change_in_words_and_a_short_responsibility():
+    old = {"kind": "process", "name": "p", "folder": "F", "record_type": "x", "steps": [], "terminal": "done", "reject_to": None,
+           "statuses": small()["statuses"], "transitions": [t for t in small()["transitions"]]}
+    new = copy.deepcopy(old)
+    new["transitions"].append({"id": "verified", "type": "directed", "from": ["review"], "to": "done", "name": "Verified",
+                               "gate": {"kind": "person", "role": "quality-manager"}})
+    words = wm.process_change_words(old, new)
+    assert words == ["Transition “Verified” added: from “Review” to “Done”, the quality manager decides"]
+    reason = wm.process_change_reason(old, new)
+    assert reason == "the p workflow (1 change): Transition “Verified” added: from “Review” to “Done”, the quality manager decides"
+    assert wm.process_change_reason(old, copy.deepcopy(old)) == "the p workflow, restated (no change of meaning)"
+    assert wm.responsibility_words(new, "role:quality-manager") == "Decides “Approve”, “Return” and “Verified” in the p workflow"
