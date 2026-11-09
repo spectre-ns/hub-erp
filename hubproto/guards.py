@@ -57,6 +57,15 @@ def grounding_guard(rules: list[dict], frames: dict[str, Frame]) -> list[Finding
         if frame is None:
             out.append(Finding("source-grounding", "error", "source names an unknown Frame", key))
             continue
+        if rule.get("kind") == "process" and rule.get("statuses"):
+            # A process written as a graph: its Statuses line and every transition sentence cite their own line.
+            subs = [rule.get("statuses_source")] + [t.get("source") for t in rule.get("transitions") or [] if t.get("source")]
+            for sub in subs:
+                if not sub:
+                    continue
+                ln = int(sub.get("line", 0) or 0)
+                if not (1 <= ln <= len(frame.file_lines)) or (frame.line(ln) or "").strip() != str(sub.get("text", "")).strip():
+                    out.append(Finding("source-grounding", "error", f"cited text does not match the Frame at line {ln}", key, frame.name, ln))
         line = int(src.get("line", 0) or 0)
         if not (1 <= line <= len(frame.file_lines)):
             out.append(Finding("source-grounding", "error", f"line {line} is outside the Frame", key, frame.name, line))
@@ -195,6 +204,8 @@ def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict |
                     out.append(Finding("consistency", "error", f"condition {c[8:]!r} cannot be evaluated deterministically", key, frame, line))
             if rule.get("countersign") and not ref_ok("role:" + rule["countersign"]):
                 out.append(Finding("consistency", "error", f"countersigning role {rule['countersign']!r} is not declared", key, frame, line))
+        elif kind == "process" and rule.get("statuses"):
+            out += _graph_consistency(rule, key, frame, line, roles, roles_with_members, members, cog_ids, criteria_by_cog, folders, record_types)
         elif kind == "process":
             if rule["folder"] and rule["folder"] not in folders:
                 out.append(Finding("consistency", "error", f"process folder {rule['folder']!r} is not declared", key, frame, line))
@@ -226,6 +237,7 @@ def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict |
                 if not any(r["kind"] == "routing" and r["process"] == rule["name"] and r["step"] != "*"
                            and (checkpoint_for(rule, r["step"]) or {}).get("id") == cp["id"] for r in rules):
                     out.append(Finding("consistency", "warning", f"checkpoint {cp['title']!r} of {rule['name']} has no routing sentence; it will route to the role on the step", key, frame, cp["line"]))
+            out += workflow_checks(rule, key, frame, line, record_types)
     profiled = {r["name"] for r in rules if r["kind"] == "cog"}
     for name, m in members.items():
         if m["principal_type"] == "cog" and name not in profiled:
@@ -264,6 +276,92 @@ def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict |
                                f"{subject} may both create and approve {obj} in {res}: whoever files an item never approves it "
                                f"(checked at every Gate routed to a role or a cog); a step routed to a named field "
                                f"(the requester, the assignee) is that person's unless a segregation sentence says otherwise"))
+    return out
+
+
+FIELD_GATE_ROLES = ("system", "assignee", "owner", "author", "requester", "auditor", "chair", "evaluator", "reporter")
+
+
+def _graph_consistency(rule: dict, key: str, frame: str, line: int, roles: set, roles_with_members: set, members: dict,
+                       cog_ids: set, criteria_by_cog: dict, folders: set, record_types: dict | None) -> list[Finding]:
+    """The checks a process written as a graph gets at compile: what it names exists, a cog gate has approval criteria,
+    and the graph checks of the workflow model (``hubproto.workflow_model.checks``, when that module is present)."""
+    out: list[Finding] = []
+    if rule["folder"] and rule["folder"] not in folders:
+        out.append(Finding("consistency", "error", f"process folder {rule['folder']!r} is not declared", key, frame, line))
+    if not rule["folder"]:
+        out.append(Finding("consistency", "error", "process does not say where records are filed", key, frame, line))
+    if not rule.get("object") and not rule.get("record_type"):
+        out.append(Finding("consistency", "error", f"process {rule['name']}: say its record type ('The record type is X.') or "
+                                                   "name its start ('Starts in <status> (\"Open the <item>\"): ...')", key, frame, line))
+    if record_types is not None:
+        wanted = rule.get("record_type") or rule.get("object")
+        if wanted and wanted not in record_types and not any(td.get("object") == wanted for td in record_types.values()):
+            out.append(Finding("consistency", "error", f"process {rule['name']} needs record type {wanted!r}, which the record type definitions do not define", key, frame, line))
+    for t in rule.get("transitions") or []:
+        tl = int(t.get("line", 0) or line)
+        g = t.get("gate") or {}
+        name = t.get("name") or t.get("id")
+        for role in [g.get("role"), g.get("fallback")]:
+            if role and role not in FIELD_GATE_ROLES and role not in roles:
+                out.append(Finding("consistency", "error", f"{name!r} is decided by {role!r}, which is not a role of the org model", key, frame, tl))
+            elif role and role not in FIELD_GATE_ROLES and role not in roles_with_members:
+                out.append(Finding("consistency", "error", f"{name!r} is decided by the {role.replace('-', ' ')}, a role nobody holds; fill the org model", key, frame, tl))
+        if g.get("kind") == "cog":
+            cog = g.get("cog")
+            if cog not in members or members[cog]["principal_type"] != "cog":
+                out.append(Finding("consistency", "error", f"{name!r} is decided by the {cog} cog, which is not a cog member of the org model", key, frame, tl))
+            elif not [c for c in criteria_by_cog.get(f"cog:{cog}", []) if c["process"] == rule["name"]]:
+                out.append(Finding("consistency", "error", f"{name!r} is decided by the {cog} cog, which has no approval criteria for {rule['name']}", key, frame, tl))
+        for a in t.get("actions") or []:
+            if isinstance(a, str) and a not in cog_ids:
+                near = sorted(c for c in cog_ids if c.endswith("-" + a) or c.startswith(a + "-"))
+                out.append(Finding("consistency", "error", f"{name!r} runs {a!r}, which is not a cog" + (f" (did you mean {', '.join(near)}?)" if near else ""),
+                                   key, frame, tl))
+            elif isinstance(a, dict) and "notify" in a:
+                kind_, _, who = str(a["notify"]).partition(":")
+                if kind_ == "role" and who not in roles:
+                    out.append(Finding("consistency", "error", f"{name!r} notifies {who!r}, which is not a role", key, frame, tl))
+    out += workflow_checks(rule, key, frame, line, record_types)
+    return out
+
+
+def workflow_checks(rule: dict, key: str, frame: str, line: int, record_types: dict | None = None) -> list[Finding]:
+    """The graph checks of ``hubproto.workflow_model`` (workstream 8), called when that module is present: its errors are
+    compile errors for a process written as a graph; for numbered steps (checked by the guards above, and compiled into
+    the graph with no change of meaning) they are shown as warnings."""
+    try:
+        from . import workflow_model  # noqa: F401
+    except ImportError:
+        return []
+    check = getattr(workflow_model, "checks", None)
+    if check is None:
+        return []
+    from .process_graph import build, graph_only
+
+    rt = rule.get("record_type") or next((t for t, td in (record_types or {}).items() if td.get("object") == rule.get("object")), rule.get("object"))
+    try:
+        graph = graph_only(build(rule, {}, rt or ""))
+        found = check(graph)
+    except Exception as e:  # a check that cannot run never blocks a compile; it says so
+        return [Finding("workflow", "warning", f"the workflow checks could not run on {rule['name']}: {type(e).__name__}: {e}", key, frame, line)]
+    if isinstance(found, dict):
+        found = [{**x, "severity": "error"} if isinstance(x, dict) else {"severity": "error", "detail": str(x)} for x in found.get("errors") or []] + \
+                [{**x, "severity": "warning"} if isinstance(x, dict) else {"severity": "warning", "detail": str(x)} for x in found.get("warnings") or []]
+    out = []
+    graph_form = bool(rule.get("statuses"))
+    lines = (graph.get("source") or {}).get("lines") or {}
+    for f in found or []:
+        f = f if isinstance(f, dict) else {"detail": str(f)}
+        sev = str(f.get("severity") or f.get("level") or "error").lower()
+        sev = "error" if sev.startswith("err") else "warning"
+        if not graph_form:
+            sev = "warning"
+        detail = f.get("detail") or f.get("message") or f.get("text") or str(f)
+        el = f.get("element") or f.get("id") or ""
+        if isinstance(el, dict):
+            el = el.get("id") or ""
+        out.append(Finding("workflow", sev, f"{rule['name']}: {detail}", key, frame, int(lines.get(el, 0) or line)))
     return out
 
 
@@ -342,7 +440,8 @@ def _widens_over(old: dict, new: dict) -> bool:
         return _criteria_widens(old, new)
     if new.get("kind") == "process":
         def checkpoints(r):
-            return {s.get("id") for s in r.get("steps") or [] if s.get("kind") == "checkpoint"}
+            return {s.get("id") for s in r.get("steps") or [] if s.get("kind") == "checkpoint"} | {
+                t.get("id") for t in r.get("transitions") or [] if (t.get("gate") or {}).get("kind") in ("person", "cog")}
         return not checkpoints(old) <= checkpoints(new) or old.get("folder") != new.get("folder")
     if new.get("kind") == "routing":
         return old.get("assignee") != new.get("assignee") or (old.get("mode") or "assign") != (new.get("mode") or "assign")
@@ -414,6 +513,8 @@ def _reason(rule: dict, op: str) -> str:
         return f"{op} member {rule['principal']} ({rule['principal_type']}) roles {rule['roles']}"
     if kind == "process":
         return f"{op} process {rule['name']} with {len(rule['steps'])} steps"
+    if kind == "sod" and rule.get("rule") == "cog-work-signed-by-person":
+        return f"{op} segregation of duties: a cog's work " + ("" if rule.get("object") in (None, "*") else f"on a {rule['object']} ") + "is signed by a person"
     if kind == "sod":
         return f"{op} segregation of duties on {rule['object']}: {rule['roles']}"
     if kind == "cog":

@@ -107,6 +107,48 @@ def validate_rule(rule: dict) -> list[str]:
             n = rule.get("adversarial_reviews")
             if not isinstance(n, int) or not 1 <= n <= 6:
                 errors.append("approval_criteria: say how many adversarial reviews must pass (1 to 6)")
-    if kind == "process" and not rule.get("steps"):
+    if kind == "process" and not rule.get("steps") and not rule.get("statuses"):
         errors.append("process: needs at least one step")
+    if kind == "process" and rule.get("statuses"):
+        errors += validate_graph(rule)
+    if kind == "sod" and rule.get("rule") not in (None, "cog-work-signed-by-person"):
+        errors.append(f"sod: unknown rule {rule.get('rule')!r}")
+    return errors
+
+
+def validate_graph(process: dict) -> list[str]:
+    """Schema of a process written as statuses and transitions (change control 10.1)."""
+    errors: list[str] = []
+    ids = [s.get("id") for s in process.get("statuses") or []]
+    for s in process.get("statuses") or []:
+        if s.get("category") not in ("todo", "in_progress", "done"):
+            errors.append(f"process: status {s.get('id')!r} has category {s.get('category')!r} (to do, in progress or done)")
+        if s.get("outcome") and (s.get("category") != "done" or s["outcome"] not in ("completed", "rejected", "cancelled", "superseded")):
+            errors.append(f"process: status {s.get('id')!r} has outcome {s['outcome']!r}, which only a done status has (completed, rejected, cancelled, superseded)")
+    if len(set(ids)) != len(ids):
+        errors.append("process: two statuses share an id")
+    tids = [t.get("id") for t in process.get("transitions") or []]
+    if len(set(tids)) != len(tids):
+        errors.append("process: two transitions share an id")
+    for t in process.get("transitions") or []:
+        where = f"process: transition {t.get('id')!r}"
+        if t.get("type") not in ("initial", "directed", "global"):
+            errors.append(f"{where} has type {t.get('type')!r}")
+        if t.get("to") not in ids:
+            errors.append(f"{where} goes to {t.get('to')!r}, which is not a status")
+        for f in t.get("from") or []:
+            if f not in ids:
+                errors.append(f"{where} comes from {f!r}, which is not a status")
+        if t.get("type") == "directed" and not t.get("from"):
+            errors.append(f"{where} says no status it comes from")
+        g = t.get("gate") or {}
+        if g.get("kind") not in ("person", "cog", "auto"):
+            errors.append(f"{where} has no gate (a person, a cog or automatic)")
+        elif g["kind"] == "cog" and not (g.get("cog") and g.get("fallback")):
+            errors.append(f"{where}: a cog gate names the cog and the role it falls back to")
+        elif g["kind"] == "auto" and g.get("when") not in ("actions-succeed", *CONDITION_VOCABULARY.values()):
+            errors.append(f"{where}: an automatic transition fires when its actions succeed or on a condition of the vocabulary")
+        for v in t.get("validators") or []:
+            if not isinstance(v, dict) or not set(v) & {"fields_set", "status_visited", "condition"}:
+                errors.append(f"{where}: validator {v!r} is not one the hub checks (fields set, a status visited, a condition)")
     return errors

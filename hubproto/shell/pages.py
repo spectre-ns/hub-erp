@@ -13,6 +13,7 @@ from .apps import FOLDER_APPS, avatars, plural
 from .charts import day_bars, hbars, last_days, median, per_day, sparkline, stacked_bars
 from .editor import new_document_form
 from ..runner import FIELD_ROLES
+from ..release import legacy_transitions  # the workflow is a graph (change control 10.1); these pages read its earlier view
 from .forms import DEFAULT_START_INPUTS, REQUIRED_EXTRA, START_INPUTS, ShellError, file_input, text_input, widget
 from .handler import details, folder_tree, hidden_as, href, kv, table
 from .icons import TYPE_ICONS, file_icon, icon, type_icon
@@ -33,7 +34,7 @@ def mermaid_for(wf: dict, current: str | None) -> str:
     for s, i in ids.items():
         lines.append(f'    state "{state_name(s, wf)}" as {i}')
     lines.append(f"    [*] --> {ids[states[0]]}")
-    for t in wf["transitions"]:
+    for t in legacy_transitions(wf):
         if t["from"] not in ids or t["to"] not in ids:
             continue
         label = ", ".join(t.get("steps") or []) or "automatic" if t["kind"] == "automatic" else f"{t['title']} (approve)"
@@ -61,7 +62,7 @@ def workflow_for(bundle: dict, rec: dict, run: dict | None) -> tuple[str | None,
 
 
 def next_state_for(wf: dict | None, checkpoint: str) -> str | None:
-    for t in (wf or {}).get("transitions", []):
+    for t in legacy_transitions(wf):
         if t["kind"] == "human" and t["step"] == checkpoint:
             return t["to"]
     return None
@@ -838,7 +839,7 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
             body += f'<div class="card"><pre class="mermaid" id="wf-diagram">{esc(diagram)}</pre><p class="why">States: ' + " &middot; ".join(self._state_chip(s, wf) + (" (current)" if s == rec["state"] else "") for s in states) \
                 + "<br>Returned, failed and cancelled are side exits: a rejection that returns the item to its owner, a stopped step, a cancelled run.</p>"
             trows = []
-            for t in wf["transitions"]:
+            for t in legacy_transitions(wf):
                 if t["kind"] == "automatic":
                     trows.append([esc(state_name(t["from"], wf)), esc(state_name(t["to"], wf)), "automatic", esc(", ".join(t.get("steps") or [])), ""])
                 else:

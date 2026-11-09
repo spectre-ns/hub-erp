@@ -356,6 +356,10 @@ class Hub:
                                     record_types=self.kernel.types, config_digests=self.kernel.config_digests,
                                     resolve_document=self.resolve_document)
         proposal["overrides"] = {n: {"text": t, "draft": docs.get(n), "path": store.get(n).relpath} for n, t in texts.items()}
+        from .runner import state_map_questions  # statuses this change removes while items are in them (change control 5.2)
+
+        asked = {q.get("id") for q in proposal.get("questions") or []}
+        proposal["questions"] = list(proposal.get("questions") or []) + [q for q in state_map_questions(self, proposal) if q["id"] not in asked]
         # Explicit: what each Frame was compiled from (the SOP document and revision, or the Frame file).
         if self.sop_source():
             from . import sopdocs

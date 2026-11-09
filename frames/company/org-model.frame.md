@@ -76,3 +76,6 @@ Staff may comment on anything in Tasks.
 Payables reviewers may comment on anything in Finance.
 Policy readers may read Policy.
 Policy readers may read Quality.
+
+## Segregation of duties
+A cog's work is signed by a person.

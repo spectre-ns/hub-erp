@@ -52,10 +52,10 @@ def test_service_mode_leaves_the_item_waiting_for_the_cog_until_it_works(release
         assert state["status"] == "waiting" and state["pending"]["assignees"] == ["ap-reviewer"]
         assert released.kernel.get(state["record"])["assignees"] == ["ap-reviewer"]
         assert [s["id"] for s in released.runner.pending_for("ap-reviewer")] == [run_id]
-        # A person cannot take the cog's turn; the cog cannot be impersonated with fields.
+        # A person cannot take the cog's turn; a cog supplies only the fields the Gate accepts (change control 7).
         with pytest.raises(RunError, match="not an assignee"):
             released.runner.decide(run_id, "dave", "approve", meaning="x", payload_digest=seen(released.runner, run_id))
-        with pytest.raises(RunError, match="supplies no fields"):
+        with pytest.raises(RunError, match="may not set amount"):
             released.runner.decide(run_id, "ap-reviewer", "approve", meaning="x", fields={"amount": 1}, payload_digest=seen(released.runner, run_id))
         touched = released.runner.cog_users_work()
         assert [t["id"] for t in touched] == [run_id] and released.runner.load(run_id)["status"] == "completed"

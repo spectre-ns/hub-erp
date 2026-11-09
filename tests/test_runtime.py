@@ -104,16 +104,23 @@ def test_rejection_is_final_and_nothing_posts(released):
         released.runner.decide(run_id, "bob", "approve", meaning="ok", payload_digest=seen(released.runner, run_id))
 
 
-def test_run_keeps_its_release_across_a_cutover(released):
+def test_run_follows_the_release_in_force_from_its_next_move(released):
+    # Change control 5.1 (this used to pin the run to its starting release): the waiting Gate keeps its assignee across
+    # the cutover, and the decision and everything after it follow the release in force then.
     first = released.releases.current()["digest"]
     run_id = released.runner.submit("purchase-to-pay", {"record": dated(BIG_BILL)}, owner="alice")
     edit_frame(released, "finance-policy", "Approvals in purchase-to-pay over 10,000 USD go to the controller.",
                "Approvals in purchase-to-pay over 10,000 USD go to the payables reviewer.", bump="1.3.0")
     second = release_all(released)["digest"]
     assert released.releases.current()["digest"] == second != first
+    assert released.runner.load(run_id)["pending"]["assignees"] == ["bob"], "a Gate already waiting keeps its assignees"
     state = released.runner.decide(run_id, "bob", "approve", meaning="ok", payload_digest=seen(released.runner, run_id))
-    assert state["status"] == "completed" and state["release"] == first
-    assert next(iter(released.kernel.journals().values()))["release"] == first
+    assert state["status"] == "completed" and state["release"] == second
+    assert next(iter(released.kernel.journals().values()))["release"] == second
+    changed = [e for e in released.runner.track(run_id) if e["type"] == "run.release_changed"]
+    assert [(e["from"], e["to"], e["move"]) for e in changed] == [(first, second, "a decision")]
+    decided = next(e for e in released.runner.track(run_id) if e["type"] == "gate.decided")
+    assert decided["release_digest"] == second
     # A new run uses the new routing: the big bill now goes to dave (against a fresh order; PO-1002 is fully billed).
     released.kernel.append("po.issued", "po:PO-1004", {"supplier": "acme-metals", "amount": 12000.0, "currency": "USD",
                                                        "description": "More fixtures", "received": True}, by="seed")

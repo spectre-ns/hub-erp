@@ -10,7 +10,7 @@ from .apps import avatars
 from .forms import file_input, text_input, widget
 from .handler import details, hidden_as, href, kv, table
 from .icons import icon, type_icon
-from .pages import next_state_for
+from .pages import legacy_transitions, next_state_for
 from .text import (BLOB_FIELDS, MEANING_EXAMPLES, NOTIFICATION_KINDS, chip, day, esc, field_label, join_words, money, notification_sentence,
                    qty, short, state_name, summary_of_record, tag, type_name, value_text, when)
 
@@ -264,7 +264,7 @@ class InboxMixin:
         rec = self.hub.kernel.get(r["record"]) if r.get("record") else None
         rt = rec["type"] if rec else self._record_type_of(r)
         nxt = next_state_for(r.get("workflow"), p["checkpoint"])
-        on_reject = next((t.get("on_reject") for t in (r.get("workflow") or {}).get("transitions", []) if t["kind"] == "human" and t["step"] == p["checkpoint"]), "rejected")
+        on_reject = next((t.get("on_reject") for t in legacy_transitions(r.get("workflow")) if t["kind"] == "human" and t["step"] == p["checkpoint"]), "rejected")
         mine = self.err is not None and self.vals.get("run") == r["id"] and self.route == "/decide"
         values = dict(self.vals) if mine else {}
         candidates = ["meaning", "reason"] + (self.hub.runner.allowed_decision_fields(r) if rec else [])
@@ -314,11 +314,11 @@ class InboxMixin:
 <div class="fields">{text_input("meaning", "Meaning of your signature", values.get("meaning", ""), required=True, textarea=True, hint="", error=self._field_error("meaning") if mine else None)}</div>
 <p class="why">{meaning_hint}</p>
 <div class="actions"><label><input type="checkbox" name="confirm" value="1" required{' checked' if values.get('confirm') else ''}> I have read the item and the checks above</label>
-<button{' disabled' if blocked else ''}>{esc(_approve_label(rt, p, rec))}</button> <span class="why">{leads}.</span></div></form>"""
+{self._option_buttons(r, user, "approve", blocked) or f"<button{' disabled' if blocked else ''}>{esc(_approve_label(rt, p, rec))}</button>"} <span class="why">{leads}.</span></div></form>"""
         reject_form = f"""<div class="card quiet" id="reject-{esc(r['id'])}"><h4>Reject instead</h4><p class="why">{rej}. {esc(r['owner'])} will see your reason.</p>
 <form method="post" action="/decide" aria-label="Reject {esc(rec['number'] if rec else '')}">{hidden_as(user)}<input type="hidden" name="run" value="{esc(r['id'])}"><input type="hidden" name="digest" value="{esc(digest)}"><input type="hidden" name="verdict" value="reject">
 <div class="fields">{text_input("reason", "Reason for rejecting", values.get("reason", "") if values.get("verdict") == "reject" else "", required=True, textarea=True, hint="", error=self._field_error("reason") if mine else None)}</div>
-<div class="actions"><button class="reject" formnovalidate>Reject {esc(rec['number'] if rec else '')}</button></div></form></div>"""
+<div class="actions">{self._option_buttons(r, user, "reject", False) or f"<button class='reject' formnovalidate>Reject {esc(rec['number'] if rec else '')}</button>"}</div></form></div>"""
         if self._viewing_cog():  # watching a cog: what it sees, and what it will do, without any form in its name
             crit = [c for c in (self.bundle or {}).get("approval_criteria", []) if c["approver"] == f"cog:{user}" and c["process"] == r["process"]]
             will = (f"{esc(user)} decides this on its own, within {self._rule_html(crit[0]['source'])}, or declines it to the next person on the route."
@@ -328,6 +328,19 @@ class InboxMixin:
                     f"{watch}<h4>The item</h4>{brief}</article>")
         return (f"<article class='card decide' aria-labelledby='h-{esc(r['id'])}'>{head}<div class='facts'>{' '.join(facts)}</div>{meta}{policy}{blocked_html}{checks}"
                 f"{approve_form}<h4>The item</h4>{brief}{reject_form}</article>")
+
+    def _option_buttons(self, run: dict, user: str, verdict: str, blocked: bool) -> str:
+        """For a process written as a graph, one button per way forward of this kind the Gate offers this person, named by
+        its transition; empty for numbered steps (the card keeps its Approve and Reject buttons)."""
+        p = run.get("pending") or {}
+        if (run.get("workflow") or {}).get("form") != "graph":
+            return ""
+        mine = [o for o in p.get("options") or [] if o.get("verdict") == verdict
+                and user in (o["assignees"] if o.get("assignees") is not None else p.get("assignees") or [])]
+        if not mine:
+            return f"<span class='why'>No way to {verdict} it is offered to you here.</span>"
+        cls = " class='reject' formnovalidate" if verdict == "reject" else (" disabled" if blocked else "")
+        return " ".join(f"<button name='transition' value='{esc(o['id'])}'{cls}>{esc(o['name'])}</button>" for o in mine)
 
     def _brief(self, rec: dict, payload: dict) -> str:
         """A readable summary of a record for the person deciding on it: key fields by type, small tables for the rest."""
