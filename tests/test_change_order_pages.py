@@ -699,3 +699,21 @@ def test_the_same_task_for_different_people_is_not_flagged_as_a_duplicate():
     key = lambda r: InboxMixin._dup_key(None, r)
     assert key(rec("bob")) != key(rec("carol")), "each person's own training"
     assert key(rec("bob")) == key(rec("bob"))
+
+
+def test_each_rounds_panel_lists_the_compile_ops_senior_cogs_first(shell):
+    """The compile-frame committee compiles the diff first in every round: the round records it, and its members head the
+    round's panel as the compile Op (here, with hosted models off, as cogs that cannot read here)."""
+    hub = shell["hub"]
+    co = new_co(shell)
+    carry_revision(shell, co)
+    ok(post(shell, "/co-review", {"as": "alice", "co": co["locator"], "choose": "own", "panel": ["management"]}))
+    rnd = cc.current_round(hub.kernel.get(co["locator"]))
+    members = [m["who"] for m in (rnd.get("committee") or {}).get("members") or []]
+    assert members == [w for w, _ in hub.compile_committee()["members"]] and members, rnd.get("committee")
+    html = co_page(shell, co, "alice")
+    panel = html.split("<h4>Panel</h4>", 1)[1].split("</table>", 1)[0]
+    for who in members:
+        assert who in panel and panel.index(who) < panel.index("management"), "the senior cogs come first"
+    assert panel.count("<span class='chip'>compile Op</span>") == len(members) and "compiles the diff into the delta" in panel
+    assert "Always on it: the compile-frame committee" in html
