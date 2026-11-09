@@ -138,6 +138,26 @@ def _owners(hub) -> list[str]:
     return sorted(p for p, m in (b.get("members") or {}).items() if m.get("type") == "person" and "policy-owner" in authz.roles_of(b, p))
 
 
+def _human_intervener(hub, chair: str | None) -> bool:
+    """Whether the release in force has a person to answer for the compile committee: a person as its chair, or a person
+    holding the system-administrator role (a cog in either place does not count)."""
+    b = _bundle(hub)
+    members = b.get("members") or {}
+    if chair and (members.get(chair) or {}).get("type") == "person":
+        return True
+    return any(m.get("type") == "person" and "system-administrator" in authz.roles_of(b, w) for w, m in members.items())
+
+
+def _question_items(p: dict | None, q: dict) -> list[str]:
+    """The delta items a question is about: the one it names, or those read from the line it asks about."""
+    out = []
+    for c in (p or {}).get("changes") or []:
+        o = c.get("origin") or {}
+        if c["id"] == q.get("item") or (q.get("line") and o.get("frame") == q.get("frame") and o.get("line") == q.get("line")):
+            out.append(c["id"])
+    return out
+
+
 def _person(hub, who: str) -> bool:
     return ((_bundle(hub).get("members") or {}).get(who) or {}).get("type") == "person"
 
@@ -546,12 +566,13 @@ def _version_authors(hub, draft: dict) -> list[str]:
 
 
 def contributors(hub, co_ref) -> list[str]:
-    """Everyone who wrote a revision the change order carries or made a direct, suggested (who accepted it), form or
-    record-type change on it. None of them may sign its approval (the change-control SOP's segregation sentence)."""
+    """Everyone who wrote a revision the change order carries (or opened it for its author: ``started_by``), retires a
+    document on it, or made a direct, suggested (who accepted it), form or record-type change on it. None of them may sign its approval (the change-control SOP's segregation sentence)."""
     co = _co(hub, co_ref)
     out = []
     for c in eco.carried(hub, co):
-        out += _version_authors(hub, c["draft"])
+        out += _version_authors(hub, c["draft"]) + [c["draft"]["fields"].get("started_by")]  # who opened it for its author too
+    out += [r.get("by") for r in eco.retirements(co).values()]  # who retires a document
     for it in _items(co):
         o = it.get("origin") or {}
         out += [o.get("accepted_by")] if o.get("kind") == "suggested" else [o.get("by")]
@@ -597,8 +618,9 @@ def may_not_sign(hub, co_ref) -> list[str]:
 
 
 # ---------------------------------------------------------------- compiling the delta
-def _shas(hub, drafts: dict[str, str]) -> dict[str, str]:
-    return {n: str((hub.kernel.get(loc) or {}).get("fields", {}).get("content_sha") or "") for n, loc in sorted(drafts.items())}
+def _shas(hub, drafts: dict[str, str | None]) -> dict[str, str]:
+    return {n: (str((hub.kernel.get(loc) or {}).get("fields", {}).get("content_sha") or "") if loc else "retired")
+            for n, loc in sorted(drafts.items())}
 
 
 def _synthetic(hub, co: dict, prev: dict | None) -> dict:
@@ -838,8 +860,16 @@ def _warnings(hub, co: dict, p: dict) -> tuple[dict[str, list[dict]], list[dict]
             general.append({"code": "divergence", "ref": str(f.get("rule_key") or "").split(":", 1)[-1], "text": f["detail"]})
     for q in questions(hub, co):
         if q.get("code") in COMMITTEE_CODES and q.get("status") == "answered":
-            # The chair's (or a system administrator's) answer for the committee stays visible, as an accepted warning.
-            general.append({"code": "question", "ref": q["id"], "text": f"{q['text']} (answered by {q.get('by')}: {q.get('answer')})"})
+            # The chair's (or a system administrator's) answer for the committee stays visible, as an accepted warning; a
+            # policy owner's answer (no person chairs or administers) is on each item it concerns, so the other owner sees it.
+            w = {"code": "question", "ref": q["id"], "text": f"{q['text']} (answered by {q.get('by')}"
+                 + (", a policy owner, as no person chairs the committee or is a system administrator" if q.get("answered_as") == "policy-owner" else "")
+                 + f": {q.get('answer')})"}
+            mine = [i for i in q.get("items") or [] if i in items]
+            for i in mine:
+                items[i].append(dict(w))
+            if not mine:
+                general.append(w)
             continue
         if q.get("status", "open") != "open" or "round-trip" in (q.get("kind"), q.get("code")):
             continue  # a round-trip question is the item's round-trip warning
@@ -894,10 +924,33 @@ def _state_map_items(hub, co: dict, p: dict) -> None:
                                  "decisions": [dict(d) for d in prior.get("decisions") or []], "warnings": [], "stale": False})
 
 
+def _retire_items(hub, co: dict, p: dict) -> None:
+    """Each document the change order retires is an item of the delta the approvers decide ("retire SOP-0007
+    (persona-reviewer): it becomes obsolete and its Frame leaves the release"); the rules its Frame stated are taken out
+    as items of their own. Decisions stay with an entry while it is the same."""
+    old = {c["id"]: c for c in p.get("changes") or [] if c.get("op") == "retire"}
+    p["changes"] = [c for c in p.get("changes") or [] if c.get("op") != "retire"]
+    retires = eco.retirements(co)
+    for c in p["changes"]:  # a rule taken out because its Frame is retired was taken out by whoever retires it
+        frame = ((c.get("rule") or {}).get("source") or {}).get("frame")
+        if c.get("op") == "remove" and frame in retires and not c.get("direct"):
+            c["origin"] = {**(c.get("origin") or {}), "kind": "retirement", "by": retires[frame].get("by"), "frame": frame}
+    for name, r in sorted(retires.items()):
+        iid = f"retire:{name}"
+        prior = old.get(iid) or {}
+        p["changes"].append({"id": iid, "op": "retire", "frame": name, "rule": {"kind": "retire", "frame": name, "document": r.get("document")},
+                             "widening": False, "reason": f"retire {r.get('document')} ({name}): it becomes obsolete and its Frame leaves the "
+                                                          f"release ({r.get('reason')})",
+                             "origin": {"kind": "retirement", "by": r.get("by"), "at": r.get("at"), "frame": name, "line": None, "quote": None,
+                                        "read_by": None, "reason": r.get("reason")},
+                             "decisions": [dict(d) for d in prior.get("decisions") or []], "warnings": [], "stale": False})
+
+
 def _refresh(hub, co: dict, p: dict) -> dict:
     acc = p.get("acceptances") or {}
     if p.get("status") == "open" and not p.get("applied"):
         _state_map_items(hub, co, p)
+        _retire_items(hub, co, p)
     authors = _draft_authors(hub, co)
     contribs = contributors(hub, co)
     for c in p.get("changes") or []:
@@ -1216,7 +1269,8 @@ def request_review(hub, co_ref, by: str, panel=None, drop_reason: str = "") -> d
     if st not in EDITABLE:
         raise ValueError(f"{co['number']} is {st.replace('-', ' ')}: review rounds are over")
     f = co["fields"]
-    if not (eco.carried(hub, co) or _items(co) or f.get("form_changes") or f.get("record_type_changes") or f.get("workflow_changes")):
+    if not (eco.carried(hub, co) or eco.retirements(co) or _items(co) or f.get("form_changes") or f.get("record_type_changes")
+            or f.get("workflow_changes")):
         raise ValueError(f"{co['number']} changes nothing yet: carry an SOP or policy revision, make a direct change or carry a form first")
     last = current_round(co)
     if last and last.get("status") == "compiling":
@@ -1857,10 +1911,12 @@ def reject_suggestion(hub, co_ref, sid: str, by: str, reason: str = "") -> dict:
 
 def answer_question(hub, co_ref, qid: str, answer: str, by: str, line: int | None = None, record_divergence: bool = False) -> dict:
     """Mark a question answered, with the answer (and, best, the line of the prose that answers it). The next compile
-    also closes a compiler question that no longer arises. ``record_divergence`` (a committee question answered by its
-    chair or a system administrator): the line stays unenforced and the release records it as a divergence, with the
-    answer as its meaning. The requester, a document controller or a contributor
-    answers."""
+    also closes a compiler question that no longer arises. A committee question (``COMMITTEE_CODES``) is answered by a
+    person: the committee's chair or a system administrator who contributed nothing; when the release in force names no
+    person as either, any policy owner who did not make what it is about (the answer is then an accepted warning on each
+    item it concerns). ``record_divergence`` (a committee question): the line stays unenforced and the release records it
+    as a divergence, with the answer as its meaning. Other questions: the requester, a document controller or a
+    contributor answers."""
     co = sync(hub, co_ref)
     if not (answer or "").strip():
         raise ValueError("say what the answer is (and, best, which line of the prose says it)")
@@ -1871,14 +1927,33 @@ def answer_question(hub, co_ref, qid: str, answer: str, by: str, line: int | Non
     p = _proposal(hub, co)
     q = next((x for x in (p or {}).get("questions") or [] if x["id"] == qid), None)
     committee_q = q is not None and q.get("code") in COMMITTEE_CODES
+    concerned: list[str] = []
     if committee_q:
         # The compile committee could not read (a member was unavailable) or did not agree: a person intervenes, and that
-        # is its chair or a system administrator, never whoever made the change.
+        # is its chair or a system administrator, never whoever made the change. When the release in force names no person
+        # as chair and no person as system administrator, the policy owners answer (a cog in either place does not count).
         chair = q.get("chair") or ((hub.compile_committee() or {}).get("chair") if hasattr(hub, "compile_committee") else None)
-        if by != chair and "system-administrator" not in authz.roles_of(_bundle(hub), by):
+        b = _bundle(hub)
+        if not _person(hub, by):
+            raise ValueError(f"{by} is a cog: a person answers a {q.get('code')} question for the committee")
+        if by == chair or "system-administrator" in authz.roles_of(b, by):
+            if by in contributors(hub, co):
+                raise ValueError(f"segregation of duties: {by} contributed to {co['number']}; someone who did not answers for the committee")
+        elif not _human_intervener(hub, chair):
+            if by not in _owners(hub):
+                raise ValueError(f"the release in force names no person as the committee's chair or as a system administrator: a policy "
+                                 f"owner ({', '.join(_owners(hub)) or 'none'}) answers a {q.get('code')} question")
+            concerned = _question_items(p, q)
+            authors = _draft_authors(hub, co)
+            own = {w for c in p.get("changes") or [] if c["id"] in concerned for w in c.get("makers") or []}
+            if not concerned:
+                own |= set(authors.get(q.get("frame") or "") or [])  # the line is in their own prose
+            if by in own:
+                raise ValueError(f"segregation of duties: {by} made what this question is about; the other policy owner answers it")
+            upd["answered_as"] = "policy-owner"
+            upd["items"] = concerned
+        else:
             raise ValueError(f"only the committee's chair ({chair or 'none'}) or a system administrator answers a {q.get('code')} question")
-        if by in contributors(hub, co):
-            raise ValueError(f"segregation of duties: {by} contributed to {co['number']}; someone who did not answers for the committee")
     elif record_divergence:
         raise ValueError("only a committee question (answered by its chair or a system administrator) is recorded as a divergence")
     elif _may_edit(hub, co, by) and by not in contributors(hub, co):
@@ -1887,9 +1962,9 @@ def answer_question(hub, co_ref, qid: str, answer: str, by: str, line: int | Non
         q.update(upd)
         _record(hub, co, "question_answered", {**_signed(hub, co, by=by, verdict="answer", meaning=answer.strip(), step=qid,
                                                          payload=_hash(q.get("text")), at=now), "question": qid}, by)
-        if committee_q:  # the intervention is an accepted warning on the change order
-            key = f"co|question|{qid}"
-            p.setdefault("acceptances", {})[key] = {"by": by, "meaning": answer.strip(), "at": now}
+        if committee_q:  # the intervention is an accepted warning on the change order (and on each item it concerns)
+            for key in [f"co|question|{qid}"] + [f"{cid}|question|{qid}" for cid in concerned]:
+                p.setdefault("acceptances", {})[key] = {"by": by, "meaning": answer.strip(), "at": now}
             _record(hub, co, "warning_accepted", {**_signed(hub, co, by=by, verdict="accept", meaning=answer.strip(), step=key,
                                                             payload=_hash(q.get("text")), at=now), "item": None}, by)
         _refresh(hub, co, p)
@@ -2290,7 +2365,7 @@ def send_reasons(hub, co_ref) -> list[str]:
     f = co["fields"]
     carried = eco.carried(hub, co)
     items = _items(co)
-    if not (carried or items or f.get("form_changes") or f.get("record_type_changes") or f.get("workflow_changes")):
+    if not (carried or eco.retirements(co) or items or f.get("form_changes") or f.get("record_type_changes") or f.get("workflow_changes")):
         return ["it changes nothing yet: carry an SOP or policy revision, make a direct change or carry a form"]
     reasons = []
     last = current_round(co)
@@ -2312,7 +2387,7 @@ def send_reasons(hub, co_ref) -> list[str]:
             if k in rec and rec[k] != now[k]:
                 reasons.append(f"{CONTENT_WORDS[k][4:]} changed since round {last['n']}: request review again")
         p = _proposal(hub, co)
-        if (carried or items) and (p is None or p.get("status") != "open"):
+        if (carried or eco.retirements(co) or items) and (p is None or p.get("status") != "open"):
             reasons.append("the delta is not compiled (or its compile was replaced): request review again")
         elif p is not None and (f.get("staged_base") != _digest(hub) or (f.get("staged_from") or {}) != _shas(hub, drafts)):
             reasons.append("the delta was compiled against a release no longer in force: it is being compiled again (or request review again)")
@@ -2715,8 +2790,8 @@ def decide_item(hub, co_ref, item_id: str, verdict: str, by: str, meaning: str, 
     if override is not None:
         if verdict != "approve":
             raise ValueError("an override sets the value the item comes into force with: give it with approve")
-        if c.get("op") == "state-map":
-            raise ValueError("a state-map entry is changed by setting the state map, not by an override")
+        if c.get("op") in ("state-map", "retire"):
+            raise ValueError(f"{'a state-map entry is changed by setting the state map' if c['op'] == 'state-map' else 'a retirement is taken off the change order'}, not by an override")
         new = dict(override) if override.get("kind") else {**c["rule"], **override}
         new = {k: v for k, v in new.items() if k not in ("source", "key")}
         if new.get("kind") != c["rule"].get("kind") or _slot(new) != _slot(c["rule"]):
@@ -2893,7 +2968,7 @@ def apply_delta(hub, co_ref) -> dict:
         c["stale_decisions"] = [d for d in c.get("decisions") or [] if d.get("stale")]
         c["decisions"] = [d for d in c.get("decisions") or [] if not d.get("stale")]
         st = item_state(c, owners)
-        if c.get("op") == "state-map":
+        if c.get("op") in ("state-map", "retire"):
             applied.append({**c, "state": st})
             continue
         if c.get("unstated"):
@@ -3336,7 +3411,7 @@ def role_grant_suggestions(hub, co_ref) -> list[dict]:
     members = after.get("members") or {}
     out, seen = [], set()
     for c in delta(hub, co):
-        if c.get("op") in ("text", "state-map", "remove") or c.get("state") == "rejected":
+        if c.get("op") in ("text", "state-map", "retire", "remove") or c.get("state") == "rejected":
             continue
         r = _effective(c)
         name = _assignee_name(r)

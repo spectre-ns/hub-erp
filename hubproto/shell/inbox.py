@@ -215,7 +215,7 @@ class InboxMixin:
         opt = "".join(widget(x, td.get("fields", {}).get(x), values.get(x, rec["fields"].get(x, "")), people=people, options=self._picker_options(x, td.get("fields", {}).get(x)),
                              error=self._field_error(x) if values else None) for x in optional)
         if opt:
-            html_ += details(f"Also set: {esc(', '.join(optional))}", f"<div class='fields'>{opt}</div>", open_=bool(values and any(self._field_error(x) for x in optional)))
+            html_ += details(f"Also set: {esc(', '.join(field_label(x).lower() for x in optional))}", f"<div class='fields'>{opt}</div>", open_=bool(values and any(self._field_error(x) for x in optional)))
         return html_, missing, optional
 
     # ---------------------------------------------------------------- cards
@@ -247,7 +247,7 @@ class InboxMixin:
             return f'<li class="open" id="r-{esc(run["id"])}">{self._decision_card(run, dups=dups)}</li>'
         fact = self._key_fact(rec, self._payload_of(run))
         f = rec["fields"] if rec else {}
-        risk = chip(f["risk"], title="risk") if f.get("risk") else ""
+        risk = chip(f"risk {f['risk']}", "risk-" + str(f["risk"]) if str(f["risk"]) in ("low", "medium", "high") else None) if f.get("risk") else ""
         others = [a for a in p["assignees"] if a != user]
         meta = [tag(type_name(rec["type"]) if rec else run["process"]), esc(fact) if fact else "", risk, self._due_html(p.get("due")),
                 chip("escalated", "warn") if p.get("escalated") else "", chip("on hold", "crit") if rec and rec["hold"] else "",

@@ -318,12 +318,18 @@ class Hub:
             names = self.released_frame_names()
             if names:
                 frames = frames.only(names)
+        added: dict[str, str] = {}  # new Frames: {name: relpath}
         if self.sop_source():
             # The Frame is derived from the SOP documents: the documents in force (or the drafts an ECO carries, in
             # ``sop_drafts``: {frame name: draft locator}) on top of the release in force; the files on disk are not read.
             from . import sopdocs
 
             frames = self.released_frames()
+            retired = {n for n, loc in (sop_drafts or {}).items() if loc is None}  # retired by the change order
+            if retired:
+                frames = frames.only(set(frames.frames) - retired)
+            added = {n: ((self.kernel.get(loc) or {}).get("fields") or {}).get("frame_relpath") for n, loc in (sop_drafts or {}).items()
+                     if loc and n not in frames.frames}  # a new SOP document the change order carries
             derived = sopdocs.source_texts(self, drafts=sop_drafts or {})
             changed = {n: t for n, t in derived.items() if n not in frames.frames or frames.get(n).text != t}
             overrides = {**changed, **(overrides or {})}
@@ -356,9 +362,9 @@ class Hub:
         texts = {n: o["text"] for n, o in carried.items()}
         docs = {n: o.get("draft") for n, o in carried.items()}
         for name, text in (overrides or {}).items():
-            texts[name] = bump_version(text, frames.get(name).version)
+            texts[name] = bump_version(text, frames.get(name).version) if name in frames.frames else text
             docs[name] = (drafts or {}).get(name) or docs.get(name)
-        store = frames.with_overrides(texts) if texts else frames
+        store = frames.with_overrides(texts, added=added) if texts else frames
         proposal = compile_proposal(store, scopes or default_scopes(store), self.registry.ids(), self.releases,
                                     extractor=extractor or self.extractor(), now=now,
                                     record_types=self.kernel.types, config_digests=self.kernel.config_digests,
@@ -734,11 +740,13 @@ class Hub:
                 # The Frame is derived output: the released text overwrites the file. Edits on disk that were in neither
                 # the text in force nor the draft (a draft written on an older text) are kept by hash, and the policy
                 # owners are told, so an overwrite never loses work silently.
-                path = self.frames.get(name).path
+                path = (self.frames.get(name).path if name in self.frames.frames  # a new Frame: its file is written where it goes
+                        else self.frames.root / (o.get("path") or f"{name}.frame.md"))
+                path.parent.mkdir(parents=True, exist_ok=True)
                 old = path.read_text(encoding="utf-8") if path.exists() else ""
                 before = was_in_force.get(name).text if name in was_in_force.frames else ""
                 if old and old not in (o["text"], before):
-                    replaced.append({"frame": name, "path": self.frames.get(name).relpath,
+                    replaced.append({"frame": name, "path": o.get("path") or self.frames.get(name).relpath,
                                      "sha256": self.dms.blobs.put(old.encode("utf-8"))})
                 tmp = path.with_suffix(path.suffix + ".tmp")
                 tmp.write_text(o["text"], encoding="utf-8")

@@ -710,7 +710,7 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
             btns += f'<a class="button" href="#rework">{icon("retry")}Rework and resubmit</a>'
         if run and run["status"] == "failed" and rec["state"] == "failed":
             btns += f'<a class="button" href="#stopped">{icon("retry")}Fix and retry</a>'
-        if may_approve["allowed"]:
+        if may_approve["allowed"] and rec["type"] != "change-order":  # a change order is held back by its own loop, not a hold
             btns += f'<a class="button ghost" href="#hold">{icon("pause")}{"Release the hold" if rec["hold"] else "Put on hold"}</a>'
         if f_may["allowed"]:
             btns += f'<a class="button ghost" href="#attach">{icon("paperclip")}Attach</a><a class="button ghost" href="#new-document">{icon("plus")}New document</a>'
@@ -839,12 +839,25 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
             body += "<h2>Runs</h2>" + table(["Run", "Started by", "Status", "Started", "Waiting for"],
                                              [[self._run_link(r), self._avatar(r["owner"], size="sm", named=True), self._state_chip(r["status"]), esc(when(r["created_at"])),
                                                esc(", ".join((r.get("pending") or {}).get("assignees") or []))] for r in reversed(runs_of)])
-        body += '<h2 id="decisions">Decisions</h2>' + table(["When", "By", "Verdict", "Meaning", "Step", "Under"],
-                                                             [[esc(when(d.get("at", ""))), f"{self._avatar(d.get('by', ''), size='sm', named=True)} ({'cog' if d.get('by_type') == 'cog' else 'person'})", chip(d.get("verdict")),
-                                                               esc(short(d.get("meaning"), 600)) + details("signature", f"<code>{esc(d.get('signature'))}</code> on payload <code>{esc(str(d.get('payload_digest', ''))[:12])}</code>"),
-                                                               esc((d.get("step") or "").replace("-", " ")),
-                                                               self._rule_html(d["delegating_rule"]) if d.get("delegating_rule") else ""]
-                                                              for d in decisions], "No signatures yet.") + "</section>"
+        from ..co_record import CATEGORIES, VERDICTS, when_utc, who_line
+
+        people = [d for d in decisions if d.get("by_type") != "cog"]
+        cogs_ = [d for d in decisions if d.get("by_type") == "cog"]
+        members = (bundle or {}).get("members") or {}
+        body += '<h2 id="decisions">Signatures</h2>' + table(
+            ["Signed by", "Date and time", "Verdict", "Meaning category", "Meaning", "At"],
+            [[f"{self._avatar(d.get('by', ''), size='sm', named=True)} <span class='why'>{esc(who_line(d.get('by') or '', members).partition(', ')[2])}</span>",
+              f"<span style='white-space:nowrap'>{esc(when_utc(d.get('at')))}</span>", chip(VERDICTS.get(d.get("verdict") or "", d.get("verdict"))),
+              esc(d.get("category") or CATEGORIES.get(d.get("verdict") or "", "")),
+              esc(short(d.get("meaning"), 600)) + details("signature", f"<code>{esc(d.get('signature'))}</code> on payload <code>{esc(str(d.get('payload_digest', ''))[:12])}</code>"),
+              esc((d.get("step") or "").replace("-", " "))] for d in people], "No signature yet.")
+        if cogs_:
+            body += ("<h3>Automated decisions <span class='muted'>not electronic signatures</span></h3><p class='why'>A cog decides within approval criteria "
+                     "people approved on a change order; they are accountable for the criteria.</p>"
+                     + table(["Cog", "Date and time", "Outcome", "Under the rule", "At"],
+                             [[self._avatar(d.get("by", ""), size="sm", named=True), esc(when_utc(d.get("at"))), chip(VERDICTS.get(d.get("verdict") or "", d.get("verdict"))),
+                               self._rule_html(d["delegating_rule"]) if d.get("delegating_rule") else "-", esc((d.get("step") or "").replace("-", " "))] for d in cogs_]))
+        body += "</section>"
         body += self._chatter(rec, run)
         parts = rec["folder"].split("/")
         crumbs = [("Files", href("/files", user))] + [(p, href("/files", user, folder="/".join(parts[: i + 1]))) for i, p in enumerate(parts)]
@@ -884,6 +897,9 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
                     continue
                 if rec["type"] == "change-order":  # a change order goes in through Request review and Send for approval only
                     continue
+                if rec["type"] == "document" and rec["fields"].get("change_order") and rec["state"] != "effective":
+                    continue  # a revision carried on a change order is approved with it, not through document control
+
                 op = bundle["ops"].get(name) or {}
                 d = authz.check(bundle, user, "create", op.get("object", rec["type"]), op.get("folder") or rec["folder"])
                 first = op["steps"][0]["role"] if op.get("steps") else "system"
@@ -903,6 +919,8 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
                 if (p.get("record_type") or p.get("object")) == rec["type"]}
         cogs = [(n, m) for n, m in sorted((bundle.get("members") or {}).items()) if m.get("type") == "cog" and n in self.hub.registry.ids()
                 and sops & set(((bundle.get("cogs") or {}).get(n) or {}).get("follows") or [])]
+        if rec["type"] == "change-order":
+            cogs = []  # its reviewers are its panel (Review), not ad-hoc asks
         for n, m in cogs:
             cog = self.hub.registry.get(n)
             if "review-document" not in getattr(cog, "tasks", []):

@@ -200,6 +200,31 @@ class CommitteesMixin:
         return ("<p class='why'>Every permission that reaches it, and what it comes through. A widening of any of these needs both policy "
                 "owners.</p>" + table(["Permission", "", "Through", "Stated in"], rows))
 
+    def _member_committees_html(self, name: str) -> str:
+        """The committees a member sits on, where each decides (workflow gates), and whether a cog member can vote there
+        (approval criteria for the process) or pauses for the chair."""
+        from .. import groups as gr
+
+        b = self.bundle or {}
+        names = gr.committees_of(b, name)
+        if not names:
+            return "<span class='muted'>none</span>"
+        is_cog = ((b.get("members") or {}).get(name) or {}).get("type") == "cog"
+        rows = []
+        for n in names:
+            c = gr.committee(b, n) or {}
+            where = []
+            for proc, wf in sorted((b.get("workflows") or {}).items()):
+                for t in wf.get("transitions") or []:
+                    if (t.get("gate") or {}).get("kind") == "committee" and t["gate"].get("committee") == n:
+                        crit = any(x.get("approver") == f"cog:{name}" and x.get("process") == proc for x in b.get("approval_criteria") or [])
+                        where.append(f"“{t.get('name') or t['id']}” in {proc}" + ("" if not is_cog else
+                                     (" (it votes within its approval criteria)" if crit else " (it has no approval criteria there, so the chair decides for it)")))
+            rows.append(f"<li><b>{esc(n)}</b> <span class='why'>chair {esc(c.get('chair') or '-')}; {esc(c.get('purpose') or '')}</span>"
+                        + (f"<br>decides {esc('; '.join(where))}" if where else "<br><span class='why'>reviews on change-order panels and wherever an SOP names it</span>")
+                        + "</li>")
+        return "<ul>" + "".join(rows) + "</ul>"
+
     # ------------------------------------------------------------ Settings > Groups and committees
     def _settings_groups(self, rules, draft, released, check) -> str:
         from .. import groups as gr

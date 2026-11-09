@@ -102,6 +102,8 @@ def _kinds(item: dict) -> set[str]:
         return {item["kind"]}
     rule = item.get("rule") or {}
     kind = rule.get("kind") or ("text" if item.get("op") == "text" else "")
+    if kind == "retire":  # retiring a document is its wording leaving; the rules its Frame stated are items of their own
+        kind = "text"
     out = {kind} if kind else set()
     if item.get("widening"):
         out.add("widening")

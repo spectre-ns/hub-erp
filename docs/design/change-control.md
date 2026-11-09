@@ -404,3 +404,10 @@ final report every place you needed another workstream's code and what you assum
   in. No private store: the per-cog judgments file becomes review records on the item.
 - **A chat carries its context**: the conversation thread (a record both sides can read, cleared with
   New conversation) goes into the cog's prompt as THE CONVERSATION. It is a record, not a private memory.
+
+## 14. Bootstrap answers (agreed 2026-11-09)
+
+When the release in force has no human chair and no human system administrator (as on a hub migrating
+to this design), the policy owners answer the blocking committee questions. Only people count; a
+policy owner who contributed to the change order does not answer questions about their own items;
+each answer stays visible as an accepted warning on the items it concerns.

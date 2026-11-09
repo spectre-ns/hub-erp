@@ -219,6 +219,13 @@ class ViewsMixin:
             crumbs = [(app["name"], href("/app/" + app["key"], user)), (name, None)]
         params = {k: v for k, v in q.items() if v and k not in ("view", "page")}
         body = f"<h1>{type_icon(rt) if rt != 'all' else icon('grid')} {esc(name)} <span class='muted'>{len(recs)}</span></h1>"
+        if rt == "training":  # who must read what: the training matrix, generated from the Roles and responsibilities tables
+            from .. import training as _tr
+
+            mx = _tr.matrix_document(self.hub)
+            if mx and self._can_read(mx["folder"])["allowed"]:
+                body += (f"<p class='card quiet'>{icon('book')} <a href='{href('/document/' + quote(mx['locator'], safe=':'), user)}'>The training matrix</a> "
+                         f"({esc(mx['number'])} rev {esc(mx['fields'].get('revision') or '')}): who must read which document, by role and group.</p>")
         body += self._control_panel(rt, view, q, recs[0] if recs else None, params)
         err = self._form_error(["reason", "sel"]) if (self.err and self.route == "/bulk-hold") else ""
         if view == "kanban":
@@ -599,6 +606,7 @@ class ViewsMixin:
                         + "<div class='why'>Derived: the company scope and every document whose Roles and responsibilities table lists it or one of "
                           "its roles (in brackets).</div>"),
                        ("What it may do", acts + self._member_permissions_html(name)),
+                       ("Committees", self._member_committees_html(name)),
                        ("Written in", self._rule_link(prof.get("source")) if prof.get("source") else "")]
             def pin_html(pin):
                 d = self.hub.kernel.get(pin["locator"])

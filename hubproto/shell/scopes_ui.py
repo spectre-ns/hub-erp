@@ -31,6 +31,8 @@ class ScopesMixin:
         if src.get("document"):
             return (f"<a href='{href('/record/' + 'rec:document:' + src['document'], self.user)}'>{esc(src['document'])}</a> rev "
                     f"{esc(src.get('revision') or '')} <span class='why'>{esc(src.get('title') or '')}</span>")
+        if self.hub.sop_source():
+            return f"<code>{esc(src.get('file') or '')}</code> <span class='why'>the shipped file; the text in force is its document's</span>"
         return f"<code>{esc(src.get('file') or '')}</code> <span class='why'>the Frame file (the SOPs are not documents yet)</span>"
 
     def _dependency_html(self, frame: str) -> str:
