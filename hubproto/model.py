@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -42,6 +43,16 @@ def thinking_releases(lock):
     finally:
         _held.lock = prev
 
+
+_THINK = re.compile(r"<think>.*?</think>|</?think>", re.S)
+
+
+def strip_thinking(text: str) -> str:
+    """A reasoning model's thinking (qwen3's <think>...</think>, or a stray closing tag when the server strips the
+    opening) is not its answer: it never reaches a page, a review or a chat."""
+    if not text or "think>" not in text:
+        return text
+    return _THINK.sub("", text).strip()
 
 class ModelGate:
     """Turns on a local model. Each cog has its own worker, but a local model (Ollama) answers one call at a time and
@@ -328,6 +339,7 @@ class ModelGateway:
                 raise ModelUnavailable(f"{model} did not answer: {e}") from None
             text = f"[{backend} model {model} did not answer: {e}]\n" + self._stand_in(system, user)
             backend = "stand-in"
+        text = strip_thinking(text)
         stand_in = backend == "stand-in"
         usage = getattr(self, "_last_usage", None) if backend == "ollama" else None
         self._last_usage = None
@@ -416,6 +428,7 @@ class ModelGateway:
                 raise ModelUnavailable(f"{model} did not answer: {e}") from None
             text = f"[{backend} model {model} did not answer: {e}]\n" + self._stand_in_tools(user, run)
             backend = "stand-in"
+        text = strip_thinking(text)
         out = {"text": text, "model": model, "served_model": (usage or {}).get("served_model") or (model if backend == "anthropic" else "stand-in"),
                "backend": backend, "stand_in": backend == "stand-in", "by": by, "at": utcnow(), "prompt_chars": len(system) + len(user),
                "usage": usage, "tool_calls": calls, "prompt_digest": sha256_of({"system": system, "user": user})[:16],

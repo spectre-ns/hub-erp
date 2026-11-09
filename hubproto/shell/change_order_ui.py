@@ -929,7 +929,8 @@ class ChangeOrderMixin:
             else:
                 r = cc.committee_results(p, m["who"])
                 status, scls = "done", "ok"
-                summary = f"{r['items']} item(s) read by the committee, {r['questions']} question(s)"
+                summary = f"read the diff: {r['questions']} question(s)" + (
+                    f"; {r['items']} item(s) only the committee could read (the sentence grammar read the rest)" if r["items"] else "")
             why = ("compiles the diff into the delta (the compile Op), by consensus"
                    + (f" <span class='why'>(compile-frame committee, group {esc(cmt.get('group'))}; chair {esc(cmt.get('chair') or '-')})</span>"
                       if cmt.get("group") else ""))

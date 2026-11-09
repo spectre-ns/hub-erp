@@ -717,3 +717,12 @@ def test_each_rounds_panel_lists_the_compile_ops_senior_cogs_first(shell):
         assert who in panel and panel.index(who) < panel.index("management"), "the senior cogs come first"
     assert panel.count("<span class='chip'>compile Op</span>") == len(members) and "compiles the diff into the delta" in panel
     assert "Always on it: the compile-frame committee" in html
+
+
+def test_a_reasoning_models_thinking_never_reaches_a_review():
+    from hubproto.model import strip_thinking
+
+    assert strip_thinking("</think>\n\nFINDING advisory: general: mind the queue") == "FINDING advisory: general: mind the queue"
+    assert strip_thinking("<think>weigh it\nagain</think>The answer.") == "The answer."
+    assert strip_thinking("no tags here") == "no tags here" and strip_thinking("") == ""
+
