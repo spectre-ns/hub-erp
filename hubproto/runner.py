@@ -156,7 +156,9 @@ class Runner:
             state["pending"] = None
         path = self._dir(state["id"]) / "state.json"
         tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(state, indent=1, sort_keys=True))
+        # The seen digest is what the item is *now*: computed on every load, never stored (a stored one goes stale when
+        # the item moves, follows a release or is moved by a state map, and a card quoting it could never be signed).
+        tmp.write_text(json.dumps({k: v for k, v in state.items() if k != "seen_digest"}, indent=1, sort_keys=True))
         tmp.replace(path)  # atomic: a crash never leaves a half-written state
 
     def list(self) -> list[dict]:
@@ -164,9 +166,11 @@ class Runner:
         for p in sorted(self.root.iterdir()):
             if (p / "state.json").exists():
                 try:
-                    out.append(json.loads((p / "state.json").read_text()))
+                    st = json.loads((p / "state.json").read_text())
                 except json.JSONDecodeError:
                     continue
+                st.pop("seen_digest", None)  # one saved by an earlier version is stale: readers compute it (seen_digest)
+                out.append(st)
         return sorted(out, key=lambda s: (s["created_at"], s.get("created_ns", 0)))
 
     def track(self, run_id: str) -> list[dict]:

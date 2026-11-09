@@ -3,6 +3,7 @@ into one shape, the runner walking graphs (derived Gates and their options, loop
 gates, validators, failed and Retry), items following the release in force, state maps, cogs supplying fields, and
 "a cog's work is signed by a person" as an SOP sentence."""
 
+import json
 import shutil
 from datetime import timedelta
 from pathlib import Path
@@ -619,6 +620,37 @@ def test_an_item_in_a_status_the_new_release_removed_stays_until_a_state_map_mov
     state = decide(gizmos, run_id, "lee", "check")
     assert state["status"] == "completed" and gizmos.kernel.get(loc)["state"] == "approved"
     assert items_in_removed_statuses(gizmos, old_graph, new_graph) == {}
+
+
+def card_digest(hub, run_id, who):
+    """The digest the inbox card quotes: from the waiting list, as the shell draws it."""
+    run = next(r for r in hub.runner.pending_for(who) if r["id"] == run_id)
+    return run.get("seen_digest") or hub.runner.seen_digest(run)
+
+
+@pytest.mark.parametrize("how", ["follows the release", "moved by a state map"])
+def test_an_item_waiting_when_a_release_comes_into_force_is_decided_from_a_fresh_card(gizmos, how):
+    """Usability B5: a card drawn after the release is signable; a card drawn before a move is not (signatures bind what
+    was seen)."""
+    run_id = submit(gizmos)
+    decide(gizmos, run_id, "kim", "check")
+    before = card_digest(gizmos, run_id, "lee")
+    if how == "follows the release":
+        edit_gizmo(gizmos, "Gizmo supervisors may read Gizmos.", "Gizmo supervisors may read Gizmos.\nGizmo supervisors may approve gizmos in Gizmos.", "1.1.0")
+        release_all(gizmos)
+        option = "approve"
+    else:
+        release_proposal(gizmos, remove_under_review(gizmos))
+        apply_state_map(gizmos, G, {"review": "checking"}, by="bob", co="CO-1")
+        option = "check"
+        with pytest.raises(RunError, match="changed since you opened it"):
+            gizmos.runner.decide(run_id, "lee", None, meaning="ok", payload_digest=before, transition=option)
+    digest = card_digest(gizmos, run_id, "lee")
+    assert digest == gizmos.runner.seen_digest(gizmos.runner.load(run_id))
+    state = gizmos.runner.decide(run_id, "lee", None, meaning="ok", payload_digest=digest, transition=option,
+                                 fields={"description": "fine"} if option == "approve" else None)
+    assert state["status"] == "completed"
+    assert all("seen_digest" not in json.loads(p.read_text()) for p in gizmos.runner.root.glob("*/state.json"))
 
 
 def test_a_state_map_moves_only_removed_statuses_to_statuses_in_force(gizmos):
