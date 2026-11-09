@@ -129,6 +129,7 @@ _OPS = {"over": ">", "above": ">", "under": "<", "below": "<", "at or under": "<
 class Extraction:
     rules: list[dict] = field(default_factory=list)
     notes: list[dict] = field(default_factory=list)
+    questions: list[dict] = field(default_factory=list)  # where the prose is ambiguous (hubproto.llm_extract): proposal["questions"]
 
 
 _FIELD_ASSIGNEES = {"the assignee": "assignee", "the owner": "owner", "the record owner": "owner", "the author": "author",
@@ -168,7 +169,7 @@ def audience_rule(line: str, frame, n: int) -> dict | None:
                 named.append(singular_role(" ".join(words)))
     if not named:
         return None
-    return {"kind": "audience", "roles": sorted(set(named)),
+    return {"kind": "audience", "frame": frame.name, "roles": sorted(set(named)),  # the frame keeps two identical lines apart
             "source": {"frame": frame.name, "version": frame.version, "line": n, "text": line, "path": frame.relpath}}
 
 
@@ -641,9 +642,11 @@ def get_extractor(cache_dir=None, context: dict | None = None, gateway=None, cal
     """How SOPs are read: "convention" (the sentence shapes only) or "hybrid" (those, then a local model for the prose,
     behind the guards and approvals; hubproto.llm_extract). Hybrid by default when the hub has an Ollama. ("claude",
     a hosted model for everything, only when hosted models are switched on.)"""
+    from .llm_extract import compile_hosted
     from .model import hosted_allowed, ollama_url
 
-    mode = os.environ.get("HUBPROTO_EXTRACTOR") or ("hybrid" if ollama_url() else "convention")
+    # HUBPROTO_COMPILE_HOSTED: Claude Opus reads the prose for compilation only (hubproto.llm_extract.compile_hosted).
+    mode = os.environ.get("HUBPROTO_EXTRACTOR") or ("hybrid" if ollama_url() or compile_hosted() else "convention")
     if mode == "claude" and hosted_allowed():
         return ClaudeExtractor()
     if mode in ("hybrid", "claude"):

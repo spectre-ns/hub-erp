@@ -73,5 +73,6 @@ Policy owners may approve documents in Policy.
 Staff may comment on anything in Policy.
 Staff may comment on anything in Quality.
 Staff may comment on anything in Tasks.
+Payables reviewers may comment on anything in Finance.
 Policy readers may read Policy.
 Policy readers may read Quality.

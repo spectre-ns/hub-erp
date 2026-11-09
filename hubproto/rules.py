@@ -32,7 +32,7 @@ KINDS = {
     # A cog's standing goal, stated in the SOP that owns the work ("Every day the quality-assistant cog finds ...").
     "duty": {"cog", "task", "every"},
     # Who a work instruction is for ("For: reviewers and the document controller."): their required reading.
-    "audience": {"roles"},
+    "audience": {"frame", "roles"},
     # A committee of cogs that does one piece of work together, each on its own: "compile-frame" reads the SOPs into
     # rules; a rule needs ``quorum`` of the members to read it the same way.
     "committee": {"name", "members", "quorum"},

@@ -70,7 +70,8 @@ hubproto shell                      # http://127.0.0.1:8080/
 | `HUBPROTO_PUBLIC_URL` | `http://localhost:8080` in compose | the hub's own origin, for the editor's frame policy |
 | `HUBPROTO_OLLAMA_URL` | `http://host.docker.internal:11434` in compose; none outside it | where the local models answer. Without it no cog is available, and SOP prose is not read by a model |
 | `HUBPROTO_HOSTED_MODELS` | off | `on` lets the hub use hosted (Claude) models; off, a cog whose profile names a `claude-*` model is not available and the model lists offer only Ollama's models |
-| `ANTHROPIC_API_KEY` | none (compose does not pass it) | used only when `HUBPROTO_HOSTED_MODELS=on` |
+| `ANTHROPIC_API_KEY` | none (compose does not pass it) | used only when `HUBPROTO_HOSTED_MODELS=on` or `HUBPROTO_COMPILE_HOSTED=1` |
+| `HUBPROTO_COMPILE_HOSTED` | off | `1`, with `ANTHROPIC_API_KEY`, has Claude Opus (`claude-opus-5-5`) read SOP prose for compilation only (every compile-frame committee member reads with it); cogs keep their bundled models and hosted models stay off for everything else |
 | `HUBPROTO_EXTRACTOR` | `hybrid` when `HUBPROTO_OLLAMA_URL` is set, else `convention` | how SOPs are read: `convention` (the sentence shapes only) or `hybrid` (those, then the compile-frame committee reads the prose, chapter 7.4); `claude` only with hosted models on |
 | `HUBPROTO_EXTRACTOR_MODEL` | the organization cog's model, else the largest local model | the model that reads SOP prose when the release has no compile-frame committee |
 | `HUBPROTO_COG_QUEUE` | `worker` in compose and `hubproto shell`; `inline` for the CLI | who works the cogs' queues (8.7) |

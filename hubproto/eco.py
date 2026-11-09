@@ -148,6 +148,13 @@ def stage(hub, co_ref: str, drafts: dict[str, str] | None = None, extractor=None
             p = hub.compile(sop_drafts=drafts, save=True, extractor=extractor)
             p["eco"] = co["number"]
             p["source"] = "eco"
+            if old and old != p["id"]:  # the questions of the compile staged before (on any release) carry, or close
+                from .compile import carry_questions
+
+                try:
+                    p["questions"] = carry_questions(hub.proposals.load(old).get("questions") or [], p.get("questions") or [])
+                except Exception:
+                    pass
             hub.proposals.save(p)
             fields.update({"staged_proposal": p["id"], "staged_number": p.get("number"), "staged_changes": len(p["changes"]),
                            "staged_widenings": sum(1 for c in p["changes"] if c.get("widening") and c.get("op") != "text"),

@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import difflib
 import re
+from html import unescape
 from urllib.parse import quote
 
+from ..closure import release_blocker
 from ..sopdocs import is_frame_doc
 from ..compile import CompileError, change_state
 from ..frames import FrameError
@@ -95,6 +97,8 @@ class PolicyDocsMixin:
             draft = self.hub.frame_draft(name, by=self.user)
         except (FrameError, KeyError):
             raise ShellError(f"There is no policy Frame {name!r}.", 404) from None
+        except ValueError as e:  # the SOPs are documents: a Frame changes through a change order (hubproto.closure)
+            raise ShellError(friendly(str(e)), 409) from None
         log_line(f"frame draft frame={name} by={self.user} doc={draft['number']}")
         self._redirect(self._once_finish(href("/text-edit/" + quote(draft["locator"], safe=":"), self.user,
                                               done=f"{draft['number']} is your draft of {name}. Write the change, then check it and propose it for release.")))
@@ -305,6 +309,9 @@ class PolicyDocsMixin:
     def _blocking_reasons(self, p: dict) -> list[str]:
         """Why a proposal cannot be released yet, in words (no ids)."""
         out = []
+        closed = release_blocker(self.hub, p) if p.get("status") == "open" else ""
+        if closed:  # the SOPs are documents: only an approved change order brings a proposal into force
+            out.append(esc(closed))
         cur = self.hub.releases.current()
         if p.get("status") == "open" and (cur["digest"] if cur else None) != p.get("base"):
             out.append("The policy in force changed after this proposal was made, so it would undo that change. Propose the drafts again "
@@ -537,7 +544,7 @@ class PolicyDocsMixin:
         self.arg = p["id"]
         blocking = self._blocking_reasons(p)
         if blocking:
-            raise ShellError("Proposal #" + str(p.get("number")) + " cannot be released yet: " + " ".join(re.sub(r"<[^>]+>", "", b) for b in blocking[:3]))
+            raise ShellError("Proposal #" + str(p.get("number")) + " cannot be released yet: " + " ".join(unescape(re.sub(r"<[^>]+>", "", b)) for b in blocking[:3]))
         try:
             meta = self.hub.release(p["id"], self.user)
         except CompileError as e:

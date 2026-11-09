@@ -48,7 +48,7 @@ Model: ollama/qwen3:14b
 Persona: executor
 
 ## Cog: qa-manager
-About: Owns the quality management system with the quality manager: drafts and revises procedures, work instructions and forms, reviews documents and changes against ISO 9001 and the procedures, and approves what is ready within its criteria, a major change countersigned by a quality manager.
+About: The QA manager. Owns the quality management system with the quality manager: drafts and revises procedures, work instructions and forms, reviews documents and changes against ISO 9001 and the procedures, and approves what is ready within its criteria, a major change countersigned by a quality manager.
 Model: ollama/qwen3:14b
 Persona: author
 
