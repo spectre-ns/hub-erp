@@ -67,7 +67,8 @@ def condition_words(cond) -> str:
     f, op, v = cond.get("field"), cond.get("op"), cond.get("value")
     if f == "amount":
         word = {">": "over", "<": "under", "<=": "at or under", ">=": "at or over"}.get(op, op)
-        return f"{word} {money(v)} {cond.get('currency') or ''}".strip()
+        also = cond.get("also_currencies") or []
+        return f"{word} {money(v)} {cond.get('currency') or ''}".strip() + (f" or the same in {' or '.join(also)}" if also else "")
     if f == "risk" and op == "==":
         return f"with {v} risk"
     if f == "change_type" and op == "==":
@@ -146,6 +147,8 @@ def sentence(rule: dict, processes: dict | None = None) -> str:
         s = f"The {cog} cog may approve {rule['process']} {obj}"
         if rule.get("max_amount") is not None:
             s += f" under {money(rule['max_amount'])} {rule.get('currency') or ''}".rstrip()
+            if rule.get("also_currencies"):
+                s += " or the same in " + " or ".join(rule["also_currencies"])
         conds = [f"{int(rule.get('adversarial_reviews') or 0)} adversarial reviews pass" if c == "adversarial_reviews_pass" else _PHRASE.get(c, _words(c))
                  for c in rule.get("conditions") or []]
         if conds:

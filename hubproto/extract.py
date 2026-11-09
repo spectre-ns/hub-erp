@@ -66,6 +66,7 @@ _THRESHOLD = re.compile(
 _ROUTING = re.compile(
     r"^(?:(?P<approvals>Approvals)|At (?P<title>[A-Z][^,]*?)|(?P<overdue>Overdue items)) in (?P<process>[a-z0-9-]+)"
     r"(?: (?P<op>over|above|under|below|at or under|at or over) (?P<amount>[\d,]+(?:\.\d+)?) (?P<cur>[A-Z]{3})"
+    r"(?: or the same in (?P<also>[A-Z]{3}(?:(?:, | or | and )[A-Z]{3})*))?"
     r"| with (?P<risk>low|medium|high) risk"
     r"|(?: for (?P<doctype>[a-z][a-z -]*?)s?)?(?: with a (?P<change>minor|major) change)?)?"
     r" (?P<verb>go to|are reported to) (?P<assignee>the [\w -]+? cog|the [\w -]+?|[a-z][\w-]*)\.$"
@@ -77,7 +78,7 @@ _PROCESS_TYPE = re.compile(r"^The record type is (?P<t>[a-z][a-z-]*)\.$")
 _PROCESS_REJECT = re.compile(r"^Rejections return to (?P<title>[A-Z][^.]+?)\.$")
 _CRITERIA = re.compile(
     r"^The (?P<cog>[a-z][\w-]*) cog may approve (?P<process>[a-z0-9-]+) (?P<object>[a-z][a-z -]*?)"
-    r"(?: under (?P<amount>[\d,]+(?:\.\d+)?) (?P<cur>[A-Z]{3}))?"
+    r"(?: under (?P<amount>[\d,]+(?:\.\d+)?) (?P<cur>[A-Z]{3})(?: or the same in (?P<also>[A-Z]{3}(?:(?:, | or | and )[A-Z]{3})*))?)?"
     r"(?: when (?P<conds>.+?))?"
     r"(?:, at most (?P<perday>\d+) (?:approvals? )?a day)?"
     r"(?:, at most (?P<permonth>[\d,]+(?:\.\d+)?) (?P<mcur>[A-Z]{3}) a month)?"
@@ -127,6 +128,12 @@ _TABLE_ROW = re.compile(r"^\|(?P<cells>.*)\|$")
 _TABLE_RULE = re.compile(r"^\|(?:\s*:?-{3,}:?\s*\|)+$")
 _DOC_REF = re.compile(r"\b[A-Z]{2,}-\d[\w-]*\b")
 _OPS = {"over": ">", "above": ">", "under": "<", "below": "<", "at or under": "<=", "at or over": ">="}
+
+
+def _also(text: str | None, cur: str | None) -> dict:
+    """"... 1,500 USD or the same in EUR": the same amount limit holds in these currencies too (``also_currencies``)."""
+    found = [c for c in re.findall(r"[A-Z]{3}", text or "") if c != cur]
+    return {"also_currencies": list(dict.fromkeys(found))} if found else {}
 
 
 @dataclass
@@ -917,7 +924,7 @@ class ConventionExtractor:
             conds = []
             if m.group("op"):
                 conds.append({"field": "amount", "op": _OPS[m.group("op")], "value": number(m.group("amount")),
-                              "currency": m.group("cur")})
+                              "currency": m.group("cur"), **_also(m.group("also"), m.group("cur"))})
             if m.group("risk"):
                 conds.append({"field": "risk", "op": "==", "value": m.group("risk")})
             if m.group("doctype"):
@@ -949,7 +956,7 @@ class ConventionExtractor:
                     conds.append(CONDITION_VOCABULARY.get(phrase.strip(), "unknown:" + phrase.strip()))
             add("approval_criteria", n, line, approver="cog:" + m.group("cog"), process=m.group("process"),
                 max_amount=number(m.group("amount")) if m.group("amount") else None,
-                currency=m.group("cur"), conditions=conds,
+                currency=m.group("cur"), conditions=conds, **_also(m.group("also"), m.group("cur")),
                 countersign=singular_role(m.group("counter")) if m.group("counter") else None,
                 **lenses,
                 **({"max_per_day": int(m.group("perday"))} if m.group("perday") else {}),
