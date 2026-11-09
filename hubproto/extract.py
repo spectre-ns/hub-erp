@@ -284,7 +284,8 @@ _GRAPH_AUTO = re.compile(r"^automatically(?: when (?P<cond>.+?))?(?:,? after (?P
 _GRAPH_COG = re.compile(r"^the (?P<cog>[a-z][\w -]*?) cog decides(?: within its approval criteria)?, else (?P<fallback>the [\w -]+)$")
 # "the design-review committee decides": every member of the committee agrees (consensus), or the item goes back (groups)
 _GRAPH_COMMITTEE = re.compile(r"^the (?P<committee>[a-z][\w -]*?) committee decides(?: by consensus)?$")
-_GRAPH_PERSON = re.compile(r"^(?P<who>the [\w -]+?|anyone)(?: decides)?(?:, not (?P<not>.+))?$")
+# "the owner or an approver": the owner, or anyone who may approve the process's object (numbered steps' Cancel and Retry).
+_GRAPH_PERSON = re.compile(r"^(?P<who>the [\w -]+?|anyone)(?P<approvers> or an approver)?(?: decides)?(?:, not (?P<not>.+))?$")
 _GRAPH_CATEGORY = {"to do": "todo", "in progress": "in_progress", "done": "done"}
 _GRAPH_OUTCOMES = ("completed", "rejected", "cancelled", "superseded")
 _GRAPH_FIELD_ROLES = {"the assignee": "assignee", "the owner": "owner", "the author": "author", "the requester": "requester",
@@ -351,6 +352,8 @@ def _graph_gate(text: str) -> tuple[dict, list, str]:
     m = _GRAPH_PERSON.match(text)
     if m:
         gate = {"kind": "person", "role": _role_of(m.group("who"))}
+        if m.group("approvers"):
+            gate["also"] = "approvers"
         if m.group("not"):
             nots = []
             for part in _words_list(m.group("not")):
@@ -374,9 +377,13 @@ def _graph_actions(text: str) -> tuple[list, str]:
             v = m.group("value").strip()
             out.append({"set": {m.group("field").strip().replace(" ", "_"): {"true": True, "false": False}.get(v, v)}})
             continue
+        if part.lower().startswith("the ") and " with the " in part:
+            # Several cogs review together and their findings merge ("the quality assistant with the purchasing assistant").
+            out.append({"swarm": [slug(c) for c in re.split(r" with the ", part[4:], flags=re.I)]})
+            continue
         m = re.match(r"^the (?P<cog>[\w -]+)$", part, re.I)
         if not m:
-            return [], f"“{part}” is not an action (the <cog>, notify the <role>, or set <field> to <value>)"
+            return [], f"“{part}” is not an action (the <cog>, the <cog> with the <cog>, notify the <role>, or set <field> to <value>)"
         out.append(slug(m.group("cog")))
     return out, ""
 

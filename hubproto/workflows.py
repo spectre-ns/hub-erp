@@ -293,7 +293,8 @@ def step_cogs(proc: dict) -> dict[str, str]:
         from .process_graph import action_steps
 
         return {step: cog for step, cog, _ in action_steps(proc)}
-    return {s["id"]: s["cog"] for s in proc.get("steps") or [] if s.get("cog")}
+    # A step naming several cogs is a swarm: the graph prose states it as "the <cog> with the <cog>".
+    return {s["id"]: ({"swarm": list(s["swarm"])} if s.get("swarm") else s["cog"]) for s in proc.get("steps") or [] if s.get("cog")}
 
 
 def process_rule(bundle: dict, process: str, graph: dict) -> dict:

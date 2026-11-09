@@ -90,14 +90,19 @@ def render_graph_manifest(process: dict) -> dict:
     init = next((t for t in process.get("transitions") or [] if t.get("type") == "initial"), None) or {}
     start_role = (init.get("gate") or {}).get("role") or "system"
     steps: list[dict] = []
-    prev: dict[str, str] = {}
+    prev = None
     for sid, cog, t in action_steps(process):
-        entry = {"id": sid, "title": cog.replace("-", " ").capitalize(), "role": "system", "cog": {"id": cog, "task": "run"},
+        swarm = list(cog["swarm"]) if isinstance(cog, dict) else None
+        title = (" with ".join(swarm) if swarm else cog).replace("-", " ").capitalize()
+        entry = {"id": sid, "title": title, "role": "system", "cog": {"id": "swarm" if swarm else cog, "task": "run"},
                  "input": {"record": {"$from": "inputs.record"}}, "gate": {"type": "default"}, "transition": t["id"]}
-        if prev.get(t["id"]):
-            entry["input"]["prior"] = {"$from": f"steps.{prev[t['id']]}.payload"}
-            entry["depends_on"] = [prev[t["id"]]]
-        prev[t["id"]] = sid
+        if swarm:  # several cogs review in parallel and their findings merge, as for a numbered step naming several
+            entry["input"]["cogs"] = swarm
+            entry["input"]["question"] = t.get("name") or title
+        if prev:  # as numbered steps chain them: each step sees the result of the one written before it
+            entry["input"]["prior"] = {"$from": f"steps.{prev}.payload"}
+            entry["depends_on"] = [prev]
+        prev = sid
         steps.append(entry)
     if not steps:  # readers take the starting role from the first step
         steps.append({"id": "start", "title": init.get("name") or "Start", "role": start_role, "cog": {"id": "noop", "task": "run"},

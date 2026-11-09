@@ -550,6 +550,10 @@ class Runner:
                 return state
             autos = [t for t in pg.transitions_out(wf, at, include_global=False) if pg.is_auto(t)]
             auto = next((t for t in autos if self._auto_holds(state, t)), None)
+            if auto is not None and self.is_change_order(state) and self._approves(wf, auto):
+                self._fail(state, track, f"to-{auto['to']}", f"{state['process']} approves a change order automatically "
+                           f"(“{auto.get('name') or auto['id']}”): {self.PERSON_SIGNS_CONFIGURATION}", kind="organisation")
+                return state
             if auto is not None:
                 why = self._validators_block(state, wf, auto)
                 if why:
@@ -829,6 +833,9 @@ class Runner:
                     if v and isinstance(v, str):
                         out.setdefault(authz.principal_name(v), f"segregation of duties: they are the {role.replace('-', ' ')} of this item "
                                                                 f"({r.get('source', {}).get('text', 'policy')})")
+        for who in self.contributors(state):  # change control 3.6: no contributor approves the change order
+            out.setdefault(who, "segregation of duties: they contributed to this change order (a revision it carries, a direct "
+                                "change on it, or its request)")
         # The gate's own exclusions ("the quality manager decides, not the author"; not whoever decided another step).
         nots = gate_not if gate_not is not None else (((state.get("pending") or {}).get("gate") or {}).get("not") or [])
         for n in nots:
@@ -844,6 +851,40 @@ class Runner:
             for who in (last or {}).get("voters") or ([last["by"]] if last else []):  # a committee: each member who voted
                 out.setdefault(who, f"segregation of duties: they decided {n.replace('-', ' ')} on this item")
         return out
+
+    # ------------------------------------------------------------ change orders (configuration approvals)
+    @staticmethod
+    def is_change_order(state: dict) -> bool:
+        """The item is a change order: its approval puts configuration in force."""
+        return ((state.get("workflow") or {}).get("record_type") or (state.get("manifest") or {}).get("record_type")) == "change-order"
+
+    def change_order_blocks(self, state: dict) -> list[str]:
+        """Why the change order may not be approved now (``changecontrol.approval_reasons``: every item decided, every
+        warning accepted, the delta current...); empty for any other item. Checked at every gate kind that approves it."""
+        if not self.is_change_order(state) or getattr(self, "hub", None) is None or not state.get("record"):
+            return []
+        from . import eco
+
+        return eco.check_approval(self.hub, state["record"])
+
+    PERSON_SIGNS_CONFIGURATION = ("a change order's approval puts configuration in force, so a person signs it: a cog may review it "
+                                  "and say what it found, never approve it (a guard, like a cog never signing its own work)")
+
+    def contributors(self, state: dict) -> list[str]:
+        """Who contributed to the item and so never decides it: for a change order, whoever wrote a revision it carries or
+        made a direct change on it, and its requester (``changecontrol.contributors``)."""
+        if not self.is_change_order(state) or not state.get("record"):
+            return []
+        rec = self.kernel.get(state["record"]) or {}
+        out = list(rec.get("fields", {}).get("contributor") or [])
+        if getattr(self, "hub", None) is not None:
+            try:
+                from . import changecontrol
+
+                out += list(changecontrol.contributors(self.hub, state["record"]) or [])
+            except Exception:  # a change order the change-control module cannot read: the recorded field stands
+                pass
+        return sorted({authz.principal_name(x) for x in out if x})
 
     @staticmethod
     def cog_work_needs_person(bundle: dict, obj: str) -> dict | None:
@@ -1134,7 +1175,7 @@ class Runner:
     # an intervention with its meaning), extends the due date, or returns the item. If the chair is the member in question
     # or absent, the pause escalates under the SOP's overdue rule. Nothing passes by default. The tally is on the card
     # (``pending["committee"]``).
-    COMMITTEE_PAUSES = {"criteria": "its approval criteria do not hold", "unavailable": "is not available",
+    COMMITTEE_PAUSES = {"not-ready": "the change order is not ready to be approved", "criteria": "its approval criteria do not hold", "unavailable": "is not available",
                         "excluded": "may not decide this item", "late": "has not answered by the due date",
                         "differ": "the members chose different ways forward"}
 
@@ -1261,6 +1302,8 @@ class Runner:
         from .model import cog_availability
         from .routing import criteria_for
 
+        if self.is_change_order(state):
+            return self._committee_pause(state, track, bundle, cog_name, "excluded", self.PERSON_SIGNS_CONFIGURATION)
         ok, why = cog_availability(bundle, cog_name)
         if not ok:
             return self._committee_pause(state, track, bundle, cog_name, "unavailable", why)
@@ -1340,6 +1383,9 @@ class Runner:
             why = self._validators_block(state, wf, option)
             if why:
                 raise RunError(why)
+            blocked = self.change_order_blocks(state)
+            if blocked:
+                raise RunError("the change order cannot be approved yet: " + "; ".join(blocked))
         return self._committee_vote(state, Track(self._dir(state["id"])), by, vote, meaning.strip(), payload_digest, option["id"])
 
     def _committee_vote(self, state: dict, track: Track, member: str, verdict: str, meaning: str, seen: str, option: str | None,
@@ -1404,6 +1450,12 @@ class Runner:
         votes = [cm["votes"][m] for m in cm["members"] if m in (cm.get("votes") or {})]
         fwd, back = self._committee_ways(state)
         if how == "agree":
+            blocked = self.change_order_blocks(state)
+            if blocked:  # every member agreed, but the change order is not ready: nothing passes; the chair is asked
+                if any(p.get("kind") == "not-ready" for p in cm.get("paused") or []):
+                    return self.load(state["id"])
+                return self._committee_pause(state, track, self.releases.bundle(state["release"]), None, "not-ready",
+                                             "the change order cannot be approved yet: " + "; ".join(blocked))
             option = pg.transition(wf, votes[0].get("option")) or fwd
             verdict = "approve"
             meaning = (f"agreed by consensus of the {cm['name']} committee ({', '.join(cm['members'])}): "
@@ -1540,6 +1592,9 @@ class Runner:
                 why = self._validators_block(state, wf, option)
                 if why:
                     raise RunError(why)
+                blocked = self.change_order_blocks(state)
+                if blocked:
+                    raise RunError("the change order cannot be approved yet: " + "; ".join(blocked))
             members = [member] if member else [m for m in cm["members"]]
             intervention = {"by": by, "action": "decide", "meaning": meaning, "for": member, "pause": pause, "at": utcnow()}
             track.append({"type": "gate.intervened", "run_id": state["id"], "step": pending["step"], **intervention})
@@ -1747,6 +1802,8 @@ class Runner:
         pending = state.get("pending") or {}
         if state["status"] != "waiting" or pending.get("kind", "decision") != "decision":
             return f"it is not waiting for a decision (it is {state['status']})"
+        if self.is_change_order(state):
+            return self.PERSON_SIGNS_CONFIGURATION
         if pending.get("countersign_of"):
             return "it waits for a person's countersignature"
         if pending.get("committee"):
@@ -1925,7 +1982,7 @@ class Runner:
             self._finish(state, track, wf, target, close)
             return
         rejected = {"type": "run.rejected", "run_id": state["id"], "step": step["id"], "by": by, "to": target}
-        if any(t.get("id") == "resubmit" or t.get("resume_from") for t in pg.transitions_out(wf, target, include_global=False)):
+        if self._rework_transition(wf, target) is not None:
             track.append(rejected)
             state["at"] = target
             self._return_to_owner(state, step, track, decision, meaning)
@@ -1951,9 +2008,11 @@ class Runner:
     def _return_to_owner(self, state: dict, step: dict, track: Track, decision: dict, meaning: str) -> None:
         """A rejection that returns the item to its owner for rework: state ``returned``; resubmission reopens the run."""
         wf = self._graph(state)
-        resub = next((t for t in pg.transitions_out(wf, "returned", include_global=False) if t.get("resume_from")), None)
-        reject_to = (resub or {}).get("resume_from") or state["workflow"].get("reject_to")
-        state["at"] = "returned"
+        here = state.get("at") if self._rework_transition(wf, state.get("at")) is not None else "returned"
+        resub = self._rework_transition(wf, here)
+        first = next((a for a in (resub or {}).get("actions") or [] if isinstance(a, str)), None)
+        reject_to = first or state["workflow"].get("reject_to")
+        state["at"] = here
         if state.get("record"):
             try:
                 self.kernel.transition(state["record"], "returned", by=decision["by"], run_id=state["id"], release=state["release"],
@@ -2098,7 +2157,8 @@ class Runner:
             raise RunError(f"{state['process']} has no transition {transition!r}")
         if t["id"] == "retry" or (t.get("system") and state["status"] == "failed"):
             return self.retry(run_id, by, note=meaning, fields=fields)
-        if t.get("resume_from") or (state["status"] == "waiting" and pending.get("kind") == "resubmit" and t["id"] == pending.get("transition")):
+        if (state["status"] == "waiting" and pending.get("kind") == "resubmit"
+                and (t["id"] == pending.get("transition") or t is self._rework_transition(wf, state.get("at")))):
             return self.resubmit(run_id, by, fields=fields, note=meaning)
         at = state.get("at")
         if t.get("type") != "global" or not pg.global_applies(wf, t, at) or state["status"] in ("completed", "cancelled", "rejected"):
@@ -2108,6 +2168,8 @@ class Runner:
             return self.cancel(run_id, by, reason=meaning, transition=t["id"])
         if not meaning.strip():
             raise RunError(f"say why you take “{t.get('name') or t['id']}”")
+        if self.is_change_order(state) and self._approves(wf, t):
+            raise RunError(f"“{t.get('name') or t['id']}” would approve the change order outside its Gate: {self.PERSON_SIGNS_CONFIGURATION}")
         bundle = self.releases.bundle(state["release"])
         why = self._may_take(state, bundle, t, by)
         if why:
@@ -2123,6 +2185,12 @@ class Runner:
         self._take(state, t)
         self._save(state)
         return self.advance(run_id)
+
+    @staticmethod
+    def _approves(wf: dict, t: dict) -> bool:
+        """The transition ends the item as completed (for a change order: approves it)."""
+        st = pg.status_of(wf, t.get("to")) or {}
+        return st.get("category") == "done" and st.get("outcome", "completed") == "completed"
 
     def _may_take(self, state: dict, bundle: dict, t: dict, by: str) -> str:
         """Why ``by`` may not take this transition's gate outside a Gate (a global such as Cancel); empty when they may."""
@@ -2235,10 +2303,10 @@ class Runner:
         allowed = authz.check(bundle, by, "approve", state["manifest"]["object"], rec_now["folder"] if rec_now else state["manifest"]["folder"])
         if not allowed["allowed"]:
             raise RunError(allowed["why"])
-        if verdict == "approve" and (state.get("workflow") or {}).get("record_type") == "change-order" and getattr(self, "hub", None) is not None:
-            from . import eco
-
-            blocked = eco.check_approval(self.hub, state["record"])
+        if verdict == "approve" and self.is_change_order(state):
+            if by_type != "person":
+                raise RunError(f"{by} may not approve {state.get('record') or 'this change order'}: {self.PERSON_SIGNS_CONFIGURATION}")
+            blocked = self.change_order_blocks(state)
             if blocked:
                 raise RunError("the change order cannot be approved yet: " + "; ".join(blocked))
         if pending.get("countersign_of"):
@@ -2403,15 +2471,18 @@ class Runner:
                 self.dms.create(title=att.get("title") or att.get("name", "attachment"), doc_class=att.get("doc_class", "controlled"),
                                 folder=state["manifest"]["folder"], by=by, content=content, filename=att.get("name", ""),
                                 doc_type=att.get("doc_type", ""), run_id=state["id"], release=state["release"], attach_to=state["record"])
-        # The process runs again from the step the rejection returned it to (the moves after it are forgotten).
-        ids = self._executed(state)
-        start = (len(ids) - 1 - ids[::-1].index(pending["step"])) if pending["step"] in ids else 0
-        for sid in ids[start:]:
-            state["steps"].pop(sid, None)
-        if start < len(ids):
-            self._rewind_path(state, start)
-        else:
-            state["at"], state["moving"], state["path"] = (pg.initial(self._graph(state)) or {}).get("to", "open"), None, []
+        wf = self._graph(state)
+        rework = self._rework_transition(wf, state.get("at"))
+        if rework is None:
+            # A run saved before graphs: the process runs again from the step the rejection returned it to.
+            ids = self._executed(state)
+            start = (len(ids) - 1 - ids[::-1].index(pending["step"])) if pending["step"] in ids else 0
+            for sid in ids[start:]:
+                state["steps"].pop(sid, None)
+            if start < len(ids):
+                self._rewind_path(state, start)
+            else:
+                state["at"], state["moving"], state["path"] = (pg.initial(wf) or {}).get("to", "open"), None, []
         # The rerun reads the record as it now is: the original submission's one-shot inputs are spent.
         record_input = dict(state["inputs"].get("record") or {})
         record_input.update(fields or {})
@@ -2421,10 +2492,24 @@ class Runner:
         state["pending"] = None
         state["grant"] = None
         track.append({"type": "run.resubmitted", "run_id": state["id"], "by": by, "from_step": pending["step"], "note": note,
-                      "fields": sorted(fields or {}), "attachments": [a.get("name") for a in attachments or []]})
-        self.kernel.transition(state["record"], "open", by=by, run_id=state["id"], release=state["release"], reason=f"resubmitted: {note}")
+                      "fields": sorted(fields or {}), "attachments": [a.get("name") for a in attachments or []],
+                      **({"transition": rework["id"]} if rework else {})})
+        if pg.status_of(wf, "open") or not pg.is_graph_shape(wf):
+            self.kernel.transition(state["record"], "open", by=by, run_id=state["id"], release=state["release"], reason=f"resubmitted: {note}")
+        if rework is not None:
+            # The rework loop is the transition out of the returned status: its steps (from the one the rejection
+            # returned the item to) run again, then the item waits where it leads.
+            self._take(state, rework)
         self._save(state)
         return self.advance(run_id)
+
+    @staticmethod
+    def _rework_transition(wf: dict, sid: str | None) -> dict | None:
+        """The rework loop out of a status (numbered steps' Resubmit out of ``returned``): the owner resubmits."""
+        if not sid or not pg.is_graph_shape(wf):
+            return None
+        return next((t for t in pg.transitions_out(wf, sid, include_global=False)
+                     if t["id"] == "resubmit" and (t.get("gate") or {}).get("role") == "owner"), None)
 
     def retry(self, run_id: str, by: str, note: str = "", fields: dict | None = None,
               attachments: list[dict] | None = None) -> dict:
@@ -2602,6 +2687,65 @@ class Runner:
         return self.kernel.get(rec["locator"])
 
     # ------------------------------------------------------------- state maps
+    def previous_workflow(self, process: str, meta: dict | None = None) -> dict | None:
+        """The process's workflow in the release that was in force before ``meta`` (the release in force by default)."""
+        meta = meta or self.releases.current()
+        if not meta:
+            return None
+        prev = None
+        if meta.get("parent"):
+            try:
+                prev = self.releases.get(meta["parent"])
+            except KeyError:
+                prev = None
+        if prev is None:
+            order = [m["digest"] for m in self.releases.list()]
+            i = order.index(meta["digest"]) if meta["digest"] in order else -1
+            prev = self.releases.get(order[i - 1]) if i > 0 else None
+        return (self.releases.bundle(prev["digest"]).get("workflows") or {}).get(process) if prev else None
+
+    def check_state_map(self, process: str, mapping: dict[str, str], old_graph: dict | None, new_graph: dict | None) -> list[str]:
+        """Why a state map may not be applied (empty when it may): the release changed the process; each source is a
+        status the old graph had and the new one does not; each target is a status of the new graph (not the hub's own)."""
+        if not new_graph or not pg.is_graph_shape(new_graph):
+            return [f"the release in force has no process {process!r}"]
+        if not old_graph:
+            return [f"{process} is new in this release: no item is in a status it removed"]
+        def ids(g):
+            return {x["id"] for x in g.get("statuses") or [] if not x.get("system")} if pg.is_graph_shape(g) else set(g.get("states") or [])
+        def same(a, b):
+            strip = lambda g: {k: v for k, v in pg.graph_only(g).items() if k not in ("source", "form")}
+            return pg.is_graph_shape(a) and strip(a) == strip(b)
+        out = []
+        if same(old_graph, new_graph):
+            out.append(f"the release did not change {process}: a state map moves only items in statuses a change removed")
+        old_ids, new_ids = ids(old_graph), ids(new_graph)
+        for src, dst in mapping.items():
+            if src in new_ids:
+                out.append(f"{src!r} is still a status of {process}: only items in a status the change removed are moved")
+            elif src not in old_ids:
+                out.append(f"{src!r} was not a status of {process}")
+            if dst not in new_ids:
+                out.append(f"the state map sends {src!r} to {dst!r}, which is not a status of {process} in the release in force")
+        return out
+
+    def _of_process(self, process: str, bundle: dict, record_type: str) -> dict[str, dict | None]:
+        """The items of a process: {record locator: its latest run} for the items whose latest run is of this process,
+        and the items of its record type with no run when no other process of the release files that type."""
+        latest: dict[str, dict] = {}
+        for st in self.list():
+            if st.get("record"):
+                latest[st["record"]] = st
+        alone = [n for n, w in (bundle.get("workflows") or {}).items() if w.get("record_type") == record_type] == [process]
+        out: dict[str, dict | None] = {}
+        for rec in self.kernel.query(type_=record_type):
+            run = latest.get(rec["locator"])
+            if rec.get("archived"):
+                continue
+            if (run and run.get("process") == process) or (run is None and alone):
+                out[rec["locator"]] = run
+        return out
+
     def apply_state_map(self, process: str, mapping: dict[str, str], by: str, co: str) -> list[dict]:
         """See ``apply_state_map`` (module level)."""
         meta = self.releases.current()
@@ -2609,18 +2753,15 @@ class Runner:
             raise RunError("no policy release is in effect")
         bundle = self.releases.bundle(meta["digest"])
         wf = (bundle.get("workflows") or {}).get(process)
-        if not wf or not pg.is_graph_shape(wf):
-            raise RunError(f"the release in force has no process {process!r}")
-        for old, new in mapping.items():
-            if not pg.status_of(wf, new):
-                raise RunError(f"the state map sends {old!r} to {new!r}, which is not a status of {process} in the release in force")
+        problems = self.check_state_map(process, dict(mapping or {}), self.previous_workflow(process, meta), wf)
+        if problems:
+            raise RunError(f"{co}'s state map for {process} is refused: " + "; ".join(problems))
         moved = []
-        runs: dict[str, dict] = {}
-        for st in self.list():
-            if st.get("record") and st.get("process") == process:
-                runs[st["record"]] = st
+        items = self._of_process(process, bundle, wf["record_type"])
         for rec in self.kernel.query(type_=wf["record_type"]):
-            run = runs.get(rec["locator"])
+            if rec["locator"] not in items:
+                continue  # never an item of another process
+            run = items[rec["locator"]]
             live = run is not None and run.get("status") in ("waiting", "failed", "running", "submitted")
             here = (run.get("at") if live and run.get("status") == "failed" and run.get("at") else rec["state"])
             if here not in mapping or rec.get("archived"):
@@ -2722,18 +2863,16 @@ def items_in_removed_statuses(hub, old_graph: dict, new_graph: dict) -> dict[str
 
 
 def _positions(hub, process: str | None, record_type: str | None) -> dict[str, str]:
-    """Where each item of the process stands: the status of its latest run (a failed run stands where it failed), else
-    its record state."""
+    """Where each item of the process stands (only its own items, never another process's of the same record type): the
+    status of its latest run (a failed run stands where it failed), else its record state."""
+    if not record_type:
+        return {}
+    meta = hub.releases.current()
+    bundle = hub.releases.bundle(meta["digest"]) if meta else {}
     out: dict[str, str] = {}
-    runs: dict[str, dict] = {}
-    for st in hub.runner.list():
-        if st.get("record") and (process is None or st.get("process") == process):
-            runs[st["record"]] = st
-    for rec in hub.kernel.query(type_=record_type) if record_type else []:
-        if rec.get("archived"):
-            continue
-        run = runs.get(rec["locator"])
-        out[rec["locator"]] = (run or {}).get("at") if run and run.get("status") == "failed" and run.get("at") else rec["state"]
+    for loc, run in hub.runner._of_process(process, bundle, record_type).items():
+        rec = hub.kernel.get(loc)
+        out[loc] = run.get("at") if run and run.get("status") == "failed" and run.get("at") else rec["state"]
     return out
 
 
@@ -2771,5 +2910,5 @@ def state_map_questions(hub, proposal: dict) -> list[dict]:
             noun = rt.replace("-", " ") + ("" if n == 1 else "s")
             out.append(question(src.get("frame", ""), src.get("line", 0),
                                 f"{n} {noun} {'is' if n == 1 else 'are'} in {st['name']}, which this change removes from {name}: where do they go?",
-                                raised_by="hub", code="state-map", process=name, status=sid, count=n))
+                                raised_by="hub", code="state-map", process=name, state=sid, count=n))
     return out
