@@ -69,7 +69,10 @@ def condition_words(cond: dict | None, ctx: dict) -> tuple[bool, str]:
     return holds, f"its {field.replace('_', ' ')} is {value}" + ("" if holds else f", not {yes} {cond['value']}".replace("  ", " "))
 
 
-def explain(bundle: dict, process: str, step: str, ctx: dict) -> list[dict]:
+JUDGED = ("review_passes", "adversarial_reviews_pass")  # decided at the Gate by the cog's own review, not stored on the item
+
+
+def explain(bundle: dict, process: str, step: str, ctx: dict, decided_by: str | None = None) -> list[dict]:
     """How a Gate is routed for this item: every routing sentence for the step, in release order (the order the runner
     tries them), with whether it applies and why; for a cog, whether the item is within the cog's approval criteria. The
     first that applies (and, for a cog, is within its criteria) takes the item: ``taken``; later ones are not needed."""
@@ -85,11 +88,27 @@ def explain(bundle: dict, process: str, step: str, ctx: dict) -> list[dict]:
             if not crits:
                 row.update(within=False, criteria=["the cog has no approval criteria for it"])
             else:
-                within, reasons = evaluate_criteria(crits[0], ctx)
-                row.update(within=within, criteria=reasons, limit=crits[0])
+                judged = [c for c in crits[0].get("conditions") or [] if c in JUDGED]
+                facts = {**(ctx.get("conditions") or {}), **{c: True for c in judged}}  # its review is its own, at the Gate
+                within, reasons = evaluate_criteria(crits[0], {**ctx, "conditions": facts})
+                row.update(within=within, criteria=reasons, limit=crits[0], judged=bool(judged))
         if holds and not taken and row.get("within", True):
             row["taken"], taken = True, True
         out.append(row)
+    if decided_by:  # what happened: the sentence whose assignee decided the Gate took it
+        who = decided_by.split(":", 1)[-1]
+        took = next((r for r in out if r["holds"] and (who in principals_for({"members": {}, **bundle}, r["rule"]["assignee"])
+                                                       or r["rule"]["assignee"] == f"cog:{who}")), None)
+        if took is not None:
+            seen = False
+            for r in out:
+                r["taken"], r["not_needed"] = r is took, seen
+                if r is took:
+                    seen = True
+                    if r.get("judged") is not None:
+                        r.update(within=True, criteria=[])
+                elif not seen and r["holds"] and r.get("judged"):  # a cog before it whose own review did not pass
+                    r.update(within=False, criteria=r.get("criteria") or ["its review did not pass"])
     return out
 
 

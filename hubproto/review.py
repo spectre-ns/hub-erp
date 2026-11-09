@@ -178,7 +178,7 @@ def review(cog_id: str, profile: dict, ctx, record: dict, question: str = "", ju
         text = "\n".join(ln for ln in text.splitlines() if not any(k in squash(ln) for k in keys)).strip()
     remarks = len(findings) - len(errors)
     summary = text or ("No findings." if not findings else
-                       f"{len(errors)} problem(s) and {remarks} remark(s), listed above." if errors else f"{remarks} remark(s), listed above; nothing wrong.")
+                       f"{len(errors)} problem(s) and {remarks} remark(s) in the review." if errors else f"{remarks} remark(s) in the review, nothing wrong.")
     if said_fail and not errors:
         summary += " (The reviewer leaned towards fail but named no error it could quote from the procedures; these are remarks.)"
     return {"cog": cog_id, "verdict": verdict, "findings": findings, "summary": summary, "routing_notes": notes, "model": model,

@@ -119,3 +119,41 @@ def test_cog_rails_list_each_cog_once_though_several_sops_name_it(shell):
     status, text = get(shell, "/settings/rails", **{"as": "bob"})
     names = re.findall(r"<section class='cog-rails'><h2>.*?</span> ([a-z0-9-]+) <span class='muted'>", text)
     assert status == 200 and names and len(names) == len(set(names)), names
+
+
+JUDGED_BUNDLE = {**BUNDLE, "approval_criteria": [{"approver": "cog:purchasing-assistant", "process": "purchase-request", "max_amount": 2000.0,
+                                                  "currency": "USD", "conditions": ["supplier_approved", "review_passes"]}]}
+
+
+def test_a_cogs_own_review_is_decided_at_the_gate_and_the_table_follows_the_decision():
+    ctx = {"amount": 1500.0, "currency": "USD", "conditions": {"supplier_approved": True}}
+    rows = explain(JUDGED_BUNDLE, "purchase-request", "approve", ctx)
+    assert rows[1]["taken"] and rows[1]["judged"] and rows[1]["criteria"] == [], "its review is not a fact the item lacks"
+    rows = explain(JUDGED_BUNDLE, "purchase-request", "approve", ctx, decided_by="purchasing-assistant")
+    assert rows[1]["taken"] and not rows[2]["taken"] and rows[2]["not_needed"]
+    members = {"members": {"dave": {"roles": ["buyer"]}}}
+    rows = explain({**JUDGED_BUNDLE, **members}, "purchase-request", "approve", ctx, decided_by="dave")
+    assert rows[2]["taken"] and not rows[1]["taken"] and rows[1]["criteria"] == ["its review did not pass"]
+
+
+def test_a_cog_whose_authority_the_change_widens_is_left_off_its_review_panel(shell):
+    from hubproto import changecontrol as cc
+    from test_change_order_pages import NEW, OLD, carry_revision, new_co
+
+    hub = shell["hub"]
+    co = new_co(shell, title="Raise the AP cog limit")
+    carry_revision(shell, co, new=OLD.replace("2,000", "5,000"))
+    ok(post(shell, "/co-review", {"as": "alice", "co": co["locator"], "choose": "own", "panel": ["ap-reviewer", "management"]}))
+    rnd = cc.current_round(hub.kernel.get(co["locator"]))
+    assert "ap-reviewer" not in {e["who"] for e in rnd["panel"]} and [x["who"] for x in rnd["left_off"]] == ["ap-reviewer"]
+    assert "Left off the panel: <b>ap-reviewer</b>, the change widens its own authority" in co_page(shell, co, "alice")
+    assert NEW  # the narrowing edit (2,000 -> 1,500) is the other tests'
+
+
+def test_a_reviews_summary_reads_right_where_a_signature_quotes_it():
+    import inspect
+
+    from hubproto import review
+
+    src = inspect.getsource(review)
+    assert "listed above" not in src.split("summary = text or")[1].split("\n")[1]

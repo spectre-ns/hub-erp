@@ -1534,6 +1534,23 @@ def round_check(hub, co_ref, n: int) -> str:
             + (f"; {len(left)} direct change(s) the prose does not state (round-trip questions)" if left else ""))
 
 
+def widened_principals(hub, co_ref) -> set[str]:
+    """The members whose own authority the change order's delta widens: a cog that may approve more, is routed more, or
+    may do more (a permission), a member gaining roles. Like a person, none of them reviews that change."""
+    co = _co(hub, co_ref)
+    p = _proposal(hub, co)
+    out: set[str] = set()
+    for c in (p or {}).get("changes") or []:
+        if c.get("op") == "text" or not _widening(c):
+            continue
+        r = _effective(c)
+        for ref in (r.get("approver"), r.get("assignee"), r.get("subject"), f"person:{r['principal']}" if r.get("kind") == "member" else None):
+            kind, _, name = str(ref or "").partition(":")
+            if kind in ("cog", "person") and name:
+                out.add(name)
+    return out
+
+
 def round_panel(hub, co_ref, n: int) -> str:
     """Round step 4: the suggested panel, or the one the requester gave."""
     co = _co(hub, co_ref)
@@ -1547,16 +1564,21 @@ def round_panel(hub, co_ref, n: int) -> str:
                     panel.append(e)
     else:
         panel = [dict(s) for s in suggested]
+    interested = widened_principals(hub, co)
+    left_off = [{"who": e["who"], "reason": "the change widens its own authority: like a person, it does not review its own"}
+                for e in panel if e["who"] in interested]
+    panel = [e for e in panel if e["who"] not in interested]
     contribs = set(contributors(hub, co))
     for e in panel:
         if e["who"] in contribs:
             e["excluded"] = "it contributed to this change order, so it does not review it"
     on = {e["who"] for e in panel}
     omitted = [{"who": s["who"], "reason": s.get("reason"), "by": rnd["requested_by"]} for s in suggested if s.get("member") and s["who"] not in on]
-    _update_round(hub, co, n, lambda r: r.update({"suggested": suggested, "panel": panel, "omitted": omitted}))
+    _update_round(hub, co, n, lambda r: r.update({"suggested": suggested, "panel": panel, "omitted": omitted, "left_off": left_off}))
     named = [f"{e['who']}" + ("" if e["member"] else " (not a member: shown, not asked)") + (" (a contributor: not asked)" if e.get("excluded") else "")
              for e in panel]
-    return ("panel: " + ", ".join(named)) if named else "no reviewer suggested: the section on reviewing changes names none for this delta"
+    off = "".join(f"; left off: {x['who']} ({x['reason']})" for x in left_off)
+    return (("panel: " + ", ".join(named)) if named else "no reviewer suggested: the section on reviewing changes names none for this delta") + off
 
 
 def round_queue(hub, co_ref, n: int, by: str) -> str:

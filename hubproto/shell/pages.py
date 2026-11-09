@@ -617,7 +617,8 @@ class PagesMixin:
             if gate.get("type") != "human" or not route.get("process"):
                 continue
             rows = []
-            for r in explain(bundle, route["process"], gate.get("step") or step["id"], ctx):
+            dec = ((s["steps"].get(step["id"]) or {}).get("decision") or {})
+            for r in explain(bundle, route["process"], gate.get("step") or step["id"], ctx, decided_by=dec.get("by") if dec.get("verdict") == "approve" else None):
                 rule = r["rule"]
                 if r["taken"]:
                     state = chip("takes it", "ok")
@@ -632,8 +633,9 @@ class PagesMixin:
                     lim = r.get("limit") or {}
                     bound = (f"its limit is under {money(lim['max_amount'])} {lim.get('currency') or ''}".strip()
                              if lim.get("max_amount") is not None else "")
+                    judged = " and its own review" + (" passed" if r["taken"] else " decides") if r.get("judged") else ""
                     why += ("; " + esc("; ".join(r["criteria"])) + (f" ({esc(bound)})" if bound else "")) if r["criteria"] else (
-                        "; within its approval criteria" + (f" ({esc(bound)})" if bound else ""))
+                        "; within its approval criteria" + (f" ({esc(bound)})" if bound else "") + esc(judged))
                 rows.append([self._rule_html(rule.get("source") or {"text": rule.get("assignee")}), state, why])
             if rows:
                 out += (f"<h2 id='routing'>How “{esc(gate.get('title') or 'the approval')}” is routed</h2>"

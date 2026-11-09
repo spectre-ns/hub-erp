@@ -588,6 +588,8 @@ def test_a_policy_owner_who_made_a_widening_decides_it_with_its_superseded_half_
     assert cc.approval_reasons(hub, co["number"]) == [], cc.approval_reasons(hub, co["number"])
     ok(sign(shell, co))
     assert hub.kernel.get(co["locator"])["state"] == "released" and ap_limit(hub) == 5000.0
+    html = co_page(shell, co, "alice")
+    assert "Released as" in html and "/release/" in html and "Nothing compiled yet" not in html, "a released change order says what it released"
 
 
 def test_the_preview_leaves_a_sentence_the_grammar_cannot_read_to_the_compile_committee(shell):
