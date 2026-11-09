@@ -136,3 +136,12 @@ def test_a_retired_frame_document_comes_back_when_its_frame_is_released(released
     hub.kernel.transition(doc["locator"], "obsolete", by="test", reason="as if its Frame had been dropped")
     again = hub.frame_document("finance-policy")
     assert again["locator"] == doc["locator"] and again["state"] == "effective"
+
+
+def test_the_stdlib_frontmatter_parser_reads_a_one_line_json_value(monkeypatch):
+    """Without PyYAML (the container has none) the hub's own parser reads workflow_ids the drafter writes."""
+    import hubproto.frames as frames
+
+    monkeypatch.setattr(frames, "yaml", None)
+    data, _ = frames.parse_frontmatter('---\nname: x\nworkflow_ids: {"gizmo-review": {"in-review": "review"}}\n---\nbody\n')
+    assert data["workflow_ids"] == {"gizmo-review": {"in-review": "review"}}
