@@ -170,3 +170,33 @@ def test_prose_that_states_more_than_the_change_is_a_question_and_the_drafter_is
     hub.dms.add_version(draft["locator"], sopdocs.to_docx(body.replace(extra + "\n", "")), by="bob", filename="finance-policy.docx",
                         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
     assert draft_direct_changes(hub, co["number"], "bob") == []
+
+
+def test_a_renamed_status_keeps_its_id_beside_the_prose_and_its_items_stay(tmp_path):
+    """A status renamed in the workflow editor, carried and drafted: the prose names it without an id, the revision's
+    front matter keeps its id (workflow_ids), and the compile gives the same id, so no item needs a state map."""
+    from test_workflow_graph import G, decide, gizmo_hub, submit
+
+    from hubproto.runner import state_map_questions
+
+    hub = gizmo_hub(tmp_path)
+    release_all(hub)
+    run = submit(hub)
+    decide(hub, run, "kim", "check")
+    assert hub.runner.load(run)["at"] == "review", "an item waits in the status about to be renamed"
+    sopdocs.convert(hub, by="sam")
+    old = next(r for r in hub.settings_rules() if r["kind"] == "process" and r["name"] == G)
+    renamed = {**{k: v for k, v in old.items() if k != "source"},
+               "statuses": [{**s, "name": "In review"} if s["id"] == "review" else s for s in old["statuses"]]}
+    co = hub.kernel.create("change-order", "Quality/Changes", {"title": "Rename", "description": "clearer", "requested_by": "bob"}, by="bob")
+    hub.kernel.set_fields(co["locator"], {"direct_changes": [direct_item(renamed, by="bob", op="change", was=old)]}, by="bob")
+    assert draft_direct_changes(hub, co["number"], "bob") == []
+    draft = next(c["draft"] for c in eco.carried(hub, hub.kernel.get(co["locator"])) if c["name"] == "gizmo-policy")
+    text = sopdocs.frame_text(hub, draft)
+    head, body = text.split("\n---\n", 1)
+    assert 'workflow_ids: {"gizmo-review": {"in-review": "review"}}' in head
+    assert "In review (in progress)" in body and "[review]" not in body and "[" not in body.split("## Process: gizmo-review")[1].split("## Process")[0]
+    p = hub.compile(sop_drafts=eco.drafts_of(hub, hub.kernel.get(co["locator"])), save=False)
+    proc = next(r for r in p["rules"] if r["kind"] == "process" and r["name"] == G)
+    assert {s["id"]: s["name"] for s in proc["statuses"]}["review"] == "In review", "the same id, its new name"
+    assert state_map_questions(hub, p) == [], "nothing removed, so no item needs a state map"
