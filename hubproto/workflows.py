@@ -379,7 +379,14 @@ def carry(hub, co_ref: str, user: str, process: str) -> dict:
         items = changecontrol.add_direct_change(hub, co["locator"], {"op": "change" if was else "add", "rule": rule, **({"was": was} if was else {})},
                                                 user, origin={"editor": "workflow", "process": process})
         direct_id = next((i["id"] for i in reversed(items) if (i.get("origin") or {}).get("process") == process), None)
-    removed = {k: v for k, v in (doc.get("state_map") or {}).items() if k not in wm.status_map(doc["graph"]) and v}
+    # The state map says where the items of the statuses the draft removes go: only those (a status deleted and then put
+    # back by undo is not removed), and the answers carried before for this process are replaced, not merged.
+    removed = {k: v for k, v in (doc.get("state_map") or {}).items() if k not in wm.status_map(doc["graph"]) and k in wm.status_map(base["graph"]) and v}
+    cur = eco._co(hub, co["locator"])
+    smap = dict(cur["fields"].get("state_map") or {})
+    if process in smap:
+        smap.pop(process)
+        hub.kernel.set_fields(co["locator"], {"state_map": smap}, by=user)
     if removed:
         changecontrol.set_state_map(hub, co["locator"], process, removed, user)
     entry = {"graph": copy.deepcopy(doc["graph"]), "layout": copy.deepcopy(doc["layout"]), "state_map": removed,

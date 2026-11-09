@@ -290,6 +290,8 @@ class ChangeOrderMixin:
         """A rule as the sentence a person would write (the hub's reading of it)."""
         if not rule:
             return ""
+        if rule.get("kind") == "process" and rule.get("statuses"):  # a workflow: its summary, never its whole process text
+            return cc._sentence(rule)
         from ..settings import sentence
 
         try:
@@ -549,9 +551,15 @@ class ChangeOrderMixin:
             old, new = cc._old_new(it)
             op = item_op(it)
             sign, word, cls = SIGN[op]
-            what = (f"<span class='co-sign {cls}' aria-hidden='true'>{sign}</span><span class='vh'>{word}: </span>"
-                    + (esc(self._say(new)) if new is not None else f"<del>{esc(self._say(old))}</del>")
-                    + (f"<div class='why'>was: {esc(self._say(old))}</div>" if old is not None and new is not None else ""))
+            if (new or old or {}).get("kind") == "process":  # a workflow from the editor: its changes, one line each
+                from ..workflow_model import process_change_words
+
+                what = (f"<span class='co-sign {cls}' aria-hidden='true'>{sign}</span><span class='vh'>{word}: </span>The {esc((new or old).get('name'))} workflow"
+                        + "<ul class='co-parts'>" + "".join(f"<li>{esc(w)}</li>" for w in process_change_words(old, new)) + "</ul>")
+            else:
+                what = (f"<span class='co-sign {cls}' aria-hidden='true'>{sign}</span><span class='vh'>{word}: </span>"
+                        + (esc(self._say(new)) if new is not None else f"<del>{esc(self._say(old))}</del>")
+                        + (f"<div class='why'>was: {esc(self._say(old))}</div>" if old is not None and new is not None else ""))
             if o.get("kind") == "suggested":
                 by = f"suggested by {self._co_who(o.get('by'))}, accepted by {self._co_who(o.get('accepted_by'))}"
             else:
@@ -1029,6 +1037,10 @@ class ChangeOrderMixin:
         op = item_op(c)
         new = cc._effective(c) if c.get("op") != "remove" else None
         old = c.get("changes_from") or c.get("was") or (c["rule"] if c.get("op") == "remove" else None)
+        if (new or old or {}).get("kind") == "process":
+            from ..workflow_model import process_change_reason
+
+            return process_change_reason(old, new)
         if op == "change":
             return f"{self._say(old)} → {self._say(new)}"
         if op == "remove":
@@ -1040,6 +1052,14 @@ class ChangeOrderMixin:
         op = item_op(c)
         new = cc._effective(c) if c.get("op") != "remove" else None
         old = c.get("changes_from") or c.get("was") or (c["rule"] if c.get("op") == "remove" else None)
+        if (new or old or {}).get("kind") == "process":  # a workflow: one line per change of meaning (workflow_model), no ids
+            from ..workflow_model import process_change_words
+
+            words = process_change_words(old, new)
+            name = (new or old).get("name")
+            return (f"The <a href='{href('/workflows/' + quote(str(name)), self.user)}'>{esc(name)} workflow</a> "
+                    + (f"changes ({len(words)}):" if old is not None and new is not None else "")
+                    + "<ul class='co-parts'>" + "".join(f"<li>{esc(w)}</li>" for w in words or ["restated, no change of meaning"]) + "</ul>")
         if op == "change":
             return f"{esc(self._say(new))}<span class='was'>was: <del>{esc(self._say(old))}</del></span>"
         if op == "remove":

@@ -353,9 +353,17 @@ box.addEventListener('click',function(e){var b=e.target.closest('button[data-wf-
  var g=e.target.closest('.wf-s,.wf-l');if(g){var key=(g.classList.contains('wf-s')?'status:':'transition:')+g.getAttribute('data-id');hl(key,true);
  var li=box.querySelector('li[data-wf-key="'+CSS.escape(key)+'"]');if(li)li.scrollIntoView({block:'nearest'})}
  var v=e.target.closest('[data-wf-view]');if(v){var want=v.getAttribute('data-wf-view');box.querySelectorAll('[data-wf-view]').forEach(function(x){x.setAttribute('aria-pressed',x===v?'true':'false')});
- box.querySelectorAll('.wf-pane').forEach(function(p){p.hidden=p.getAttribute('data-wf-pane')!==want})}});
+ box.querySelectorAll('.wf-pane').forEach(function(p){p.hidden=p.getAttribute('data-wf-pane')!==want;if(!p.hidden)frame(p)})}});
 box.addEventListener('keydown',function(e){if(e.key!=='Enter'&&e.key!==' ')return;var g=e.target.closest&&e.target.closest('.wf-s,.wf-l');if(!g)return;e.preventDefault();g.dispatchEvent(new MouseEvent('click',{bubbles:true}))});
-box.querySelectorAll('.wf-pane').forEach(function(p,i){if(i>0)p.hidden=true});box.querySelectorAll('[data-wf-view]').forEach(function(x,i){x.setAttribute('aria-pressed',i===0?'true':'false')});
+// Open framed on what changed: scroll each drawing (drawn at its own, readable size) so the changed elements are in view.
+var changed={};box.querySelectorAll('.wf-pane[data-wf-pane="changes"] .m-add,.wf-pane[data-wf-pane="changes"] .m-del,.wf-pane[data-wf-pane="changes"] .m-chg').forEach(function(e){
+ var id=e.getAttribute('data-id')||e.getAttribute('data-t');if(id)changed[id]=1});
+function frame(p){var svg=p.querySelector('svg.wf');if(!svg||!svg.getBBox)return;var vb=svg.viewBox.baseVal,x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+ p.querySelectorAll('.wf-s,.wf-l').forEach(function(e){if(!changed[e.getAttribute('data-id')])return;var b=e.getBBox(),m=e.transform.baseVal.consolidate(),tx=m?m.matrix.e:0,ty=m?m.matrix.f:0;
+  x0=Math.min(x0,b.x+tx);y0=Math.min(y0,b.y+ty);x1=Math.max(x1,b.x+tx+b.width);y1=Math.max(y1,b.y+ty+b.height)});
+ if(x1<x0)return;var k=svg.getBoundingClientRect().width/vb.width||1,cx=((x0+x1)/2-vb.x)*k,cy=((y0+y1)/2-vb.y)*k;
+ p.scrollLeft=Math.max(0,(x1-x0)*k>p.clientWidth?(x0-vb.x)*k-24:cx-p.clientWidth/2);p.scrollTop=Math.max(0,(y1-y0)*k>p.clientHeight?(y0-vb.y)*k-24:cy-p.clientHeight/2)}
+box.querySelectorAll('.wf-pane').forEach(function(p,i){if(i>0)p.hidden=true;else frame(p)});box.querySelectorAll('[data-wf-view]').forEach(function(x,i){x.setAttribute('aria-pressed',i===0?'true':'false')});
 })})();"""
 
 

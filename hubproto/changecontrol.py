@@ -143,6 +143,8 @@ def _person(hub, who: str) -> bool:
 def _sentence(rule: dict | None) -> str:
     if not rule:
         return ""
+    if rule.get("kind") == "process" and rule.get("statuses"):  # a workflow in words is its summary, not its whole text
+        return f"the {rule.get('name')} workflow ({len(rule.get('statuses') or [])} statuses, {len(rule.get('transitions') or [])} transitions)"
     from .settings import sentence
 
     try:
@@ -297,6 +299,10 @@ def _item_slot(it: dict) -> tuple:
 
 def _item_reason(it: dict) -> str:
     old, new = _old_new(it)
+    if (new or old or {}).get("kind") == "process":  # a workflow: its changes in words, never the whole process (workflow_model)
+        from .workflow_model import process_change_reason
+
+        return process_change_reason(old, new)
     if old is not None and new is not None:
         return f"change “{_sentence(old)}” to “{_sentence(new)}”"
     return f"add “{_sentence(new)}”" if new is not None else f"remove “{_sentence(old)}”"
@@ -1620,7 +1626,21 @@ def answer_question(hub, co_ref, qid: str, answer: str, by: str, line: int | Non
 
 # ---------------------------------------------------------------- state maps
 def _states(proc: dict | None) -> set[str]:
+    """The states items of a process can wait in: its statuses (a process written as a graph, as the workflow editor
+    carries it), or the awaiting state of each checkpoint (numbered steps). A status on both sides is not removed."""
+    if (proc or {}).get("statuses"):
+        return {s["id"] for s in proc["statuses"]}
     return {f"awaiting-{s['id']}" for s in (proc or {}).get("steps") or [] if s.get("kind") == "checkpoint"}
+
+
+def _state_names(hub, proc: dict | None, name: str) -> dict[str, str]:
+    """{state: its name in words} for the messages ("Awaiting disposition the nonconformance", never the id)."""
+    try:
+        from .workflow_model import graph_of_rule
+
+        return {s["id"]: s["name"] for s in graph_of_rule({"kind": "process", **(proc or {}), "name": name})["statuses"]}
+    except Exception:
+        return {}
 
 
 def state_questions(hub, co_ref) -> list[dict]:
@@ -1946,9 +1966,11 @@ def approval_reasons(hub, co_ref) -> list[str]:
         for w in p.get("warnings") or []:
             if not w.get("accepted"):
                 reasons.append(f"accept the warning: [{w['code']}] {w['text']}")
+    in_force = {r["name"]: r for r in hub.settings_rules() if r.get("kind") == "process"}
     for q in state_questions(hub, co):
         if not q.get("answer"):
-            reasons.append(f"{q['count']} {q['record_type']} item(s) are in {q['state']}, which this change removes from {q['process']}: "
+            sname = _state_names(hub, in_force.get(q["process"]), q["process"]).get(q["state"], q["state"])
+            reasons.append(f"{q['count']} {q['record_type']} item(s) are in {sname}, which this change removes from {q['process']}: "
                            "say where they go (state map)")
     return reasons
 

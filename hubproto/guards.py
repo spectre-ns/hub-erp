@@ -609,6 +609,10 @@ def drift_guard(old_rules: list[dict], new_rules: list[dict]) -> list[dict]:
         if old_key:
             change["changes_from"] = removed[old_key]
             change["reason"] = _reason(rule, "change") + " (" + (_differences(removed[old_key], rule) or "restated") + ")"
+            if rule.get("kind") == "process":  # a workflow: its changes of meaning in words (workflow_model), never a repr
+                from .workflow_model import process_change_reason
+
+                change["reason"] = "change " + process_change_reason(removed[old_key], rule)
             change["widening"] = _widens_over(removed[old_key], rule)
         changes.append(change)
     for key, rule in removed.items():
