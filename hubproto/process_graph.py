@@ -109,9 +109,9 @@ def from_linear(process: dict, slas: dict, record_type: str) -> dict:
         # Rework: the owner resubmits and the process runs again from the step the rejection returns to.
         owner = next((t for t in transitions if reject_to in (t.get("actions") or [])), None) or {"to": "open", "actions": [reject_to]}
         resumed = owner["actions"][owner["actions"].index(reject_to):]
+        # The rework loop: the owner resubmits and the steps from the one the rejection returns to run again.
         transitions.append({"id": "resubmit", "type": "directed", "from": ["returned"], "to": owner["to"], "name": "Resubmit",
-                            "gate": {"kind": "person", "role": "owner"}, "validators": [], "actions": list(resumed), "fields": [],
-                            "resume_from": reject_to})
+                            "gate": {"kind": "person", "role": "owner"}, "validators": [], "actions": list(resumed), "fields": []})
     done = [s["id"] for s in statuses if s["category"] == "done"]
     transitions.append(_cancelled(done))
     transitions.append(_retry())
@@ -131,7 +131,7 @@ def from_statements(process: dict, slas: dict, record_type: str) -> dict:
         tt.setdefault("validators", [])
         tt.setdefault("actions", [])
         tt.setdefault("fields", [])
-        tt["actions"] = [action_step_id(process, t, a) if isinstance(a, str) else a for a in tt["actions"]]
+        tt["actions"] = [action_step_id(process, t, a) if isinstance(a, str) or "swarm" in a else a for a in tt["actions"]]
         transitions.append(tt)
         if t.get("line"):
             lines[t["id"]] = t["line"]
@@ -159,19 +159,27 @@ def build(process: dict, slas: dict, record_type: str) -> dict:
     return from_statements(process, slas, record_type) if is_graph(process) else from_linear(process, slas, record_type)
 
 
-def action_step_id(process: dict, transition: dict, cog: str) -> str:
+def action_step_id(process: dict, transition: dict, cog) -> str:
     """The step id of a cog action in a graph process: the cog id, or the cog id and the transition id when the cog
-    runs in more than one transition (step ids are unique in a process)."""
-    uses = sum(1 for t in process.get("transitions") or [] for a in t.get("actions") or [] if a == cog)
+    runs in more than one transition (step ids are unique in a process). A swarm ({"swarm": [cogs]}) is named by its
+    cogs."""
+    if isinstance(cog, dict):
+        cog = "swarm-" + "-".join(cog.get("swarm") or [])
+    uses = sum(1 for t in process.get("transitions") or [] for a in t.get("actions") or []
+               if (a if isinstance(a, str) else "swarm-" + "-".join(a.get("swarm") or []) if isinstance(a, dict) and "swarm" in a else None) == cog)
     return cog if uses <= 1 else f"{cog}-{transition['id']}"
 
 
-def action_steps(process: dict) -> list[tuple[str, str, dict]]:
-    """(step id, cog id, transition) for every cog action of a graph process, in the order written."""
+def is_cog_action(a) -> bool:
+    return isinstance(a, str) or (isinstance(a, dict) and "swarm" in a)
+
+
+def action_steps(process: dict) -> list[tuple[str, object, dict]]:
+    """(step id, cog id or {"swarm": [cogs]}, transition) for every cog action of a graph process, in the order written."""
     out, seen = [], set()
     for t in process.get("transitions") or []:
         for a in t.get("actions") or []:
-            if isinstance(a, str):
+            if is_cog_action(a):
                 sid = action_step_id(process, t, a)
                 if sid not in seen:
                     seen.add(sid)
@@ -369,7 +377,7 @@ def gate_words(gate: dict, wf: dict | None = None) -> str:
         return f"the {g.get('cog', '').replace('-', ' ')} cog decides, else {_role_words(g.get('fallback') or 'quality-manager')}"
     if g.get("kind") == "committee":
         return f"the {g.get('committee', '')} committee decides"
-    words = _role_words(g.get("role") or "system")
+    words = _role_words(g.get("role") or "system") + (" or an approver" if g.get("also") == "approvers" else "")
     nots = []
     for n in g.get("not") or []:
         t = transition(wf or {}, n)
@@ -384,6 +392,10 @@ def condition_phrase(key: str) -> str:
 
 
 def action_words(a, cogs: dict | None = None) -> str:
+    if isinstance(a, str) and isinstance((cogs or {}).get(a), dict):
+        a = cogs[a]
+    if isinstance(a, dict) and "swarm" in a:
+        return " with ".join("the " + c.replace("-", " ") for c in a["swarm"])
     if isinstance(a, dict):
         if "notify" in a:
             kind, _, who = str(a["notify"]).partition(":")
@@ -424,7 +436,7 @@ def to_sentences(wf: dict, cogs: dict | None = None) -> list[str]:
         if extra:
             parts.append("only if " + _names([validator_words(v, wf) for v in extra]))
         if acts:
-            verb = "" if any(isinstance(a, dict) for a in acts) else (" runs" if len(acts) == 1 else " run")
+            verb = "" if any(isinstance(a, dict) and "swarm" not in a for a in acts) else (" runs" if len(acts) == 1 else " run")
             parts.append("then " + _names([action_words(a, cogs) for a in acts]) + verb)
         return "; ".join(parts) + "."
 

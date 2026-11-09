@@ -21,6 +21,23 @@ def hub(tmp_path) -> Hub:
     return h
 
 
+@pytest.fixture
+def today(monkeypatch):
+    """The day the runner sees, fixed for this test: due dates and the dates a test expects come from one clock, so a
+    test that runs across midnight cannot see two days (bind no date at import)."""
+    import hubproto.runner as runner_module
+    from datetime import date as real_date
+
+    day = real_date.today()
+
+    class Day(real_date):
+        @classmethod
+        def today(cls):
+            return day
+    monkeypatch.setattr(runner_module, "date", Day)
+    return day
+
+
 def release_all(hub: Hub, reviewers=("bob", "carol"), effective_from=None, now=None) -> dict:
     """Compile, approve every change with two policy owners, and release."""
     proposal = hub.compile(now=now)

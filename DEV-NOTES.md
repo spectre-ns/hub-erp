@@ -221,16 +221,24 @@ From any status except done to Cancelled ("Cancel"): the quality manager.
   [; then <actions>[ run]].` is a directed transition (`from` equal to `to` is a loop); `From any status[ except done |
   except <statuses>] to <status> ...` is a global one (Cancel, Put on hold). The id is the name's slug, `[id]` when two
   share a name, or `<from>-to-<to>` (`any-to-<to>`) when unnamed.
-* Gates: `the <role words>[ decides][, not the author | not the <field role> | not whoever decided "<Name>"]` (a person;
-  field roles: the owner, assignee, author, requester, auditor, chair, evaluator, reporter); `the <cog id words> cog
+* Gates: `the <role words>[ or an approver][ decides][, not the author | not the <field role> | not whoever decided
+  "<Name>"]` (a person; field roles: the owner, assignee, author, requester, auditor, chair, evaluator, reporter; "or an
+  approver" adds anyone who may approve the object, as numbered steps' Cancel and Retry); `the <cog id words> cog
   decides, else the <role words>` (the cog decides within its approval criteria, else the role); `automatically[ when
   <condition>][, after <actions>]` (conditions from the closed vocabulary; with no condition it fires when its actions
   succeed). Auto transitions out of a status are tried in order; the first that holds fires, else the item waits at the
   Gate there.
 * `needs <fields>` collects those fields at the decision and checks they are set (a validator). `only if <status> was
   visited` or `only if <condition>` are further checks. A check that fails blocks the move with a sentence.
-* Actions, in order: `the <cog id words>` (a cog step: "the record filer" is `record-filer`), `notify the <role words |
-  owner>`, `set <field> to <value>`. A failed action moves the item to the system status `failed` with a Retry loop.
+* Actions, in order: `the <cog id words>` (a cog step: "the record filer" is `record-filer`), `the <cog> with the <cog>`
+  (a swarm: they review together and their findings merge), `notify the <role words | owner>`, `set <field> to <value>`.
+  A failed action moves the item to the system status `failed` with a Retry loop. `From Returned to <status>
+  ("Resubmit"): the owner; then <actions> run.` is a rework loop: a rejection to Returned waits for the owner to rework the
+  item, and resubmitting runs those actions again.
+* Every graph the compiler produces, numbered steps included, writes back as these sentences and reads back to the same
+  graph (`tests/test_workflow_graph.py::test_every_repository_process_round_trips_through_its_graph_sentences`).
+* A change order's approval (any gate kind: a person, a committee, a cog, automatic) is always a person's, and only when
+  the change order is ready (`changecontrol.approval_reasons`); a cog may review it, never approve it.
 * Routing and SLA sentences name a decision by its transition name ("At Disposition in nonconformance with low risk go
   to the quality-assistant cog."; "Approvals in ..." is the first transition whose id starts approv/accept/confirm/authori).
 * `the <name> committee decides` is a committee gate (`{"kind": "committee", "committee": "<name>"}`): every member of
@@ -346,7 +354,7 @@ Workflow bundle shape (change control 10.1): `bundle["workflows"][process] = {pr
 statuses[{id, name, category: todo|in_progress|done, outcome (done), sla_days?, system? (failed)}],
 transitions[{id, type: initial|directed|global, from[] (directed), except[] (global), to, name,
 gate {kind: person, role, not[]?, also?} | {kind: cog, cog, fallback} | {kind: auto, when: actions-succeed|<condition>},
-validators[{fields_set}|{status_visited}|{condition}], actions[<step id> | {set} | {notify}], fields[], resume_from?, system?}],
+validators[{fields_set}|{status_visited}|{condition}], actions[<step id> | {set} | {notify}], fields[], system?}],
 source {frame, lines{element id: line}}}` plus a derived view of the earlier shape for its readers: `object, states,
 checkpoints[{id,title,role,state,sla_days}], terminal, reject_to, sla{checkpoint: days}` (`process_graph.graph_only` drops
 it; `release.legacy_transitions(wf)` gives the earlier `transitions[{from,to,kind,steps|step,title,on_reject,sla_days}]`).

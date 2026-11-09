@@ -4,7 +4,7 @@ gates, validators, failed and Retry), items following the release in force, stat
 "a cog's work is signed by a person" as an SOP sentence."""
 
 import shutil
-from datetime import date, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -19,7 +19,6 @@ from hubproto.runner import RunError, apply_state_map, items_in_removed_statuses
 
 TEST_FRAMES = Path(__file__).resolve().parent / "frames"
 G = "gizmo-review"
-TODAY = date.today()
 
 GIZMO = '''---
 type: frame [0.2]
@@ -266,7 +265,7 @@ def test_numbered_steps_compile_into_the_graph_with_no_change_of_meaning(hub):
 def test_a_return_to_the_owner_compiles_to_returned_with_a_resubmit(released):
     wf = released.current_bundle()["workflows"]["design-release"]
     resub = pg.transition(wf, "resubmit")
-    assert resub["from"] == ["returned"] and resub["resume_from"] == "submit-the-design"
+    assert resub["from"] == ["returned"] and resub["actions"][0] == "submit-the-design" and "resume_from" not in resub
     assert pg.rejection_option(wf, "awaiting-review-the-design")["to"] == "returned"
 
 
@@ -296,14 +295,72 @@ def test_a_process_of_numbered_steps_converts_to_graph_sentences(tmp_path, hub):
     assert [s["id"] for s in p["statuses"]] == [s["id"] for s in wf["statuses"] if not s.get("system")]
 
 
+def test_the_owner_or_an_approver_and_a_swarm_read_and_write_back(tmp_path):
+    text = GIZMO.replace('From any status except done to Cancelled ("Cancel"): the gizmo supervisor.',
+                         'From any status except done to Cancelled ("Cancel"): the owner or an approver.\n'
+                         'From Checking to Checking ("Second look"): the gizmo checker; then the quality assistant with the doc reviewer run.')
+    ex = rules_of(text, tmp_path)
+    assert ex.notes == [], ex.notes
+    t = {x["id"]: x for x in proc(ex.rules)["transitions"]}
+    assert t["cancel"]["gate"] == {"kind": "person", "role": "owner", "also": "approvers"}
+    assert t["second-look"]["actions"] == [{"swarm": ["quality-assistant", "doc-reviewer"]}]
+    lines = pg.to_sentences(proc(ex.rules))
+    assert 'From any status except done to Cancelled ("Cancel"): the owner or an approver.' in lines
+    assert any(x.endswith("then the quality assistant with the doc reviewer runs.") for x in lines), lines
+    from hubproto.release import render_graph_manifest
+
+    step = next(x for x in render_graph_manifest(proc(ex.rules))["steps"] if x["cog"]["id"] == "swarm")
+    assert step["input"]["cogs"] == ["quality-assistant", "doc-reviewer"] and step["input"]["question"] == "Second look"
+
+
+def repository_processes():
+    out = []
+    for path in sorted(list((ROOT / "frames").rglob("*.frame.md")) + list((ROOT / "profiles").rglob("*.frame.md")) + list(TEST_FRAMES.glob("*.frame.md"))):
+        try:
+            frame = load_frame(path)
+        except Exception:
+            continue
+        out += [(path.relative_to(ROOT), r) for r in ConventionExtractor().extract(frame).rules if r["kind"] == "process"]
+    return out
+
+
+def test_every_repository_process_round_trips_through_its_graph_sentences(tmp_path):
+    """The property behind a workflow change on a change order: the graph the compiler produces, stated as the editor
+    states it (``workflows.process_rule``) and written as the drafter writes it, compiles back to the same rule and the
+    same graph; and for numbered steps that graph is the one they compile to (step ids aside: the prose names cogs)."""
+    from hubproto import workflows
+    from hubproto.prose_drafting import graph_lines, same_rule
+    from hubproto.release import render_workflow
+
+    head = '---\ntype: frame [0.2]\nname: rt\ndescription: x\nvisibility: internal\nversion: "1.0.0"\nscope: company\nmaintainer: t\n---\n# x\n'
+    procs = repository_processes()
+    assert len(procs) >= 36
+    for where, r in procs:
+        wf = render_workflow(r, {}, r.get("record_type") or "x")
+        rule1 = workflows.process_rule({"processes": {r["name"]: r}}, r["name"], pg.graph_only(wf))
+        p = tmp_path / "rt.frame.md"
+        p.write_text(head + "\n".join(graph_lines(rule1)) + "\n")
+        ex = ConventionExtractor().extract(load_frame(p))
+        assert not [n for n in ex.notes if n.get("severity") == "error"], (where, r["name"], ex.notes)
+        rule2 = next(x for x in ex.rules if x["kind"] == "process")
+        assert same_rule(rule1, {**rule2, "object": rule1["object"]}), (where, r["name"])
+        g1, g2 = (pg.graph_only(render_workflow(x, {}, "x")) for x in (rule1, rule2))
+        assert {k: v for k, v in g1.items() if k != "source"} == {k: v for k, v in g2.items() if k != "source"}, (where, r["name"])
+        # Against the numbered steps' own graph: the same statuses, and the same transitions, gates and targets.
+        key = lambda g: {t["id"]: (t["type"], tuple(t.get("from") or []), t["to"], t.get("gate"), tuple(t.get("except") or []))
+                         for t in g["transitions"]}
+        assert key(g2) == key(pg.graph_only(wf)), (where, r["name"])
+        assert sorted(map(str, g2["statuses"])) == sorted(map(str, pg.graph_only(wf)["statuses"])), (where, r["name"])
+
+
 # ---------------------------------------------------------------------------------------------- the runner on a graph
-def test_the_waiting_decision_is_derived_from_the_status(gizmos):
+def test_the_waiting_decision_is_derived_from_the_status(gizmos, today):
     run_id = submit(gizmos)
     state = gizmos.runner.load(run_id)
     assert state["status"] == "waiting" and state["at"] == "checking"
     p = state["pending"]
     assert p["checkpoint"] == "check" and p["title"] == "Check" and p["assignees"] == ["kim", "lee"]
-    assert p["due"] == (TODAY + timedelta(days=3)).isoformat(), "the due date comes from the status"
+    assert p["due"] == (today + timedelta(days=3)).isoformat(), "the due date comes from the status"
     assert [(o["id"], o["verdict"], o.get("assignees")) for o in p["options"]] == [("check", "approve", None), ("ask-for-detail", "reject", ["maya"])]
     rec = gizmos.kernel.get(state["record"])
     assert rec["state"] == "checking" and rec["assignees"] == ["kim", "lee"]
@@ -508,12 +565,9 @@ def test_an_item_follows_the_release_in_force_from_its_next_move(gizmos):
     assert events(gizmos, run_id, "gate.decided")[0]["release_digest"] == second
 
 
-def test_an_item_in_a_status_the_new_release_removed_stays_until_a_state_map_moves_it(gizmos):
-    run_id = submit(gizmos)
-    decide(gizmos, run_id, "kim", "check")
-    old_graph = gizmos.current_bundle()["workflows"][G]
-    # Under review goes: Check approves directly. Rejected goes with it (only Under review led there, and the workflow
-    # checks refuse a status nothing leads to).
+def remove_under_review(gizmos) -> dict:
+    """A change of gizmo-review that removes Under review (Check approves directly); Rejected goes with it (only Under
+    review led there, and the workflow checks refuse a status nothing leads to). Returns its proposal."""
     edit_gizmo(gizmos, "Under review [review] (in progress), ", "", "1.1.0")
     edit_gizmo(gizmos, "Rejected (done, rejected), ", "", "1.1.0")
     text = gizmos.frames.get("gizmo-policy").path.read_text()
@@ -524,13 +578,26 @@ def test_an_item_in_a_status_the_new_release_removed_stays_until_a_state_map_mov
     gizmos.frames = type(gizmos.frames)(gizmos.frames.root)
     proposal = gizmos.compile()
     assert not [f for f in proposal["findings"] if f["severity"] == "error"], [f for f in proposal["findings"] if f["severity"] == "error"]
+    return proposal
+
+
+def release_proposal(hub, proposal):
+    for r in ("bob", "carol"):
+        hub.review(proposal["id"], r, approve_all=True)
+    hub.release(proposal["id"], "bob")
+
+
+def test_an_item_in_a_status_the_new_release_removed_stays_until_a_state_map_moves_it(gizmos):
+    run_id = submit(gizmos)
+    decide(gizmos, run_id, "kim", "check")
+    old_graph = gizmos.current_bundle()["workflows"][G]
+    proposal = remove_under_review(gizmos)
     asked = [q for q in proposal["questions"] if q.get("code") == "state-map"]
-    assert [(q["process"], q["status"], q["count"]) for q in asked] == [(G, "review", 1)]
+    # The status removed is the question's ``state``; its own ``status`` is the question's (open, answered...).
+    assert [(q["process"], q["state"], q["count"], q["status"]) for q in asked] == [(G, "review", 1, "open")]
     assert asked[0]["text"] == f"1 task is in Under review, which this change removes from {G}: where do they go?"
     assert asked[0]["id"] == state_map_questions(gizmos, proposal)[0]["id"], "the same question has the same id"
-    for r in ("bob", "carol"):
-        gizmos.review(proposal["id"], r, approve_all=True)
-    gizmos.release(proposal["id"], "bob")
+    release_proposal(gizmos, proposal)
     new_graph = gizmos.current_bundle()["workflows"][G]
     assert items_in_removed_statuses(gizmos, old_graph, new_graph) == {"review": 1}
     # The release itself does not move the waiting item: it stays in its status, on its release, until the state map.
@@ -554,9 +621,37 @@ def test_an_item_in_a_status_the_new_release_removed_stays_until_a_state_map_mov
     assert items_in_removed_statuses(gizmos, old_graph, new_graph) == {}
 
 
-def test_a_state_map_names_only_statuses_of_the_release_in_force(gizmos):
-    with pytest.raises(RunError, match="not a status of gizmo-review"):
-        apply_state_map(gizmos, G, {"review": "limbo"}, by="bob", co="CO-1")
+def test_a_state_map_moves_only_removed_statuses_to_statuses_in_force(gizmos):
+    with pytest.raises(RunError, match="gizmo-review is new in this release"):
+        apply_state_map(gizmos, G, {"review": "checking"}, by="bob", co="CO-1")
+    run_id = submit(gizmos)
+    decide(gizmos, run_id, "kim", "check")
+    release_proposal(gizmos, remove_under_review(gizmos))
+    refused = {
+        "'checking' is still a status of gizmo-review": {"checking": "open"},
+        "'nowhere' was not a status of gizmo-review": {"nowhere": "checking"},
+        "sends 'review' to 'limbo', which is not a status of gizmo-review": {"review": "limbo"},
+        "sends 'review' to 'failed'": {"review": "failed"},
+    }
+    for why, mapping in refused.items():
+        with pytest.raises(RunError, match=why):
+            apply_state_map(gizmos, G, mapping, by="bob", co="CO-1")
+    with pytest.raises(RunError, match="the release did not change gizmo-triage"):
+        apply_state_map(gizmos, "gizmo-triage", {"new": "triage"}, by="bob", co="CO-1")
+    assert gizmos.runner.load(run_id)["at"] == "review", "a refused map moves nothing"
+    assert not events(gizmos, run_id, "run.moved")
+
+
+def test_a_state_map_never_moves_items_of_another_process(gizmos):
+    # A task of gizmo-triage (the same record type) standing in a status named like the removed one is not touched.
+    other = gizmos.runner.submit("gizmo-triage", {"record": {"title": "other", "risk": "high"}}, owner="maya")
+    loc = gizmos.runner.load(other)["record"]
+    gizmos.kernel.append("record.transitioned", loc, {"from": "triage", "to": "review", "reason": "test", "assignees": [], "due": None}, by="test")
+    old_graph = gizmos.current_bundle()["workflows"][G]
+    release_proposal(gizmos, remove_under_review(gizmos))
+    assert items_in_removed_statuses(gizmos, old_graph, gizmos.current_bundle()["workflows"][G]) == {}
+    assert apply_state_map(gizmos, G, {"review": "checking"}, by="bob", co="CO-1") == []
+    assert gizmos.kernel.get(loc)["state"] == "review" and not events(gizmos, other, "run.moved")
 
 
 # ---------------------------------------------------------------------------------------------- shell
