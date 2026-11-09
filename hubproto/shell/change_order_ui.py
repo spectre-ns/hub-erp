@@ -1925,7 +1925,8 @@ class ChangeOrderMixin:
         if not answer:
             raise ShellError("Say what the answer is (and, best, which line of the prose says it).", field="answer")
         try:
-            cc.answer_question(self.hub, co["locator"], self._f("qid"), answer, self.user, line=line)
+            cc.answer_question(self.hub, co["locator"], self._f("qid"), answer, self.user, line=line,
+                               record_divergence=bool(self._f("record_divergence")))
         except ValueError as e:
             raise self._co_refused(e) from None
         self._co_done(co, "The question is marked answered.", "co-questions")
@@ -2104,7 +2105,7 @@ class ChangeOrderMixin:
             raise ShellError("No question of the compile-frame committee is open.")
         try:
             for q in qs:
-                cc.answer_question(self.hub, co["locator"], q["id"], answer, self.user)
+                cc.answer_question(self.hub, co["locator"], q["id"], answer, self.user, record_divergence=bool(self._f("record_divergence")))
         except ValueError as e:
             raise self._co_refused(e) from None
         self._co_done(co, f"{len(qs)} question(s) marked answered.", "co-questions")

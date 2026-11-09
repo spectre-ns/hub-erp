@@ -401,3 +401,34 @@ def test_the_change_order_diff_opens_on_what_changed(shell):
     from hubproto.shell.workflow_svg import DIFF_JS
 
     assert "function frame(p)" in DIFF_JS and "scrollLeft" in DIFF_JS
+
+
+def test_a_rename_in_the_editor_keeps_every_id_through_the_review_round(tmp_path):
+    """Rename a status in the editor, carry it, run a review round: the qa-manager's prose (no ids in it) and the
+    revision's workflow_ids compile back to the same statuses and transitions, the round trip holds, and nothing asks
+    where items go."""
+    from hubproto import changecontrol as cc
+    from hubproto.process_graph import id_map
+    from test_change_control import new_co
+    from test_workflow_graph_change_orders import converted_hub
+
+    hub = converted_hub(tmp_path)
+    hub.kernel.create("ncr", "Quality/Nonconformances", {"title": "N", "description": "x", "source": "inspection"}, by="carol")
+    before = wfs.graph_in_force(hub, NCR)
+    co = new_co(hub, by="carol")
+    wfs.edit(hub, "carol", NCR, {"op": "rename_status", "id": AWAIT, "name": "Waiting here"})
+    wfs.carry(hub, co["locator"], "carol", NCR)
+    item = next(i for i in cc._items(hub.kernel.get(co["locator"])) if (i.get("origin") or {}).get("process") == NCR)
+    assert item["workflow_ids"] == id_map(item["rule"]) and item["workflow_ids"]["waiting-here"] == AWAIT
+    assert any(v.startswith("open-to-awaiting") and k == "open-to-waiting-here" for k, v in item["workflow_ids"].items()), \
+        "the automatic transition's id, which the prose derives from the new name, is kept too"
+    cc.request_review(hub, co["number"], "carol", panel=[])
+    co = hub.kernel.get(co["locator"])
+    item = next(i for i in cc._items(co) if (i.get("origin") or {}).get("process") == NCR)
+    assert item["round_trip"]["ok"], item["round_trip"]
+    assert not any("[" in ln for ln in item["stated"]["lines"]), "no id in the prose"
+    compiled = next(r for r in cc._proposal(hub, co)["rules"] if r.get("kind") == "process" and r["name"] == NCR)
+    assert [s["id"] for s in compiled["statuses"]] == [s["id"] for s in before["statuses"] if not s.get("system")]
+    assert [t["id"] for t in compiled["transitions"]] == [t["id"] for t in before["transitions"] if not t.get("system")]
+    assert wm.status_map({"statuses": compiled["statuses"]})[AWAIT]["name"] == "Waiting here"
+    assert cc.state_questions(hub, co["number"]) == [] and not [r for r in cc.send_reasons(hub, co) if "state map" in r]

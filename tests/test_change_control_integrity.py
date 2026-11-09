@@ -147,10 +147,15 @@ def test_who_made_a_change_does_not_decide_it_accept_against_it_or_count_on_its_
     cc.send_for_approval(hub, co["number"], "bob")
     add = next(i for i in items(hub, co) if i["op"] == "add")
     assert add["widening"] and "bob" in add["makers"]
+    # Whoever made a change is not its only approver: bob, a policy owner, may be one of the two owners on his widening.
+    out = cc.decide_item(hub, co["number"], add["id"], "approve", "bob", "mine, checked", accept_warnings=["all"])
+    assert out["state"] == "pending", "a maker never decides alone"
+    assert any("needs two policy owners, one of whom contributed nothing to it (approved by bob)" in r for r in cc.approval_reasons(hub, co["number"]))
+    out = cc.decide_item(hub, co["number"], add["id"], "approve", "carol", "ok", accept_warnings=["all"])
+    assert out["state"] == "approved", "carol, who contributed nothing, is the other owner"
+    rest = next(i for i in items(hub, co) if i["id"] != add["id"] and not i["widening"])
     with pytest.raises(ValueError, match="segregation of duties: bob made this change"):
-        cc.decide_item(hub, co["number"], add["id"], "approve", "bob", "mine is fine", accept_warnings=["all"])
-    cc.decide_item(hub, co["number"], add["id"], "approve", "carol", "ok", accept_warnings=["all"])
-    assert any("needs two policy owners who did not make it (approved by carol)" in r for r in cc.approval_reasons(hub, co["number"]))
+        cc.decide_item(hub, co["number"], rest["id"], "approve", "bob", "mine is fine", accept_warnings=["all"])
     w = next(w for w in cc.co_warnings(hub, co["number"]))
     with pytest.raises(ValueError, match="segregation of duties: bob contributed"):
         cc.accept_warning(hub, co["number"], w["ref"], "bob", "not needed")
@@ -347,3 +352,100 @@ def test_a_drafted_revision_is_the_qa_manager_s_so_a_settings_maker_may_sign_alo
     [c] = eco.carried(hub, hub.kernel.get(co["locator"]))
     assert c["draft"]["fields"]["author"] == "qa-manager" and c["draft"]["fields"]["started_by"] == "carol"
     assert "carol" not in cc.revision_authors(hub, co["number"]) and "carol" in cc.contributors(hub, co["number"])
+
+
+# ---------------------------------------------------------------- round 3
+def test_a_revision_of_an_sop_comes_into_force_only_with_a_change_order(hub):  # manual agent: no SOP change outside a CO
+    from hubproto import sopdocs
+
+    policy = sopdocs.in_force(hub.kernel, "finance-policy")
+    loose = hub.dms.create(title=policy["fields"]["title"], doc_class="controlled", folder=policy["folder"], by="alice", content=b"x",
+                           filename="finance-policy.md", mime="text/markdown", doc_type="policy",
+                           fields={"revises": policy["number"], "review_date": "2027-11-01"})
+    with pytest.raises(KernelGuardError, match="only with the change order that carries it"):
+        hub.kernel.transition(loose["locator"], "effective", by="alice")
+    with pytest.raises(KernelGuardError, match="Carry it on a change order"):
+        hub.kernel.publish_document(loose["number"], run_id="r", release="", grant={"run_id": "r", "id": "g"}, approved_by="carol", by="hub")
+    assert sopdocs.in_force(hub.kernel, "finance-policy")["locator"] == policy["locator"]
+
+
+def test_the_demo_change_order_is_written_by_bob_so_carol_may_sign_it(hub):
+    from hubproto import dev_demo
+
+    number = dev_demo.change_order(hub)
+    [c] = eco.carried(hub, cc._co(hub, number))
+    assert c["draft"]["fields"]["author"] == "bob" and "carol" not in cc.revision_authors(hub, number)
+
+
+def test_a_widening_made_by_a_policy_owner_passes_with_the_other_independent_owner(hub):  # fidelity 25
+    co = new_co(hub, by="carol", title="Shorter document approvals")
+    sla = next(r for r in hub.settings_rules() if r["kind"] == "sla" and r["process"] == "document-control")
+    cc.add_direct_change(hub, co["number"], {**{k: v for k, v in sla.items() if k != "source"}, "days": 7}, "carol")
+    cc.request_review(hub, co["number"], "carol", panel=[])
+    cc.send_for_approval(hub, co["number"], "carol")
+    for it in items(hub, co):
+        if it["widening"]:
+            cc.decide_item(hub, co["number"], it["id"], "approve", "carol", "mine, checked", accept_warnings=["all"])
+            assert cc.decide_item(hub, co["number"], it["id"], "approve", "bob", "agreed", accept_warnings=["all"])["state"] == "approved"
+
+
+def test_the_chair_recording_unread_prose_as_a_divergence_records_one(hub):  # qms A4
+    co = new_co(hub)
+    revise(hub, co, "finance-policy", OLD, NEW)
+    cc.request_review(hub, co["number"], "alice", panel=[])
+    p = hub.proposals.load(hub.kernel.get(co["locator"])["fields"]["staged_proposal"])
+    q = question("finance-policy", 42, "a sentence the hub cannot read", raised_by="hub", code="unread-rule", chair="carol", blocking=True,
+                 quote="New suppliers' bills always go to the controller.")
+    p["questions"].append(q)
+    hub.proposals.save(p)
+    assert any("answer the question first" in r for r in cc.approval_reasons(hub, co["number"]))
+    with pytest.raises(ValueError, match="only a committee question"):
+        cc.answer_question(hub, co["number"], "not-a-committee-question", "x", "alice", record_divergence=True)
+    cc.answer_question(hub, co["number"], q["id"], "this is not a divergence by its words, but record it", "carol", record_divergence=True)
+    cc.send_for_approval(hub, co["number"], "alice")
+    decide_all(hub, co, who=("bob",))
+    accept_co_warnings(hub, co, "bob")
+    assert gate(hub, co)["status"] == "completed"
+    [d] = hub.releases.current()["divergences"]
+    assert d["kind"] == "unread" and d["accepted_by"] == "carol" and "controller" in d["prose"] and d["change_request"]
+
+
+def test_a_dropped_reviewer_s_objection_stands(hub, monkeypatch):  # governance H5
+    co = new_co(hub, title="Document approvals")
+    revise(hub, co, "document-control-sop", ROUTE_OLD, ROUTE_NEW)
+    monkeypatch.setattr(cc, "REVIEWER", lambda hub_, co_, cog, brief: "- [blocking] general: the routing leaves no reviewer")
+    cc.request_review(hub, co["number"], "alice", panel=["qa-manager"])
+    with pytest.raises(ValueError, match="qa-manager objected"):
+        cc.request_review(hub, co["number"], "alice", panel=["quality-assistant"])
+    cc.request_review(hub, co["number"], "alice", panel=["quality-assistant"], drop_reason="qa-manager is on leave")
+    rnd = cc.current_round(hub.kernel.get(co["locator"]))
+    assert rnd["dropped"] == [{"who": "qa-manager", "reason": "qa-manager is on leave", "by": "alice"}]
+    assert any(w["code"] == "finding" and w["text"].startswith("qa-manager:") for w in cc.co_warnings(hub, co["number"])), "it stays a warning"
+
+
+def test_a_carried_record_type_and_the_process_that_uses_it_compile_and_release_together(hub):  # correctness M3
+    from hubproto import recordtypes
+
+    co = new_co(hub, by="carol", title="Deviations")
+    recordtypes.carry(hub, co["number"], [{"op": "add_type", "type": "deviation", "definition": {
+        "prefix": "DEV", "digits": 4, "yearly": True, "object": "deviation", "retention": "quality", "sensitivity": "internal",
+        "fields": {"title": "text", "description": "text"}}}], by="carol", reason="deviations")
+    d = eco.add_sop(hub, co["number"], "ncr-sop", by="carol")
+    write(hub, hub.kernel.get(d["locator"]), "## Roles and responsibilities",
+          "## Process: deviation\nRecords are filed in Quality/Nonconformances.\nThe record type is deviation.\n1. [staff] Raise the deviation (record-filer)\n"
+          "2. [quality-manager] Approve the deviation\n\n## Roles and responsibilities", "carol")
+    cc.request_review(hub, co["number"], "carol", panel=[])
+    co = hub.kernel.get(co["locator"])
+    assert cc.current_round(co)["status"] != "failed" and not co["fields"].get("staged_errors")
+    assert "deviation" not in hub.kernel.types, "nothing is in force before the release"
+
+
+def test_a_settings_change_by_someone_who_may_not_revise_the_sop_says_who_must_carry_it(hub, monkeypatch):
+    monkeypatch.setattr(prose_drafting, "draft_direct_changes", lambda *a, **k: [])
+    co = new_co(hub, by="dave", title="Looser match")
+    tol = next(r for r in hub.settings_rules() if r["kind"] == "threshold" and r["name"] == "match-tolerance")
+    cc.add_direct_change(hub, co["number"], {**{k: v for k, v in tol.items() if k != "source"}, "value": 3.0}, "dave")
+    cc.request_review(hub, co["number"], "dave", panel=[])
+    [q] = [q for q in cc.questions(hub, co["number"]) if q.get("code") == "carrier"]
+    assert q["blocking"] and "dave may not revise finance-policy" in q["text"] and "document controller" in q["text"]
+    assert any("answer the question first" in r for r in cc.approval_reasons(hub, co["number"]))
