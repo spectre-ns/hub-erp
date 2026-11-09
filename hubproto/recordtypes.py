@@ -22,6 +22,8 @@ A change order carries record-type changes in its ``record_type_changes`` field,
 Ops, all of them non-destructive (``OPS``):
 
     add_type {type, definition}            a new record type (prefix, digits, fields, object, retention, ...)
+    add_system_fields {type, fields}       fields only the hub sets (no form, JSON box or person sets them)
+    add_decision_fields {type, fields}     fields a Gate takes with a decision
     add_field {type, field, spec}          a new field (custom ``x_`` fields belong to form layouts)
     add_enum_values {type, field, values}  more options for an enum field
     add_state {type, state, fields}        a state the type knows, with the fields a record needs to enter it
@@ -64,7 +66,8 @@ SENSITIVITY = ("public", "internal", "confidential", "restricted")
 TYPE_KEYS = ("prefix", "digits", "yearly", "object", "fields", "required_by_state", "defaults", "retention", "sensitivity", "gapless",
              "system_fields", "system_states", "decision_fields", "description", "folder_hint")
 OPS = ("add_type", "add_field", "add_enum_values", "add_state", "require_fields", "set_retention", "set_sensitivity", "set_default",
-       "archive_type", "remove_field", "remove_type")
+       "add_system_fields", "add_decision_fields", "archive_type", "remove_field", "remove_type")
+LIST_OPS = {"add_system_fields": "system_fields", "add_decision_fields": "decision_fields"}  # fields only the hub sets; fields a Gate takes
 DESTRUCTIVE = {
     "rename_type": "a record type is never renamed: its records keep their type and numbers. Add a new type and archive this one",
     "rename_field": "a field is never renamed: records keep their values under its name. Add a new field and take this one off the form",
@@ -74,7 +77,8 @@ DESTRUCTIVE = {
 PARAMS = {"add_type": ("type", "definition"), "add_field": ("type", "field", "spec"), "add_enum_values": ("type", "field", "values"),
           "add_state": ("type", "state", "fields"), "require_fields": ("type", "state", "fields"), "set_retention": ("type", "value"),
           "set_sensitivity": ("type", "value"), "set_default": ("type", "field", "value"), "archive_type": ("type",),
-          "remove_field": ("type", "field"), "remove_type": ("type",)}
+          "remove_field": ("type", "field"), "remove_type": ("type",), "add_system_fields": ("type", "fields"),
+          "add_decision_fields": ("type", "fields")}
 
 
 # ---------------------------------------------------------------- storage
@@ -478,6 +482,12 @@ def check_one(hub, types: dict, c: dict) -> tuple[list[str], list[str]]:
             why = _value_problem(fields[f], c["value"])
             if why:
                 errors.append(f"{t}.{f}: the default {why}")
+    elif op in LIST_OPS:
+        want = c["fields"] if isinstance(c["fields"], list) else [c["fields"]]
+        have = td.get(LIST_OPS[op]) or []
+        errors += [f"{t}: {x} is not a field" for x in want if x not in fields]
+        if not set(want) - set(have):
+            errors.append(f"{t}: {', '.join(want)} already among its {LIST_OPS[op].replace('_', ' ')}")
     elif op == "archive_type":
         procs = _filed_by(hub, t)
         if procs:
@@ -528,6 +538,10 @@ def apply_one(types: dict, c: dict) -> dict:
         td["sensitivity"] = c["value"]
     elif op == "set_default":
         td.setdefault("defaults", {})[c["field"]] = c["value"]
+    elif op in LIST_OPS:
+        have = list(td.get(LIST_OPS[op]) or [])
+        want = c["fields"] if isinstance(c["fields"], list) else [c["fields"]]
+        td[LIST_OPS[op]] = have + [x for x in want if x not in have]
     elif op == "archive_type":
         td["archived"] = True
     elif op == "remove_field":
@@ -573,6 +587,10 @@ def describe(c: dict) -> str:
         return f"{t}: new records labelled {c.get('value')}"
     if op == "set_default":
         return f"{t}.{c.get('field')}: default {c.get('value')}"
+    if op == "add_system_fields":
+        return f"{t}: {', '.join(c.get('fields') or [])} set only by the hub (system fields; no form or person sets them)"
+    if op == "add_decision_fields":
+        return f"{t}: {', '.join(c.get('fields') or [])} taken at its Gates (decision fields)"
     if op == "archive_type":
         return f"{t}: archived (readable; nothing new is filed)"
     if op == "remove_field":
@@ -652,10 +670,10 @@ def uncarry(hub, co_ref: str, change_id: str, *, by: str) -> None:
     hub.kernel.set_fields(co["locator"], {"record_type_changes": rest}, by=by)
 
 
-def from_file_changes(hub) -> tuple[list[dict], list[str]]:
+def from_file_changes(hub, base: dict | None = None) -> tuple[list[dict], list[str]]:
     """The changes that would bring what the file adds into force (non-destructive ones), and what the file says that
     no change order can make (removals, renames, retypes): ([change], [skipped, in words])."""
-    base = in_force(hub)["types"]
+    base = in_force(hub)["types"] if base is None else base
     new = file_types(hub)
     out, skipped = [], []
     for t in sorted(set(new) - set(base)):
@@ -692,8 +710,16 @@ def from_file_changes(hub) -> tuple[list[dict], list[str]]:
                 out.append({"op": "set_default", "type": t, "field": f, "value": v})
         if b.get("archived") and not a.get("archived"):
             out.append({"op": "archive_type", "type": t})
-        others = sorted(k for k in (set(a) | set(b)) - {"fields", "required_by_state", "retention", "sensitivity", "defaults", "archived"}
-                        if a.get(k) != b.get(k))
+        handled = {"fields", "required_by_state", "retention", "sensitivity", "defaults", "archived"}
+        for op, key in LIST_OPS.items():
+            old, now = list(a.get(key) or []), list(b.get(key) or [])
+            if [x for x in now if x not in old]:
+                out.append({"op": op, "type": t, "fields": [x for x in now if x not in old]})
+            if [x for x in old if x not in now]:
+                skipped.append(f"{t}: the file no longer lists {', '.join(x for x in old if x not in now)} among its "
+                               f"{key.replace('_', ' ')}: a change order does not open a field to people this way")
+            handled.add(key)
+        others = sorted(k for k in (set(a) | set(b)) - handled if a.get(k) != b.get(k))
         for k in others:
             skipped.append(f"{t} {k.replace('_', ' ')} differs in the file: not a change a change order makes")
     return out, skipped
@@ -758,7 +784,12 @@ def activate(hub, co: dict, digest: str) -> list[str]:
     if errors:
         raise ValueError(f"{co['number']}'s record-type changes cannot come into force: " + "; ".join(errors))
     now_sha = file_sha(hub)
-    adopted = now_sha if any(c.get("from_file") == now_sha for c in changes) else None
+    # The file is adopted (no longer drift) only when what it says is then wholly in force: a difference a change order
+    # cannot carry keeps it reported (status --check), never hidden.
+    adopted = None
+    if any(c.get("from_file") == now_sha for c in changes):
+        left, skipped = from_file_changes(hub, types)
+        adopted = now_sha if not left and not skipped else None
     entry = {"version": int(base["version"]) + 1, "types": types, "digest": sha256_of(types),
              "file_sha": adopted or base.get("file_sha"), "source": f"released with {co['number']}", "release": digest,
              "released_with": co["number"], "by": f"change-order:{co['number']}", "at": utcnow(),

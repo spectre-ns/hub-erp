@@ -608,3 +608,132 @@ def test_a_bootstrap_whose_conversion_is_blocked_says_so_and_finishes_when_run_a
     rc, out = run_cli(fresh.root, "bootstrap-release", "--as", "bob", "--second", "carol", "--if-needed")
     assert rc == 0 and "converting the SOPs to documents" in out and "the SOPs are documents now" in out
     assert Hub(fresh.root).sop_source()
+
+
+# ------------------------------------------------------------------ rollout findings: documents decide, system fields, restore
+NEW_GUIDE = """---
+type: frame [0.2]
+name: it-guide
+description: "A guide added by a change order."
+visibility: internal
+version: "0.1.0"
+scope: department
+maintainer: carol
+compile: none
+---
+# IT guide
+
+Ask the system administrator.
+"""
+
+
+def test_once_converted_the_documents_decide_which_frames_compile_not_the_disk(closed):
+    root = closed.root / "frames"
+    gone = closed.frames.get("finance-policy").path
+    gone.unlink()  # a merge dropped a Frame file ...
+    (root / "stray.frame.md").write_text(NEW_GUIDE.replace("it-guide", "stray").replace("compile: none", "inherits: nothing-there"))
+    closed._frames = None  # ... and added one whose parent does not exist
+    p = closed.compile(save=False)
+    assert p["changes"] == [] and "finance-policy" in {f["name"] for f in p["frames"]} and "stray" not in {f["name"] for f in p["frames"]}
+    assert "finance-policy" in closed.released_frames().frames and "stray" not in closed.released_frames().frames
+
+
+def test_end_to_end_a_change_order_revises_adds_and_retires_and_the_documents_decide_the_next_compile(tmp_path, config_dir):
+    """On a converted hub one change order carries a revision, a new SOP (eco.add_new_sop) and a retirement
+    (eco.retire_sop); it compiles, is approved and released; the next compile has the new Frame and not the retired one,
+    and the Frame files on disk decide nothing."""
+    from test_change_control import new_co as cc_new_co, revise
+    from test_change_control_documents import COACH, coach_text, released as release_co
+
+    shutil.copytree(ROOT / "frames", tmp_path / "frames")
+    hub = Hub(tmp_path)
+    hub.kernel.seed()
+    release_all(hub, keep_frame_files=False)  # the first release converts
+    assert hub.sop_source()
+    hub.kernel.set_fields(sopdocs.in_force(hub.kernel, "finance-policy")["locator"], {"owner": "alice"}, by="setup")
+    co = cc_new_co(hub, by="alice")
+    revise(hub, co, "finance-policy", OLD, NEW)
+    eco.add_new_sop(hub, co["number"], "persona-coach", coach_text(), by="alice", relpath=COACH)
+    eco.retire_sop(hub, co["number"], "scopes", by="alice", reason="the scopes move into the org model")
+    co = hub.kernel.get(co["locator"])
+    p = hub.compile(sop_drafts=eco.drafts_of(hub, co), save=False)
+    names = {f["name"] for f in p["frames"]}
+    assert "persona-coach" in names and "scopes" not in names and not [f for f in p["findings"] if f["severity"] == "error"], \
+        [f["detail"] for f in p["findings"] if f["severity"] == "error"]
+    release_co(hub, co, deciders=("bob", "carol"))
+    assert hub.kernel.get(co["locator"])["state"] == "released" and ap_limit(hub) == 1500.0
+    bom = {f["name"] for f in hub.releases.current()["frames"]}
+    assert "persona-coach" in bom and "scopes" not in bom
+    # The files on disk decide nothing: lose one in force, keep the retired one where it was, add a stray.
+    root = tmp_path / "frames"
+    (root / "finance" / "finance-policy.frame.md").unlink()
+    retired = next(root.joinpath(".retired").rglob("scopes.frame.md"))
+    shutil.copy(retired, root / "scopes.frame.md")
+    (root / "stray.frame.md").write_text(NEW_GUIDE.replace("it-guide", "stray"))
+    again = Hub(tmp_path)
+    nxt = again.compile(save=False)
+    names = {f["name"] for f in nxt["frames"]}
+    assert "persona-coach" in names and "finance-policy" in names and "scopes" not in names and "stray" not in names
+    assert nxt["changes"] == [], "the next compile reads the documents in force: nothing changed"
+
+
+def test_system_fields_the_file_adds_are_carried_and_then_refused_from_forms(closed, config_dir):
+    from hubproto.shell import free_port, serve_in_thread
+    from test_shell_views import main_of, post
+
+    path = config_dir / "record-types.json"
+    data = json.loads(path.read_text())
+    data["ncr"]["fields"]["batch"] = "text"
+    data["ncr"]["system_fields"] = list(data["ncr"]["system_fields"]) + ["batch"]
+    data["ncr"]["decision_fields"] = list(data["ncr"]["decision_fields"]) + ["batch"]
+    path.write_text(json.dumps(data))
+    hub = Hub(closed.root)
+    changes, skipped = recordtypes.from_file_changes(hub)
+    assert {c["op"] for c in changes} == {"add_field", "add_system_fields", "add_decision_fields"} and not skipped
+    co = new_co(hub)
+    recordtypes.carry_file_changes(hub, co["number"], by="carol")
+    recordtypes.activate(hub, approved(hub, hub.kernel.get(co["locator"])), hub.releases.current()["digest"])
+    assert "batch" in hub.kernel.types["ncr"]["system_fields"] and recordtypes.drift(hub) is None
+    port = free_port()
+    server = serve_in_thread(hub, "127.0.0.1", port)
+    try:
+        status, _, body = post({"hub": hub, "base": f"http://127.0.0.1:{port}"}, "/start",
+                               {"as": "alice", "process": "nonconformance", "title": "Scratch", "description": "x", "json": '{"batch": "B-1"}'})
+        assert "set by the system" in main_of(body), main_of(body)[:600]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_file_difference_no_change_order_can_carry_stays_reported(closed, config_dir):
+    path = config_dir / "record-types.json"
+    data = json.loads(path.read_text())
+    data["ncr"]["fields"]["batch"] = "text"
+    data["ncr"]["system_fields"] = [f for f in data["ncr"]["system_fields"] if f != "risk"]  # opens a system field to people
+    path.write_text(json.dumps(data))
+    hub = Hub(closed.root)
+    co = new_co(hub)
+    _, skipped = recordtypes.carry_file_changes(hub, co["number"], by="carol")
+    assert any("risk" in x for x in skipped)
+    recordtypes.activate(hub, approved(hub, hub.kernel.get(co["locator"])), hub.releases.current()["digest"])
+    assert "batch" in hub.kernel.types["ncr"]["fields"] and "risk" in hub.kernel.types["ncr"]["system_fields"]
+    assert recordtypes.drift(hub), "what could not be carried keeps the file reported"
+    rc, out = run_cli(closed.root, "status", "--check")
+    assert rc == 1 and "config/record-types.json differs" in out
+
+
+@pytest.mark.parametrize("mounted", [False, True])
+def test_restore_onto_a_state_folder_that_cannot_be_renamed_with_the_backup_inside_it(closed, monkeypatch, mounted):
+    import os
+
+    state = closed.root / "state"
+    rc, out = run_cli(closed.root, "backup", str(state / "backups" / "b1"))
+    assert rc == 0
+    if mounted:  # the container: /hub/state is the volume's mount point
+        real = os.path.ismount
+        monkeypatch.setattr(os.path, "ismount", lambda p: Path(p).resolve() == state.resolve() or real(p))
+    rc, out = run_cli(closed.root, "restore", str(state / "backups" / "b1"), "--force")
+    assert rc == 0 and "previous state moved to" in out and ".before-restore-" in out, out
+    assert (state / "backups" / "b1" / "backup.json").exists(), "the backups folder stays where it is"
+    assert [p for p in state.iterdir() if p.name.startswith(".before-restore-")]
+    assert Hub(closed.root).sop_source() and "release in force: v1" in out
