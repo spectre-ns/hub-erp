@@ -58,3 +58,10 @@ Add one line per person and per cog under Members, in the shape
 
 ## Segregation of duties
 A cog's work is signed by a person.
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Policy owner | Approves every change to the organization model and the documents filed in Policy. |
+| System administrator | Keeps the members and their roles as intended: who holds which role, cogs included. |
+| Staff | Knows who holds which role and where things are filed; files documents in Policy. |

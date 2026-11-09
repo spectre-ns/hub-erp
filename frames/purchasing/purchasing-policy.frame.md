@@ -88,3 +88,11 @@ Closes as received.
 2. [system] Check the order (receipt-checker)
 3. [buyer] Confirm the receipt
 4. [system] Book the stock (stock-booker)
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Staff | Raises purchase requests and records the goods received. |
+| Buyer | Approves purchase requests and confirms receipts. |
+| Controller | Approves large purchases and receives the overdue ones. |
+| the purchasing-assistant cog | Approves small purchases within its criteria and tells the buyer which requests wait longest. |

@@ -33,3 +33,8 @@ The record type is task.
 Closes as done.
 1. [staff] File the task (record-filer)
 2. [staff] Complete the task
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Staff | Files tasks for themselves and others and completes the tasks assigned to them. |

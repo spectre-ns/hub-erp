@@ -145,3 +145,10 @@ The suitability, adequacy and effectiveness of the QMS are evaluated at each
 management review from the inputs in 9.3.2. Where the analysis shows a need,
 the outputs name the improvement, its owner and its due date, and a change
 request or CAPA carries it out.
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Management representative | Keeps the quality management system and reports on its performance to top management. |
+| Quality manager | Owns the quality processes the manual describes and keeps them in line with ISO 9001. |
+| Staff | Knows the quality policy, the objectives that concern their work and where each process is described. |

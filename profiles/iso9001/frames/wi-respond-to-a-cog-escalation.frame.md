@@ -30,3 +30,8 @@ For: anyone who receives an item a cog could not decide.
    widening of what a cog may approve needs two policy owners at the Gate.
 5. Never message the cog to ask it to approve: it cannot act outside the
    release.
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Staff | Decides the items a cog escalates to them, as this instruction says. |

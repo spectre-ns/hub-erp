@@ -85,10 +85,11 @@ def test_a_cog_takes_its_prompt_and_references_from_documents_pinned_by_the_rele
     ctx = RunContext(run_id="t", release="", bundle=b, owner="quality-assistant", kernel=hub.kernel, dms=hub.dms,
                      frames=lambda: hub.frames, extras={"cog_profile": prof})
     system = cog_context(ctx, None)
-    assert system.startswith("You are the quality assistant of Example Instruments.") and "M5: 4 Nm" in system and "REFERENCE DOCUMENTS" in system
+    assert system.startswith("== WHO YOU ARE ==\nYou are the quality assistant of Example Instruments.") and "M5: 4 Nm" in system
+    assert "Reference documents your profile pins" in system.split("== REFERENCE: THE KNOWLEDGE BASE ==")[1]
     # A newer version of the brief is not used until a release pins it, and pinning it is a reviewed change.
     hub.dms.add_version(prompt["locator"], b"You are the quality assistant. Be gentle.", by="hub", filename="qa-brief.md", mime="text/markdown", system=True)
-    assert cog_context(ctx, None).startswith("You are the quality assistant of Example Instruments.")
+    assert cog_context(ctx, None).startswith("== WHO YOU ARE ==\nYou are the quality assistant of Example Instruments.")
     proposal = hub.compile()
     change = next(c for c in proposal["changes"] if c["rule"]["kind"] == "cog" and c["rule"]["name"] == "quality-assistant" and c["op"] == "add")
     assert change["widening"] is True and change["rule"]["prompt_doc"]["version"] == 2

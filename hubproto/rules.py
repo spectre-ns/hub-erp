@@ -31,8 +31,9 @@ KINDS = {
     "persona": {"name", "stance", "behaviour"},
     # A cog's standing goal, stated in the SOP that owns the work ("Every day the quality-assistant cog finds ...").
     "duty": {"cog", "task", "every"},
-    # Who a work instruction is for ("For: reviewers and the document controller."): their required reading.
-    "audience": {"frame", "roles"},
+    # A row of a document's Roles and responsibilities table: who (a role, a cog, a group) has what part in it. The table
+    # says who must read the document and what a cog follows.
+    "responsibility": {"frame", "who", "text"},
     # A committee of cogs that does one piece of work together, each on its own: "compile-frame" reads the SOPs into
     # rules; a rule needs ``quorum`` of the members to read it the same way.
     "committee": {"name", "members", "quorum"},

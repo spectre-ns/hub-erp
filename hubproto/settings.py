@@ -151,8 +151,10 @@ def sentence(rule: dict, processes: dict | None = None) -> str:
         return f"The {a} and the {b} of a {rule['object']} must be different people."
     if k == "duty":
         return f"Every {rule.get('every') or 'day'} the {rule['cog']} cog {rule['task']}"
-    if k == "audience":
-        return "For: " + " and ".join(f"`{r}`" for r in rule.get("roles") or []) + "."
+    if k == "responsibility":
+        kind_, _, name_ = (rule.get("who") or "").partition(":")
+        who_ = f"the {name_} cog" if kind_ == "cog" else f"the {name_} group" if kind_ == "group" else _words(name_).capitalize()
+        return f"| {who_} | {rule.get('text') or ''} |"
     if k == "cog":
         lines = [f"## Cog: {rule['name']}"]
         if rule.get("about"):

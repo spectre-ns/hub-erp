@@ -1,8 +1,10 @@
 """Scopes and personas on screen: which Frames depend on which SOPs, which scopes compile them, which cogs follow them
-and which roles must read them (derived from the rules that name them); the personas cogs behave by; a person's
+and which roles must read them (from their Roles and responsibilities tables); the personas cogs behave by; a person's
 required reading; what a change order affects."""
 
 from __future__ import annotations
+
+from urllib.parse import quote
 
 from .. import scopes as sc
 from ..release import scope_frames
@@ -51,8 +53,8 @@ class ScopesMixin:
                    if d.get("persona") else
                    f"<dt>Followed by</dt><dd>{', '.join(cogs) or '<span class=muted>no cog</span>'}</dd>"
                    f"<dt>Required reading for</dt><dd>{', '.join(roles) or '<span class=muted>no role</span>'}</dd>")
-                + "</dl><p class='why'>Derived from the rules that name them: a change to it reaches every cog listed (what it works from and "
-                "is bound by) and every role listed (what its people must read).</p></div>")
+                + "</dl><p class='why'>From its Roles and responsibilities table: a change to it reaches every cog listed (what it works from "
+                "and is bound by) and every role listed (what its people must read).</p></div>")
 
     def _impact_html(self, frames: list[str]) -> str:
         """On a change order: the Frames, scopes and personas its revisions affect."""
@@ -70,17 +72,46 @@ class ScopesMixin:
                 "<p class='why'>The cogs listed read these SOPs and are bound by them; the people in the roles listed must read the new revisions.</p></div>")
 
     def _required_reading_html(self, person: str) -> str:
+        from .. import training
+
         b = self._scope_bundle()
         rows = sc.required_reading(b, person)
         if not rows:
             return ""
         srcs = sc.frame_sources(self.hub)
+        chip = {"done": "ok", "due": "warn", "overdue": "crit", "not assigned": "", "no document": ""}
+
+        def status(r):
+            st = training.reading_status(self.hub, person, r["frame"])
+            words = {"done": "acknowledged", "due": f"due {st.get('due') or ''}".strip(), "overdue": f"overdue since {st.get('due')}",
+                     "not assigned": "not assigned", "no document": "not a document yet"}[st["status"]]
+            rec = (f" <a href='{href('/record/' + quote(st['record']), self.user)}'>{esc(st['record'])}</a>" if st.get("record") else "")
+            return f"<span class='chip {chip[st['status']]}' data-status='{esc(st['status'])}'>{esc(words)}</span>{rec}"
+
         items = "".join(f"<tr><td>{self._frame_link(r['frame'])}</td><td>{self._source_html(srcs.get(r['frame']))}</td>"
-                        f"<td>{esc(', '.join(x.replace('-', ' ') for x in r['roles']))}</td></tr>" for r in rows)
-        return (f"<h2 id='reading'>{icon('book')}Required reading</h2><p class='why'>Derived from the roles {esc(person)} holds: the company "
-                "scope, every SOP whose rules name one of those roles, and the work instructions written for them.</p><div class='tbl'><table>"
-                "<thead><tr><th scope=\"col\">SOP</th><th scope=\"col\">Document</th>"
-                f"<th scope=\"col\">Because of the role</th></tr></thead><tbody>{items}</tbody></table></div>")
+                        f"<td>{esc(', '.join(x.replace('-', ' ') for x in r['roles']))}<div class='why'>{esc('; '.join(r.get('responsibilities') or []))}</div></td>"
+                        f"<td>{status(r)}</td></tr>" for r in rows)
+        matrix = training.matrix_document(self.hub)
+        return (f"<h2 id='reading'>{icon('book')}Required reading</h2><p class='why'>Every document whose Roles and responsibilities table "
+                f"lists a role {esc(person)} holds, with where they stand on the revision in force"
+                + (f"; the whole <a href='{href('/document/' + quote(matrix['locator'], safe=':'), self.user)}'>training matrix</a> is {esc(matrix['number'])}" if matrix else "")
+                + ".</p><div class='tbl'><table><thead><tr><th scope=\"col\">Document</th><th scope=\"col\">Compiled from</th>"
+                f"<th scope=\"col\">Because of the role</th><th scope=\"col\">Acknowledged</th></tr></thead><tbody>{items}</tbody></table></div>")
+
+    def _cog_training_html(self, cog: str) -> str:
+        """On a cog's profile: what it is trained on (in its context), with the revision and the release that brought it."""
+        from .. import training
+
+        rows = training.cog_training(self.hub, cog)
+        if not rows:
+            return ""
+        items = "".join(f"<tr><td>{self._frame_link(r['frame'])}</td><td>{esc(r['revision'] or '-')}</td>"
+                        f"<td><span class='chip ok' data-status='in-context'>in context</span> since release v{r['release_n']} "
+                        f"<code>{esc(r['release'][:12])}</code></td></tr>" for r in rows)
+        return (f"<h2 id='training'>{icon('book')}Training</h2><p class='why'>A cog is trained on a document when it is in its context as it "
+                "works: the company scope and every document whose Roles and responsibilities table names it or its roles. The release that "
+                "put a revision there is its training record; it acknowledges nothing.</p><div class='tbl'><table><thead><tr><th scope=\"col\">"
+                "Document</th><th scope=\"col\">Revision</th><th scope=\"col\">Trained</th></tr></thead><tbody>" + items + "</tbody></table></div>")
 
     def page_scopes(self):
         self._need_release()
@@ -88,9 +119,10 @@ class ScopesMixin:
         scopes, personas = b.get("scopes") or {}, b.get("personas") or {}
         srcs = sc.frame_sources(self.hub)
         out = (f"<h1>{icon('layers')}Scopes and personas</h1><p class='why'>Each scope compiles SOP and policy Frames and may layer on a wider "
-               "scope; later layers add and may only narrow. Who works from which SOP is derived, not listed: every cog follows the company "
-               "scope and every SOP whose rules name it or one of its roles, and a person must read the same. A persona says how a cog "
-               "behaves, never what it may do. Every Frame names the document it was compiled from.</p>")
+               "scope; later layers add and may only narrow. Who works from which document is what its Roles and responsibilities table "
+               "says: a person must read every document whose table lists one of their roles, and a cog follows the company scope and every "
+               "document whose table lists it or one of its roles. A persona says how a cog behaves, never what it may do. Every Frame names "
+               "the document it was compiled from.</p>")
         if not scopes:
             out += "<p class='muted'>The release in force defines no scopes yet.</p>"
         for n, s in scopes.items():
@@ -114,17 +146,17 @@ class ScopesMixin:
             rows = "".join(f"<tr id='cog-{esc(n)}'><td>{self._persona_link({'name': n, 'of': 'cog'})}</td><td>{esc(c.get('persona') or '-')}</td>"
                            f"<td>{', '.join(self._frame_link(f['frame']) + (' <span class=why>(' + esc(', '.join(x.partition(':')[2] or x for x in f['because'])) + ')</span>' if f['because'] and f['because'] != ['company'] else '') for f in sc.following(b, n))}</td></tr>"
                            for n, c in cogs.items())
-            out += (f"<h2>Cogs</h2><p class='why'>What each cog follows: the company scope and every SOP whose rules name it or one of its roles "
-                    "(in brackets).</p><div class='tbl'><table><thead><tr><th scope=\"col\">Cog</th><th scope=\"col\">Persona</th>"
+            out += (f"<h2>Cogs</h2><p class='why'>What each cog follows: the company scope and every document whose Roles and responsibilities "
+                    "table lists it or one of its roles (in brackets).</p><div class='tbl'><table><thead><tr><th scope=\"col\">Cog</th><th scope=\"col\">Persona</th>"
                     f"<th scope=\"col\">So it works from</th></tr></thead><tbody>{rows}</tbody></table></div>")
         roles = sorted(b.get("roles") or [])
         if roles:
-            from ..release import company_frames, frames_naming
+            from ..release import frames_naming
 
-            named = frames_naming(b, {"role:" + r for r in roles}, audience=True)
-            rows = "".join(f"<tr id='role-{esc(r)}'><td>{esc(r.replace('-', ' '))}</td><td>{', '.join(self._frame_link(f) for f in company_frames(b) + sorted(f for f, w in named.items() if 'role:' + r in w and f not in company_frames(b)))}</td></tr>"
+            named = frames_naming(b, {"role:" + r for r in roles})
+            rows = "".join(f"<tr id='role-{esc(r)}'><td>{esc(r.replace('-', ' '))}</td><td>{', '.join(self._frame_link(f) for f in sorted(f for f, w in named.items() if 'role:' + r in w)) or '<span class=muted>nothing</span>'}</td></tr>"
                            for r in roles)
-            out += (f"<h2>Roles</h2><p class='why'>What each role must read: the company scope, every SOP whose rules name the role, and the work "
-                    "instructions written for it.</p><div class='tbl'><table><thead><tr><th scope=\"col\">Role</th><th scope=\"col\">Required reading</th>"
+            out += (f"<h2>Roles</h2><p class='why'>What each role must read: every document whose Roles and responsibilities table lists it."
+                    "</p><div class='tbl'><table><thead><tr><th scope=\"col\">Role</th><th scope=\"col\">Required reading</th>"
                     f"</tr></thead><tbody>{rows}</tbody></table></div>")
         self._page("Scopes and personas", out, crumbs=[("Policies", href("/frames", self.user)), ("Scopes and personas", None)])

@@ -75,3 +75,10 @@ Persona: advisor
 ## Committee: compile-frame
 Members: qa-manager, organization
 Agree: 2 of 2
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Policy owner | Approves every change to a cog's identity, model and persona (two policy owners). |
+| the qa-manager cog | Sits on the compile-frame committee and reads the SOPs into rules. |
+| the organization cog | Sits on the compile-frame committee and reads the SOPs into rules. |

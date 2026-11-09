@@ -2,15 +2,15 @@
 
 The release says it all explicitly: each Frame in its bill of materials names the source it was compiled from (the
 SOP or policy document and revision, or the Frame file before the SOPs were documents); each scope names the Frames
-it compiles and the scopes it layers on. Who works from a Frame is derived: every cog follows the company scope and
-every SOP whose rules name it or one of its roles; a person must read the same, and the work instructions written
-for their roles. From those, for any Frame: the scopes it is in, the cogs that follow it and the roles that must read
-it; for a change: everything it affects.
+it compiles and the scopes it layers on. Who works from a Frame is what its Roles and responsibilities table says: a
+person must read every document whose table lists one of their roles; a cog follows the company scope and every
+document whose table lists it or one of its roles. From those, for any Frame: the scopes it is in, the cogs that
+follow it and the roles that must read it; for a change: everything it affects.
 """
 
 from __future__ import annotations
 
-from .release import company_frames, follows_for, frames_naming, scope_frames
+from .release import follows_for, scope_frames, table_roles
 
 
 def frame_sources(hub, meta: dict | None = None) -> dict[str, dict]:
@@ -20,16 +20,12 @@ def frame_sources(hub, meta: dict | None = None) -> dict[str, dict]:
 
 
 def _roles_reading(bundle: dict, frame: str) -> list[str]:
-    roles = list(bundle.get("roles") or [])
-    if frame in company_frames(bundle):
-        return sorted(roles)
-    named = frames_naming(bundle, {"role:" + r for r in roles}, audience=True).get(frame, set())
-    return sorted(n.partition(":")[2] for n in named)
+    return table_roles(bundle, frame)
 
 
 def dependents(bundle: dict, frame: str) -> dict:
     """The scopes a Frame is in (directly or through a scope layered on it), the cogs that follow it and the roles that
-    must read it (both derived from the rules that name them), and the cogs that behave by it (a persona)."""
+    must read it (both from its Roles and responsibilities table), and the cogs that behave by it (a persona)."""
     scopes = bundle.get("scopes") or {}
     in_scopes = sorted(n for n in scopes if frame in scope_frames(scopes, n))
     direct = sorted(n for n, s in scopes.items() if frame in (s.get("compiles") or []))
@@ -55,14 +51,14 @@ def impact(bundle: dict, frames: list[str]) -> dict:
 
 
 def required_reading(bundle: dict, person: str) -> list[dict]:
-    """The SOPs a person must read, derived from the roles they hold: the company scope, every SOP whose rules name one
-    of their roles (or them), and the work instructions written for their roles; each with the roles that ask."""
+    """The documents a person must read: every document whose Roles and responsibilities table lists one of their roles;
+    each with the roles that ask and what the table says each does there."""
+    rows = bundle.get("responsibilities") or []
     out = []
-    for frame, why in follows_for(bundle, person, audience=True).items():
+    for frame, why in follows_for(bundle, person).items():
         roles = sorted(x.partition(":")[2] for x in why if x.startswith("role:"))
-        if any(x.startswith(("person:", "cog:")) for x in why):
-            roles.append("named")
-        out.append({"frame": frame, "roles": roles or ["everyone"]})
+        does = [r["text"] for r in rows if r.get("frame") == frame and r.get("who") in why]
+        out.append({"frame": frame, "roles": roles, "responsibilities": does})
     return out
 
 

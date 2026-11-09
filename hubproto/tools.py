@@ -68,6 +68,8 @@ def may_edit_document(bundle: dict, who: str, rec: dict) -> tuple[bool, str]:
     number = rec.get("number") or rec.get("locator")
     if rec.get("type") != "document":
         return False, f"{number} is not a document"
+    if f.get("generated"):
+        return False, f"{number} is generated from the policy in force (the Roles and responsibilities tables) and is not edited by hand"
     if f.get("doc_class") in ("evidence", "external"):
         return False, f"{number} is {'evidence' if f.get('doc_class') == 'evidence' else 'a received document'} and is never changed"
     if f.get("doc_class") == "controlled" and rec.get("state") not in EDITABLE_CONTROLLED_STATES:

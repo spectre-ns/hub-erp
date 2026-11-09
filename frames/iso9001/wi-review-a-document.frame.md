@@ -31,3 +31,10 @@ For: reviewers, process owners and the document controller.
    applied.
 5. If an item is still waiting after its due date, the document controller
    is added to the assignees and may approve instead.
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Reviewer | Reviews documents as this instruction says. |
+| Process owner | Reviews the drawings of their process as this instruction says. |
+| Document controller | Follows overdue reviews as this instruction says. |
