@@ -215,3 +215,20 @@ def test_a_cogs_profile_lists_what_it_may_do_and_through_what(tmp_path):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_a_paused_member_is_not_offered_a_vote(tmp_path):
+    import test_committees as tc
+
+    hub = tc.design_hub(tmp_path, {"- maya (person): designer": "- maya (person): designer, design-reviewer"})
+    run_id = tc.submit(hub, **tc.LOW)  # maya prepared it: kept out, the chair decides in her place
+    server, shell = serve(hub)
+    try:
+        inbox = main_of(get(shell, "/inbox", **{"as": "maya"})[1])
+        assert run_id not in inbox.split("id='forme'")[1].split("<h2")[0], "not listed as waiting for her"
+        rec = hub.runner.load(run_id)["record"]
+        page = main_of(get(shell, "/record/" + quote(rec, safe=":"), **{"as": "maya"})[1])
+        assert "maya" in page and "paused" in page and "Release</button>" not in page
+    finally:
+        server.shutdown()
+        server.server_close()

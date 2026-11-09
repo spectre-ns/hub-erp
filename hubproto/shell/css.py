@@ -38,7 +38,7 @@ CSS = f"""
 :root{{{_tokens(LIGHT)};--fs-s:12px;--fs-m:14px;--fs-l:16px;--fs-xl:22px;--fs-xxl:28px;--sp-1:4px;--sp-2:8px;--sp-3:12px;--sp-4:16px;--sp-6:24px;--r:6px;--r-lg:10px;--ease:cubic-bezier(.2,0,0,1)}}
 :root{{color-scheme:light}}:root[data-theme=dark]{{{_tokens(DARK)};color-scheme:dark}}
 @media (prefers-color-scheme: dark){{:root[data-theme=auto]{{{_tokens(DARK)};color-scheme:dark}}}}
-button.theme{{background:transparent;color:var(--muted);border:1px solid transparent;min-height:32px;padding:4px 8px}}button.theme:hover{{background:var(--hover);color:var(--fg)}}button.theme .i-dark,:root[data-theme=dark] button.theme .i-light{{display:none}}:root[data-theme=dark] button.theme .i-dark{{display:inline}}
+button.theme{{background:transparent;color:var(--muted);border:1px solid transparent;min-height:32px;padding:4px 8px}}button.theme:hover{{background:var(--hover);color:var(--fg)}}button.theme .i-dark,:root[data-theme=dark] button.theme .i-light{{display:none}}:root[data-theme=dark] button.theme .i-dark{{display:inline}}@media (prefers-color-scheme: dark){{:root[data-theme=auto] button.theme .i-light{{display:none}}:root[data-theme=auto] button.theme .i-dark{{display:inline}}}}
 *{{box-sizing:border-box}}body{{margin:0;font:400 var(--fs-m)/1.5 "Inter","SF Pro Text",system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;background:var(--bg);color:var(--fg);-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;text-rendering:optimizeLegibility}}
 a{{color:var(--accent);text-decoration-thickness:1px;text-underline-offset:2px}}b,strong{{font-weight:600}}a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible,[tabindex]:focus-visible{{outline:3px solid var(--focus);outline-offset:2px}}
 .skip{{position:absolute;left:-999px;top:var(--sp-2);background:var(--panel);color:var(--fg);padding:var(--sp-2) var(--sp-3);border:2px solid var(--fg);z-index:10}}.skip:focus{{left:var(--sp-2)}}
@@ -71,13 +71,13 @@ nav.rail ul{{list-style:none;margin:0;padding:0}}nav.rail li a{{display:flex;ali
 nav.rail li a:hover{{background:var(--hover)}}nav.rail li a[aria-current=page]{{background:var(--accent-soft);font-weight:500;color:var(--accent)}}nav.rail li a[aria-current=page] svg.i{{color:var(--accent)}}
 nav.rail h2{{font-size:var(--fs-s);font-weight:500;letter-spacing:.01em;color:var(--muted);margin:var(--sp-6) 0 var(--sp-1) 10px;border:0;padding:0}}
 nav.rail .tree ul{{padding-left:14px}}nav.rail .tree>ul{{padding-left:0}}nav.rail .tree a{{padding:2px 8px;font-size:var(--fs-s);border-left:0}}
-main{{padding:var(--sp-6) 32px;max-width:1400px;min-width:0}}
+main{{padding:var(--sp-6) 32px 96px;max-width:1400px;min-width:0}}[role=alert],.err,p.status{{scroll-margin-bottom:96px;scroll-margin-top:16px}}.md h2{{font-size:var(--fs-l)}}.md h3{{font-size:var(--fs-m)}}
 h1{{font-size:var(--fs-xl);font-weight:500;letter-spacing:-.015em;line-height:1.25;margin:0 0 var(--sp-4);display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap}}h2{{font-size:var(--fs-l);font-weight:500;letter-spacing:-.005em;margin:28px 0 var(--sp-3);border:0;padding:0}}
 h3{{font-size:var(--fs-m);font-weight:600;margin:var(--sp-3) 0 var(--sp-1)}}h4{{font-size:var(--fs-m);font-weight:500;margin:var(--sp-2) 0 2px}}
 /* --- tables, chips, cards, controls --- */
 .tbl{{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:var(--sp-2) 0 var(--sp-4);background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg)}}
 table{{border-collapse:collapse;width:100%;background:var(--panel);font-size:var(--fs-m)}}
-th,td{{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere}}th{{background:var(--th);font-size:var(--fs-s);font-weight:500;color:var(--muted);white-space:nowrap}}
+th,td{{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:normal;word-break:normal}}td .chip,th .chip,td.nw,td .nw,td .named,td code{{white-space:nowrap}}th{{background:var(--th);font-size:var(--fs-s);font-weight:500;color:var(--muted);white-space:nowrap}}
 th a{{color:var(--muted);text-decoration:none}}th a[aria-sort]{{color:var(--fg)}}tr:hover td{{background:var(--hover)}}tbody tr:last-child td{{border-bottom:0}}
 th[scope=row]{{font-weight:500;background:transparent;text-transform:none;letter-spacing:0;color:var(--fg);white-space:nowrap}}td.num{{white-space:nowrap}}td.sel,th:first-child:has(input[data-select-all]){{width:2em}}
 .chip{{display:inline-block;padding:1px 9px;border-radius:999px;font-size:var(--fs-s);font-weight:500;background:var(--chip);color:var(--fg);max-width:100%;overflow-wrap:anywhere;line-height:1.55}}
@@ -199,13 +199,13 @@ svg a:hover rect,svg a:focus rect{{opacity:.75}}
 @media (prefers-reduced-motion:reduce){{*{{transition:none!important}}}}
 @media(max-width:900px){{.layout{{grid-template-columns:1fr}}nav.rail{{border-right:0;border-bottom:1px solid var(--line);padding:var(--sp-2) var(--sp-3)}}
 nav.rail ul.main{{display:flex;flex-wrap:wrap;gap:var(--sp-1)}}nav.rail .tree,nav.rail h2{{display:none}}
-main{{padding:var(--sp-4)}}.grid2{{grid-template-columns:1fr}}.sheet{{padding:var(--sp-4)}}.top .crumb{{display:none}}}}
-@media(max-width:600px){{main{{padding:var(--sp-3) var(--sp-4)}}.top{{gap:var(--sp-2)}}.top form label span.who{{display:none}}.statusbar{{margin-left:0;width:100%}}.formhead{{padding:var(--sp-2) var(--sp-3)}}
+main{{padding:var(--sp-4) var(--sp-4) 96px}}.grid2{{grid-template-columns:1fr}}.sheet{{padding:var(--sp-4)}}.top .crumb{{display:none}}}}
+@media(max-width:600px){{main{{padding:var(--sp-3) var(--sp-4) 88px}}.top{{gap:var(--sp-2)}}.top form label span.who{{display:none}}.statusbar{{margin-left:0;width:100%}}.formhead{{padding:var(--sp-2) var(--sp-3)}}
 .sheet .sheetfields .fld{{grid-template-columns:1fr}}.sheet .title{{font-size:var(--fs-xl)}}.smart a{{min-width:0;flex:1}}.kpis{{grid-template-columns:1fr 1fr}}.board{{grid-auto-columns:minmax(85vw,1fr)}}.cp .views{{margin-left:0}}}}
 @media print{{.top,.appbar,nav.rail,.skip,.formhead .btns,.composer,.cp,.tabs,.actions,form,details.cancel,.chatter form{{display:none!important}}.layout{{display:block}}main{{max-width:none;padding:0}}.sheet,.card,.formhead,.smart{{box-shadow:none;border-color:#999}}.tab-panel{{display:block!important}}body{{background:#fff;color:#000}}}}
 
 .vh{{position:absolute!important;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}}
-.mx{{position:fixed;right:16px;bottom:16px;z-index:50;display:flex;flex-direction:column;align-items:flex-end;gap:8px;font-size:var(--fs-m)}}
+.mx-toggle.mini span{{display:none}}.mx-toggle.mini{{padding:12px}}.mx{{position:fixed;right:16px;bottom:16px;z-index:50;display:flex;flex-direction:column;align-items:flex-end;gap:8px;font-size:var(--fs-m)}}
 .mx-toggle{{display:inline-flex;align-items:center;gap:8px;padding:10px 16px;border-radius:999px;background:var(--fg);color:var(--panel);border:0;box-shadow:0 6px 20px var(--shadow-lg);cursor:pointer;font-weight:500}}.mx-toggle:hover{{background:var(--fg)}}
 .mx-toggle svg.i{{width:18px;height:18px}}.mx.open .mx-toggle span{{display:none}}.mx.open .mx-toggle{{padding:10px}}
 .mx-panel{{order:-1;width:min(380px,calc(100vw - 32px));height:min(540px,calc(100vh - 120px));display:flex;flex-direction:column;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:14px;box-shadow:0 16px 40px var(--shadow-lg);overflow:hidden}}
