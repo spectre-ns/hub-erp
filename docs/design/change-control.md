@@ -22,6 +22,15 @@ in the PR.
    delta item, may override with an accepted warning, and sign the CO.
 6. **Cogs are members like people.** They hold roles; their authority is what the SOPs give their
    roles (and them by name), within the guards. Be explicit: never hand a cog outsized permissions.
+7. **When in question, treat a cog as a person with training and a personality** (product owner,
+   2026-11-09): its training is what the Roles and responsibilities tables require it to read and
+   acknowledge; its personality is its persona. Design questions about cogs are settled by asking what
+   the hub would do for a person in the same position. For example: an SOP that gives a cog work its
+   roles do not cover produces a *suggested* role grant on the change order, never an automatic one,
+   as a person's role is granted by an org-model change; a cog's **training is the SOP in its context**
+   when it works (the release that puts a revision in its context is its training record; people
+   acknowledge training tasks, cogs do not); a cog's configuration changes when the compiled SOPs it works under change, and
+   the change order shows what each change does to each cog.
 
 ## 2. What lives where
 
@@ -377,7 +386,20 @@ final report every place you needed another workstream's code and what you assum
 - **A required-training document** (training matrix, Quality/Training) summarises the links: per
   role, each document to read, its revision in force and the responsibility. It is generated from the
   tables and republished by the release automation when a table or a listed revision changes.
-  Training acknowledgement tasks are assigned from the tables when a revision becomes effective.
+  Training acknowledgement tasks are assigned to people from the tables when a revision becomes
+  effective; for a cog, training is the SOP in its context when it works, recorded by the release.
 - **Committees exist to bring differing perspectives with different contexts**: each member works
   from its own persona and responsibilities; the shared material (diff, rules in force, output
   format) is the same, so differences surface as disagreements for a person to resolve.
+
+## 13. What a cog knows (agreed 2026-11-09)
+
+- **Cogs have no private memories.** What a cog should remember becomes documentation released into
+  the system (a work instruction, a lessons-learned note) on a change order; once released and named
+  in a Roles and responsibilities table, it is in the context of everyone it is meant for.
+- A cog works from: its **training** (the released documents whose tables name it or its roles, put in
+  its context when it works); the **knowledge base through its tools** (any document or record it may
+  read under its roles' read permissions; effective revisions by default, a draft only when its task
+  is about that draft); the item it is working on and that item's records; and the conversation it is
+  in. No private store: the per-cog judgments file becomes review records on the item.
+- Open: whether a chat keeps the current conversation (proposed) or every chat message stands alone.
