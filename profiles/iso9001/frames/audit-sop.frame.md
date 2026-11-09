@@ -42,3 +42,10 @@ The record type is audit.
 4. [system] Notify the auditor (notifier)
 5. [quality-manager] Accept the findings
 6. [system] Render the record (document-renderer)
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Internal auditor | Plans and runs internal audits and records the findings; never audits their own work. |
+| Quality manager | Accepts the findings of each audit. |
+| Management representative | Receives the audits that are overdue. |

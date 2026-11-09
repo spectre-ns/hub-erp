@@ -42,8 +42,8 @@ a sentence below or in the SOP that owns them says so.
 - dave (person): payables-reviewer, staff
 - ap-reviewer (cog): payables-reviewer, finance-clerk
 - doc-reviewer (cog): reviewer, author
-- quality-assistant (cog): quality-manager, author, reviewer, staff, design-review-committee
-- qa-manager (cog): quality-manager, reviewer, author, staff
+- quality-assistant (cog): staff, design-review-committee
+- qa-manager (cog): reviewer, author, staff
 - organization (cog): policy-reader
 - it-admin (cog): system-administrator
 - management (cog): management-reviewer
@@ -79,3 +79,10 @@ Policy readers may read Quality.
 
 ## Segregation of duties
 A cog's work is signed by a person.
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Policy owner | Approves every change to the organization model and the documents filed in Policy. |
+| System administrator | Keeps the members and their roles as intended: who holds which role, cogs included. |
+| Staff | Knows who holds which role and where things are filed; files documents in Policy. |

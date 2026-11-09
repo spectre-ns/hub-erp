@@ -223,9 +223,9 @@ def test_the_cogs_system_prompt_carries_its_process_the_whole_document_and_every
     ctx = RunContext(run_id="t", release="", bundle=bundle, owner="quality-assistant", kernel=released.kernel, frames=lambda: released.frames,
                      extras={"cog_profile": bundle["cogs"]["quality-assistant"]})
     system = cog_context(ctx, released.kernel.get(doc["locator"]))
-    assert system.startswith("You are the quality-assistant cog") and "Reviews drawings, designs and nonconformances" in system
-    assert "- ncr-sop: " in system and "- design-control-sop: " in system, "the SOPs it follows, as an index of their sections"
-    assert "THE PROCESS THAT GOVERNS THIS ITEM: document-control" in system, "the item's process, not whole SOPs"
+    assert system.startswith("== WHO YOU ARE ==\nYou are the quality-assistant cog") and "Reviews drawings, designs and nonconformances" in system
+    assert "- ncr-sop: " in system and "- design-control-sop: " in system, "the SOPs it is trained on, as an index of their sections"
+    assert "THE PROCESS THAT GOVERNS THIS WORK: document-control" in system, "the item's process, not whole SOPs"
     assert "DOCUMENT " + doc["number"] in system and "Torque the M4 screws to 2 Nm." in system, "the whole document"
     assert "- [0] carol: @quality-assistant is 2 Nm right?" in system and "  - [1] quality-assistant (reply to 0): Yes" in system and "    - [2] carol (reply to 1): Which procedure?" in system
 

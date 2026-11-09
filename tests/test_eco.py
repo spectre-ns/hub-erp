@@ -101,8 +101,8 @@ def test_a_change_order_is_reviewed_approved_and_released_with_its_revisions(hub
     assert done["status"] == "completed", hub.runner.track(cos["id"])[-3:]
     [rel] = [j for j in hub.automation.of(co["locator"]) if j["automation"] == "release-change-order"]
     assert rel["status"] == "success", rel
-    assert [s["name"] for s in rel["steps"]][:4] == ["Check the change order is ready", "Approve the carried revisions", "Bring the Frame into force",
-                                                     "Publish the revisions"]
+    assert [s["name"] for s in rel["steps"]][:5] == ["Check the change order is ready", "Approve the carried revisions", "Bring the Frame into force",
+                                                     "Move items by the state map", "Publish the revisions"]
     assert "approved by carol" in rel["acting_on"]
     assert ap_limit(hub) == 1500.0
     new = hub.kernel.get(draft["locator"])

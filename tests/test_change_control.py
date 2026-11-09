@@ -455,7 +455,7 @@ def test_a_release_recompiles_every_open_change_order_and_sends_related_ones_bac
 
     released(hub, a)
     [rel] = job(hub, a, "release-change-order")
-    assert rel["status"] == "success" and b["number"] in rel["steps"][8]["detail"]
+    assert rel["status"] == "success" and b["number"] in next(s for s in rel["steps"] if s["name"] == "Send related changes back")["detail"]
     b = hub.kernel.get(b["locator"])
     bc = b["fields"]["baseline_changed"]
     assert bc["by"] == a["number"] and bc["kind"] == "definition" and any("finance-policy" in r for r in bc["reasons"])
@@ -543,3 +543,20 @@ def test_the_change_order_page_requests_review_and_sends_for_approval(hub):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_the_release_moves_items_by_the_change_orders_state_map(hub, monkeypatch):
+    """The release automation applies the state map once the new release is in force (design note 5.2)."""
+    from hubproto import automation, runner
+
+    calls = []
+    monkeypatch.setattr(runner, "apply_state_map", lambda h, process, mapping, by, co: calls.append((process, mapping, by, co)) or
+                        [{"record": "NCR-2026-0001", "run": "r1", "from": "awaiting-disposition", "to": "open"}])
+    co = new_co(hub)
+    hub.kernel.set_fields(co["locator"], {"state_map": {"nonconformance": {"awaiting-disposition": "open"}, "capa": {}}}, by="hub")
+    text, memo = automation.r_state_maps(hub, {"subject": co["locator"]}, {})
+    assert calls == [("nonconformance", {"awaiting-disposition": "open"}, "hub", co["number"])]
+    assert text.startswith("moved 1 item(s)") and memo == {"moved": 1}
+    hub.kernel.set_fields(co["locator"], {"state_map": {}}, by="hub")
+    assert automation.r_state_maps(hub, {"subject": co["locator"]}, {})[0] == "no item to move"
+    assert "Move items by the state map" in automation.AUTOMATIONS["release-change-order"]["steps"]

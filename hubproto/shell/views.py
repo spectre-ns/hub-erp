@@ -514,7 +514,7 @@ class ViewsMixin:
 
     def _user_reading(self, person: str) -> str:
         m = ((self.bundle or {}).get("members") or {}).get(person) or {}
-        return self._required_reading_html(person) if m.get("type") == "person" else ""
+        return self._required_reading_html(person) if m.get("type") == "person" else self._cog_training_html(person)
 
     def page_user(self):
         user = self.user
@@ -596,7 +596,8 @@ class ViewsMixin:
                                     f"lenses {esc(', '.join(persona.get('lenses') or []) or '-')}</span>") if pframe else esc(prof.get("persona") or "-")),
                        ("How it behaves", esc(prof.get("prompt") or "-")),
                        ("Follows", (follows_html or "<span class='muted'>no procedure: it is routed no work</span>")
-                        + "<div class='why'>Derived: the company scope and every SOP whose rules name it or one of its roles (in brackets).</div>"),
+                        + "<div class='why'>Derived: the company scope and every document whose Roles and responsibilities table lists it or one of "
+                          "its roles (in brackets).</div>"),
                        ("What it may do", acts),
                        ("Written in", self._rule_link(prof.get("source")) if prof.get("source") else "")]
             def pin_html(pin):

@@ -37,8 +37,13 @@ executor, author or advisor), Lenses:, Reviews: (n adversarial passes),
 Escalates: and Behaviour:. What a cog follows and may do is not written in
 its profile: it comes from the SOPs that name it or its roles.
 
-## Who a work instruction is for
-A line "For: <roles>." under the title makes it required reading for them.
+## Roles and responsibilities
+Every document ends with a section "## Roles and responsibilities": a table
+with the header row "| Role | Responsibilities |", the rule "|---|---|" and
+one row per role (or "the <name> cog") with what it does in the document.
+The table says who must read the document and what each cog has in its
+context. List every role and cog the document gives a step, a route,
+approval criteria, a duty or a create, approve or update permission.
 
 ## Threshold sentences
 "The <name> threshold|tolerance|limit is <number> <unit>." Units: USD, EUR,
@@ -64,3 +69,9 @@ A section "## Process: <name>", one line "Records are filed in <Folder>.",
 then numbered steps "n. [role] Title (cog-id)". A step without a cog is a
 human checkpoint and becomes a Gate on the step before it, routed by the
 Routing sentences for that process.
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Process owner | Writes the SOPs of their processes in these shapes. |
+| Document controller | Checks that a new SOP reads as rules before it is sent for approval. |

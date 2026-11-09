@@ -62,3 +62,12 @@ Closes as posted.
 1. [finance-clerk] Request the journal reversal (record-filer)
 2. [controller] Approve the reversal
 3. [system] Post the reversal (journal-reverser)
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Finance clerk | Files supplier bills and journal reversals. |
+| Payables reviewer | Reviews and approves bills within their limits. |
+| Controller | Approves large bills and journal reversals. |
+| Policy owner | Is told of the overdue approvals. |
+| the ap-reviewer cog | Approves small matched bills within its criteria. |

@@ -207,22 +207,27 @@ register({"name": "read_procedure",
 
 
 def read_sop_section(tools, a: dict) -> dict:
-    """One section of an SOP the cog follows, as released, with file line numbers; without a heading, the list of its
-    sections. A cog's context holds its process, not whole SOPs: this is how it reads the rest."""
+    """One section of an SOP, as released, with file line numbers; without a heading, the list of its sections. It
+    serves the procedures the cog is trained on (in its context) and the rest of the knowledge base it may read under
+    its roles' read rights (an SOP is read where its document is filed), as a person looks things up in the library."""
+    from .sopdocs import kind_of
+
     name = str(a.get("name") or "").strip()
     heading = str(a.get("heading") or "").strip().lstrip("#").strip()
     prof = (tools.bundle.get("cogs") or {}).get(getattr(tools, "cog", "")) or {}
-    follows = prof.get("follows")
-    if follows is not None and name not in follows:
-        return {"error": f"you do not follow {name!r}; the SOPs you follow are: {', '.join(follows) or 'none'}"}
+    trained = name in (prof.get("follows") or [])
     frames = {f.name: f for f in _released_frames(tools)}
     frame = frames.get(name)
     if frame is None:
         return {"error": f"no SOP named {name!r} in the release"}
+    folder = kind_of(frame)[1]
+    if not trained and not tools.may_read(folder):
+        return {"error": f"you may not read {name!r} (it is filed in {folder}, which your roles may not read)"}
     lines = frame.file_lines
     heads = [(i, ln.lstrip("#").strip()) for i, ln in enumerate(lines, 1) if i >= frame.body_start and ln.startswith("## ")]
+    standing = "trained: it is in your context and binding on you" if trained else "reference: you may look it up; it is not your procedure"
     if not heading:
-        return {"sop": name, "version": frame.version, "description": frame.description, "sections": [h for _, h in heads]}
+        return {"sop": name, "version": frame.version, "description": frame.description, "standing": standing, "sections": [h for _, h in heads]}
     want = heading.lower()
     at = next((i for i, h in heads if h.lower() == want), None) or next((i for i, h in heads if h.lower().startswith(want)), None) \
         or next((i for i, h in heads if want in h.lower()), None)
@@ -237,12 +242,13 @@ def read_sop_section(tools, a: dict) -> dict:
             break
         text.append(row)
         size += len(row) + 1
-    return {"sop": name, "version": frame.version, "section": lines[at - 1].lstrip("#").strip(), "lines": f"{at}-{end - 1}", "text": "\n".join(text)}
+    return {"sop": name, "version": frame.version, "standing": standing, "section": lines[at - 1].lstrip("#").strip(), "lines": f"{at}-{end - 1}",
+            "text": "\n".join(text)}
 
 
 register({"name": "read_sop_section",
-          "description": "Read one section of an SOP you follow (as released, with line numbers to cite), e.g. name='ncr-sop', "
-                         "heading='Routing'; without a heading it lists the SOP's sections.",
+          "description": "Read one section of an SOP (as released, with line numbers to cite): one you are trained on, or one you may "
+                         "look up; e.g. name='ncr-sop', heading='Routing'. Without a heading it lists the SOP's sections.",
           "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "the SOP, e.g. document-control-sop"},
                                                           "heading": {"type": "string", "description": "the section heading, e.g. Permissions or Process: nonconformance"}},
                          "required": ["name"]}},

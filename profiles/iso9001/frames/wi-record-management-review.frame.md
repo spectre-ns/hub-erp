@@ -27,3 +27,8 @@ For: the management representative (preparer) and the chair.
 4. The chair decides **approve** with `outputs` set and files a task or a
    change request for each action. The record closes and is rendered to the
    minutes document in the same folder.
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Management representative | Records the management review as this instruction says. |

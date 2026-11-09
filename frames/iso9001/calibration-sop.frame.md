@@ -36,3 +36,10 @@ The record type is calibration.
 1. [staff] Record the calibration (record-filer)
 2. [quality-manager] Review the calibration
 3. [system] Open the nonconformance (ncr-opener)
+
+## Roles and responsibilities
+| Role | Responsibilities |
+|---|---|
+| Staff | Records the calibration of the equipment they use. |
+| Quality manager | Reviews each calibration; a failed one opens a nonconformance. |
+| Management representative | Receives the calibrations that are overdue. |

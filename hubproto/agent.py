@@ -601,9 +601,9 @@ class Agent:
         from .cogs import cog_context
 
         specs = look_specs() + act_specs(mode)
-        system = cog_context(tools._ctx(None), None, tools_now=specs) + "\n\n" + AGENT_RULES.format(cog=self.cog, goal=goal, mode=MODE_WORDS[mode],
-                                                                                                actions=actions, rounds=rounds,
-                                                                                                for_whom=tools.for_whom or "yourself (a standing duty)")
+        rules = AGENT_RULES.format(cog=self.cog, goal=goal, mode=MODE_WORDS[mode], actions=actions, rounds=rounds,
+                                   for_whom=tools.for_whom or "yourself (a standing duty)")
+        system = cog_context(tools._ctx(None), None, tools_now=specs, extra=[("YOUR TASK", rules)])
         return {"run": run_id, "tools": tools, "system": system, "specs": specs, "model": prof.get("model") or "stand-in", "mode": mode,
                 "goal": goal, "by": by, "rounds": rounds}
 
