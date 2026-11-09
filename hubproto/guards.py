@@ -575,7 +575,7 @@ def rule_identity(rule: dict) -> str:
         "routing": ("process", "step", "condition"), "permission": ("subject", "action", "object", "folder"),
         "approval_criteria": ("approver", "process"), "sla": ("process", "step"), "sod": ("object",),
         "member": ("principal",), "role": ("name",), "folder": ("path",), "threshold": ("name",), "cog": ("name",),
-        "persona": ("name",), "duty": ("cog", "task"), "group": ("name",), "committee": ("name",),
+        "persona": ("name",), "duty": ("cog", "task"), "group": ("name",), "committee": ("name",), "process": ("name",),
     }.get(kind)
     if not fields:
         return rule_key(rule)
@@ -633,15 +633,54 @@ def drift_guard(old_rules: list[dict], new_rules: list[dict]) -> list[dict]:
                   # Removing a deny, a "when a person confirms" or a segregation sentence lets someone do what they could not
                   # (or do it unconfirmed).
                   "widening": (rule["kind"] == "permission" and rule["effect"] in ("deny", "propose")) or rule["kind"] in (
-                      "sod", "validation_class", "validation_need"),
+                      "sod", "validation_class", "validation_need")
+                  # A removed route that sent items to a person: they no longer go to anyone who must look.
+                  or (rule["kind"] == "routing" and (rule.get("mode") or "assign") == "assign"
+                      and not str(rule.get("assignee") or "").startswith("cog:")),
                   "reason": _reason(rule, "remove")}
         if key in paired:
             change["changed_to"] = added[paired[key]]
             change["reason"] = "superseded by the change above: " + _reason(rule, "remove")
             change["widening"] = False
         changes.append(change)
+    _flag_lost_denies(old_rules, new_rules, changes)
     changes.sort(key=lambda c: (c["rule"]["kind"], c["id"]))
     return changes
+
+
+def _subjects(rules: list[dict], who: str) -> set[str]:
+    """The subjects a permission may name that reach ``who``: its roles, the groups it is in (by name or by a role)."""
+    roles = set()
+    for r in rules:
+        if r.get("kind") == "member" and r.get("principal") == who:
+            roles |= set(r.get("roles") or [])
+    groups = {r["name"] for r in rules if r.get("kind") == "group"
+              and (who in (r.get("members") or []) or roles & set(r.get("roles") or []))}
+    return {f"role:{x}" for x in roles} | {f"group:{g}" for g in groups} | {f"person:{who}", f"cog:{who}"}
+
+
+def _denies(rules: list[dict], who: str) -> set[tuple]:
+    subj = _subjects(rules, who)
+    return {(r.get("action"), r.get("object"), r.get("resource")) for r in rules
+            if r.get("kind") == "permission" and r.get("effect") == "deny" and r.get("subject") in subj}
+
+
+def _flag_lost_denies(old_rules: list[dict], new_rules: list[dict], changes: list[dict]) -> None:
+    """A "narrowing" that lifts a deny is a widening (governance M2): taking someone out of a group, or a role away from
+    them, when that group or role carries a "may not". Effective denies are compared per member, before and after."""
+    people = {r["principal"] for r in old_rules if r.get("kind") == "member"}
+    for who in sorted(people):
+        lost = _denies(old_rules, who) - _denies(new_rules, who)
+        if not lost:
+            continue
+        said = "; ".join(f"may now {a} {o} in {str(res).partition(':')[2]}" for a, o, res in sorted(lost, key=str))
+        for c in changes:
+            r = c.get("rule") or {}
+            about = (r.get("kind") == "member" and r.get("principal") == who) or \
+                    (r.get("kind") == "group" and (who in ((c.get("changes_from") or {}).get("members") or []) or who in (r.get("members") or [])))
+            if about and c.get("op") in ("add", "remove") and not (c["op"] == "remove" and c.get("changed_to")):
+                c["widening"] = True
+                c["reason"] = f"{c['reason']}; {who} loses a deny, so {who} {said}"
 
 
 def _widens_over(old: dict, new: dict) -> bool:
@@ -651,6 +690,9 @@ def _widens_over(old: dict, new: dict) -> bool:
     if new.get("kind") == "approval_criteria":
         return _criteria_widens(old, new)
     if new.get("kind") == "process":
+        if _process_widens(old, new):
+            return True
+
         def checkpoints(r):
             return {s.get("id") for s in r.get("steps") or [] if s.get("kind") == "checkpoint"} | {
                 t.get("id") for t in r.get("transitions") or [] if (t.get("gate") or {}).get("kind") in ("person", "cog", "committee")}
@@ -670,6 +712,29 @@ def _widens_over(old: dict, new: dict) -> bool:
     if new.get("kind") == "group":  # someone more is in it (what the group may do reaches them)
         return not (set(new.get("members") or []) <= set(old.get("members") or []) and set(new.get("roles") or []) <= set(old.get("roles") or []))
     return old != {**new, "source": old.get("source")}
+
+
+def _process_widens(old: dict, new: dict) -> bool:
+    """A process change judged by meaning (governance H1), on the graphs both compile to: a removed or weaker gate
+    (person, cog, automatic), a gate given to someone else, a removed validator or segregation, a new global
+    transition, or a mandatory decision that can now be bypassed (``workflow_model._widenings``)."""
+    try:
+        from .workflow_model import _widenings, graph_of_rule, transition_map
+
+        og, ng = graph_of_rule(old), graph_of_rule(new)
+    except Exception:
+        return old != {**new, "source": old.get("source")}  # cannot judge it: two owners
+    if any(p.get("widening") for p in _widenings(og, ng)):
+        return True
+    otm, ntm = transition_map(og), transition_map(ng)
+    for tid, t in ntm.items():
+        o = otm.get(tid)
+        if o is None:
+            continue
+        a, b = o.get("gate") or {}, t.get("gate") or {}
+        if a and b and a.get("kind") == b.get("kind") and any(a.get(k) != b.get(k) for k in ("role", "cog", "committee", "also")):
+            return True  # the same kind of gate, decided by someone else
+    return False
 
 
 def _amount(cond) -> tuple | None:
