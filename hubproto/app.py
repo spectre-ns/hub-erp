@@ -755,6 +755,9 @@ class Hub:
         elif not self.sop_source() and any(_is_frame_doc(d["fields"]) for d in self.kernel.query(type_="document")):
             self.frame_documents(create=False)
         self._rebase_open_proposals(base, proposal, now=now)
+        from . import closure
+
+        closure.after_release(self, base, by)  # the first release: the SOPs become documents (unless kept as files)
         return meta
 
     def _texts_for_release(self, proposal: dict, overrides: dict, rejected_text: set) -> dict[str, str]:
