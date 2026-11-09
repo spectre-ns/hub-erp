@@ -145,8 +145,16 @@ def _fetch_json(req, timeout: float):
         url = str(getattr(req, "full_url", "") or "")
         if not url.startswith(ANTHROPIC_URL):  # a hosted API takes calls side by side; a local server does not
             with gate_for(url, getattr(req, "data", None)).turn(getattr(_held, "priority", 0), getattr(_held, "who", "")):
-                with urllib.request.urlopen(req, timeout=timeout) as r:
-                    return json.load(r)
+                # A local model that timed out is usually still busy (a long prompt, a cold load): ask once more, longer,
+                # before the caller hears it did not answer (a review would otherwise be recorded as failed).
+                for attempt, limit in enumerate((timeout, timeout * 1.5)):
+                    try:
+                        with urllib.request.urlopen(req, timeout=limit) as r:
+                            return json.load(r)
+                    except (TimeoutError, OSError) as e:
+                        timed_out = isinstance(e, TimeoutError) or "timed out" in str(e).lower()
+                        if attempt or not timed_out or isinstance(e, urllib.error.HTTPError):
+                            raise
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.load(r)
     finally:
