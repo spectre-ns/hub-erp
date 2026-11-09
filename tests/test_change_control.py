@@ -261,7 +261,9 @@ def test_people_review_ask_and_suggest_and_the_author_answers(hub):
     assert d["origin"]["kind"] == "suggested" and d["origin"]["by"] == "bob" and d["origin"]["accepted_by"] == "alice"
     assert cc.suggestions(hub, co["number"])[0]["status"] == "accepted"
     assert any("direct changes changed since round 1" in r for r in cc.send_reasons(hub, co["number"]))
-    cc.request_review(hub, co["number"], "alice", panel=[])
+    with pytest.raises(ValueError, match="bob objected"):
+        cc.request_review(hub, co["number"], "alice", panel=[])  # leaving off a reviewer who objected needs a reason
+    cc.request_review(hub, co["number"], "alice", panel=[], drop_reason="bob's point is answered in the prose")
     stated = next(i for i in items(hub, co) if i.get("direct") == d["id"])
     assert stated["origin"]["kind"] == "suggested" and stated["origin"]["frame"] == "document-control-sop" and stated["origin"]["line"], \
         "the qa-manager wrote it into the SOP and it reads back"
@@ -284,7 +286,7 @@ def test_every_warning_is_accepted_and_a_widening_needs_both_policy_owners(hub, 
     ref = route["warnings"][0]["ref"]
     out = cc.decide_item(hub, co["number"], route["id"], "approve", "carol", "routing checked", accept_warnings=[ref])
     assert out["state"] == "pending" and out["decisions"][-1]["accepted_warnings"] == [ref]
-    assert any("needs two policy owners who did not make it (approved by carol)" in r for r in cc.approval_reasons(hub, co["number"]))
+    assert any("needs two policy owners, one of whom contributed nothing to it (approved by carol)" in r for r in cc.approval_reasons(hub, co["number"]))
     cc.decide_item(hub, co["number"], route["id"], "approve", "bob", "routing checked")  # carol accepted it already
     rest = [i for i in items(hub, co) if i["id"] != route["id"]]
     for i in rest:
