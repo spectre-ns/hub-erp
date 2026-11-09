@@ -277,6 +277,82 @@ def source_texts(hub, drafts: dict[str, str] | None = None) -> dict[str, str]:
     return out
 
 
+# ---------------------------------------------------------------- the Frames, once the SOPs are documents
+def _store_of(hub, frames: dict[str, tuple[str, str]]):
+    """A Frame store made of texts, never of the files on disk: {name: (text, path relative to the Frames root)}."""
+    from pathlib import Path
+
+    from .frames import FrameError, FrameStore, load_frame_text
+
+    root = Path(hub._frames_dir)
+    store = object.__new__(FrameStore)
+    store.root = root
+    store.frames = {}
+    for name, (text, rel) in sorted(frames.items()):
+        try:
+            f = load_frame_text(text, root / rel)
+        except FrameError:
+            raise
+        except Exception as e:
+            raise FrameError(f"{rel}: {e}") from None
+        if f.name != name:
+            raise FrameError(f"the document of {name} reads as the Frame {f.name!r}; a Frame keeps its name")
+        f.relpath = rel
+        store.frames[name] = f
+    return store
+
+
+def _relpath(hub, name: str, rec: dict | None, bom: dict) -> str:
+    """Where a Frame lives under frames/: as the release in force has it, as its document says, or a new place."""
+    if name in bom and bom[name].get("path"):
+        return bom[name]["path"]
+    f = (rec or {}).get("fields") or {}
+    rel = f.get("frame_relpath") or f.get("frame_path") or ((f.get("converted_from") or {}).get("frame") if isinstance(f.get("converted_from"), dict) else None)
+    return rel or f"documents/{name}.frame.md"
+
+
+def released_store(hub, digest: str | None = None):
+    """The Frames exactly as a release has them (its bill of materials and the texts it kept), for a hub whose SOPs
+    are documents: the files on disk decide nothing. Documents in force that no release compiles (reference guides)
+    are read from the document. None when the release kept no texts (an old release)."""
+    meta = hub.releases.current() if digest is None else hub.releases.get(digest)
+    if not meta:
+        return None
+    texts = hub.releases.frame_texts(meta["digest"])
+    bom = {f["name"]: f for f in meta.get("frames") or []}
+    frames = {}
+    for name, entry in bom.items():
+        text = texts.get(name) or hub.releases.text_by_sha(entry.get("sha256"))
+        if text is None:
+            return None
+        frames[name] = (text, entry.get("path") or f"documents/{name}.frame.md")
+    for d in hub.kernel.query(type_="document"):
+        name = d["fields"].get("sop_name")
+        if name and name not in frames and d["state"] == "effective" and str(d["fields"].get("lineage", "")).startswith(LINEAGE):
+            frames[name] = (frame_text(hub, d), _relpath(hub, name, d, bom))
+    return _store_of(hub, frames)
+
+
+def document_store(hub, drafts: dict[str, str | None] | None = None):
+    """The Frames a compile reads once the SOPs are documents: one per document in force, each read from it, with the
+    drafts a change order carries in place of theirs (``eco.drafts_of``: {name: draft locator}; a draft of an SOP with no
+    document in force, ``eco.add_new_sop``, adds that Frame; a name with None, ``eco.retire_sop``, takes it out).
+    Never the disk listing."""
+    drafts = dict(drafts or {})
+    bom = {f["name"]: f for f in (hub.releases.current() or {}).get("frames") or []}
+    frames = {}
+    names = {d["fields"]["sop_name"] for d in hub.kernel.query(type_="document")
+             if str(d["fields"].get("lineage", "")).startswith(LINEAGE) and d["state"] == "effective"} | set(drafts)
+    for name in sorted(names):
+        if name in drafts and drafts[name] is None:
+            continue  # retired by the change order
+        rec = hub.kernel.get(drafts[name]) if name in drafts else in_force(hub.kernel, name)
+        if rec is None:
+            continue
+        frames[name] = (frame_text(hub, rec), _relpath(hub, name, rec, bom))
+    return _store_of(hub, frames)
+
+
 def roundtrip_problems(hub, frames=None) -> list[str]:
     """Frames whose text would not read back exactly from the document they become (nothing is written). Empty means
     converting changes no rule and no wording."""
