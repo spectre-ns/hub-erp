@@ -21,11 +21,18 @@ KINDS = {
     "approval_criteria": {"approver", "process", "max_amount", "currency", "conditions"},
     "sod": {"object", "roles"},
     "process": {"name", "folder", "steps", "terminal", "reject_to"},
-    "cog": {"name", "model", "prompt", "follows", "reviews", "prompt_from", "references", "autonomy", "duties"},
+    # A cog's identity: what it does (about), the model it is bundled with, its persona. What it follows, what it may do and
+    # its duties are derived from the SOPs (hubproto.release).
+    "cog": {"name", "model"},
     # A scoping Frame: the SOP and policy Frames it compiles, in order, its level, and the scopes it layers on.
     "scope": {"name", "level", "compiles", "layers_on"},
-    # A persona (a cog or a job role): the scopes and Frames it layers, in order (later layers add and may only narrow).
-    "persona": {"name", "of", "layers"},
+    # A persona: a behaviour document shared by any number of cogs (tone, stance, lenses, adversarial passes, when it
+    # escalates, its behaviour prompt).
+    "persona": {"name", "stance", "behaviour"},
+    # A cog's standing goal, stated in the SOP that owns the work ("Every day the quality-assistant cog finds ...").
+    "duty": {"cog", "task", "every"},
+    # Who a work instruction is for ("For: reviewers and the document controller."): their required reading.
+    "audience": {"frame", "roles"},
     # A committee of cogs that does one piece of work together, each on its own: "compile-frame" reads the SOPs into
     # rules; a rule needs ``quorum`` of the members to read it the same way.
     "committee": {"name", "members", "quorum"},
@@ -80,8 +87,12 @@ def validate_rule(rule: dict) -> list[str]:
     src = rule.get("source")
     if not isinstance(src, dict) or not {"frame", "version", "line", "text"} <= set(src):
         errors.append(f"{kind}: missing or incomplete source")
-    if kind == "permission" and rule.get("effect") not in ("allow", "deny"):
-        errors.append("permission: effect must be allow or deny")
+    if kind == "permission" and rule.get("effect") not in ("allow", "deny", "propose"):
+        errors.append("permission: effect must be allow, deny or propose")
+    if kind == "permission" and rule.get("effect") == "propose" and not rule.get("confirmer"):
+        errors.append("permission: a proposing permission names who confirms (a role, or a person)")
+    if kind == "duty" and rule.get("every") not in ("day", "week", "month"):
+        errors.append("duty: every must be day, week or month")
     if kind == "member" and rule.get("principal_type") not in ("person", "cog"):
         errors.append("member: principal_type must be person or cog")
     if kind == "routing":

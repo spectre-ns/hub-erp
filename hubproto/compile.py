@@ -144,6 +144,10 @@ def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], re
     findings += scope_guard(rules, set(store.frames), {n: f.scope for n, f in store.frames.items()})
     base = releases.current(now)
     old_rules = releases.rules(base["digest"]) if base else []
+    from .changecontrol import keep_divergences  # an open divergence keeps its rule in force until a change order resolves it
+
+    rules, kept = keep_divergences(rules, base)
+    findings += kept
     changes = drift_guard(old_rules, rules)
     changes += text_changes(base.get("frames") if base else [], store.bill_of_materials(frames), rules)
     for c in changes:
@@ -181,11 +185,9 @@ def text_changes(old_bom: list[dict], new_bom: list[dict], rules: list[dict]) ->
     """A change to a Frame's wording is a change the policy owners review, whether or not any rule moved: the SOP is
     what people follow and what cogs judge against. Two owners when a cog follows that Frame."""
     old = {f["name"]: f for f in old_bom or []}
-    followed = {n for r in rules if r.get("kind") == "cog" for n in (r.get("follows") or []) + (r.get("reviews") or [])}
-    from .release import persona_frames
+    from .release import followed_by_cogs
 
-    scopes = {r["name"]: r for r in rules if r.get("kind") == "scope"}
-    followed |= {n for r in rules if r.get("kind") == "persona" and r.get("of") == "cog" for n in persona_frames(scopes, r)}
+    followed = followed_by_cogs(rules)  # what the cogs follow (derived from the SOPs that name them) and the personas they behave by
     out = []
     for f in new_bom or []:
         prior = old.get(f["name"])

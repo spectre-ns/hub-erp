@@ -13,6 +13,27 @@ from __future__ import annotations
 from . import authz, inventory
 from .agent import register
 
+
+def _lot_intent(action: str, aliases=()):
+    """What a stock tool would do, for the harness's decision: an action on stock items in the lot's folder ("move"
+    and "count" are what the SOPs' "update stock items" covers)."""
+    def intent(t, a: dict) -> dict:
+        lot, err = _lot(t, a)
+        if err:
+            return err
+        return {"action": action, "aliases": list(aliases), "object": "stock-item", "folder": lot["folder"], "checked": True}
+    return intent
+
+
+def _process_intent(process: str):
+    def intent(t, a: dict) -> dict:
+        lot, err = _lot(t, a)
+        if err:
+            return err
+        proc = (t.bundle.get("processes") or {}).get(process) or {}
+        return {"action": "create", "object": proc.get("object") or process, "folder": proc.get("folder") or lot["folder"], "checked": True}
+    return intent
+
 WORDS = {"update": "move or count", "quarantine": "quarantine"}
 
 
@@ -183,20 +204,20 @@ register({"name": "transfer_stock", "description": "Move a lot (or part of it) t
           "too need custody of the stock); quarantined stock moves only between hold locations; between sites go through a transit location.",
           "parameters": {"type": "object", "properties": {"lot": {"type": "string"}, "to_location": {"type": "string"},
                                                           "quantity": {"type": "number"}, "reason": {"type": "string"}},
-                         "required": ["lot", "to_location"]}}, transfer_stock, write=True)
+                         "required": ["lot", "to_location"]}}, transfer_stock, write=True, intent=_lot_intent("move", ["update"]))
 register({"name": "count_stock", "description": "Book a stock count. Within the count variance tolerance it is booked at once; outside it the "
           "tool refuses and you ask for an adjustment (request_stock_adjustment), which needs an approval.",
           "parameters": {"type": "object", "properties": {"lot": {"type": "string"}, "counted": {"type": "number"}, "reason": {"type": "string"}},
-                         "required": ["lot", "counted"]}}, count_stock, write=True)
+                         "required": ["lot", "counted"]}}, count_stock, write=True, intent=_lot_intent("count", ["update"]))
 register({"name": "quarantine_stock", "description": "Hold a lot (or the affected quantity, split off) in quarantine. Free: containment never "
           "waits. It leaves quarantine only through a stock release or a nonconformance's disposition.",
           "parameters": {"type": "object", "properties": {"lot": {"type": "string"}, "quantity": {"type": "number"}, "reason": {"type": "string"}},
-                         "required": ["lot", "reason"]}}, quarantine_stock, write=True)
+                         "required": ["lot", "reason"]}}, quarantine_stock, write=True, intent=_lot_intent("quarantine"))
 register({"name": "request_stock_adjustment", "description": "Ask for a stock adjustment (a count outside tolerance, a loss, a correction): it "
           "goes through stock-adjustment, routed by value; the requester never approves it.",
           "parameters": {"type": "object", "properties": {"lot": {"type": "string"}, "new_quantity": {"type": "number"}, "reason": {"type": "string"}},
-                         "required": ["lot", "new_quantity", "reason"]}}, request_stock_adjustment, write=True)
+                         "required": ["lot", "new_quantity", "reason"]}}, request_stock_adjustment, write=True, intent=_process_intent("stock-adjustment"))
 register({"name": "request_stock_release", "description": "Ask for a lot to be released from quarantine (stock-release, approved by the quality "
           "manager); refused while an open nonconformance names the lot.",
           "parameters": {"type": "object", "properties": {"lot": {"type": "string"}, "to_location": {"type": "string"}, "reason": {"type": "string"}},
-                         "required": ["lot", "reason"]}}, request_stock_release, write=True)
+                         "required": ["lot", "reason"]}}, request_stock_release, write=True, intent=_process_intent("stock-release"))

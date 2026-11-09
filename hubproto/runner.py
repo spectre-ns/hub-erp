@@ -287,6 +287,7 @@ class Runner:
         state["manifest"] = manifest
         track.append({"type": "run.release_changed", "run_id": state["id"], "from": old, "to": cur["digest"], "status": state.get("at"),
                       "move": move, "manifest_digest": sha256_of(manifest)})
+        self._save(state)  # the saved state and the Track agree even if the move is then refused
         return True
 
     # ------------------------------------------------------------- submission

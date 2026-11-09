@@ -3,7 +3,7 @@ type: frame [0.2]
 name: ncr-sop
 description: "Control of nonconforming outputs: any member of staff opens a nonconformance, it is classified and risk-scored, the quality manager dispositions it within 5 days, and a corrective action is opened when the risk or the disposition demands one."
 visibility: internal
-version: "0.2.0"
+version: "0.3.0"
 scope: department
 maintainer: carol
 inherits: org-model
@@ -22,7 +22,8 @@ quality manager, and for the management representative when the quality
 manager reported it (the reporter may not approve their own record). When the
 disposition is scrap or return, or the risk is medium or high, a CAPA is
 opened automatically and linked to the record (10.2). The record is rendered
-to an evidence document when it closes.
+to an evidence document when it closes. The quality-assistant cog keeps an
+eye on dispositions that are waiting too long.
 
 ## Permissions
 Staff may create nonconformances in Quality/Nonconformances.
@@ -41,6 +42,9 @@ The quality-assistant cog may approve nonconformance nonconformances when the ri
 
 ## Segregation of duties
 The reporter and the approver of a nonconformance must be different people.
+
+## Duties
+Every day the quality-assistant cog finds nonconformances that have waited more than three days for a disposition and reminds whoever they wait for, in the item's chatter.
 
 ## Process: nonconformance
 Records are filed in Quality/Nonconformances.

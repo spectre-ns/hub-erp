@@ -24,7 +24,7 @@ from .rules import CONDITION_VOCABULARY, NUMBER_WORDS
 
 RULE_SECTIONS = (
     "roles", "members", "folders", "permissions", "thresholds", "routing",
-    "approval criteria", "segregation of duties",
+    "approval criteria", "segregation of duties", "duties",
 )
 
 
@@ -55,8 +55,10 @@ _MEMBER_ITEM = re.compile(
 )
 _FOLDER_ITEM = re.compile(r"^- (?P<path>[A-Z][\w /-]*)$")
 _PERMISSION = re.compile(
-    r"^(?P<subject>[A-Z][\w -]+?) may (?P<neg>not )?(?P<action>[a-z]+) (?P<object>[a-z][a-z -]*?) in (?P<folder>[A-Z][\w /-]+?)\.$"
+    r"^(?P<subject>[A-Z][\w -]+?) may (?P<neg>not )?(?P<action>[a-z]+)(?: on)? (?P<object>[a-z][a-z -]*?) in (?P<folder>[A-Z][\w /-]+?)"
+    r"(?: when (?:an? |the )?(?P<confirmer>[a-z][a-z -]*?) confirms)?\.$"
 )
+_COG_SUBJECT = re.compile(r"^The (?P<cog>[a-z][\w-]*) cog$")
 _PERMISSION_READ = re.compile(
     r"^(?P<subject>[A-Z][\w -]+?) may (?P<neg>not )?read (?P<folder>[A-Z][\w /-]+?)\.$"
 )
@@ -86,6 +88,9 @@ _CRITERIA = re.compile(
 _SOD = re.compile(
     r"^The (?P<a>[\w -]+?) and the (?P<b>[\w -]+?) of a (?P<object>[\w-]+) must be different people\.$"
 )
+# "Whoever made a direct configuration change on a change-order is not its only approver.": that person may approve
+# it with others, never alone (enforced where the object's approvals are counted).
+_SOD_ONLY = re.compile(r"^Whoever (?P<did>[a-z][\w -]+?) on an? (?P<object>[\w-]+) is not its only approver\.$")
 # "A person signs a cog's work, never another cog", as configuration (change control 7): any item, or one kind of item.
 _SOD_COG = re.compile(r"^A cog's work(?: on an? (?P<object>[\w -]+?))? is signed by a person\.$")
 _PROCESS_HEAD = re.compile(r"^## Process: (?P<name>[a-z0-9-]+)$")
@@ -96,11 +101,28 @@ _PROCESS_STEP = re.compile(
 )
 _COG_HEAD = re.compile(r"^## Cog: (?P<name>[a-z0-9][\w-]*)$")
 _SCOPE_HEAD = re.compile(r"^## Scope: (?P<name>[a-z0-9][\w-]*)$")
-_PERSONA_HEAD = re.compile(r"^## Persona: (?P<name>[a-z0-9][\w-]*) \((?P<of>cog|role)\)$")
+_PERSONA_HEAD = re.compile(r"^## Persona: (?P<name>[a-z0-9][\w-]*)(?: \((?P<of>cog|role)\))?$")
 _COMMITTEE_HEAD = re.compile(r"^## Committee: (?P<name>[a-z0-9][\w-]*)$")
-_SECTION_KEY = re.compile(r"^(?P<key>Level|Layers on|Compiles|Layers|Reads|Members|Agree): ?(?P<rest>.*)$")
+_SECTION_KEY = re.compile(r"^(?P<key>Level|Layers on|Compiles|Members|Agree): ?(?P<rest>.*)$")
 _LEVELS = ("company", "site", "department", "process")
-_COG_KEY = re.compile(r"^(?P<key>Model|Prompt from|Prompt|Follows|Reviews|References|Autonomy|Duty|Lenses): ?(?P<rest>.*)$")
+# A cog profile is the cog's identity: what it does (About), the model it is bundled with and its persona. What it may do,
+# what it follows and its duties are derived from the SOPs; its behaviour (prompt, lenses) is in its persona.
+_COG_KEY = re.compile(r"^(?P<key>About|Model|Persona|Prompt from|References|Prompt|Follows|Reviews|Autonomy|Duty|Lenses): ?(?P<rest>.*)$")
+_COG_MOVED = {
+    "prompt": "a cog's behaviour prompt is in its persona (Behaviour:) and what it does is its About: line",
+    "lenses": "lenses are in the cog's persona (Lenses:)",
+    "autonomy": "autonomy is derived per action from the SOPs (permissions, steps, and 'when a person confirms' sentences)",
+    "follows": "what a cog follows is derived from the SOPs that name it or its roles",
+    "reviews": "what a cog reads is derived from the SOPs that name it or its roles",
+    "duty": "a duty is a sentence in the SOP that owns the work: 'Every day the <cog> cog <does the task>.' under '## Duties'",
+}
+# A persona is a behaviour document for cogs, shared by any number of them.
+_PERSONA_KEY = re.compile(r"^(?P<key>Tone|Stance|Lenses|Reviews|Escalates|Behaviour|Behavior): ?(?P<rest>.*)$")
+STANCES = ("reviewer", "executor", "author", "advisor")
+TONES = ("formal", "informal")
+_PASSES = re.compile(r"^(?P<n>\d+|one|two|three|four|five|six|once|twice) ?(?:adversarial )?(?:pass(?:es)?|times?|reviews?)?\.?$", re.I)
+_DUTY = re.compile(r"^Every (?P<every>day|working day|week|month) the (?P<cog>[a-z][\w-]*) cog (?P<task>[a-z].+\.)$")
+_FOR = re.compile(r"^For: (?P<who>.+)$")
 _DOC_REF = re.compile(r"\b[A-Z]{2,}-\d[\w-]*\b")
 _OPS = {"over": ">", "above": ">", "under": "<", "below": "<", "at or under": "<=", "at or over": ">="}
 
@@ -125,6 +147,32 @@ def object_of(title: str) -> str:
     while words and words[0].lower() in ("the", "a", "an", "this"):
         words = words[1:]
     return slug(" ".join(words)) or slug(title)
+
+
+def permission_subject(text: str) -> str:
+    """'Finance clerks' -> 'role:finance-clerk'; 'The stores cog' -> 'cog:stores' (a permission that names one cog)."""
+    m = _COG_SUBJECT.match(text.strip())
+    return "cog:" + m.group("cog") if m else "role:" + singular_role(text)
+
+
+def audience_rule(line: str, frame, n: int) -> dict | None:
+    """A work instruction's "For: ..." line: the roles it is written for, which makes it their required reading. Role
+    names in backticks are taken as written; otherwise each listed name ("internal auditors and the quality manager")
+    is read as a role. Names that are not roles (the chair) are dropped when the release is rendered."""
+    m = _FOR.match(line)
+    if not m:
+        return None
+    who = m.group("who").strip()
+    named = re.findall(r"`([a-z][a-z0-9-]*)`", who)
+    if not named:
+        for part in re.split(r",| and ", re.sub(r"\([^)]*\)", "", who).rstrip(".")):
+            words = [w for w in part.strip().lower().split() if w not in ("the", "a", "an", "every", "all", "any")]
+            if words and len(words) <= 4:
+                named.append(singular_role(" ".join(words)))
+    if not named:
+        return None
+    return {"kind": "audience", "frame": frame.name, "roles": sorted(set(named)),  # the frame keeps two identical lines apart
+            "source": {"frame": frame.name, "version": frame.version, "line": n, "text": line, "path": frame.relpath}}
 
 
 def _assignee(text: str) -> str:
@@ -420,6 +468,12 @@ class ConventionExtractor:
         out = Extraction()
         mode = str(frame.frontmatter.get("compile", "convention"))
         if mode == "none":
+            # Not compiled; only who it is for (a work instruction's "For:" line) is read, for required reading.
+            for n, raw in enumerate(frame.lines, start=frame.body_start):
+                aud = audience_rule(raw.strip(), frame, n)
+                if aud:
+                    out.rules.append(aud)
+                    break
             return out
         if mode == "guided":
             out.notes.append({"frame": frame.name, "line": 0, "text": "",
@@ -448,38 +502,96 @@ class ConventionExtractor:
         def close_cog():
             nonlocal cog_profile, cog_key
             if cog_profile is not None:
-                cog_profile["prompt"] = " ".join(cog_profile["prompt"]).strip()
+                cog_profile["about"] = " ".join(cog_profile["about"]).strip()
                 out.rules.append(cog_profile)
                 cog_profile = None
                 cog_key = ""
 
-        layered: dict | None = None  # the scope or persona section being read
+        layered: dict | None = None  # the scope, persona or committee section being read
+        persona_key = ""
 
         def close_layered():
-            nonlocal layered
+            nonlocal layered, persona_key
             if layered is not None:
+                if layered["kind"] == "persona":
+                    layered["behaviour"] = " ".join(layered["behaviour"]).strip()
+                    layered["escalates"] = " ".join(layered["escalates"]).strip()
+                    if not layered["stance"]:
+                        out.notes.append({"frame": frame.name, "line": layered["source"]["line"], "text": layered["source"]["text"], "severity": "error",
+                                          "note": f"persona {layered['name']} says no Stance: (one of {', '.join(STANCES)})"})
                 out.rules.append(layered)
                 layered = None
+                persona_key = ""
 
         def name_list(rest: str) -> list[str]:
             return [slug(x) for x in re.split(r",| and ", rest.rstrip(".")) if x.strip()]
 
+        skipping = False  # inside a section of a shape that is gone (a role persona): its lines are not read
         for n, raw in enumerate(frame.lines, start=frame.body_start):
             line = raw.strip()
             if not line:
                 continue
+            if section == "" and not line.startswith("#"):
+                aud = audience_rule(line, frame, n)
+                if aud:
+                    out.rules.append(aud)
+                    continue
             m = _SCOPE_HEAD.match(line) or _PERSONA_HEAD.match(line) or _COMMITTEE_HEAD.match(line)
             if m:
                 close_process()
                 close_cog()
                 close_layered()
                 section = "layered"
+                skipping = False
                 if m.re is _COMMITTEE_HEAD:
                     layered = {"kind": "committee", "name": m.group("name"), "members": [], "quorum": 0, "source": src(n, line)}
-                elif "of" in m.groupdict():
-                    layered = {"kind": "persona", "name": m.group("name"), "of": m.group("of"), "layers": [], "reads": [], "source": src(n, line)}
+                elif m.re is _PERSONA_HEAD and m.group("of"):
+                    out.notes.append({"frame": frame.name, "line": n, "text": line, "severity": "error",
+                                      "note": "a persona is a behaviour document for cogs now ('## Persona: <name>' with Tone:, Stance:, Lenses:, "
+                                              "Reviews:, Escalates:, Behaviour:); what a cog or a role reads is derived from the SOPs that name it"})
+                    skipping = True
+                elif m.re is _PERSONA_HEAD:
+                    layered = {"kind": "persona", "name": m.group("name"), "tone": "", "stance": "", "lenses": [], "passes": 0,
+                               "escalates": [], "behaviour": [], "source": src(n, line)}
                 else:
                     layered = {"kind": "scope", "name": m.group("name"), "level": "", "compiles": [], "layers_on": [], "source": src(n, line)}
+                continue
+            if skipping and not line.startswith("#"):
+                continue
+            skipping = False
+            if layered is not None and layered["kind"] == "persona" and not line.startswith("#"):
+                km = _PERSONA_KEY.match(line)
+                if km:
+                    persona_key = km.group("key").lower().replace("behavior", "behaviour")
+                    rest = km.group("rest").strip()
+                    if persona_key == "tone":
+                        layered["tone"] = rest.rstrip(".").lower()
+                        if layered["tone"] not in TONES:
+                            out.notes.append({"frame": frame.name, "line": n, "text": line, "severity": "error",
+                                              "note": f"a persona's tone is {' or '.join(TONES)}"})
+                    elif persona_key == "stance":
+                        layered["stance"] = rest.rstrip(".").lower()
+                        if layered["stance"] not in STANCES:
+                            out.notes.append({"frame": frame.name, "line": n, "text": line, "severity": "error",
+                                              "note": f"a persona's stance is one of {', '.join(STANCES)}"})
+                    elif persona_key == "lenses":
+                        layered["lenses"] = name_list(rest)
+                    elif persona_key == "reviews":
+                        pm = _PASSES.match(rest)
+                        word = (pm.group("n").lower() if pm else "")
+                        passes = int(word) if word.isdigit() else {**NUMBER_WORDS, "one": 1, "once": 1, "twice": 2}.get(word)
+                        if passes is None:
+                            out.notes.append({"frame": frame.name, "line": n, "text": line, "severity": "error",
+                                              "note": "say how many adversarial passes it makes before it signs, e.g. 'Reviews: 3 adversarial passes'"})
+                        else:
+                            layered["passes"] = passes
+                    elif persona_key in ("escalates", "behaviour"):
+                        layered[persona_key] = [rest] if rest else []
+                elif persona_key in ("escalates", "behaviour"):
+                    layered[persona_key].append(line)
+                else:
+                    out.notes.append({"frame": frame.name, "line": n, "text": line,
+                                      "note": "unparsed line in a persona section (Tone:, Stance:, Lenses:, Reviews:, Escalates:, Behaviour:)"})
                 continue
             if layered is not None and not line.startswith("## "):
                 km = _SECTION_KEY.match(line)
@@ -491,10 +603,6 @@ class ConventionExtractor:
                         layered["layers_on"] = name_list(rest)
                     elif key == "compiles":
                         layered["compiles"] = name_list(rest)
-                    elif key == "layers":
-                        layered["layers"] = name_list(rest)
-                    elif key == "reads":
-                        layered["reads"] = name_list(rest)
                     elif key == "members":
                         layered["members"] = name_list(rest)
                     elif key == "agree":
@@ -502,7 +610,7 @@ class ConventionExtractor:
                         layered["quorum"] = int(agree.group(1)) if agree else 0
                 else:
                     out.notes.append({"frame": frame.name, "line": n, "text": line,
-                                      "note": "unparsed line in a scope or persona section (Level:, Layers on:, Compiles:, Layers:, Reads:)"})
+                                      "note": "unparsed line in a scope or committee section (Level:, Layers on:, Compiles:, Members:, Agree:)"})
                 continue
             if layered is not None:
                 close_layered()
@@ -511,9 +619,8 @@ class ConventionExtractor:
                 close_process()
                 close_cog()
                 section = "cog"
-                cog_profile = {"kind": "cog", "name": m.group("name"), "model": "", "prompt": [], "follows": [], "reviews": [],
-                               "prompt_from": "", "references": [], "autonomy": "", "duties": [],
-                               "source": src(n, line)}
+                cog_profile = {"kind": "cog", "name": m.group("name"), "about": [], "model": "", "persona": "",
+                               "prompt_from": "", "references": [], "source": src(n, line)}
                 continue
             if section == "cog" and cog_profile is not None and not line.startswith("#"):
                 m = _COG_KEY.match(line)
@@ -522,30 +629,29 @@ class ConventionExtractor:
                     rest = m.group("rest").strip()
                     if cog_key == "model":
                         cog_profile["model"] = rest.rstrip(".")
+                    elif cog_key == "about":
+                        cog_profile["about"] = [rest] if rest else []
+                    elif cog_key == "persona":
+                        cog_profile["persona"] = slug(rest.rstrip(".").removeprefix("persona-"))
+                        cog_key = ""
                     elif cog_key == "prompt from":
                         refs = _DOC_REF.findall(rest)
                         cog_profile["prompt_from"] = refs[0] if refs else rest.strip().rstrip(".")
                         cog_key = ""
-                    elif cog_key == "autonomy":
-                        cog_profile["autonomy"] = rest.strip().rstrip(".").lower()
-                        cog_key = ""
-                    elif cog_key == "duty":
-                        if rest.strip():
-                            cog_profile["duties"].append(rest.strip())
-                        cog_key = ""
                     elif cog_key == "references":
                         cog_profile["references"] = _DOC_REF.findall(rest) or [x.strip() for x in rest.rstrip(".").split(",") if x.strip()]
                         cog_key = ""
-                    elif cog_key == "prompt":
-                        cog_profile["prompt"] = [rest] if rest else []
-                    else:
-                        names = [slug(x) for x in re.split(r",| and ", rest.rstrip(".")) if x.strip()]
-                        cog_profile[cog_key] = names
-                elif cog_key == "prompt":
-                    cog_profile["prompt"].append(line)
+                    else:  # a line that left the profile (Prompt:, Lenses:, Autonomy:, Follows:, Reviews:, Duty:)
+                        out.notes.append({"frame": frame.name, "line": n, "text": line, "severity": "error",
+                                          "note": f"a cog profile is its identity (About:, Model:, Persona:): {_COG_MOVED[cog_key]}"})
+                        cog_key = "moved"
+                elif cog_key == "about":
+                    cog_profile["about"].append(line)
+                elif cog_key == "moved":
+                    continue  # the rest of a moved Prompt: paragraph
                 else:
                     out.notes.append({"frame": frame.name, "line": n, "text": line,
-                                      "note": "unparsed line in a cog section (Model:, Prompt:, Follows:, Reviews:)"})
+                                      "note": "unparsed line in a cog section (About:, Model:, Persona:, Prompt from:, References:)"})
                 continue
             m = _PROCESS_HEAD.match(line)
             if m:
@@ -626,7 +732,10 @@ class ConventionExtractor:
             matched = self._match_sentence(line, n, section, add)
             if not matched:
                 note = {"frame": frame.name, "line": n, "text": line, "note": f"unparsed sentence in the {section!r} section"}
-                if _MODAL.search(line):
+                if section == "duties":
+                    note["severity"] = "error"
+                    note["note"] = "a duty reads 'Every day|week|month the <cog> cog <does the task>.'; this one would be silently dropped"
+                elif _MODAL.search(line):
                     note["severity"] = "error"
                     note["note"] = (f"this sentence in the {section!r} section looks like a rule but does not parse "
                                     "(see the writing-policy-frames reference); it would be silently dropped")
@@ -652,16 +761,29 @@ class ConventionExtractor:
             return True
         m = _PERMISSION.match(line)
         if m:
-            add("permission", n, line, subject="role:" + singular_role(m.group("subject")),
-                action=m.group("action"), object=singular_role(m.group("object")),
-                resource="folder:" + m.group("folder").strip(),
-                effect="deny" if m.group("neg") else "allow")
+            confirmer = m.group("confirmer")
+            if confirmer and m.group("neg"):
+                return False  # "may not ... when a person confirms" says nothing a rule can hold
+            obj = m.group("object").strip()
+            fields = {"subject": permission_subject(m.group("subject")), "action": m.group("action"),
+                      "object": "*" if obj in ("anything", "everything", "items", "records") else singular_role(obj),
+                      "resource": "folder:" + m.group("folder").strip(),
+                      "effect": "deny" if m.group("neg") else ("propose" if confirmer else "allow")}
+            if confirmer:
+                # "when a storekeeper confirms": the cog's action waits for a person in that role (a person: whoever gave the task).
+                fields["confirmer"] = "person" if confirmer.strip() == "person" else singular_role(confirmer)
+            add("permission", n, line, **fields)
             return True
         m = _PERMISSION_READ.match(line)
         if m:
-            add("permission", n, line, subject="role:" + singular_role(m.group("subject")),
+            add("permission", n, line, subject=permission_subject(m.group("subject")),
                 action="read", object="*", resource="folder:" + m.group("folder").strip(),
                 effect="deny" if m.group("neg") else "allow")
+            return True
+        m = _DUTY.match(line)
+        if m and section == "duties":
+            # A standing goal the duty runner takes up for the cog ("Every day the quality-assistant cog finds ...").
+            add("duty", n, line, cog=m.group("cog"), task=m.group("task").strip(), every=m.group("every").replace("working ", ""))
             return True
         m = _THRESHOLD.match(line)
         if m:
@@ -719,6 +841,10 @@ class ConventionExtractor:
         if m and section == "segregation of duties":
             add("sod", n, line, object=singular_role(m.group("object")) if m.group("object") else "*", roles=[],
                 rule="cog-work-signed-by-person")
+            return True
+        m = _SOD_ONLY.match(line)
+        if m:
+            add("sod", n, line, object=slug(m.group("object")), roles=[slug(m.group("did")), "approver"], only=True)
             return True
         return False
 

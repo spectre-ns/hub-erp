@@ -3,7 +3,7 @@ type: frame [0.2]
 name: inventory-policy
 description: "Parts, stock locations and lots: what moves freely, what needs an approval, and how stock is held, counted and released."
 visibility: internal
-version: "1.1.0"
+version: "1.2.0"
 scope: department
 maintainer: dave
 inherits: org-model
@@ -73,6 +73,7 @@ Controllers may approve stock adjustments in Inventory/Adjustments.
 Stock reviewers may approve stock adjustments in Inventory/Adjustments.
 Staff may create stock releases in Inventory/Releases.
 Quality managers may approve stock releases in Inventory/Releases.
+Staff may comment on anything in Inventory.
 
 ## Thresholds
 The count variance tolerance is 2 percent.

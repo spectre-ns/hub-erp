@@ -329,3 +329,55 @@ without running rules, with pending decisions withdrawn explicitly and the move 
 Rules for every workstream: stdlib only; keep the full suite green (`python -m pytest -q`); update
 tests that encoded the old behaviour rather than deleting them; no model calls in tests; say in the
 final report every place you needed another workstream's code and what you assumed.
+
+## 11. Groups and committees (agreed 2026-11-09; workstream 9, after workstreams 3 and 7 merge)
+
+- **Groups** are named sets of members, people and cogs, defined in the org model and changed by a
+  change order like everything else. A group is listed ("quality board: carol, bob, qa-manager") or
+  defined by role ("everyone holding quality-manager", following role changes). **Groups may carry
+  permissions** (e.g. "Administrators may ...") as roles do, and are also simply a way of grouping
+  members. Permission checks consider a member's roles and groups; the per-cog permissions listing
+  (principle 6) includes what a cog gains through a group.
+- **Committees** are defined on a group and **decide by consensus**: an item passes only when every
+  member agrees; an objection with a reason blocks it and returns it for revision. Committees are
+  used as a gate kind in workflow graphs, as reviewers on a change order's panel, and as the
+  compile-frame committee (whose members' readings must agree; a disagreement becomes a question).
+- Created and edited in Settings > People and roles > Groups and committees; each edit is a direct
+  change on a change order.
+- **No standing aside**: every member must agree; there is no abstention.
+- **Human intervention** when a cog member's approval criteria do not hold, and when a member has not
+  responded by the due date: the committee decision pauses and goes to a person who intervenes
+  (proposed: each committee names a person as its chair; the chair may decide in that member's place
+  with a recorded meaning, extend the due date, or return the item). Nothing passes by default.
+
+### 11.1 Senior and junior cogs; the compile Op (agreed 2026-11-09)
+
+- **Seniority distinguishes models.** A senior cog is bundled with `claude-opus-5-5`; a junior cog
+  with `qwen3:14b` (local). Groups `senior-cogs` and `junior-cogs` carry what the SOPs give each.
+- **Compilation is an Op** run by the existing Op machinery: the `compile-frame` automation, started
+  as the first step of a review round (section 3.3), each step recorded and retryable.
+- **The compile Op's committee is composed of senior cogs**: the compile-frame committee is defined on
+  the `senior-cogs` group and decides by consensus. Initial seniors: `senior-organization` (knows the
+  organization; reads SOPs into rules; signs nothing) and `senior-qa-manager` (the quality system),
+  new cogs on Opus with the existing personas. The existing `organization` and `qa-manager` stay as
+  juniors on qwen for day-to-day work (chat, drafting, reviews).
+- Seniors are usable only where the administrator has switched hosted models on
+  (`HUBPROTO_HOSTED_MODELS`, `ANTHROPIC_API_KEY`, IT SOP); an unavailable senior means the committee
+  cannot reach consensus and a person intervenes (a `member-unavailable` question).
+
+## 12. Roles and responsibilities, and required training (agreed 2026-11-09)
+
+- **Every document ends with a Roles and responsibilities table** (`| Role | Responsibilities |`;
+  a row may name a role, a group or a cog). **The table defines who must read the document**: a
+  person's required reading and a cog's context are the documents whose tables name their roles (or
+  the cog). This replaces deriving them from any mention of a role.
+- The compile warns when an SOP gives a role or cog a step, route, criteria, duty or
+  create/approve/update permission that its table does not list, and when a table names a role
+  nobody holds.
+- **A required-training document** (training matrix, Quality/Training) summarises the links: per
+  role, each document to read, its revision in force and the responsibility. It is generated from the
+  tables and republished by the release automation when a table or a listed revision changes.
+  Training acknowledgement tasks are assigned from the tables when a revision becomes effective.
+- **Committees exist to bring differing perspectives with different contexts**: each member works
+  from its own persona and responsibilities; the shared material (diff, rules in force, output
+  format) is the same, so differences surface as disagreements for a person to resolve.
