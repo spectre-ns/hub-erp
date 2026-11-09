@@ -240,8 +240,8 @@ The **Ops** row on a record or document page offers one-click actions on this it
   nonconformance. The process starts on this item, not on a copy. Only processes you may start are offered. On a
   document (other than evidence) you must also choose **minor or major?** before the button works.
 * **Ask *cog* to review**, lettered q, w, e and on: one for each cog that works from the SOP defining this kind of
-  item's process (its persona, chapter 7.1). It sends "@*cog* please review this *type*" on the chatter. Every cog
-  works from the company scope, which includes the tasks SOP, so a task offers all seven cogs.
+  item's process (the SOP is in its context, chapter 6.1). It sends "@*cog* please review this *type*" on the chatter.
+  Every cog works from the company scope, which includes the tasks SOP, so a task offers all eleven cogs.
 
 **How to use the keyboard shortcuts**
 

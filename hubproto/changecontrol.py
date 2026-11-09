@@ -899,8 +899,10 @@ def _refresh(hub, co: dict, p: dict) -> dict:
     if p.get("status") == "open" and not p.get("applied"):
         _state_map_items(hub, co, p)
     authors = _draft_authors(hub, co)
+    contribs = contributors(hub, co)
     for c in p.get("changes") or []:
         c["makers"] = _makers(c, authors)
+        c["contributors"] = contribs
     per_item, general = _warnings(hub, co, p)
     for c in p.get("changes") or []:
         ws = per_item.get(c["id"], [])
@@ -928,12 +930,19 @@ def item_state(c: dict, owners) -> str:
     approver. Stale decisions (made before the baseline changed) do not count, nor does a decision by one of the item's
     makers (who made a change never approves it: a maker is not the second owner on their own widening)."""
     makers = set(c.get("makers") or [])
+    if _widening(c):
+        # Whoever made a change is not its only approver (the agreed rule): a maker who is a policy owner may be one of
+        # the two owners, when the other owner contributed nothing to the change order and approves it too.
+        live = [d for d in c.get("decisions") or [] if not d.get("stale")]
+        if any(d["verdict"] == "reject" for d in live if d["by"] not in makers):
+            return "rejected"
+        approvers = {d["by"] for d in live if d["verdict"] == "approve"} & set(owners)
+        independent = approvers - makers - set(c.get("contributors") or [])
+        return "approved" if len(approvers) >= 2 and independent else "pending"
     live = [d for d in c.get("decisions") or [] if not d.get("stale") and d["by"] not in makers]
     if any(d["verdict"] == "reject" for d in live):
         return "rejected"
     approvers = {d["by"] for d in live if d["verdict"] == "approve"}
-    if _widening(c):
-        return "approved" if len(approvers & set(owners)) >= 2 else "pending"
     return "approved" if approvers else "pending"
 
 
@@ -1187,7 +1196,13 @@ def _panel_entry(hub, raw, by: str, suggested: list[dict]) -> list[dict]:
 
 
 # ---------------------------------------------------------------- a round
-def request_review(hub, co_ref, by: str, panel=None) -> dict:
+def _objectors(co: dict) -> dict[str, dict]:
+    """Reviewers whose latest review raised a blocking finding (an objection): {who: result}."""
+    return {w: res for w, (n, res) in _latest_results(co).items()
+            if w != "hub" and any(f.get("severity") == "blocking" for f in res.get("findings") or [])}
+
+
+def request_review(hub, co_ref, by: str, panel=None, drop_reason: str = "") -> dict:
     """Start a review round: the compile-frame Op (hubproto.automation, queued in the hub-automation lane, every step
     recorded) compiles the delta from the drafts as they stand, drafts the prose for direct changes, checks the
     guards, stages it, suggests the panel (or takes ``panel``: member names or {"who", "reason"}, which replaces the
@@ -1210,7 +1225,16 @@ def request_review(hub, co_ref, by: str, panel=None) -> dict:
             return last
     rs = rounds(co)
     n = len(rs) + 1
+    dropped = []
+    if panel is not None:  # leaving off a reviewer who objected needs a reason; the objection stays a warning to accept
+        named = {(x.get("who") if isinstance(x, dict) else str(x)) for x in panel}
+        prior = {e["who"]: e for r0 in rounds(co) for e in r0.get("panel") or []}
+        dropped = [w for w in _objectors(co) if w not in named and not (prior.get(w) or {}).get("committee")]
+        if dropped and not (drop_reason or "").strip():
+            raise ValueError(f"{', '.join(dropped)} objected (a blocking finding) and is not on this panel: say why it is left off "
+                             "(its objection stays a warning the approver accepts)")
     rs.append({"n": n, "requested_by": by, "at": utcnow(), "status": "compiling", "compiled": None, "panel": [], "suggested": [],
+               "dropped": [{"who": w, "reason": drop_reason.strip(), "by": by} for w in dropped],
                "results": {}, "requested_panel": list(panel) if panel is not None else None,
                "baseline": f.get("baseline_changed") or None})
     _set(hub, co, by=by, rounds=rs, stage="in-review", baseline_changed=None, rejected=None)
@@ -1279,12 +1303,41 @@ def round_draft(hub, co_ref, n: int, by: str, *, extractor=None) -> str:
     if p is not None:
         co = _co(hub, co["locator"])
         p["questions"] = carry_questions(p.get("questions") or [], qs, codes=("round-trip",))
+        p["questions"] = _carrier_questions(hub, co, p, by)
         _refresh(hub, co, p)
         hub.proposals.save(p)
     _update_round(hub, co, n, lambda r: r.update({"drafted": {"by": who, "questions": [q.get("id") for q in qs]}}))
     left = [c for c in (p or {}).get("changes") or [] if c.get("unstated")]
     return (f"{who} wrote the prose for {len(todo)} direct change(s)" if todo else f"{len(items)} direct change(s) already stated") + \
         (f"; {len(left)} not stated as it stands ({len(qs)} round-trip question(s))" if left or qs else "; each reads back as itself")
+
+
+def _carrier_questions(hub, co: dict, p: dict, by: str) -> list[dict]:
+    """A direct change whose SOP the person who ran the round may not revise cannot be written into its prose (only the
+    SOP's owner or author, a document controller or a policy owner revises it, so the drafter does not write it for
+    someone who may not): a blocking question says who must carry the revision, rather than letting the change come into
+    force only as a divergence. Recomputed every round (an answered one keeps its answer)."""
+    from . import sopdocs
+    from .compile import question
+
+    old = {q["id"]: q for q in p.get("questions") or [] if q.get("code") == "carrier"}
+    keep = [q for q in p.get("questions") or [] if q.get("code") != "carrier"]
+    b = _bundle(hub)
+    for c in p.get("changes") or []:
+        if not c.get("unstated"):
+            continue
+        frame = (c.get("origin") or {}).get("frame")
+        doc = sopdocs.in_force(hub.kernel, frame) if frame else None
+        why = eco.may_change_sop(b, doc, by) if doc else ""
+        if not why:
+            continue
+        owner = doc["fields"].get("owner") or "its owner"
+        q = question(frame, 0, f"{by} may not revise {frame} ({why}), so the prose for “{c.get('reason')}” is not written: {owner}, a "
+                     "document controller or a policy owner requests the review (and so carries the revision), or the change comes into "
+                     "force only as a divergence", raised_by="hub", code="carrier", item=c["id"], blocking=True)
+        prior = old.get(q["id"])
+        keep.append({**q, **({k: prior[k] for k in ("status", "answer", "by", "at") if k in prior} if prior and prior.get("status") != "open" else {})})
+    return keep
 
 
 def _draft_fallback(hub, co: dict, todo: list[dict]) -> list[dict]:
@@ -1811,6 +1864,8 @@ def answer_question(hub, co_ref, qid: str, answer: str, by: str, line: int | Non
         raise ValueError("say what the answer is (and, best, which line of the prose says it)")
     now = utcnow()
     upd = {"status": "answered", "answer": answer.strip(), "by": by, "at": now, "answer_line": line}
+    if "divergence" in answer.lower():  # "record as a divergence": the release records it (QMS A4)
+        upd["record_divergence"] = True
     p = _proposal(hub, co)
     q = next((x for x in (p or {}).get("questions") or [] if x["id"] == qid), None)
     committee_q = q is not None and q.get("code") in COMMITTEE_CODES
@@ -2355,6 +2410,23 @@ def committee_reviews(hub, co_ref, today: str | None = None) -> list[dict]:
         out.append({"committee": name, "chair": chair, "members": members, "status": status, "objections": objections,
                     "waiting": waiting, "paused": paused, "reason": reason, "due": dues[-1] if dues else None, "vote": vote_words(name),
                     "interveners": sorted({x for p in paused for x in p["interveners"]})})
+    # A committee that objected in an earlier round and is not on this panel: its objection stands (governance H5) until
+    # it withdraws it (on a panel again, reviewing without objecting) or its chair intervenes there.
+    latest = _latest_results(co)
+    for r in rounds(co)[:-1]:
+        for name in dict.fromkeys(e["committee"] for e in r.get("panel") or [] if e.get("committee")):
+            if name in names or name in {x["committee"] for x in out}:
+                continue
+            c = committee(b, name) or {"members": [], "chair": ""}
+            members = list(dict.fromkeys(list(c.get("members") or []) + [e["who"] for e in r.get("panel") or [] if e.get("committee") == name]))
+            objections = [{"member": m, "text": f.get("text")} for m in members for f in (latest.get(m, (0, {}))[1].get("findings") or [])
+                          if f.get("severity") == "blocking"]
+            if objections:
+                out.append({"committee": name, "chair": c.get("chair") or "", "members": members, "status": "objected", "objections": objections,
+                            "waiting": [], "paused": [], "due": None, "vote": vote_words(name), "interveners": [], "dropped": True,
+                            "reason": (f"the {name} committee objected and was left off this round's panel: its objection stands ("
+                                       + "; ".join(f"{o['member']}: {o['text']}" for o in objections)
+                                       + "); put it back on the panel to review again, or its chair intervenes there")})
     return out
 
 
@@ -2490,8 +2562,9 @@ def approval_reasons(hub, co_ref) -> list[str]:
                 if c.get("stale"):
                     reasons.append(f"decided before the baseline changed (or before it went back to revising), decide it again: {c.get('reason')}")
                 elif _widening(c):
-                    have = sorted({d["by"] for d in live if d["verdict"] == "approve" and d["by"] not in (c.get("makers") or [])})
-                    reasons.append(f"widening: {c.get('reason')} needs two policy owners who did not make it" + (f" (approved by {', '.join(have)})" if have else ""))
+                    have = sorted({d["by"] for d in live if d["verdict"] == "approve"})
+                    reasons.append(f"widening: {c.get('reason')} needs two policy owners, one of whom contributed nothing to it"
+                                   + (f" (approved by {', '.join(have)})" if have else ""))
                 elif any(d["by"] in (c.get("makers") or []) for d in live):
                     reasons.append(f"not decided by anyone who did not make it: {c.get('reason')}")
                 else:
@@ -2606,7 +2679,7 @@ def decide_item(hub, co_ref, item_id: str, verdict: str, by: str, meaning: str, 
     (wrote it, made it directly, accepted it as a suggestion, overrode it, set the state-map entry) does not decide it.
     ``override`` edits the item's value (a rule of the same kind and slot, or fields to change in it): the overrider
     becomes a maker of the item, so another approver approves the new value; an override is a warning, and may leave a
-    divergence between configuration and prose. A widening needs two policy owners who did not make it. Every
+    divergence between configuration and prose. A widening needs two policy owners, one of whom contributed nothing. Every
     decision, acceptance and override is a signed, chained event on the change order; a re-decision appends. Returns
     the item."""
     from .guards import consistency_guard, drift_guard
@@ -2630,9 +2703,9 @@ def decide_item(hub, co_ref, item_id: str, verdict: str, by: str, meaning: str, 
         raise ValueError(f"{co['number']} has no item {item_id}")
     if c.get("op") == "text":
         raise ValueError("a wording change is the revision itself: the change order's approval approves it")
-    if by in (c.get("makers") or []):
+    if by in (c.get("makers") or []) and not (_widening(c) and by in (p.get("reviewers") or _owners(hub)) and override is None):
         raise ValueError(f"segregation of duties: {by} made this change ({c.get('reason')}); someone who did not decides it "
-                         f"({CHANGE_CONTROL_SOP}: “{SOD_SENTENCE}”)")
+                         f"({CHANGE_CONTROL_SOP}: “{SOD_SENTENCE}”; a policy owner who made a widening may be one of its two owners)")
     now = utcnow()
     acc = dict(p.get("acceptances") or {})
     if override is not None:
@@ -2928,7 +3001,12 @@ def record_release(hub, co_ref, digest: str) -> dict:
         return holds and (inf is not None or d.get("slot") not in final_slots or pr is not None)
 
     kept_ids = {str(f.get("rule_key") or "").split(":", 1)[-1] for f in p.get("findings") or [] if f.get("guard") == "divergence"}
-    kept = [d for d in before if d["id"] in kept_ids and still(d)]
+    texts = hub.releases.frame_texts(digest) if hasattr(hub.releases, "frame_texts") else {}
+
+    def unread_still(d):  # a sentence the hub does not enforce: open while the SOP still says it
+        return bool(d.get("prose")) and d["prose"] in (texts.get(d.get("frame")) or "")
+
+    kept = [d for d in before if (unread_still(d) if d.get("kind") == "unread" else d["id"] in kept_ids and still(d))]
     resolved = [d["id"] for d in before if d not in kept]
     prose = p.get("prose_rules") or p.get("rules") or []
     fin, pro = {}, {}
@@ -2953,6 +3031,15 @@ def record_release(hub, co_ref, digest: str) -> dict:
                     "co": co["number"], "accepted_by": ((cause or {}).get("override") or {}).get("by") or dec.get("by"),
                     "meaning": ((cause or {}).get("override") or {}).get("meaning") or dec.get("meaning"), "at": utcnow(), "status": "open",
                     "item": (cause or {}).get("id")})
+    # The committee's chair answered "record as a divergence" for prose the hub cannot read: the sentence is in force as
+    # text, not as configuration; that is a divergence of its own (QMS A4).
+    for q in p.get("questions") or []:
+        if q.get("record_divergence") and q.get("status") == "answered":
+            quote = q.get("quote") or q.get("text") or ""
+            new.append({"id": f"{co['number']}/D{len(new) + 1}", "kind": "unread", "frame": q.get("frame"), "line": q.get("line"),
+                        "prose": quote, "prose_rule": None, "in_force": None, "slot": f"unread:{q.get('frame')}:{q.get('line')}",
+                        "co": co["number"], "accepted_by": q.get("by"), "meaning": q.get("answer"), "at": utcnow(), "status": "open",
+                        "question": q["id"]})
     _annotate_release(hub, digest, change_order=co["number"], divergences=kept + new, divergences_resolved=resolved)
     return {"new": [d["id"] for d in new], "kept": [d["id"] for d in kept], "resolved": resolved}
 

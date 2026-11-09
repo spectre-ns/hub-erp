@@ -64,3 +64,51 @@ def test_or_the_same_in_another_currency(released, tmp_path):
     [ch] = [x for x in p["changes"] if x["op"] == "add" and x["rule"]["kind"] == "approval_criteria"]
     assert ch["widening"], "the limit now holds in EUR too: more bills for the cog"
     assert not [f for f in p["findings"] if f["severity"] == "error"]
+
+
+# ---------------------------------------------------------------- governance H1 and M2 (regression round 3)
+def test_deleting_the_approval_step_is_a_widening_that_needs_both_owners(released):
+    """H1 (p04): a process change is judged by meaning: the bill approval step removed lets bills post with no decision."""
+    from hubproto.compile import change_state
+
+    edit_frame(released, "finance-policy", "5. [payables-reviewer] Approve the bill\n", "")
+    p = released.compile()
+    [c] = [c for c in p["changes"] if c["op"] == "add" and c["rule"]["kind"] == "process" and c["rule"]["name"] == "purchase-to-pay"]
+    assert c["changes_from"] and c["widening"], "one change of the process, and a widening"
+    released.review(p["id"], "carol", decisions={c["id"]: "approve"})
+    assert change_state(next(x for x in released.proposals.load(p["id"])["changes"] if x["id"] == c["id"])) == "pending", "one approver is not enough"
+
+
+def test_a_process_that_only_moved_is_still_not_a_change(released):
+    edit_frame(released, "finance-policy", "Everything else is approved by a person.\n", "Everything else is approved by a person.\nA line.\n")
+    p = released.compile(save=False)
+    assert [c["op"] for c in p["changes"]] == ["text"] and {m["name"] for m in p["moved"]} == {"purchase-to-pay", "journal-reversal"}
+
+
+def test_a_gate_given_to_someone_else_or_a_removed_person_route_is_a_widening(released):
+    from hubproto.guards import drift_guard
+
+    base = released.settings_rules()
+    proc = next(r for r in base if r["kind"] == "process" and r["name"] == "purchase-to-pay")
+    staff = {**proc, "steps": [{**s, "role": "staff"} if s["kind"] == "checkpoint" else s for s in proc["steps"]]}
+    [add] = [c for c in drift_guard(base, [staff if r is proc else r for r in base]) if c["op"] == "add"]
+    assert add["widening"], "the approval decided by staff instead of the payables reviewer"
+    route = next(r for r in base if r["kind"] == "routing" and r.get("assignee") == "role:controller" and r["process"] == "purchase-to-pay")
+    [gone] = drift_guard(base, [r for r in base if r is not route])
+    assert gone["op"] == "remove" and gone["widening"], "big bills no longer go to the controller"
+
+
+def test_a_narrowing_that_lifts_a_deny_is_a_widening(released):
+    """M2 (p16): taking someone out of a group, or a role away, when it carries a "may not"."""
+    from hubproto.guards import drift_guard
+
+    base = released.settings_rules()
+    grp = {"kind": "group", "name": "audit-conflicted", "members": ["bob"], "roles": [], "source": {"frame": "org-model", "line": 1, "text": "x"}}
+    deny = {"kind": "permission", "subject": "group:audit-conflicted", "action": "approve", "object": "audit",
+            "resource": "folder:Quality/Audits", "effect": "deny", "source": {"frame": "audit-sop", "line": 1, "text": "y"}}
+    [c] = [c for c in drift_guard(base + [grp, deny], base + [{**grp, "members": []}, deny]) if c["op"] == "add"]
+    assert c["widening"] and "bob loses a deny" in c["reason"]
+    carol = next(r for r in base if r["kind"] == "member" and r["principal"] == "carol")
+    fewer = {**carol, "roles": [x for x in carol["roles"] if x != "quality-manager"]}
+    [m] = [c for c in drift_guard(base, [fewer if r is carol else r for r in base]) if c["op"] == "add" and c["rule"]["kind"] == "member"]
+    assert m["widening"] and "carol may now create bill" in m["reason"]

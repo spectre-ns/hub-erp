@@ -1508,6 +1508,26 @@ class Runner:
                            kind="organisation", gate=pending.get("title") or "")
                 return self.load(state["id"])
         step = self._gate_step(state, pending)
+        if verdict == "approve" and self.is_change_order(state):
+            # A person signs a change order: the committee's approval is its people's signatures (every vote a person's;
+            # a cog member was paused for the chair), recorded as theirs so the release accepts it.
+            people = [v for v in votes if v.get("by_type") == "person"]
+            if len(people) != len(votes) or not people:
+                return self._committee_pause(state, track, self.releases.bundle(state["release"]), None, "excluded", self.PERSON_SIGNS_CONFIGURATION)
+            chair = cm.get("chair")
+            lead = next((v for v in people if v["by"] == chair), people[0])
+            for v in people:
+                if v is not lead and state.get("record"):
+                    self.kernel.append("record.decision", state["record"], {**v, "verdict": "approve", "step": pending.get("checkpoint"),
+                                                                             "committee": cm["name"], "cosigns": lead["by"]},
+                                       run_id=state["id"], release=state["release"], by=v["by"])
+            self._record_decision(state, step, track, by=lead["by"], by_type="person", verdict=verdict, meaning=meaning,
+                                  payload_digest=pending["payload_digest"], meaning_given=True, option=option,
+                                  extra={"committee": cm["name"], "votes": votes, "voters": [v["member"] for v in votes],
+                                         "cosigned_by": [v["by"] for v in people if v is not lead]})
+            self._save(state)
+            result = self.advance(state["id"]) if state.get("moving") else self.load(state["id"])
+            return self._committee_cogs(result) if (result.get("pending") or {}).get("committee") else result
         self._record_decision(state, step, track, by=f"committee:{cm['name']}", by_type="committee", verdict=verdict, meaning=meaning,
                               payload_digest=pending["payload_digest"], meaning_given=True, option=option,
                               extra={"committee": cm["name"], "votes": votes, "voters": [v["member"] for v in votes],

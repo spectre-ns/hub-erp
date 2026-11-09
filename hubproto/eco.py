@@ -143,6 +143,34 @@ def compiled_from(hub, co: dict) -> dict[str, str]:
     return {n: str(d["fields"].get("content_sha") or "") for n, d in sorted(approved_of(hub, co).items())}
 
 
+class carried_record_types:
+    """While the change order's delta is compiled, the record types it carries are the ones in force (so a CO can carry a
+    new record type together with the process that uses it): the record types in force with its record-type changes
+    applied (hubproto.recordtypes.check). Restored afterwards; the release activates them for good."""
+
+    def __init__(self, hub, co: dict):
+        self.hub, self.co, self.saved = hub, co, None
+
+    def __enter__(self):
+        changes = list(self.co["fields"].get("record_type_changes") or [])
+        if not changes:
+            return self
+        try:
+            from . import recordtypes
+        except ImportError:
+            return self
+        k = self.hub.kernel
+        types, _, _ = recordtypes.check(self.hub, changes, k.types)
+        self.saved = (k.types_hook, k._types)
+        k.types_hook, k._types = None, types
+        return self
+
+    def __exit__(self, *exc):
+        if self.saved is not None:
+            self.hub.kernel.types_hook, self.hub.kernel._types = self.saved
+        return False
+
+
 def stage(hub, co_ref: str, drafts: dict[str, str] | None = None, extractor=None) -> dict:
     """Compile the Frame the change order's approved revisions make (or the given ``drafts``: {SOP name: locator}),
     against the release in force, and stage it on the change order as its proposal (replacing the one staged before).
@@ -160,7 +188,8 @@ def stage(hub, co_ref: str, drafts: dict[str, str] | None = None, extractor=None
         fields.update({"staged_proposal": None, "staged_number": None, "staged_changes": 0, "staged_widenings": 0})
     else:
         try:
-            p = hub.compile(sop_drafts=drafts, save=True, extractor=extractor)
+            with carried_record_types(hub, co):  # a CO may carry a new record type and the process that uses it
+                p = hub.compile(sop_drafts=drafts, save=True, extractor=extractor)
             p["eco"] = co["number"]
             p["source"] = "eco"
             if old and old != p["id"]:  # the questions of the compile staged before (on any release) carry, or close

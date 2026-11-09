@@ -18,7 +18,6 @@ from hubproto.groups import committee, group_members, groups_of
 from hubproto.runner import RunError
 
 P = "design-review"
-TODAY = date.today()
 
 DESIGN = '''---
 type: frame [0.2]
@@ -780,7 +779,7 @@ def test_a_panel_committee_member_is_told_their_review_is_a_vote_with_a_due_date
     co = _limit_co(hub)
     cc.request_review(hub, co["number"], "alice")
     [note] = [m for m in hub.inbox.for_principal("dave") if m["kind"] == "review"]
-    due = (TODAY + timedelta(days=cc.COMMITTEE_REVIEW_DAYS)).isoformat()
+    due = (date.today() + timedelta(days=cc.COMMITTEE_REVIEW_DAYS)).isoformat()
     assert "Your vote: the change-board committee decides by consensus; one reasoned objection sends it back." in note["body"]
     assert f"due {due}" in note["subject"] and "a review without one is your agreement" in note["body"]
     [c] = cc.committee_reviews(hub, co["number"])
@@ -795,7 +794,7 @@ def test_the_chair_acts_for_a_late_person_member_of_a_panel_committee(board_hub)
     cc.request_review(hub, co["number"], "alice")
     with pytest.raises(ValueError, match="has until"):
         cc.intervene_review(hub, co["number"], "change-board", "dave", "bob", "too slow")
-    late = (TODAY + timedelta(days=cc.COMMITTEE_REVIEW_DAYS + 1)).isoformat()
+    late = (date.today() + timedelta(days=cc.COMMITTEE_REVIEW_DAYS + 1)).isoformat()
     [c] = cc.committee_reviews(hub, co["number"], today=late)
     assert c["status"] == "paused" and c["paused"][0]["kind"] == "late" and c["interveners"] == ["bob"]
     assert "dave has not responded by" in c["reason"] and "its chair, bob, intervenes" in c["reason"]
@@ -803,14 +802,14 @@ def test_the_chair_acts_for_a_late_person_member_of_a_panel_committee(board_hub)
     assert cc.tick_panels(hub, today=late) == [], "told once"
     assert any(m["kind"] == "intervention" and "dave has not responded" in m["subject"] for m in hub.inbox.for_principal("bob"))
     # Extend: dave is asked again with the new date.
-    later = (TODAY + timedelta(days=20)).isoformat()
+    later = (date.today() + timedelta(days=20)).isoformat()
     with pytest.raises(ValueError, match="meaning"):
         cc.intervene_review(hub, co["number"], "change-board", "dave", "bob", " ", action="extend", due=later, today=late)
     cc.intervene_review(hub, co["number"], "change-board", "dave", "bob", "dave is on leave", action="extend", due=later, today=late)
     assert cc.committee_reviews(hub, co["number"], today=late)[0]["status"] == "waiting"
     assert any("now due " + later in m["subject"] for m in hub.inbox.for_principal("dave"))
     # Late again: bob decides in dave's place (an objection with its reason sends it back).
-    after = (TODAY + timedelta(days=21)).isoformat()
+    after = (date.today() + timedelta(days=21)).isoformat()
     res = cc.intervene_review(hub, co["number"], "change-board", "dave", "bob", "the limit needs the controller's view", verdict="object",
                               today=after)
     assert res["intervention"]["by"] == "bob" and res["findings"][0]["severity"] == "blocking"
@@ -830,7 +829,7 @@ def test_a_chair_who_contributed_to_the_change_order_escalates(board_hub):
 
     write(hub, hub.kernel.get(d["locator"]), OLD, NEW, "bob")
     cc.request_review(hub, co["number"], "bob")
-    late = (TODAY + timedelta(days=cc.COMMITTEE_REVIEW_DAYS + 1)).isoformat()
+    late = (date.today() + timedelta(days=cc.COMMITTEE_REVIEW_DAYS + 1)).isoformat()
     [c] = cc.committee_reviews(hub, co["number"], today=late)
     [p] = c["paused"]
     assert "the chair, bob, contributed to" in p["who"] and "bob" not in p["interveners"]
@@ -849,7 +848,7 @@ def test_at_a_gate_the_chair_acts_for_a_late_person_once_the_due_date_has_passed
     class Later(date):
         @classmethod
         def today(cls):
-            return TODAY + timedelta(days=5)
+            return date.today() + timedelta(days=5)
     monkeypatch.setattr(runner_mod, "date", Later)
     # No tick has run: kim is late all the same, and sam decides in her place.
     done = hub.runner.intervene(run_id, "sam", "decide", member="kim", verdict="approve", meaning="kim is away; I checked the drawing",

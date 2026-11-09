@@ -74,9 +74,33 @@ def test_a_committee_gate_on_a_change_order_honours_its_approval_readiness(tmp_p
     assert hub.kernel.get(co["locator"])["state"] != "approved" and not hub.runner.load(run_id)["pending"]["committee"]["votes"]
     # Once every item is decided the board agrees, and the change order is approved by consensus.
     decide_all(hub, co, who=("bob",))
+    from test_change_control import accept_co_warnings
+
+    accept_co_warnings(hub, co, "bob")
     for who in ("carol", "bob"):
         hub.runner.decide(run_id, who, "approve", meaning="agreed", payload_digest=seen(hub.runner, run_id))
-    assert hub.kernel.get(co["locator"])["state"] in ("approved", "released")
+    # The board's approval is its people's signatures (carol's, the chair, cosigned by bob): the release accepts it.
+    co = hub.kernel.get(co["locator"])
+    approvals = [d for d in co["decisions"] if d.get("verdict") == "approve" and d.get("committee") == "change-board"]
+    assert {(d["by"], d.get("by_type", "person")) for d in approvals} == {("carol", "person"), ("bob", "person")}
+    jobs = [j for j in hub.automation.of(co["locator"]) if j["automation"] == "release-change-order"]
+    assert jobs and jobs[-1]["status"] == "success", [(s["name"], s["status"], s.get("detail")) for s in jobs[-1]["steps"]] if jobs else "no release"
+    assert hub.kernel.get(co["locator"])["state"] == "released"
+
+
+def test_a_committee_with_cog_members_may_not_approve_change_orders(tmp_path):
+    shutil.copytree(ROOT / "frames", tmp_path / "frames")
+    for rel, pairs in BOARD.items():
+        path = tmp_path / "frames" / rel
+        text = path.read_text()
+        for old, new in pairs:
+            text = text.replace(old, new.replace("- change-board: carol and bob", "- change-board: carol, bob and qa-manager"))
+        path.write_text(text)
+    h = Hub(tmp_path)
+    h.kernel.seed()
+    errors = [f["detail"] for f in h.compile()["findings"] if f["severity"] == "error"]
+    assert any("approves change orders by the change-board committee, which has cog members (qa-manager): a person signs a change order" in e
+               for e in errors), errors
 
 
 def test_a_committee_that_agrees_on_a_change_order_that_became_unready_pauses_for_its_chair(tmp_path, monkeypatch):

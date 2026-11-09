@@ -172,7 +172,7 @@ def test_the_loop_from_the_pages(shell):
     # bob's suggestion changes a tolerance: a widening, so the second policy owner decides it too (the page says so).
     widening = [i for i in items(hub, co) if i["state"] == "pending" and i["widening"]]
     assert widening and "widening: needs both policy owners" in co_page(shell, co, "bob")
-    assert any("needs two policy owners who did not make it (approved by carol)" in r for r in cc.approval_reasons(hub, co["number"]))
+    assert any("needs two policy owners, one of whom contributed nothing to it (approved by carol)" in r for r in cc.approval_reasons(hub, co["number"]))
     for i in widening:
         ok(decide(shell, co, i, "bob", "tighter matching, as I suggested", accept=[w["ref"] for w in i["warnings"]]))
     for w in cc.co_warnings(hub, co["number"]):
