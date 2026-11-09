@@ -935,9 +935,16 @@ def complete_layout(g: dict, layout: dict | None) -> dict:
     return lay
 
 
-def free_spot(layout: dict) -> list[int]:
-    """The first place on tidy's grid where a new status overlaps none."""
+def free_spot(layout: dict, near: list | tuple | None = None) -> list[int]:
+    """Where a new status overlaps none: the free place closest to ``near`` (the middle of what the editor shows), else
+    the first free place on tidy's grid."""
     boxes = list(positions(layout).values())
+    if near:
+        cands = [(snap(near[0] - W / 2 + i * (W + 32)), snap(near[1] - H / 2 + j * (H + 48))) for i in range(-4, 5) for j in range(-4, 5)]
+        cands.sort(key=lambda p: ((p[0] + W / 2 - near[0]) ** 2 + (p[1] + H / 2 - near[1]) ** 2, p))
+        for x, y in cands:
+            if all(abs(x - bx) >= W + 2 * GRID or abs(y - by) >= H + 2 * GRID for bx, by in boxes):
+                return [x, y]
     for r in range(0, 40):
         for c in range(0, 12):
             x, y = X0 + c * COL, Y0 + r * ROW
@@ -1014,7 +1021,9 @@ def prepare_op(doc: dict, op: dict) -> dict:
         if not op.get("id"):
             op["id"] = _unique(slug(op["name"]), _ids(g))
         if not op.get("at"):
-            op["at"] = free_spot(complete_layout(g, d["layout"]))
+            near = op.pop("near", None)
+            ok = isinstance(near, (list, tuple)) and len(near) == 2 and all(isinstance(v, (int, float)) for v in near)
+            op["at"] = free_spot(complete_layout(g, d["layout"]), near if ok else None)
         if op.get("global") and not op.get("transition_id"):
             op["transition_id"] = _unique("to-" + op["id"], _ids(g) | {op["id"]})
     elif kind == "add_transition":

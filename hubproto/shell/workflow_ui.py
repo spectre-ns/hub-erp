@@ -42,7 +42,8 @@ body:has(.wf-ed) .layout{grid-template-columns:minmax(0,1fr)}body:has(.wf-ed) na
 .wf-panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--sp-3)}.wf-panel h2{margin-top:0;font-size:var(--fs-l)}
 .wf-panel .fields,.wf-text .fields{display:grid;gap:var(--sp-2)}.wf-panel form{margin:0 0 var(--sp-3)}.wf-panel fieldset,.wf-text fieldset{border:1px solid var(--line);border-radius:var(--r);padding:var(--sp-2);margin:0}
 .wf-panel legend,.wf-text legend{font-size:var(--fs-s);color:var(--muted);font-weight:500}.wf-rule{background:var(--accent-soft);border-radius:var(--r);padding:var(--sp-2);margin:0 0 var(--sp-3);line-height:1.45}
-.wf-checklist{display:flex;flex-wrap:wrap;gap:2px var(--sp-3)}.wf-checklist label{display:flex;gap:4px;align-items:center;font-size:var(--fs-s)}
+.wf-checklist{display:flex;flex-wrap:wrap;gap:2px var(--sp-3);align-items:center}.wf-checklist label,label.wf-checklist{display:flex;gap:6px;align-items:center;font-size:var(--fs-s)}
+.wf-ed input[type=radio],.wf-ed input[type=checkbox],.wf-text input[type=radio],.wf-text input[type=checkbox]{width:auto;min-height:0;height:auto;margin:0;flex:none}
 ul.wf-checks{list-style:none;margin:0;padding:0}ul.wf-checks li{padding:4px 6px;border-radius:var(--r);margin:2px 0;font-size:var(--fs-s)}ul.wf-checks li.err{background:var(--crit-bg);color:var(--crit)}
 ul.wf-checks li.warn{background:var(--warn-bg);color:var(--warn)}ul.wf-checks li a{color:inherit}ul.wf-checks li.ok{color:var(--ok)}
 .wf-ways{list-style:none;margin:var(--sp-1) 0;padding:0}.wf-ways li{margin:2px 0}dialog.wf-dlg{border:1px solid var(--line);border-radius:var(--r-lg);background:var(--panel);color:var(--fg);padding:var(--sp-4);width:min(36rem,94vw);box-shadow:0 18px 50px var(--shadow-lg)}
@@ -120,7 +121,8 @@ if(dlg)dlg.addEventListener('click',function(e){if(e.target.closest('[data-wf-cl
 if(dlg)dlg.addEventListener('close',function(){var e=selEl(sel);if(e)e.focus({preventScroll:true});else svg.focus()});
 // --- talking to the server
 function send(data,o){o=o||{};var fd=data instanceof FormData?data:new FormData();if(!(data instanceof FormData)){fd.append('op','json');fd.append('op_json',JSON.stringify(data));if(o.coalesce)fd.append('coalesce','1')}
- fd.set('as',D.as);fd.set('process',D.process);fd.set('fmt','json');if(!fd.has('sel'))fd.set('sel',sel||'');var my=++seq;busy++;saved('Saving…');
+ fd.set('as',D.as);fd.set('process',D.process);fd.set('fmt','json');if(!fd.has('sel'))fd.set('sel',sel||'');
+ if(fd.get('op')==='add_status'&&!fd.has('near'))fd.set('near',n1(vb[0]+vb[2]/2)+','+n1(vb[1]+vb[3]/2));var my=++seq;busy++;saved('Saving…');
  return fetch(D.urls.op,{method:'POST',body:new URLSearchParams(fd),credentials:'same-origin',headers:{'Accept':'application/json'}}).then(function(r){return r.json()}).then(function(j){busy--;
   if(my<applied)return j;applied=my;if(!j.ok){saved('Not saved');showError(j.error||'Not done.',o.form);say(j.error);if(j.svg)swap(j);return j}
   showError('',o.form);if(o.form&&dlg&&dlg.contains(o.form))dlg.close();swap(j);say(j.said);saved(j.saved||'Draft saved');return j}).catch(function(){busy--;saved('Could not reach the hub; your last change was not saved.')})}
@@ -131,7 +133,7 @@ function swap(j){if(drag){pending=j;return}var f=document.activeElement,fid=(f&&
  if(j.panel!=null)setPanel(j.panel,j.focus);var c=document.getElementById('wf-checks');if(c&&j.checks_html!=null)c.innerHTML=j.checks_html;var d=document.getElementById('wf-delta');if(d&&j.delta_html!=null)d.innerHTML=j.delta_html;
  var n=document.getElementById('wf-nchanges');if(n&&j.n_changes!=null)n.textContent=j.n_changes;
  ['undo','redo'].forEach(function(k){var b=root.querySelector('[data-wf-'+k+']');if(b)b.disabled=!j['can_'+k]});
- if(!j.focus){var e=fid?document.getElementById(fid):null;if(!e&&j.focus_el)e=selEl(sel);if(e){quiet=true;e.focus({preventScroll:true});quiet=false}}
+ if(!j.focus){var e=fid?document.getElementById(fid):null;if(!e&&j.focus_el)e=selEl(sel);if(!e&&fid)e=svg;if(e){quiet=true;e.focus({preventScroll:true});quiet=false}}
  if(j.reveal&&sel)reveal(selEl(sel))}
 function reveal(el){if(!el)return;var b=el.getBBox(),p=el.transform&&el.transform.baseVal.consolidate();var x=b.x+(p?p.matrix.e:0),y=b.y+(p?p.matrix.f:0);
  if(x<vb[0]||y<vb[1]||x+b.width>vb[0]+vb[2]||y+b.height>vb[1]+vb[3]){vb[0]=x+b.width/2-vb[2]/2;vb[1]=y+b.height/2-vb[3]/2;setVB()}}
@@ -182,7 +184,7 @@ svg.addEventListener('keydown',function(e){var k=e.key,g=e.target.closest&&e.tar
  if(k==='Enter'||k===' '){e.preventDefault();loadPanel(true);return}
  if((k==='Delete'||k==='Backspace')&&D.editable){e.preventDefault();del(g);return}
  if((k==='c'||k==='C')&&isS&&D.editable&&!hotOff()){e.preventDefault();clearTimeout(focusTimer);loadPanel('[data-wf-form="connect"] select[name="to"]');return}});
-root.addEventListener('keydown',function(e){if(!(e.ctrlKey||e.metaKey)||e.altKey)return;var t=e.target;if(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable))return;var k=e.key.toLowerCase();
+document.addEventListener('keydown',function(e){if(!(e.ctrlKey||e.metaKey)||e.altKey)return;var t=e.target;if(t!==document.body&&!root.contains(t))return;if(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable))return;var k=e.key.toLowerCase();
  if(k==='z'||k==='y'){e.preventDefault();var redo=k==='y'||e.shiftKey;var b=root.querySelector(redo?'[data-wf-redo]':'[data-wf-undo]');if(b&&!b.disabled)b.form.requestSubmit()}});
 // --- forms (panel, dialogs, toolbar) and links that select
 root.addEventListener('submit',function(e){var f=e.target;if(!f.matches||!f.matches('form[data-wf-op]'))return;e.preventDefault();send(new FormData(f),{form:f})});
@@ -760,7 +762,12 @@ class WorkflowsMixin:
         if op in ("undo", "redo", "tidy"):
             return {"op": op}, False
         if op == "add_status":
-            return {"op": "add_status", "name": self._f("name"), "category": self._f("category") or "in_progress",
+            near = None
+            try:
+                near = [float(v) for v in self._f("near").split(",")] if self._f("near") else None
+            except ValueError:
+                near = None
+            return {"op": "add_status", "name": self._f("name"), "category": self._f("category") or "in_progress", "near": near,
                     "outcome": self._f("outcome") if self._f("category") == "done" else None, "sla_days": self._f("sla_days") or None,
                     "global": bool(self._f("global"))}, False
         if op == "edit_status":

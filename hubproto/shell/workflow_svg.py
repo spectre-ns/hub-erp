@@ -44,11 +44,11 @@ WF_CSS = """
 .wf .m-del .wf-name,.wf .m-del .wf-lname{text-decoration:line-through}
 .wf .m-chg .wf-box,.wf .m-chg .wf-lbox{stroke:var(--warn);stroke-width:2.5}.wf .m-chg .wf-line{stroke:var(--warn);stroke-width:2.2}.wf .m-chg .wf-mk circle{fill:var(--warn-bg);stroke:var(--warn)}.wf .m-chg .wf-mk text{fill:var(--warn)}
 .wf-views{display:flex;gap:var(--sp-1);flex-wrap:wrap;margin:0 0 var(--sp-2)}.wf-legend{display:flex;flex-wrap:wrap;gap:var(--sp-1) var(--sp-3);font-size:var(--fs-s);color:var(--muted);margin:var(--sp-1) 0}
-.wf-diffbox{display:grid;grid-template-columns:minmax(0,2fr) minmax(15rem,1fr);gap:var(--sp-3);align-items:start}.wf-diffbox .wf-pane{min-width:0;overflow:auto;border:1px solid var(--line);border-radius:var(--r-lg);background:var(--bg)}
+.wf-diffbox{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--sp-3);align-items:start}@media(min-width:1700px){.wf-diffbox{grid-template-columns:minmax(0,3fr) minmax(16rem,1fr)}}.wf-diffbox .wf-pane{min-width:0;overflow:auto;border:1px solid var(--line);border-radius:var(--r-lg);background:var(--bg)}
 ol.wf-changes{margin:0;padding-left:1.2em}ol.wf-changes li{margin:2px 0}ol.wf-changes button.linkish,ul.wf-checks button.linkish{background:none;border:0;padding:0;color:var(--accent);text-align:left;font:inherit;min-height:0;cursor:pointer;text-decoration:underline;text-underline-offset:2px}
 ol.wf-changes li.wf-hl{background:var(--accent-soft);border-radius:4px}ol.wf-changes ul{margin:2px 0;padding-left:1.1em;color:var(--muted)}
 .wf-sign{display:inline-block;min-width:1.4em;text-align:center;font-weight:700;border-radius:4px;margin-right:4px}.wf-sign.add{color:var(--ok);background:var(--ok-bg)}.wf-sign.del{color:var(--crit);background:var(--crit-bg)}.wf-sign.chg{color:var(--warn);background:var(--warn-bg)}
-.wf-card .wf{max-height:560px}@media(max-width:900px){.wf-diffbox{grid-template-columns:1fr}}
+.wf-card .wf{max-height:560px}.wf-diffbox .wf{max-height:640px}
 """
 
 ICON_PATHS = {
