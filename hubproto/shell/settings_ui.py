@@ -18,7 +18,7 @@ from .handler import hidden_as, href, log_line, table
 from .icons import icon
 from .text import chip, day, esc, version_label
 
-SECTIONS = [("overview", "Your changes", "edit"), ("people", "People and roles", "users"), ("permissions", "Permissions", "lock"),
+SECTIONS = [("overview", "Your changes", "edit"), ("people", "People and roles", "users"), ("groups", "Groups and committees", "group"), ("permissions", "Permissions", "lock"),
             ("limits", "Limits and due dates", "clock"), ("rails", "Cog rails", "robot"), ("sod", "Segregation of duties", "shield"),
             ("workflows", "Workflows and routing", "activity")]
 SECTION_NAMES = {k: n for k, n, _ in SECTIONS}
@@ -179,7 +179,7 @@ class SettingsMixin:
                 "Put more on it from Your changes. Nothing changes in force until it is reviewed, approved and released; its review round "
                 "writes the prose for each change into the SOP it belongs to.</div>")
 
-    SECTION_KINDS = {"people": ("role", "member", "folder"), "permissions": ("permission",), "limits": ("threshold", "sla"),
+    SECTION_KINDS = {"people": ("role", "member", "folder"), "groups": ("group", "committee"), "permissions": ("permission",), "limits": ("threshold", "sla"),
                      "rails": ("approval_criteria", "cog"), "sod": ("sod",), "workflows": ("process", "routing")}
 
     def _settings_pending_html(self, section: str) -> str:
@@ -319,7 +319,9 @@ class SettingsMixin:
         fid = "add-perm"
         out += self._sform(fid, "permissions", "permission", "add",
                            "<div class='fields'>"
-                           + self._select("subject", [(r, r.replace("-", " ")) for r in roles], self._sv(fid, "subject"), label="Role", blank="choose…")
+                           + self._select("subject", [(r, r.replace("-", " ")) for r in roles] + [(f"group:{g}", f"the {g} group") for g in
+                                                                                                  sorted(r["name"] for r in rules if r["kind"] == "group")],
+                                          self._sv(fid, "subject"), label="Role or group", blank="choose…")
                            + self._select("effect", [("allow", "may"), ("deny", "may not")], self._sv(fid, "effect", "allow"), label="May or may not")
                            + self._select("action_word", [(a, a) for a in ACTIONS], self._sv(fid, "action_word", "read"), label="Do")
                            + self._select("object", [("*", "anything")] + [(o, o.replace("-", " ")) for o in self._objects()], self._sv(fid, "object", "*"), label="What")
@@ -507,7 +509,7 @@ class SettingsMixin:
             action = f("action_word") or "read"
             if action not in ACTIONS:
                 raise ShellError("Choose what they may do.", field="action_word")
-            return {"kind": "permission", "subject": f"role:{role}", "action": action, "object": f("object") or "*",
+            return {"kind": "permission", "subject": role if role.startswith("group:") else f"role:{role}", "action": action, "object": f("object") or "*",
                     "resource": f"folder:{f('folder')}", "effect": "deny" if f("effect") == "deny" else "allow"}
         if kind == "threshold":
             name = _slug(f("name"))
@@ -558,6 +560,8 @@ class SettingsMixin:
             if not obj:
                 raise ShellError("Choose the kind of item.", field="object")
             return {"kind": "sod", "object": obj, "roles": [a, b]}
+        if kind in ("group", "committee"):
+            return self._group_rule_from_form(kind)
         if kind == "cog":
             old = next((r for r in rules if rule_key(r) == key), None) or {}
             if not f("model"):

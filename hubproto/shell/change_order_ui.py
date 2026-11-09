@@ -413,6 +413,14 @@ class ChangeOrderMixin:
         if rej and stage in cc.EDITABLE:
             out += (f"<div class='card warn' role='status'>{icon('x')} {esc(rej.get('by'))} rejected its approval"
                     + (f": “{esc(rej.get('meaning'))}”" if rej.get("meaning") else "") + ". It is back to revising.</div>")
+        unav = [q for q in self._co_unavailable_questions(ctx) if q.get("status", "open") == "open"]
+        if unav and stage in cc.EDITABLE + ("awaiting-approval",):
+            out += (f"<div class='card warn' role='status'>{icon('alert')} <b>The compile-frame committee could not read part of the prose</b> "
+                    f"({len(unav)} question(s): its members are not available here). <a href='#co-unavailable'>What to do</a></div>")
+        for c in ctx["ov"].get("committees") or []:
+            if c["status"] == "paused" and self.user == c.get("chair"):
+                out += (f"<div class='card warn' role='status'>{icon('users')} <b>The {esc(c['committee'])} committee needs you, its chair:</b> "
+                        f"{esc(c['reason'])}. <a href='#co-review'>Intervene</a></div>")
         out += f"<div class='co-next'>{self._co_next_html(ctx)}</div></div>"
         return out
 
@@ -724,6 +732,8 @@ class ChangeOrderMixin:
         out += "<h4>Panel</h4>" + table(["Reviewer", "Why", "Status", "Results", ""], rows, "Nobody is on the panel of this round.")
         for x in rnd.get("removed") or []:
             out += f"<p class='why'>{esc(x.get('who'))} was taken off the panel by {esc(x.get('by'))} on {esc(when(x.get('at')))}.</p>"
+        if current:
+            out += self._co_committees_html(ctx) + self._co_compile_committee_html(ctx)
         if prep and st != "compiling":
             on = {e["who"] for e in rnd.get("panel") or []}
             fid = "add-reviewer"
@@ -738,6 +748,98 @@ class ChangeOrderMixin:
                          "<span class='why'>They are asked at once: a cog through its queue, a person in their inbox.</span></div>")
                 out += self._co_form("/co-reviewer-add", co, fid, inner, cls="sform card", label="Add a reviewer")
         return out + "</div>"
+
+    def _co_committees_html(self, ctx: dict) -> str:
+        """Each committee on the panel and where its consensus stands (every member agrees; one objection returns it; a
+        member that could not review pauses it for the chair, who may review in its place)."""
+        co = ctx["co"]
+        cms = ctx["ov"].get("committees") or []
+        if not cms:
+            return ""
+        rnd = ctx["round"] or {}
+        res = rnd.get("results") or {}
+        out = "<h4>Committees on the panel</h4>"
+        for c in cms:
+            st = c["status"]
+            cls = {"agreed": "ok", "objected": "crit", "paused": "warn", "waiting": "info"}.get(st, "")
+            rows = []
+            for m in c["members"]:
+                r = res.get(m) or {}
+                obj = [o for o in c["objections"] if o["member"] == m]
+                pause = next((x for x in c["paused"] if x["member"] == m), None)
+                if obj:
+                    where = chip("objects", "crit") + " " + esc("; ".join(o["text"] or "" for o in obj))
+                elif pause:
+                    where = chip("could not review", "warn") + " " + esc(pause["why"])
+                elif r.get("status") == "done":
+                    where = chip("agrees", "ok") + (f" <span class='why'>{esc(short(r.get('summary') or '', 200))}</span>" if r.get("intervention") else "")
+                else:
+                    where = chip("waiting", "info")
+                rows.append([self._co_who(m), where])
+            out += (f"<div class='card'><p style='margin-top:0'><b>The {esc(c['committee'])} committee</b> {chip(st, cls)} "
+                    f"<span class='why'>chair {esc(c.get('chair') or '-')}; decides by consensus: every member agrees, one objection returns it, "
+                    "nothing passes by default</span></p>" + table(["Member", "Where it stands"], rows) + f"<p class='why'>{esc(c['reason'])}.</p>")
+            if st == "paused" and self.user == c.get("chair") and not self._viewing_cog():
+                for pz in c["paused"]:
+                    fid = f"intervene-{anchor(c['committee'] + '-' + pz['member'])}"
+                    act = "/co-intervene-review"
+                    inner = (f"<input type='hidden' name='committee' value='{esc(c['committee'])}'><input type='hidden' name='member' value='{esc(pz['member'])}'>"
+                             f"<p style='margin-top:0'><b>You chair it:</b> {esc(pz['member'])} could not review ({esc(pz['why'])}). Review in its place, "
+                             "recorded as an intervention with your meaning; to return the change instead, post a blocking finding through your own "
+                             "review or ask the requester to revise.</p>"
+                             f"<label class='f'><span>Meaning <b aria-hidden='true'>*</b> <i>(why you review in its place)</i></span>"
+                             f"<input name='meaning' required value='{esc(self._co_cv(act, fid, 'meaning'))}'></label>"
+                             f"<div class='actions'><button class='secondary'>{icon('check')}Review in {esc(pz['member'])}'s place</button></div>")
+                    out += self._co_form(act, co, fid, inner, cls="card warn", label=f"Intervene for {pz['member']}")
+            out += "</div>"
+        return out
+
+    def _co_unavailable_questions(self, ctx: dict) -> list[dict]:
+        return [q for q in ctx["ov"]["questions"] if q.get("code") == "member-unavailable"]
+
+    def _co_sysadmins(self) -> list[str]:
+        b = self.bundle or {}
+        return sorted(p for p, m in (b.get("members") or {}).items() if m.get("type") == "person" and "system-administrator" in (m.get("roles") or []))
+
+    def _co_compile_committee_html(self, ctx: dict) -> str:
+        """The compile-frame committee: who reads the prose into the delta, and, when some of its members cannot read
+        here (hosted models switched off), what that means and who can change it (the IT SOP: the installation is the
+        environment; system administrators change it)."""
+        try:
+            cmt = self.hub.compile_committee()
+        except Exception:
+            cmt = None
+        if not cmt:
+            return ""
+        un = cmt.get("unavailable") or {}
+        names = ", ".join(n for n, _ in cmt.get("members") or [])
+        if not un:
+            return f"<p class='why'>{icon('users')} The compile-frame committee ({esc(names)}; chair {esc(cmt.get('chair') or '-')}) read the prose by consensus.</p>"
+        qs = [q for q in self._co_unavailable_questions(ctx) if q.get("status", "open") == "open"]
+        what = ("; ".join(f"{n}: {w}" for n, w in un.items()))
+        return (f"<div class='card warn' role='status' id='co-committee-unavailable'><p style='margin-top:0'>{icon('alert')} <b>The compile-frame committee cannot read here.</b> "
+                f"{esc(what)}.</p><p>" + ("Every changed sentence was read exactly by the hub's sentence grammar, so this round did not need it. "
+                                          if not qs else f"{len(qs)} question(s) say what it could not read: <a href='#co-unavailable'>see Questions</a>. ")
+                + "Prose outside the grammar's sentence shapes waits for the committee, which reads by consensus.</p>"
+                + self._co_fix_unavailable_html(ctx) + "</div>")
+
+    def _co_fix_unavailable_html(self, ctx: dict) -> str:
+        co = ctx["co"]
+        admins = self._co_sysadmins()
+        who = esc(", ".join(admins)) if admins else "a system administrator (nobody holds the role in force)"
+        reported = [m for m in self.hub.inbox.all() if m.get("record") == co["locator"] and m.get("kind") == "task"
+                    and str(m.get("subject") or "").startswith("Incident: the compile-frame committee")]
+        out = (f"<p><b>Who can change it:</b> under the IT SOP the installation (the model server, its secrets) is the environment, changed by "
+               f"the system administrators ({who}): they switch hosted models on (<code>HUBPROTO_HOSTED_MODELS=on</code> with an "
+               "<code>ANTHROPIC_API_KEY</code>) and restart the hub; then request review again. Or the committee, or its members' models, change "
+               "through a change order to the cog profiles.</p>")
+        if reported:
+            last = reported[-1]
+            out += f"<p class='why'>Reported to {esc(', '.join(sorted({m['to'] for m in reported})))} on {esc(when(last.get('at')))} by {esc(last.get('from'))}.</p>"
+        elif admins and not self._viewing_cog() and (ctx["mine"] or ctx["decider"]):
+            out += self._co_form("/co-report-unavailable", co, "report-unavailable", f"<button class='secondary'>{icon('send')}Report it to the system administrators</button>"
+                                 "<span class='why'> an incident under the IT SOP: a model unavailable</span>", cls="inline")
+        return out
 
     def _co_item_options(self, ctx: dict) -> list[tuple[str, str]]:
         out = []
@@ -799,6 +901,12 @@ class ChangeOrderMixin:
         out = f"<section class='co-sec' id='co-questions'><h2>{icon('help')}Questions</h2>"
         if not qs:
             return out + "<p class='muted'>No question has been asked.</p></section>"
+        unav = [q for q in qs if q.get("code") == "member-unavailable"]
+        if unav:
+            out += self._co_unavailable_card(ctx, unav)
+            qs = [q for q in qs if q.get("code") != "member-unavailable"]
+            if not qs:
+                return out + "</section>"
         out += ("<p class='why'>Answer a question in the prose first (the next compile closes a compiler question that no longer arises); "
                 "then mark it answered with the line that says it. An open question becomes a warning the approver must accept.</p><ul class='notes'>")
         for q in qs:
@@ -821,6 +929,37 @@ class ChangeOrderMixin:
                                 open_=bool(self.err and self.route == "/co-answer" and self.vals.get("form") == fid))
             out += body + "</div></li>"
         return out + "</ul></section>"
+
+    def _co_unavailable_card(self, ctx: dict, unav: list[dict]) -> str:
+        """The compile-frame committee's member-unavailable questions as one card: who could not read what, why, who can
+        change it, and one answer for them all (each stays a warning the approver accepts)."""
+        co = ctx["co"]
+        open_ = [q for q in unav if q.get("status", "open") == "open"]
+        members = sorted({q.get("member") or "?" for q in unav})
+        frames = sorted({q.get("frame") or "?" for q in unav})
+        chair = next((q.get("chair") for q in unav if q.get("chair")), "")
+        try:
+            why = (self.hub.compile_committee() or {}).get("unavailable") or {}
+        except Exception:
+            why = {}
+        out = (f"<div class='card warn' id='co-unavailable'><h3 style='margin-top:0'>{icon('alert')}The compile-frame committee could not read "
+               f"{esc(', '.join(frames))} <span class='muted'>{len(unav)} question(s), {len(open_)} open</span></h3>"
+               "<p>It reads by consensus, so the prose it could not read is not in the delta until it can: "
+               + "; ".join(f"<b>{esc(m)}</b> ({esc(why.get(m) or 'not available')})" for m in members)
+               + (f". Its chair is {esc(chair)}." if chair else ".") + "</p>" + self._co_fix_unavailable_html(ctx))
+        if open_ and ctx["answerer"] and ctx["editable"] and not self._viewing_cog():
+            fid = "answer-unavailable"
+            act = "/co-answer-all"
+            inner = (f"<label class='f'><span>One answer for the {len(open_)} open question(s) <b aria-hidden='true'>*</b> "
+                     "<i>(for example: what was read, and how it was checked)</i></span>"
+                     f"<textarea name='answer' rows='2' required>{esc(self._co_cv(act, fid, 'answer'))}</textarea></label>"
+                     f"<div class='actions'><button class='secondary'>{icon('check')}Mark them answered</button>"
+                     "<span class='why'>The approver still accepts each as a warning; another round with the committee available closes them.</span></div>")
+            out += details("Answer them together", self._co_form(act, co, fid, inner, label="Answer the committee's questions"),
+                           open_=bool(self.err and self.route == act))
+        lis = "".join(f"<li>{esc(q.get('frame') or '')}: {esc(q.get('member') or '')} {chip(q.get('status', 'open'), 'warn' if q.get('status', 'open') == 'open' else 'ok')}"
+                      + (f" <span class='why'>answered by {esc(q.get('by'))}: “{esc(q.get('answer'))}”</span>" if q.get("answer") else "") + "</li>" for q in unav)
+        return out + details("Each question", f"<ul>{lis}</ul>") + "</div>"
 
     def _co_findings_html(self, ctx: dict) -> str:
         fs = ctx["ov"]["findings"]
@@ -1233,6 +1372,17 @@ class ChangeOrderMixin:
         else:
             out += "<p class='ok'>" + icon("check") + "Every item is decided and every warning accepted: it may be signed at its Gate.</p>"
         ws = ov["warnings"]
+        unav_ids = {q["id"] for q in self._co_unavailable_questions(ctx)}
+        grouped = [w for w in ws if w.get("ref") in unav_ids and not w.get("accepted")]
+        if len(grouped) > 1 and ctx["decider"] and not self._viewing_cog():
+            fid = "accept-unavailable"
+            act = "/co-accept-all"
+            inner = ("".join(f"<input type='hidden' name='ref' value='{esc(w['ref'])}'>" for w in grouped)
+                     + f"<label class='check'><input type='checkbox' name='confirm' value='1' required> I accept: the compile-frame committee could not read "
+                       f"part of the prose ({len(grouped)} warnings, listed below)</label>"
+                       f"<label class='f'><span>Meaning <b aria-hidden='true'>*</b></span><input name='meaning' required value='{esc(self._co_cv(act, fid, 'meaning'))}'></label>"
+                       f"<button class='secondary'>{icon('check')}Accept the {len(grouped)} warnings</button>")
+            out += self._co_form(act, co, fid, inner, cls="sform card warn", label="Accept the committee's warnings together")
         if ws:
             out += "<h3>Warnings on the change order as a whole</h3><ul class='co-warn'>"
             for w in ws:
@@ -1545,6 +1695,76 @@ class ChangeOrderMixin:
         except ValueError as e:
             raise self._co_refused(e) from None
         self._co_done(co, "The direct change is off the change order (prose already drafted for it stays in the revision: edit it there).", "co-carries")
+
+    def post_co_intervene_review(self):
+        co = self._co_post()
+        if co is None:
+            return
+        member = self._f("member")
+        meaning = self._f("meaning")
+        if not meaning:
+            raise ShellError("An intervention needs its meaning: say why you review in the member's place.", field="meaning")
+        try:
+            cc.intervene_review(self.hub, co["locator"], self._f("committee"), member, self.user, meaning)
+        except ValueError as e:
+            raise self._co_refused(e) from None
+        log_line(f"change order {co['number']} committee {self._f('committee')} intervention for {member} by={self.user}")
+        self._co_done(co, f"Recorded: you reviewed in {member}'s place.", "co-review")
+
+    def post_co_report_unavailable(self):
+        co = self._co_post()
+        if co is None:
+            return
+        admins = self._co_sysadmins()
+        if not admins:
+            raise ShellError("Nobody holds the system-administrator role in force: give someone the role through a change order to the organization model.")
+        try:
+            un = (self.hub.compile_committee() or {}).get("unavailable") or {}
+        except Exception:
+            un = {}
+        if not un:
+            raise ShellError("Every member of the compile-frame committee can read now: request review again.")
+        body = (f"{self.user} reports an incident under the IT SOP (a model unavailable): the compile-frame committee cannot read the prose of "
+                f"{co['number']}: " + "; ".join(f"{n}: {w}" for n, w in un.items()) + ". Switch hosted models on in the environment "
+                "(HUBPROTO_HOSTED_MODELS=on with ANTHROPIC_API_KEY) and restart the hub, or say why not on the change order.")
+        for a in admins:
+            self.hub.inbox.notify(a, kind="task", subject=f"Incident: the compile-frame committee cannot read ({co['number']})", body=body, record=co["locator"])
+        log_line(f"change order {co['number']} committee unavailable reported to {','.join(admins)} by={self.user}")
+        self._co_done(co, f"Reported to {', '.join(admins)}.", "co-questions")
+
+    def post_co_answer_all(self):
+        co = self._co_post()
+        if co is None:
+            return
+        answer = self._f("answer")
+        if not answer:
+            raise ShellError("Say what the answer is.", field="answer")
+        qs = [q for q in cc.questions(self.hub, co["locator"]) if q.get("code") == "member-unavailable" and q.get("status", "open") == "open"]
+        if not qs:
+            raise ShellError("No question of the compile-frame committee is open.")
+        try:
+            for q in qs:
+                cc.answer_question(self.hub, co["locator"], q["id"], answer, self.user)
+        except ValueError as e:
+            raise self._co_refused(e) from None
+        self._co_done(co, f"{len(qs)} question(s) marked answered.", "co-questions")
+
+    def post_co_accept_all(self):
+        co = self._co_post()
+        if co is None:
+            return
+        if self._f("confirm") != "1":
+            raise ShellError("Tick I accept to accept the warnings.", field="confirm")
+        meaning = self._f("meaning")
+        if not meaning:
+            raise ShellError("Say what you accept, in a few words.", field="meaning")
+        refs = self._multi("ref")
+        try:
+            for ref in refs:
+                cc.accept_warning(self.hub, co["locator"], ref, self.user, meaning)
+        except ValueError as e:
+            raise self._co_refused(e) from None
+        self._co_done(co, f"{len(refs)} warning(s) accepted.", "co-approval")
 
     def post_co_rt_uncarry(self):
         from .. import recordtypes

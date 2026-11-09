@@ -258,7 +258,9 @@ class BaseHandler(BaseHTTPRequestHandler):
                  "/co-submit-review": self.post_co_submit_review, "/co-suggestion": self.post_co_suggestion, "/co-answer": self.post_co_answer,
                  "/co-decide": self.post_co_decide, "/co-accept-warning": self.post_co_accept_warning, "/co-state-map": self.post_co_state_map,
                  "/co-dismiss-related": self.post_co_dismiss_related, "/co-direct-remove": self.post_co_direct_remove,
-                 "/co-rt-uncarry": self.post_co_rt_uncarry, "/record-types-carry": self.post_record_types_carry, "/assign": self.post_assign, "/agent-confirm": self.post_agent_confirm, "/new-person": self.post_new_person, "/new-cog": self.post_new_cog, "/cog-model": self.post_cog_model, "/restart": self.post_restart, "/mark-applied": self.post_mark_applied, "/verify-edit": self.post_verify_edit, "/editor-debug": self.post_editor_debug,
+                 "/co-rt-uncarry": self.post_co_rt_uncarry, "/record-types-carry": self.post_record_types_carry,
+                 "/co-intervene-review": self.post_co_intervene_review, "/co-report-unavailable": self.post_co_report_unavailable,
+                 "/co-answer-all": self.post_co_answer_all, "/co-accept-all": self.post_co_accept_all, "/intervene": self.post_intervene, "/assign": self.post_assign, "/agent-confirm": self.post_agent_confirm, "/new-person": self.post_new_person, "/new-cog": self.post_new_cog, "/cog-model": self.post_cog_model, "/restart": self.post_restart, "/mark-applied": self.post_mark_applied, "/verify-edit": self.post_verify_edit, "/editor-debug": self.post_editor_debug,
                  "/upload": self.post_upload, "/checkout": self.post_checkout, "/checkin": self.post_checkin, "/link": self.post_link,
                  "/snapshot": self.post_snapshot, "/hold": self.post_hold, "/resubmit": self.post_resubmit, "/retry": self.post_retry,
                  "/cancel": self.post_cancel, "/undo-checkout": self.post_undo_checkout, "/bulk-hold": self.post_bulk_hold}
@@ -399,6 +401,8 @@ class BaseHandler(BaseHTTPRequestHandler):
         try:
             if self.route == "/start":
                 return self.page_home(status=status)
+            if self.route == "/intervene":  # a refused intervention: the card it came from, what was typed kept
+                return self.page_inbox(status=status)
             if self.route == "/decide":
                 stale = isinstance(e, RunError) and ("not waiting for a" in raw or "changed since you opened it" in raw)
                 return self.page_inbox(status=status, stale=stale)

@@ -327,6 +327,18 @@ class InboxMixin:
             return (f"<article class='card decide' aria-labelledby='h-{esc(r['id'])}'>{head}<div class='facts'>{' '.join(facts)}</div>{meta}{policy}{blocked_html}{checks}"
                     f"{watch}<h4>The item</h4>{brief}</article>")
         co_gate = self._co_gate_html(r, rec) if rec and rec["type"] == "change-order" else ""
+        cm = p.get("committee")
+        if cm:  # a committee decides here by consensus: the tally; a member votes, whoever intervenes intervenes
+            tally = self._committee_tally_html(r)
+            outstanding = self.hub.runner.committee_outstanding(p)
+            if user in outstanding:
+                return (f"<article class='card decide' aria-labelledby='h-{esc(r['id'])}'>{head}<div class='facts'>{' '.join(facts)}</div>{meta}{policy}{blocked_html}{checks}"
+                        f"{tally}{self._intervention_html(r)}{self._committee_vote_note(r)}{approve_form}<h4>The item</h4>{brief}{reject_form}</article>")
+            vote = (cm.get("votes") or {}).get(user)
+            said = (f"<p class='status'>You {'agreed' if vote.get('verdict') == 'agree' else 'objected'}: “{esc(vote.get('meaning') or '')}”. "
+                    "Waiting for the other members.</p>" if vote else "")
+            return (f"<article class='card decide' aria-labelledby='h-{esc(r['id'])}'>{head}<div class='facts'>{' '.join(facts)}</div>{meta}{policy}{blocked_html}{checks}"
+                    f"{tally}{said}{self._intervention_html(r)}<h4>The item</h4>{brief}</article>")
         return (f"<article class='card decide' aria-labelledby='h-{esc(r['id'])}'>{head}<div class='facts'>{' '.join(facts)}</div>{meta}{policy}{blocked_html}{checks}"
                 f"{co_gate}{approve_form}<h4>The item</h4>{brief}{reject_form}</article>")
 
@@ -578,7 +590,7 @@ class InboxMixin:
             return self._page("Inbox", f"<h1>Inbox</h1><div class='card' role='alert'><b>{esc(user)} is not a member</b> of the organization under the release in effect; "
                                        "there is nothing in this inbox. Ask a policy owner (bob or carol) to add you to the org model.</div>")
         today = self.today
-        open_id = self.q.get("open", [""])[0] or (self.vals.get("run", "") if self.err and self.route == "/decide" else "")
+        open_id = self.q.get("open", [""])[0] or (self.vals.get("run", "") if self.err and self.route in ("/decide", "/intervene") else "")
         type_filter = self.q.get("type", [""])[0]
         try:
             page = max(1, int(self.q.get("page", ["1"])[0] or 1))
@@ -611,7 +623,7 @@ class InboxMixin:
             if total_pages > 1:
                 pages = " ".join(f"<b>{n}</b>" if n == page else f'<a href="{href("/inbox", user, page=n, type=type_filter)}#forme">{n}</a>' for n in range(1, total_pages + 1))
                 body += f"<p class='why'>Page {page} of {total_pages} ({PAGE_SIZE} per page): {pages}</p>"
-        body += self._co_inbox_html()
+        body += self._interventions_inbox_html() + self._co_inbox_html()
         awaiting = self._awaiting_me() if hasattr(self, "_awaiting_me") else []
         if awaiting:
             body += f"<h2 id='proposals'>Policy proposals waiting for your decision <span class='muted'>{len(awaiting)}</span></h2><ul class='notes'>"
@@ -665,7 +677,7 @@ class InboxMixin:
             body += "<p class='muted'>No escalations, stops, returns or automatic decisions.</p>"
         else:
             icons = {"escalation": "alert", "failure": "x-circle", "returned": "retry", "rejection": "x", "auto-decided": "robot", "request": "user", "review": "eye", "mention": "message",
-                     "automation": "layers", "task": "clipboard"}
+                     "automation": "layers", "task": "clipboard", "intervention": "users"}
 
             def note(m):
                 return (f"<li>{icon(icons.get(m['kind'], 'alert'))}<span>{notification_sentence(m, self._number_link)} <span class='muted'>{esc(when(m['at']))}</span>"
