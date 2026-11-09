@@ -184,7 +184,7 @@ def test_render_workflow_states_and_transitions(bundle):
         ("open", "awaiting-check-the-widget", ["request-the-widget"]),
         ("awaiting-check-the-widget", "awaiting-approve-the-widget", ["link-the-widget"])]
     assert [(t["id"], t.get("from"), t["to"], t["gate"]["kind"], t["actions"]) for t in wf["transitions"] if t["type"] == "directed"] == [
-        ("auto-awaiting-check-the-widget", ["open"], "awaiting-check-the-widget", "auto", ["request-the-widget"]),
+        ("open-to-awaiting-check-the-widget", ["open"], "awaiting-check-the-widget", "auto", ["request-the-widget"]),
         ("check-the-widget", ["awaiting-check-the-widget"], "awaiting-approve-the-widget", "person", ["link-the-widget"]),
         ("reject-check-the-widget", ["awaiting-check-the-widget"], "awaiting-check-the-widget", "person", []),
         ("approve-the-widget", ["awaiting-approve-the-widget"], "done", "person", []),
