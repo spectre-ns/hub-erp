@@ -13,6 +13,7 @@ functions so the prototype runs in one process):
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from pathlib import Path
 
@@ -34,18 +35,65 @@ def _reviewers(rules: list[dict]) -> set[str]:
 
 
 # ---------------------------------------------------------------- questions (change control v2, section 8)
-COMPILE_QUESTION_CODES = ("ambiguous", "unread")  # raised by compiling: a recompile that no longer raises one closes it
+# Raised by compiling: a recompile that no longer raises one closes it.
+COMPILE_QUESTION_CODES = ("ambiguous", "unread", "disagreement", "member-unavailable")
+_NEGATION = re.compile(r"\b(?:not|never|no|none|nobody|nothing|unless|except|without|cannot|neither|nor)\b|n't\b", re.I)
+
+
+def _words(text: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", (text or "").lower()))
 
 
 def question(frame: str, line: int | None, text: str, *, raised_by: str, code: str = "ambiguous", **extra) -> dict:
     """A question on a proposal: where the prose is ambiguous ("ambiguous", a reader's), where a reading in force lost its
-    line ("unread", the hub's), or where drafted prose does not read back as its direct change ("round-trip"). Its id is
-    the same for the same SOP, line and words, so a recompile finds it again."""
+    line ("unread"), where the committee's members read a line differently ("disagreement"), where a member cannot read
+    ("member-unavailable"), or where drafted prose does not read back as its direct change ("round-trip").
+
+    Its id is ``q-`` and a hash of the SOP, the line and the words of the question normalised (lower case, letters and
+    digits only), so a recompile that asks the same finds the same question. When members' questions are merged
+    (``merge_questions``) the merged one keeps the id of the first phrasing (the first member's, in committee order)."""
     from .rules import sha256_of
 
     line = int(line or 0)
-    return {"id": "q-" + sha256_of({"frame": frame, "line": line, "text": text})[:12], "text": text, "frame": frame, "line": line,
+    return {"id": "q-" + sha256_of({"frame": frame, "line": line, "text": _words(text)})[:12], "text": text, "frame": frame, "line": line,
             "raised_by": raised_by, "status": "open", "answer": None, "by": None, "code": code, **extra}
+
+
+def _raisers(q: dict) -> list[str]:
+    return [x.strip() for x in str(q.get("raised_by") or "").split(",") if x.strip()]
+
+
+def _overlap(a: str, b: str) -> float:
+    x = {w for w in _words(a).split() if len(w) > 3}
+    y = {w for w in _words(b).split() if len(w) > 3}
+    return len(x & y) / len(x | y) if x | y else 0.0
+
+
+def merge_questions(questions: list[dict]) -> list[dict]:
+    """One question per ambiguity. Readers' questions (code "ambiguous") from different members about the same SOP and
+    line (or quoting the same words) are merged into the first one asked: ``raised_by`` lists every member who asked and
+    the other phrasings are kept under ``also_asked`` ({"by", "text"}). Of one member's questions about a line, each joins
+    the earlier question it shares the most words with; a member's own questions about one line stay apart (it asked two
+    things). The same question twice (same id) is one. Other codes are only de-duplicated by id."""
+    out: list[dict] = []
+    for q in questions:
+        q = dict(q)
+        same = next((p for p in out if p["id"] == q["id"]), None)
+        if same is not None:
+            same["raised_by"] = ", ".join(dict.fromkeys(_raisers(same) + _raisers(q)))
+            continue
+        if q.get("code", "ambiguous") == "ambiguous":
+            mine = set(_raisers(q))
+            near = [p for p in out if p.get("code", "ambiguous") == "ambiguous" and p.get("frame") == q.get("frame")
+                    and (p.get("line") == q.get("line") or (_words(p.get("quote")) and _words(p.get("quote")) == _words(q.get("quote"))))
+                    and not set(_raisers(p)) & mine]
+            if near:
+                best = max(near, key=lambda p: _overlap(p["text"], q["text"]))
+                best["raised_by"] = ", ".join(dict.fromkeys(_raisers(best) + _raisers(q)))
+                best.setdefault("also_asked", []).append({"by": q.get("raised_by"), "text": q["text"]})
+                continue
+        out.append(q)
+    return out
 
 
 def carry_questions(previous: list[dict], current: list[dict], codes=COMPILE_QUESTION_CODES) -> list[dict]:
@@ -69,20 +117,73 @@ def carry_questions(previous: list[dict], current: list[dict], codes=COMPILE_QUE
     return out
 
 
-def stamp_origins(changes: list[dict], *, kind: str = "prose", by: str | None = None, at: str | None = None) -> list[dict]:
+def negated(text: str | None) -> bool:
+    """Whether words say "not" in any way (not, never, no, unless, except, without, ...n't)."""
+    return bool(_NEGATION.search(text or ""))
+
+
+def stamp_origins(changes: list[dict], *, kind: str = "prose", by: str | None = None, at: str | None = None,
+                  processes: dict | None = None) -> list[dict]:
     """Each change (delta item) says where it came from (section 8): ``origin`` (for prose, the SOP, line and words it was
-    read from and who read them: ``read_by`` for a model's reading), an empty ``warnings`` list and ``stale: False``.
-    A change that already has an origin (direct, suggested, override: change-order core) keeps it."""
+    read from and who read them: ``read_by`` for a model's reading), a ``warnings`` list and ``stale: False``. A change
+    that already has an origin (direct, suggested, override: change-order core) keeps it.
+
+    Explain-back: a rule a model read is written back as the sentence the hub's own grammar would state it in
+    (``origin.explained``), so reviewers see the quote and its meaning side by side; when exactly one of the two says
+    "not" (or never, no, unless, except, without), the change carries a ``negation`` warning: the reading may have
+    inverted the prose."""
+    from .settings import sentence
+
     for c in changes:
         src = (c.get("rule") or {}).get("source") or {}
         if c.get("op") == "text":
             where = {"frame": c.get("frame"), "line": None, "quote": None, "read_by": None}
         else:
             where = {"frame": src.get("frame"), "line": src.get("line"), "quote": src.get("text"), "read_by": src.get("read_by") or None}
-        c.setdefault("origin", {"kind": kind, "by": by if by is not None else src.get("by"), **where, "at": at or src.get("at")})
+        origin = c.setdefault("origin", {"kind": kind, "by": by if by is not None else src.get("by"), **where, "at": at or src.get("at")})
         c.setdefault("warnings", [])
         c.setdefault("stale", False)
+        if c.get("op") == "text" or not src.get("read_by"):
+            continue
+        try:
+            origin.setdefault("explained", sentence({k: v for k, v in c["rule"].items() if k != "source"}, processes or {}))
+        except Exception:
+            continue
+        quote, explained = src.get("text") or "", origin.get("explained") or ""
+        if c.get("op") == "add" and negated(quote) != negated(explained) and not any(w.get("code") == "negation" for w in c["warnings"]):
+            said, read = ("says", "does not") if negated(quote) else ("does not say", "does")
+            c["warnings"].append({"code": "negation", "ref": c["id"], "accepted": None,
+                                  "text": f"the prose {said} “not” (or never, no, unless, except, without) and the rule as read {read}: "
+                                          f"“{quote}” was read as “{explained}”. Check the reading did not invert it."})
     return changes
+
+
+def collapse_moves(changes: list[dict]) -> tuple[list[dict], list[dict]]:
+    """A rule removed and added again that differs only in where it sits (a process whose steps moved down because lines
+    were inserted above) is no change: the pair is taken out of the changes, so nobody is asked to decide noise, and
+    listed as moved. Returns (changes, moved)."""
+    from .release import strip_sources
+
+    def body(rule: dict) -> str:
+        return json.dumps(strip_sources({k: v for k, v in rule.items() if k != "source"}), sort_keys=True, default=str)
+
+    removes: dict[str, list[dict]] = {}
+    for c in changes:
+        if c.get("op") == "remove" and not c.get("changed_to"):
+            removes.setdefault(body(c["rule"]), []).append(c)
+    gone: set[str] = set()
+    moved = []
+    for c in changes:
+        if c.get("op") != "add" or c.get("changes_from"):
+            continue
+        pair = next((r for r in removes.get(body(c["rule"]), []) if r["id"] not in gone), None)
+        if pair is None:
+            continue
+        gone |= {c["id"], pair["id"]}
+        moved.append({"kind": c["rule"].get("kind"), "name": c["rule"].get("name") or c["rule"].get("kind"), "ids": [c["id"], pair["id"]],
+                      "frame": (c["rule"].get("source") or {}).get("frame"), "from_line": (pair["rule"].get("source") or {}).get("line"),
+                      "to_line": (c["rule"].get("source") or {}).get("line"), "reason": "moved in the file, no semantic change"})
+    return [c for c in changes if c["id"] not in gone], moved
 
 
 def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], releases: ReleaseStore,
@@ -144,7 +245,7 @@ def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], re
     findings += scope_guard(rules, set(store.frames), {n: f.scope for n, f in store.frames.items()})
     base = releases.current(now)
     old_rules = releases.rules(base["digest"]) if base else []
-    changes = drift_guard(old_rules, rules)
+    changes, moved = collapse_moves(drift_guard(old_rules, rules))
     changes += text_changes(base.get("frames") if base else [], store.bill_of_materials(frames), rules)
     for c in changes:
         c["decisions"] = []
@@ -153,7 +254,7 @@ def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], re
             c["read_by"] = src["read_by"]
             c["reason"] = f"{c['reason']} (read by {src['read_by']} from “{src.get('text')}”)"
     created = now or utcnow()
-    stamp_origins(changes, at=created)
+    stamp_origins(changes, at=created, processes={r["name"]: r for r in rules if r.get("kind") == "process"})
     proposal = {
         "id": uuid.uuid4().hex[:12],
         "created_at": created,
@@ -167,7 +268,8 @@ def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], re
         "notes": notes,
         "findings": [f.as_dict() for f in findings],
         "changes": changes,
-        "questions": list(questions.values()),
+        "questions": merge_questions(list(questions.values())),
+        "moved": moved,  # rules that only moved in their file: no change to decide
         "base": base["digest"] if base else None,
         # Policy owners are those of the release in force; a proposal cannot appoint its own reviewers.
         "reviewers": sorted(_reviewers(old_rules) if old_rules else _reviewers(rules)),

@@ -142,32 +142,32 @@ class Hub:
     def extractor(self, calls: bool = False):
         """How this hub reads SOPs (hubproto.extract.get_extractor), with its cache and the names a model may use.
         ``calls``: may ask the local model (background jobs, the command line); a page uses only what was read before."""
-        from .llm_extract import baseline_for, context_for, hosted_reader
+        from .llm_extract import baseline_for, context_for
 
         ex = get_extractor(cache_dir=Path(self.root) / "state" / "extract-cache", context=context_for(self), gateway=self.model, calls=calls)
         if getattr(ex, "name", "") != "hybrid":
             return ex
-        # Diff-based reading against the release in force; Claude Opus reads only when switched on for compilation.
-        baseline, hosted = (lambda: baseline_for(self)), hosted_reader()
+        baseline = lambda: baseline_for(self)  # noqa: E731  diff-based reading against the release in force
         committee = self.compile_committee()
         if committee:
             from .llm_extract import CommitteeExtractor
 
-            members = [(n, hosted["model"]) for n, _ in committee["members"]] if hosted else committee["members"]
-            return CommitteeExtractor(members, committee["quorum"], cache_dir=Path(self.root) / "state" / "extract-cache",
+            # Each member cog reads with its own bundled model, through the gateway (Ollama, or the Anthropic API where
+            # hosted models are switched on); a member without one is a question, not skipped.
+            return CommitteeExtractor(committee["members"], committee["quorum"], cache_dir=Path(self.root) / "state" / "extract-cache",
                                       context=context_for(self), gateway=self.model, calls=calls, baseline=baseline,
-                                      **({"call": hosted["call"], "budget": hosted["budget"]} if hosted else {}))
+                                      unavailable=committee.get("unavailable"))
         ex.baseline = baseline
-        if hosted:
-            ex.model, ex.call, ex.budget = hosted["model"], hosted["call"], hosted["budget"]
-        elif not __import__("os").environ.get("HUBPROTO_EXTRACTOR_MODEL"):
+        if not __import__("os").environ.get("HUBPROTO_EXTRACTOR_MODEL"):
             ex.model = self.compiler_model() or ex.model
         return ex
 
     def compile_committee(self) -> dict | None:
-        """The compile-frame committee of the release in force: {"members": [(cog, its model)], "quorum"}; each member
-        reads with the model its profile names (when the hub can reach it)."""
-        from .model import backend_for
+        """The compile-frame committee of the release in force: {"members": [(cog, its model, or "" when it cannot read
+        here)], "quorum", "unavailable": {cog: why}}. Each member reads with the model its profile bundles it with: an
+        Ollama model, or a Claude model only where hosted models are switched on (``model.backend_for``). The committee
+        reads by consensus, so ``quorum`` is every member (the release's ``Agree:`` is kept as ``agree``)."""
+        from .model import backend_for, hosted_allowed, resolve_model
 
         meta = self.releases.current()
         if not meta:
@@ -176,11 +176,22 @@ class Hub:
         c = (b.get("committees") or {}).get("compile-frame")
         if not c:
             return None
-        members = []
+        members, unavailable = [], {}
         for name in c.get("members") or []:
             m = ((b.get("cogs") or {}).get(name) or {}).get("model") or ""
-            members.append((name, m if m and backend_for(m) not in ("none", "stand-in") else ""))
-        return {"members": members, "quorum": int(c.get("quorum") or 1)}
+            if not m:
+                why = "its profile names no model"
+            elif m.startswith("claude") and not hosted_allowed():
+                why = f"{m} is a hosted model, and hosted models are switched off here (HUBPROTO_HOSTED_MODELS)"
+            elif backend_for(m) == "stand-in":
+                why = f"{m} is not reachable here (only a development stand-in would answer)"
+            else:
+                res = resolve_model(m)
+                why = "" if res["available"] else res["note"]
+            members.append((name, "" if why else m))
+            if why:
+                unavailable[name] = why
+        return {"members": members, "quorum": len(members), "agree": int(c.get("quorum") or 1), "unavailable": unavailable}
 
     def compiler_model(self) -> str:
         """The model of the organization cog, which reads SOPs in the Compile the Frame Op when no committee is set: its

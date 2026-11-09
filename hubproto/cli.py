@@ -390,6 +390,13 @@ def _decisions_text(change: dict) -> str:
     return ", ".join(f"{d['by']}:{d['verdict']}" for d in change.get("decisions", [])) or "-"
 
 
+def print_moved(proposal: dict) -> None:
+    """Rules that only moved in their file (compile.collapse_moves): shown, never decided."""
+    for m in proposal.get("moved") or []:
+        print(f"  {m['kind']} {m['name']}: re-rendered, no semantic change (moved from line {m.get('from_line')} to "
+              f"{m.get('to_line')}; nothing to decide)")
+
+
 def print_changes(hub: Hub, changes: list[dict], with_decisions: bool = False) -> None:
     for entry in collapse_changes(changes):
         if entry.get("rerendered"):
@@ -534,6 +541,7 @@ def cmd_compile(args) -> int:
     if proposal["changes"]:
         print("changes:")
         print_changes(hub, proposal["changes"])
+        print_moved(proposal)
     else:
         print(f"no changes against the release in force ({version_of(hub, proposal['base'])}); nothing to review")
     print(f"reviewers: {', '.join(proposal['reviewers']) or 'none (no policy owner in the org model)'}")
@@ -598,6 +606,7 @@ def cmd_proposal(args) -> int:
     if p["changes"]:
         print("changes:")
         print_changes(hub, p["changes"], with_decisions=True)
+        print_moved(p)
     else:
         print("no changes")
     for line in hub.readiness(p["id"]):
