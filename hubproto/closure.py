@@ -15,8 +15,10 @@ the shell, a cog's tools) gets the same answer:
   for that change order (``by == "change-order:<CO>"``) and the change order is approved.
 * ``Hub.frame_draft`` (editing a Frame in the hub) is refused: the Frame is derived from the SOP documents.
 
-Exempt: everything before the conversion (bootstrapping the first release and the Frame-file workflow), and the
-release automation acting for an approved change order.
+Exempt: everything before the conversion, and the release automation acting for an approved change order. The
+conversion follows the first release at once (``after_release``), so on a new hub the only change released without a
+change order is the first release itself; a hub that keeps the Frame files as the source instead says so
+explicitly (``sopdocs.keep_frame_files``: the pre-conversion mode, for work on the Frames and their test suites).
 """
 
 from __future__ import annotations
@@ -126,3 +128,18 @@ def on_conversion(hub) -> None:
         if p.get("status") == "open" and not p.get("eco"):
             hub._mark_stale(p, "the SOPs became documents, so a proposal compiled from the Frame files cannot be released. " + CO_ROUTE)
     recordtypes.ensure(hub)
+    from .sopdocs import _kept_path
+
+    _kept_path(hub).unlink(missing_ok=True)  # converting ends the opt-out of keeping the Frame files
+
+
+def after_release(hub, base: str | None, by: str) -> dict | None:
+    """After a release: the first release of a hub converts the SOPs into documents at once (``sopdocs.
+    convert_after_release``), so no later change is released without a change order. None for any later release."""
+    if base is not None:
+        return None
+    from . import sopdocs
+
+    out = sopdocs.convert_after_release(hub, by=by)
+    hub.last_conversion = out
+    return out

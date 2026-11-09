@@ -9,9 +9,20 @@ text ends with the sentence:
 
 > Configuration changes only through a change order: open one under Quality > Change orders.
 
-Exempt everywhere: **before conversion** (bootstrapping the first release, the Frame-file workflow, Settings proposals
-reviewed by the policy owners) and **the release automation acting for an approved CO** (`by == "change-order:<CO>"`,
-CO record state `approved` or `released`).
+**The first release converts.** A hub's first release (however it is made: `bootstrap-release`, the entrypoint's
+first start, CLI `release`, the shell) is followed at once by the conversion (`closure.after_release` ->
+`sopdocs.convert_after_release`), so on a new hub the first release is the only configuration released without a CO.
+When the conversion is blocked (no change-order process in the release, or SOPs that would not read back exactly)
+`bootstrap-release` exits 1 with why, `status --check` exits 1 ("the SOPs are not documents yet, so changes are released
+without change orders"), and running `bootstrap-release` again finishes it.
+
+Exempt everywhere: **the first release** (bootstrapping), **a hub that keeps the Frame files** — an explicit opt-out
+recorded before conversion with who and why (`bootstrap-release --keep-frame-files REASON`,
+`sopdocs.keep_frame_files`; `status` shows it on every run; `sops convert` ends it), used for work on the Frames
+themselves and by the test suites through `tests/conftest.py`'s `release_all` — and **the release automation acting for
+an approved CO** (`by == "change-order:<CO>"`, CO record state `approved` or `released`). A hub released before this
+rule that never converted and did not opt out is reported by `status --check` (exit 1); it is not converted without
+someone asking (`bootstrap-release` or `sops convert`).
 
 ## The policy (rules, workflows, members, roles, folders, cog profiles, personas)
 
@@ -28,6 +39,8 @@ CO record state `approved` or `released`).
 | `Hub.propose_cog_model`, `propose_new_person`, `propose_new_cog` (People page, cog profiles page, a cog's `propose_cog_model` / `propose_member`) | members, roles, cog profiles | **goes through a CO** (`rules_to_change_order`) |
 | `eco.add_sop`, `eco.remove_sop`, revisions edited in Collabora | SOP, policy, cog-profile, persona prose | **goes through a CO** (the CO carries the revision; approved with it) |
 | CLI `seed <profile>` | copies a profile's Frame files into `frames/` | **refused**, exit 1 (the files would not be used; a new SOP comes in on a CO) |
+| First release (`Hub.release` with no release before; `bootstrap-release`; entrypoint first start) | the first policy in force | **released, then converted at once** (`closure.after_release`), unless the hub keeps the Frame files on the record |
+| `bootstrap-release --keep-frame-files REASON`, `sopdocs.keep_frame_files` | keeps the Frame files as the source (no conversion) | **refused** once converted; before, recorded with who and why and shown by `status` |
 | CLI `sops convert` | makes the documents the source | the switch itself; now **refuses** (exit 1) what the shell already refused: a conversion that would change rules (round-trip problems) or leave no change-order process. Running it again says "already" (exit 0) |
 | Frame files on disk (`frames/**`) | were the source | **not used** (the documents are the source); `status --check` reports a changed, missing or new file, says it is not used, gives the CO sentence and exits 1 |
 

@@ -1076,14 +1076,32 @@ def cmd_cog_users(args) -> int:
         time.sleep(args.loop)
 
 
+def _conversion_report(out: dict | None) -> int:
+    """What the bootstrap's conversion did, in words: 0 when the hub is under change control (or explicitly keeps the
+    Frame files), 1 when the SOPs could not be converted."""
+    if out is None:
+        return 0
+    if out.get("kept"):
+        k = out["kept"]
+        print(f"the Frame files stay the source (kept by {clean(k.get('by'))}: {clean(k.get('reason'))}); the policy owners release "
+              "changes without change orders until `hubproto sops convert`")
+        return 0
+    if out.get("blockers"):
+        print("the SOPs were not converted to documents, so changes are not under change control yet: " + clean("; ".join(out["blockers"])))
+        print("fix that and run this command again (or `hubproto sops convert --as <policy owner>`)")
+        return 1
+    if out.get("made"):
+        print(f"the SOPs are documents now ({len(out['made'])}): from here on {CO_ROUTE[0].lower() + CO_ROUTE[1:]}")
+    return 0
+
+
 def cmd_bootstrap_release(args) -> int:
-    """First release on a fresh hub: compile, approve with two policy owners, release."""
+    """First release on a fresh hub: compile, approve with two policy owners, release; then the SOPs become documents,
+    so every later change needs a change order (unless --keep-frame-files says, on the record, why not)."""
+    from . import sopdocs
+
     hub = _hub(args)
     cur = hub.releases.current()
-    if cur and not args.force:
-        print(f"a release is already in effect ({version_of(hub, cur['digest'])}); " +
-              ("nothing to do" if args.if_needed else "use --force to compile and release the Frames again"))
-        return 0 if args.if_needed else 1
     members = members_of(hub)  # before the first release: read from the Frames being bootstrapped
     owners = sorted(p for p, m in members.items() if POLICY_OWNER_ROLE in m["roles"] and m["type"] == "person")
     for who, flag in ((args.as_user, "--as"), (args.second, "--second")):
@@ -1091,6 +1109,19 @@ def cmd_bootstrap_release(args) -> int:
             require_member(hub, who, flag=flag, members=members)
             if who not in owners:
                 fail(f"{flag} {who}: {who} is not a policy owner; policy owners in the org model are: {', '.join(owners) or 'none (add the policy-owner role to a member)'}", 2)
+    if args.keep_frame_files is not None:
+        try:
+            sopdocs.keep_frame_files(hub, by=args.as_user, reason=args.keep_frame_files)
+        except ValueError as e:
+            fail(str(e), 1)
+    if cur and not args.force:
+        if not hub.sop_source() and not sopdocs.frame_files_kept(hub):
+            # Released, but the bootstrap stopped before the SOPs became documents: finish it.
+            print(f"a release is already in effect ({version_of(hub, cur['digest'])}); converting the SOPs to documents")
+            return _conversion_report(sopdocs.convert_after_release(hub, by=args.as_user))
+        print(f"a release is already in effect ({version_of(hub, cur['digest'])}); " +
+              ("nothing to do" if args.if_needed else "use --force to compile and release the Frames again"))
+        return 0 if args.if_needed else 1
     proposal = hub.compile()
     number = proposal_number(hub, proposal["id"])
     errors = print_findings(hub, proposal["findings"], proposal["notes"])
@@ -1101,9 +1132,10 @@ def cmd_bootstrap_release(args) -> int:
     for who in (args.as_user, args.second):
         if who:
             hub.review(proposal["id"], who, approve_all=True, meaning="bootstrap release")
-    meta = hub.release(proposal["id"], args.as_user)
+    meta = hub.release(proposal["id"], args.as_user)  # the first release converts the SOPs (closure.after_release)
     print(f"release {version_of(hub, meta['digest'])} in effect (rules: {len(proposal['rules'])}, proposal #{number} {proposal['id']})")
-    return 0
+    out = getattr(hub, "last_conversion", None) or sopdocs.convert_after_release(hub, by=args.as_user)
+    return _conversion_report(out)
 
 
 # ------------------------------------------------------------------ operations: status, backup, restore
@@ -1192,6 +1224,17 @@ def cmd_status(args) -> int:
         closed = hub.sop_source()
         if closed:
             print("configuration changes only through change orders (the SOPs are documents; `hubproto sops status`)")
+        else:
+            from . import sopdocs
+
+            kept = sopdocs.frame_files_kept(hub)
+            if kept:
+                print(f"the Frame files are the source (kept by {clean(kept.get('by'))}: {clean(kept.get('reason'))}): the policy owners "
+                      "release changes without change orders until `hubproto sops convert`")
+            else:
+                print("the SOPs are not documents yet, so changes are released without change orders: "
+                      + clean("; ".join(sopdocs.conversion_blockers(hub)) or "convert them: hubproto sops convert --as <policy owner>"))
+                rc = 1 if args.check else 0
         drift = frames_drift(hub, cur)
         if any(drift.values()) and closed:
             print(f"Frames on disk differ from the release in force ({version_of(hub, cur['digest'])}):")
@@ -1288,8 +1331,9 @@ def cmd_backup(args) -> int:
     cur = hub.releases.current()
     manifest = {"created_at": utcnow(), "root": str(Path(args.root).resolve()), "kernel": "kernel.db", "parts": parts,
                 "release": cur["digest"] if cur else None}
-    if (state / "proposal-numbers.json").exists():
-        shutil.copyfile(state / "proposal-numbers.json", dest / "proposal-numbers.json")
+    for name in ("proposal-numbers.json", "frame-files-kept.json"):  # the second: the hub keeps its Frame files (sopdocs)
+        if (state / name).exists():
+            shutil.copyfile(state / name, dest / name)
     (dest / "backup.json").write_text(json.dumps(manifest, indent=1))
     print(f"backup written to {dest}: kernel.db, " + ", ".join(f"{k} ({v} files)" for k, v in parts.items()))
     print("restore with: hubproto --root <new root> restore " + str(dest))
@@ -1328,8 +1372,9 @@ def cmd_restore(args) -> int:
     for name in (*SQLITE_PARTS, ".secret"):
         if (src / name).exists():
             shutil.copyfile(src / name, state / name)
-    if (src / "proposal-numbers.json").exists():
-        shutil.copyfile(src / "proposal-numbers.json", state / "proposal-numbers.json")
+    for name in ("proposal-numbers.json", "frame-files-kept.json"):
+        if (src / name).exists():
+            shutil.copyfile(src / name, state / name)
     hub = Hub(root, frames_dir=root / "frames") if (root / "frames").exists() else None
     cur = hub.releases.current() if hub else None
     print(f"restored {src} (taken {manifest.get('created_at', '?')}) into {state}")
@@ -1516,11 +1561,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--host", default="127.0.0.1", help="address to listen on (default 127.0.0.1)")
     s.add_argument("--port", type=int, default=8080, help="port (default 8080)")
     s.set_defaults(fn=cmd_shell)
-    s = sub.add_parser("bootstrap-release", help="first release on a fresh hub: compile, approve everything with two policy owners, release")
+    s = sub.add_parser("bootstrap-release", help="first release on a fresh hub: compile, approve everything with two policy owners, release, then make the SOPs documents (change orders from then on)")
     s.add_argument("--as", help="a policy owner (releases it)", **AS)
     s.add_argument("--second", metavar="PERSON", help="a second policy owner (widenings need two)")
     s.add_argument("--force", action="store_true", help="compile and release again although a release is in effect")
-    s.add_argument("--if-needed", action="store_true", help="exit 0 and do nothing when a release is already in effect")
+    s.add_argument("--if-needed", action="store_true", help="exit 0 and do nothing when a release is already in effect "
+                                                            "(and the SOPs are documents: otherwise it converts them)")
+    s.add_argument("--keep-frame-files", metavar="REASON", help="do not convert the SOPs to documents after the release: the Frame files "
+                                                               "stay the source and changes are released without change orders (recorded, "
+                                                               "shown by status; for work on the Frames themselves)")
     s.set_defaults(fn=cmd_bootstrap_release)
     s = sub.add_parser("backup", help="copy the hub's state (kernel via the SQLite backup API, runs, releases, proposals, blobs, inbox) into a directory")
     s.add_argument("dir", help="a new or empty directory to write the backup into")
