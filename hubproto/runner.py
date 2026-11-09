@@ -1257,8 +1257,8 @@ class Runner:
         people = [m for m in members if cm["types"][m] == "person"]
         rec = self.kernel.get(state["record"]) if state.get("record") else None
         self._notify(people, kind="approval", subject=f"{title}: your vote on {(rec or {}).get('number') or state['process']} ({name} committee)",
-                     body=(f"The {name} committee decides this by consensus: every member agrees, or an objection with its reason returns it "
-                           f"for revision. Routed by {src.get('frame')} line {src.get('line')}: {src.get('text')}" + (f" Due {due}." if due else "")),
+                     body=(f"Your vote: the {name} committee decides by consensus; one reasoned objection sends it back. Agree to a way "
+                           "forward, or object with your reason; there is no standing aside. Routed by {src.get('frame')} line {src.get('line')}: {src.get('text')}" + (f" Due {due}." if due else "")),
                      run_id=state["id"])
         # A member who may not decide this item (it prepared it, a segregation sentence keeps it out) is a pause at once.
         excluded = self.excluded(bundle, state, f"committee:{name}")
@@ -1560,6 +1560,14 @@ class Runner:
         cm = pending.get("committee")
         if state["status"] != "waiting" or not cm:
             raise RunError(f"run {run_id} is not waiting for a committee")
+        if cm.get("due") and cm["due"] < date.today().isoformat() and any(not self._paused(cm, m) for m in self.committee_outstanding(pending)):
+            # Past the due date: a member who has not responded pauses it now, as the tick would (people and cogs alike).
+            self._tick_committee(state, date.today().isoformat())
+            state = self.load(run_id)
+            pending = state.get("pending") or {}
+            cm = pending.get("committee")
+            if state["status"] != "waiting" or not cm:
+                raise RunError(f"run {run_id} is not waiting for a committee")
         if not cm.get("paused"):
             raise RunError(f"the {cm['name']} committee's decision is not paused: its members are still voting")
         if by not in (cm.get("interveners") or []):
@@ -2796,6 +2804,13 @@ class Runner:
         """Escalate overdue items. A route written 'go to' adds assignees; one written 'are reported to' only informs."""
         today = today or date.today().isoformat()
         escalated = []
+        if getattr(self, "hub", None) is not None:  # committee members late on a change order's panel: the chair is told
+            try:
+                from .changecontrol import tick_panels
+
+                tick_panels(self.hub, today)
+            except Exception:
+                pass
         for state in self.list():
             pending = state.get("pending")
             if not pending or state["status"] != "waiting" or not pending.get("due") or pending["due"] >= today or pending.get("escalated"):
