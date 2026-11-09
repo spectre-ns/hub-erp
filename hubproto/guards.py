@@ -245,6 +245,18 @@ def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict |
                     out.append(Finding("consistency", "warning", f"checkpoint {cp['title']!r} of {rule['name']} has no routing sentence; it will route to the role on the step", key, frame, cp["line"]))
             out += workflow_checks(rule, key, frame, line, record_types)
     out += responsibilities_guard(rules, roles, roles_with_members, members, groups)
+    classed: dict[str, set[str]] = {}
+    for r in rules:
+        if r["kind"] == "validation_class":
+            for k in r.get("kinds") or []:
+                classed.setdefault(k, set()).add(r["risk"])
+    for k, risks in sorted(classed.items()):
+        if len(risks) > 1:
+            out.append(Finding("consistency", "warning", f"changes to {k} are classed {' and '.join(sorted(risks))} risk; the higher class applies"))
+    needs_stated = {r["risk"] for r in rules if r["kind"] == "validation_need"}
+    if classed and not {"high", "medium"} <= needs_stated:
+        out.append(Finding("consistency", "warning", "the validation section does not say what evidence "
+                           + " and ".join(x for x in ("high", "medium") if x not in needs_stated) + "-risk changes need; the hub's defaults apply"))
     profiled = {r["name"] for r in rules if r["kind"] == "cog"}
     for name, m in members.items():
         if m["principal_type"] == "cog" and name not in profiled:
@@ -596,7 +608,8 @@ def drift_guard(old_rules: list[dict], new_rules: list[dict]) -> list[dict]:
         change = {"id": "remove:" + key, "op": "remove", "rule": rule,
                   # Removing a deny, a "when a person confirms" or a segregation sentence lets someone do what they could not
                   # (or do it unconfirmed).
-                  "widening": (rule["kind"] == "permission" and rule["effect"] in ("deny", "propose")) or rule["kind"] == "sod",
+                  "widening": (rule["kind"] == "permission" and rule["effect"] in ("deny", "propose")) or rule["kind"] in (
+                      "sod", "validation_class", "validation_need"),
                   "reason": _reason(rule, "remove")}
         if key in paired:
             change["changed_to"] = added[paired[key]]
@@ -654,6 +667,8 @@ def _widens(rule: dict, old_rules) -> bool:
         return True
     if kind in ("cog", "persona", "scope", "committee", "duty", "group"):
         return True  # who a cog is and how it behaves (its model, persona), the scopes, a standing duty, who is in a group: two policy owners
+    if kind in ("validation_class", "validation_need"):
+        return True  # what a configuration change must prove before approval: two policy owners
     if kind == "routing":
         return rule["assignee"].startswith("cog:")
     if kind == "approval_criteria":
@@ -710,6 +725,10 @@ def _reason(rule: dict, op: str) -> str:
                 + (f", chaired by {rule['chair']}" if rule.get("chair") else "") + ": decides by consensus")
     if kind == "responsibility":
         return f"{op} in {rule.get('frame')}'s Roles and responsibilities: {rule.get('who')}: {rule.get('text')}"
+    if kind == "validation_class":
+        return f"{op} validation class: changes to {', '.join(rule.get('kinds') or [])} are {rule.get('risk')} risk"
+    if kind == "validation_need":
+        return f"{op} validation: {rule.get('risk')}-risk changes need {str(rule.get('evidence')).replace('-', ' ')}"
     if kind == "scope":
         return f"{op} scope {rule['name']} ({rule.get('level')}): compiles {', '.join(rule.get('compiles') or [])}" + (
             f", layers on {', '.join(rule['layers_on'])}" if rule.get("layers_on") else "")

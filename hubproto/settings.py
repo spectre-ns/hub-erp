@@ -167,6 +167,13 @@ def sentence(rule: dict, processes: dict | None = None) -> str:
         return f"The {a} and the {b} of a {rule['object']} must be different people."
     if k == "duty":
         return f"Every {rule.get('every') or 'day'} the {rule['cog']} cog {rule['task']}"
+    if k in ("validation_class", "validation_need"):
+        from .validation import kind_words
+
+        if k == "validation_need":
+            words = {"test-record": "a test record", "test-note": "a test note", "review": "the review of the delta"}
+            return f"{rule['risk'].capitalize()}-risk changes need {words.get(rule.get('evidence'), rule.get('evidence'))}."
+        return f"Changes to {kind_words(rule.get('kinds') or [])} are {rule['risk']} risk."
     if k == "responsibility":
         kind_, _, name_ = (rule.get("who") or "").partition(":")
         who_ = f"the {name_} cog" if kind_ == "cog" else f"the {name_} group" if kind_ == "group" else _words(name_).capitalize()

@@ -24,7 +24,7 @@ from .rules import CONDITION_VOCABULARY, NUMBER_WORDS
 
 RULE_SECTIONS = (
     "roles", "members", "groups", "folders", "permissions", "thresholds", "routing",
-    "approval criteria", "segregation of duties", "duties",
+    "approval criteria", "segregation of duties", "duties", "validation",
 )
 
 
@@ -124,6 +124,10 @@ _PERSONA_KEY = re.compile(r"^(?P<key>Tone|Stance|Lenses|Reviews|Escalates|Behavi
 STANCES = ("reviewer", "executor", "author", "advisor")
 TONES = ("formal", "informal")
 _PASSES = re.compile(r"^(?P<n>\d+|one|two|three|four|five|six|once|twice) ?(?:adversarial )?(?:pass(?:es)?|times?|reviews?)?\.?$", re.I)
+# The IT SOP's validation classes: "Changes to permissions and approval criteria are high risk."; "High-risk changes need
+# a test record." (hubproto.validation reads them from the release).
+_VCLASS = re.compile(r"^(?:Changes to )?(?P<what>[A-Za-z].+?) are (?P<risk>high|medium|low) risk\.$")
+_VNEED = re.compile(r"^(?P<risk>High|Medium|Low)-risk changes need (?:an? )?(?P<need>.+?)\.$")
 _DUTY = re.compile(r"^Every (?P<every>day|working day|week|month) the (?P<cog>[a-z][\w-]*) cog (?P<task>[a-z].+\.)$")
 # The table every document ends with: who has a part in it (a role, a cog by name, later a group) and what. It says who
 # must read the document (people) and what a cog follows.
@@ -836,7 +840,12 @@ class ConventionExtractor:
             matched = self._match_sentence(line, n, section, add)
             if not matched:
                 note = {"frame": frame.name, "line": n, "text": line, "note": f"unparsed sentence in the {section!r} section"}
-                if section == "duties":
+                if section == "validation":
+                    note["severity"] = "error"
+                    note["note"] = ("a validation sentence reads '<Changes to> <permissions, routing, ...> are high|medium|low risk.' or "
+                                    "'High|Medium|Low-risk changes need a test record|a test note|the review of the delta.'; this one names "
+                                    "nothing the hub can class")
+                elif section == "duties":
                     note["severity"] = "error"
                     note["note"] = "a duty reads 'Every day|week|month the <cog> cog <does the task>.'; this one would be silently dropped"
                 elif section == "groups":
@@ -900,6 +909,19 @@ class ConventionExtractor:
                 action="read", object="*", resource="folder:" + m.group("folder").strip(),
                 effect="deny" if m.group("neg") else "allow")
             return True
+        if section == "validation":
+            from .validation import NEEDS, kinds_named
+
+            m = _VNEED.match(line)
+            if m and NEEDS.get(m.group("need").lower()):
+                add("validation_need", n, line, risk=m.group("risk").lower(), evidence=NEEDS[m.group("need").lower()])
+                return True
+            m = _VCLASS.match(line)
+            kinds = sorted(kinds_named(m.group("what"))) if m else []
+            if m and kinds:
+                add("validation_class", n, line, risk=m.group("risk").lower(), kinds=kinds)
+                return True
+            return False
         m = _DUTY.match(line)
         if m and section == "duties":
             # A standing goal the duty runner takes up for the cog ("Every day the quality-assistant cog finds ...").

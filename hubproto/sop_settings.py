@@ -15,7 +15,7 @@ from .settings import sentence
 
 SECTION = {"permission": "Permissions", "routing": "Routing", "sla": "Routing", "approval_criteria": "Approval criteria",
            "sod": "Segregation of duties", "threshold": "Thresholds", "member": "Members", "role": "Roles", "folder": "Folders",
-           "duty": "Duties", "group": "Groups"}
+           "duty": "Duties", "group": "Groups", "validation_class": "Validation", "validation_need": "Validation"}
 SECTIONED = {"cog": "Cog: {name}", "process": "Process: {name}", "persona": "Persona: {name}",
              "committee": "Committee: {name}"}  # rules written as a whole section
 

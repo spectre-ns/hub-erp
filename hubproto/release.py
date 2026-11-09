@@ -165,6 +165,8 @@ def render(rules: list[dict], record_types: dict | None = None) -> dict:
     groups: dict[str, dict] = {}
     duties: list[dict] = []
     responsibilities: list[dict] = []
+    vclasses: list[dict] = []
+    vneeds: list[dict] = []
     for r in rules:
         body = {k: v for k, v in r.items() if k != "kind"}
         kind = r["kind"]
@@ -208,6 +210,10 @@ def render(rules: list[dict], record_types: dict | None = None) -> dict:
             duties.append(dict(body))
         elif kind == "responsibility":
             responsibilities.append(dict(body))
+        elif kind == "validation_class":
+            vclasses.append(dict(body))
+        elif kind == "validation_need":
+            vneeds.append(dict(body))
     # Scopes: each scope's Frames are those of the scopes it layers on, then its own, in order.
     for name in scopes:
         scopes[name]["frames"] = scope_frames(scopes, name)
@@ -295,6 +301,7 @@ def render(rules: list[dict], record_types: dict | None = None) -> dict:
         "groups": dict(sorted(groups.items())),
         "duties": duties,
         "responsibilities": responsibilities,
+        **({"validation": render_validation(vclasses, vneeds)} if vclasses or vneeds else {}),
         "ops": ops,
     }
 
@@ -428,6 +435,23 @@ def follows_for(bundle: dict, principal: str) -> dict[str, set[str]]:
     for f in sorted(named):
         if f not in out:
             out[f] = set(named[f])
+    return out
+
+
+def render_validation(classes: list[dict], needs: list[dict]) -> dict:
+    """The validation classes in force: {"classes": {item kind: risk}, "needs": {risk: evidence}, "sources": [...]}. A
+    kind classed twice takes the higher class."""
+    order = ("low", "medium", "high")
+    out: dict = {"classes": {}, "needs": {}, "sources": []}
+    for c in sorted(classes, key=lambda r: (r["source"]["frame"], r["source"]["line"])):
+        for k in c.get("kinds") or []:
+            cur = out["classes"].get(k)
+            out["classes"][k] = c["risk"] if cur is None else max(cur, c["risk"], key=order.index)
+        out["sources"].append(c["source"])
+    for nd in sorted(needs, key=lambda r: (r["source"]["frame"], r["source"]["line"])):
+        out["needs"][nd["risk"]] = nd["evidence"]
+        out["sources"].append(nd["source"])
+    out["classes"] = dict(sorted(out["classes"].items()))
     return out
 
 

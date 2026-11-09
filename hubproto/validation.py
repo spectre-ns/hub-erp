@@ -1,7 +1,8 @@
 """Validation of configuration changes, in proportion to their risk (the IT SOP; computer software assurance).
 
-The IT SOP's "## Validation" section says, in sentences, which changes are high, medium or low risk and what each class
-needs before the change order is approved:
+The IT SOP's "## Validation" section says, in sentences the compiler reads into the release (rule kinds
+``validation_class`` and ``validation_need``; the bundle's ``validation``), which changes are high, medium or low risk
+and what each class needs before the change order is approved:
 
     Widenings are high risk.
     Changes to permissions, approval criteria, ... are high risk.
@@ -10,8 +11,8 @@ needs before the change order is approved:
     High-risk changes need a test record.
     Medium-risk changes need a test note.
 
-The section is read from the IT SOP's text in the release in force (a change to it is a change order like any other);
-the hub's defaults below are used when a release has no such section.
+The hub runs on what the release in force says, never on the prose; only when the release states no validation classes
+are the hub's built-in defaults used, and ``basis`` (and every requirement) says so.
 
 * ``classify(item)``: "high", "medium" or "low" for one delta item (a change of a rule, a wording change, or a change
   order's form, record-type or workflow change);
@@ -51,11 +52,7 @@ DEFAULT_CLASSES = {
 DEFAULT_NEEDS = {"high": "test-record", "medium": "test-note", "low": "review"}
 EVIDENCE_TYPE = "test-evidence"
 
-_CLASS = re.compile(r"^(?:Changes to )?(?P<what>.+?) are (?P<risk>high|medium|low) risk\.$", re.I)
-_NEED = re.compile(r"^(?P<risk>High|Medium|Low)-risk changes need (?:an? )?(?P<need>.+?)\.$")
-
-
-def _kinds_named(words: str) -> set[str]:
+def kinds_named(words: str) -> set[str]:
     """The item kinds a list of the IT SOP's words names ("permissions, approval criteria and segregation of duties")."""
     text, out = " " + words.lower() + " ", set()
     for key in sorted(WORDS, key=len, reverse=True):
@@ -66,42 +63,36 @@ def _kinds_named(words: str) -> set[str]:
     return out
 
 
-def policy(hub=None, text: str | None = None) -> dict:
-    """{"classes": {kind: risk}, "needs": {risk: need}, "source": "it-sop"|"default"}: from the IT SOP's Validation
-    section in the release in force (or ``text``), the hub's defaults for anything it does not say."""
-    if text is None and hub is not None:
-        try:
-            meta = hub.releases.current()
-            text = hub.releases.frame_texts(meta["digest"]).get("it-sop") if meta else None
-        except Exception:
-            text = None
-        if text is None:
-            try:
-                text = hub.released_frames().get("it-sop").text
-            except Exception:
-                text = None
-    classes, needs, found = dict(DEFAULT_CLASSES), dict(DEFAULT_NEEDS), False
-    inside = False
-    for raw in (text or "").splitlines():
-        line = raw.strip()
-        if line.startswith("#"):
-            inside = line.lower() == "## validation"
-            continue
-        if not inside or not line:
-            continue
-        m = _NEED.match(line)
-        if m:
-            need = NEEDS.get(m.group("need").lower())
-            if need:
-                needs[m.group("risk").lower()] = need
-                found = True
-            continue
-        m = _CLASS.match(line)
-        if m:
-            for kind in _kinds_named(m.group("what")):
-                classes[kind] = m.group("risk").lower()
-                found = True
-    return {"classes": classes, "needs": needs, "source": "it-sop" if found else "default"}
+_WORD_OF = {"widening": "widenings", "permission": "permissions", "approval_criteria": "approval criteria", "sod": "segregation of duties",
+            "member": "members", "role": "roles", "group": "groups", "committee": "committees", "cog": "cog profiles", "persona": "personas",
+            "record_type": "record types", "gate": "workflow gates", "workflow": "workflows", "routing": "routing", "sla": "due dates",
+            "process": "processes", "threshold": "thresholds", "required_field": "required fields", "duty": "duties", "folder": "folders",
+            "scope": "scopes", "responsibility": "responsibilities", "form": "form layouts", "text": "wording"}
+
+
+def kind_words(kinds: list[str]) -> str:
+    """The words for item kinds, as a validation sentence lists them ("permissions, routing and wording")."""
+    words = [_WORD_OF.get(k, k.replace("_", " ")) for k in kinds]
+    return words[0] if len(words) == 1 else ", ".join(words[:-1]) + " and " + words[-1] if words else ""
+
+
+def policy(hub=None, bundle: dict | None = None) -> dict:
+    """{"classes": {kind: risk}, "needs": {risk: need}, "source": "release"|"default", "basis": words}: the validation
+    classes the release in force states (compiled from the IT SOP), or the hub's built-in defaults when it states none."""
+    if bundle is None and hub is not None:
+        bundle = hub.current_bundle() or {}
+    v = (bundle or {}).get("validation") or {}
+    if not v.get("classes"):
+        return {"classes": dict(DEFAULT_CLASSES), "needs": dict(DEFAULT_NEEDS), "source": "default",
+                "basis": "the hub's built-in defaults: the release in force states no validation classes"}
+    frames = sorted({s_.get("frame") for s_ in v.get("sources") or [] if s_.get("frame")})
+    return {"classes": dict(v["classes"]), "needs": {**DEFAULT_NEEDS, **(v.get("needs") or {})}, "source": "release",
+            "basis": "the validation classes of the release in force (" + ", ".join(frames) + ")"}
+
+
+def basis(hub) -> str:
+    """Where the classes come from, for the change order's page: the release in force, or the built-in defaults."""
+    return policy(hub)["basis"]
 
 
 def _kinds(item: dict) -> set[str]:
@@ -145,9 +136,11 @@ def items_of(hub, co: dict) -> list[dict]:
 
 
 def annotate(items: list[dict], pol: dict | None = None) -> list[dict]:
-    """The items with their risk class ("risk") and what that class needs ("validation")."""
-    pol = pol or {"classes": DEFAULT_CLASSES, "needs": DEFAULT_NEEDS}
-    return [{**i, "risk": classify(i, pol), "validation": pol["needs"].get(classify(i, pol), "review")} for i in items]
+    """The items with their risk class ("risk"), what that class needs ("validation") and where the classes come from
+    ("validation_basis")."""
+    pol = pol or policy()
+    return [{**i, "risk": classify(i, pol), "validation": pol["needs"].get(classify(i, pol), "review"),
+             "validation_basis": pol.get("basis", "")} for i in items]
 
 
 def _co(hub, co_ref) -> dict:
@@ -219,4 +212,6 @@ def requirements(hub, co_ref, items: list[dict] | None = None) -> list[str]:
     if need_note:
         out.append(f"{len(need_note)} medium-risk item(s) need a test note (" + "; ".join((i.get("reason") or i["id"])[:80] for i in need_note[:4])
                    + ("; ..." if len(need_note) > 4 else "") + "): record what was tried and what was seen")
+    if out and pol["source"] == "default":
+        out = [x + f" (classed by {pol['basis']})" for x in out]
     return out
