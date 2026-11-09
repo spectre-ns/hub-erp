@@ -599,6 +599,49 @@ class PagesMixin:
         self._page("Runs", "<h1>Runs</h1><p class='why'>Newest first: runs whose item folder you may read, plus your own and those waiting for you.</p>" + form
                    + table(["Run", "Process", "Item", "Started by", "Status", "Started", "Waiting for"], rows, "No runs visible to you."), crumbs=[("Runs", None)])
 
+    def _routing_html(self, s: dict, rec: dict | None) -> str:
+        """How each approval Gate of the run is routed for this item: the policy's routing sentences in the order they
+        are tried, whether each applies and why, and, for a cog, whether the item is within its approval criteria."""
+        from ..routing import explain
+        from ..settings import money
+
+        try:
+            bundle = self.hub.releases.bundle(s["release"])
+        except Exception:
+            return ""
+        ctx = self.hub.runner._routing_ctx({}, rec)
+        out = ""
+        for step in s["manifest"]["steps"]:
+            gate = step.get("gate") or {}
+            route = gate.get("route") or {}
+            if gate.get("type") != "human" or not route.get("process"):
+                continue
+            rows = []
+            for r in explain(bundle, route["process"], gate.get("step") or step["id"], ctx):
+                rule = r["rule"]
+                if r["taken"]:
+                    state = chip("takes it", "ok")
+                elif r["not_needed"]:
+                    state = chip("not needed", "")
+                elif r["holds"] and not r.get("within", True):
+                    state = chip("the cog may not", "warn")
+                else:
+                    state = chip("does not apply", "")
+                why = esc(r["why"])
+                if r.get("criteria") is not None and r["holds"]:
+                    lim = r.get("limit") or {}
+                    bound = (f"its limit is under {money(lim['max_amount'])} {lim.get('currency') or ''}".strip()
+                             if lim.get("max_amount") is not None else "")
+                    why += ("; " + esc("; ".join(r["criteria"])) + (f" ({esc(bound)})" if bound else "")) if r["criteria"] else (
+                        "; within its approval criteria" + (f" ({esc(bound)})" if bound else ""))
+                rows.append([self._rule_html(rule.get("source") or {"text": rule.get("assignee")}), state, why])
+            if rows:
+                out += (f"<h2 id='routing'>How “{esc(gate.get('title') or 'the approval')}” is routed</h2>"
+                        "<p class='why'>Routing tries the policy's sentences in this order. The first that applies takes the item; a cog "
+                        "takes it only within its approval criteria, else the next sentence does.</p>"
+                        + table(["Routing sentence", "For this item", "Why"], rows))
+        return out
+
     def page_run(self):
         user = self.user
         self._need_release()
@@ -654,6 +697,7 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
                 continue
             rows.append([esc(step["title"]), f"{esc(env['cog']['id'])} {esc(env['cog']['version'])}", chip(result), probs, dec])
         body += "<h2>Steps</h2>" + table(["Step", "Done by", "Result", "Problems", "Decision"], rows)
+        body += self._routing_html(s, rec)
         body += "<h2>History</h2>" + self._track_html(s["id"])
         crumbs = [("Runs", href("/runs", user))] + ([(rec["number"], href("/record/" + quote(rec["locator"], safe=":"), user))] if rec else []) + [(title, None)]
         self._page(title, body, crumbs=crumbs)

@@ -40,6 +40,59 @@ def candidates(bundle: dict, process: str, step: str, ctx: dict) -> list[dict]:
     return out
 
 
+_OP_WORDS = {">": ("over", "not over"), "<": ("under", "not under"), ">=": ("at least", "less than"), "<=": ("at most", "more than"),
+             "==": ("", "not")}
+
+
+def condition_words(cond: dict | None, ctx: dict) -> tuple[bool, str]:
+    """Whether a routing condition holds for the item, and why, in words ("1,500 USD is not under 500 USD")."""
+    from .settings import money
+
+    if cond is None:
+        return True, "it applies to every item"
+    if "all" in cond:
+        parts = [condition_words(c, ctx) for c in cond["all"]]
+        return all(h for h, _ in parts), "; ".join(w for _, w in parts)
+    field, value = cond["field"], ctx.get(cond["field"])
+    yes, no = _OP_WORDS.get(cond["op"], (cond["op"], "not " + cond["op"]))
+    if field == "amount":
+        cur = cond.get("currency") or ""
+        if value is None:
+            return False, "the item has no amount"
+        if ctx.get("currency") not in [cond.get("currency")] + list(cond.get("also_currencies") or []):
+            return False, f"the item is in {ctx.get('currency') or 'no currency'}, this sentence in {cur}"
+        holds = condition_holds(cond, ctx)
+        return holds, f"{money(value)} {ctx.get('currency') or ''} is {yes if holds else no} {money(cond['value'])} {cur}".replace("  ", " ")
+    if value is None:
+        return False, f"the item has no {field.replace('_', ' ')}"
+    holds = condition_holds(cond, ctx)
+    return holds, f"its {field.replace('_', ' ')} is {value}" + ("" if holds else f", not {yes} {cond['value']}".replace("  ", " "))
+
+
+def explain(bundle: dict, process: str, step: str, ctx: dict) -> list[dict]:
+    """How a Gate is routed for this item: every routing sentence for the step, in release order (the order the runner
+    tries them), with whether it applies and why; for a cog, whether the item is within the cog's approval criteria. The
+    first that applies (and, for a cog, is within its criteria) takes the item: ``taken``; later ones are not needed."""
+    out, taken = [], False
+    for rule in bundle.get("routing") or []:
+        if rule["process"] != process or rule["step"] != step or rule.get("mode", "assign") != "assign":
+            continue
+        holds, why = condition_words(rule.get("condition"), ctx)
+        row = {"rule": rule, "holds": holds, "why": why, "taken": False, "not_needed": taken}
+        kind, _, name = rule["assignee"].partition(":")
+        if holds and kind == "cog":
+            crits = criteria_for(bundle, rule["assignee"], process)
+            if not crits:
+                row.update(within=False, criteria=["the cog has no approval criteria for it"])
+            else:
+                within, reasons = evaluate_criteria(crits[0], ctx)
+                row.update(within=within, criteria=reasons, limit=crits[0])
+        if holds and not taken and row.get("within", True):
+            row["taken"], taken = True, True
+        out.append(row)
+    return out
+
+
 def sla_days(bundle: dict, process: str, step: str):
     wf = bundle.get("workflows", {}).get(process, {})
     return wf.get("sla", {}).get(step)
