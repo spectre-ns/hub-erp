@@ -68,6 +68,8 @@ WRITE_TOOLS = {"comment", "message", "start_process", "take_turn", "review_docum
 MODES = ("derived", "confirmed", "read")
 # Its own step: the turn at a Gate routed to it (bound by its approval criteria), a step assigned to it.
 STEP_TOOLS = {"take_turn", "complete_step", "hand_back"}
+# Tools whose result is text the cog wrote: the document keeps what produced it (hubproto.cogs.provenance).
+DRAFT_TOOLS = {"draft_document", "edit_document", "create_document", "apply_document_ops"}
 
 # More tools plug in here (hubproto/agent_*.py): register(spec, fn, write=..., intent=...). fn(tools: AgentTools, args) -> dict.
 # A write tool counts against the run's budget and is decided per call from the SOPs (``intent`` says what it would do: an
@@ -376,6 +378,8 @@ class AgentTools(RecordTools):
         elif write:
             self.actions += 1
             res = self.act(name, args)
+            if name in DRAFT_TOOLS and "error" not in res:
+                self._record_draft(name, args, res)
             if "error" in res and decision.get("rule") is None and name not in STEP_TOOLS and "describe what should be done" not in str(res["error"]):
                 # No SOP sentence gave it this; the tool's own rule refused it too: it reports instead of acting.
                 res = {**res, "error": f"{res['error']}; describe what should be done instead, and who may do it"}
@@ -391,6 +395,19 @@ class AgentTools(RecordTools):
             ev["decided"] = {"mode": decision["mode"], "why": decision["why"][:300], "intent": decision.get("intent")}
         self.store.append(self.run_id, ev)
         return res
+
+    def _record_draft(self, name: str, args: dict, res: dict) -> None:
+        """A document the cog wrote or changed keeps what produced the text: its model, persona and the release."""
+        from .cogs import provenance, record_provenance
+
+        number = res.get("document") or args.get("number")
+        rec = self._find(str(number)) if number else None
+        if rec is None:
+            rec = self.hub.kernel.get(str(number)) if number else None
+        meta = self.hub.releases.current() or {}
+        prov = provenance(self.bundle, self.cog, release=meta.get("digest", ""), releases=self.hub.releases)
+        record_provenance(self.hub.kernel, (rec or {}).get("locator"), prov, kind="draft", run_id=f"agent-{self.run_id}",
+                          detail=f"{name.replace('_', ' ')}" + (f", asked by {self.for_whom}" if self.for_whom else ""))
 
     # --- the governed writes
     def act(self, name: str, a: dict) -> dict:

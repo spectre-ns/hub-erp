@@ -63,7 +63,7 @@ def test_required_reading_is_derived_from_the_roles(shell):
     assert "document-control-sop" in reading and "quality-manager" in reading["ncr-sop"]
     assert reading["org-model"] and list(reading)[:3] == ["org-model", "quality-manual", "tasks-sop"]
     assert "wi-review-a-document" in reading and "reviewer" in reading["wi-review-a-document"], "a work instruction's table"
-    assert reading["it-sop"] == ["quality-manager"], "she approves the change orders that carry configuration"
+    assert reading["it-sop"] == ["policy-owner", "quality-manager"], "she approves the change orders that carry configuration"
     assert "system-administrator" in {r["frame"]: r["roles"] for r in sc.required_reading(b, "bob")}["it-sop"], "bob administers the hub"
     assert "it-sop" not in {r["frame"] for r in sc.required_reading(b, "dave")}
     status, text = get(shell, "/user/carol", **{"as": "carol"})

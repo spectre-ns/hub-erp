@@ -469,6 +469,13 @@ def event_sentence(ev: dict, link_number=None, type_word: str = "item") -> str:
         return f"{by} checked it out"
     if t.startswith("document."):
         return f"{by}: {esc(t.split('.', 1)[1].replace('_', ' '))}" + (f" version {esc(d.get('version'))}" if d.get("version") else "")
+    if t == "cog.worked":  # what produced a cog's decision, review or drafted text (its model and competence record)
+        what = {"decision": "decided at its turn", "review": "reviewed it", "draft": "wrote it"}.get(d.get("kind"), "worked on it")
+        stand = " (stand-in)" if d.get("stand_in") else ""
+        rel = f"release v{d['release_n']}" if d.get("release_n") else (f"release {esc(str(d.get('release'))[:12])}" if d.get("release") else "no release")
+        return (f"{by} {what}" + (f": {esc(d.get('detail'))}" if d.get("detail") else "")
+                + f" &middot; model {esc(d.get('model'))}{stand}, persona {esc(d.get('persona') or '-')} {esc(d.get('persona_version') or '')}, "
+                  f"trained by {rel}")
     return f"{by}: {esc(t)}"
 
 
