@@ -144,7 +144,7 @@ class Hub:
             # hosted models are switched on); a member without one is a question, not skipped.
             return CommitteeExtractor(committee["members"], committee["quorum"], cache_dir=Path(self.root) / "state" / "extract-cache",
                                       context=context_for(self), gateway=self.model, calls=calls, baseline=baseline,
-                                      unavailable=committee.get("unavailable"))
+                                      unavailable=committee.get("unavailable"), perspectives=committee.get("perspectives"))
         ex.baseline = baseline
         if not __import__("os").environ.get("HUBPROTO_EXTRACTOR_MODEL"):
             ex.model = self.compiler_model() or ex.model
@@ -152,7 +152,7 @@ class Hub:
 
     def compile_committee(self) -> dict | None:
         """The compile-frame committee of the release in force: {"members": [(cog, its model, or "" when it cannot read
-        here)], "quorum", "unavailable": {cog: why}}. Each member reads with the model its profile bundles it with: an
+        here)], "quorum", "unavailable": {cog: why}, "perspectives": {cog: its own view}}. Each member reads with the model its profile bundles it with: an
         Ollama model, or a Claude model only where hosted models are switched on (``model.backend_for``). The committee
         reads by consensus, so ``quorum`` is every member (the release's ``Agree:`` is kept as ``agree``)."""
         from .model import backend_for, hosted_allowed, resolve_model
@@ -179,7 +179,11 @@ class Hub:
             members.append((name, "" if why else m))
             if why:
                 unavailable[name] = why
-        return {"members": members, "quorum": len(members), "agree": int(c.get("quorum") or 1), "unavailable": unavailable}
+        from .llm_extract import perspective_of
+
+        # Each member reads from its own perspective (its identity, persona and roles); the material is the same for all.
+        return {"members": members, "quorum": len(members), "agree": int(c.get("quorum") or 1), "unavailable": unavailable,
+                "perspectives": {n: perspective_of(b, n) for n, _ in members}}
 
     def compiler_model(self) -> str:
         """The model of the organization cog, which reads SOPs in the Compile the Frame Op when no committee is set: its

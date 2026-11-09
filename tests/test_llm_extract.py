@@ -379,7 +379,8 @@ def test_a_reading_that_drops_a_not_is_flagged_and_explained_back(prose_hub, tmp
                 "fields": {"approver": "cog:ap-reviewer", "process": "purchase-to-pay", "max_amount": None, "currency": None,
                            "conditions": ["supplier_approved"], "countersign": None}}
     for_a_role = dict(inverted, fields={**inverted["fields"], "approver": "role:controller"})
-    call, calls = reader(lambda user, system: {"changes": [inverted, for_a_role]})
+    dressed_as_a_cog = dict(inverted, fields={**inverted["fields"], "approver": "cog:controller"})  # as qwen3:14b read it
+    call, calls = reader(lambda user, system: {"changes": [inverted, for_a_role, dressed_as_a_cog]})
     p = hub.compile(save=False, extractor=model_reader(hub, tmp_path / "n", call))
     sent = calls[0]["user"]
     assert "Approval criteria are only for cogs" in sent and "ask a question instead" in sent and "Keep every \"not\"" in sent
@@ -388,8 +389,10 @@ def test_a_reading_that_drops_a_not_is_flagged_and_explained_back(prose_hub, tmp
     assert c["origin"]["explained"] == "The ap-reviewer cog may approve purchase-to-pay bills when the supplier is approved."
     [w] = c["warnings"]
     assert w["code"] == "negation" and w["ref"] == c["id"] and w["accepted"] is None and "invert" in w["text"] and neg in w["text"]
-    assert not any(r.get("approver") == "role:controller" for r in p["rules"]), "approval criteria are only for cogs"
+    assert not any(r.get("approver") in ("role:controller", "cog:controller") for r in p["rules"]), "approval criteria are only for cogs"
     assert any("only a cog has approval criteria" in f["detail"] for f in p["findings"])
+    asked = [q for q in p["questions"] if "which is not a cog" in q["text"]]
+    assert asked and all(q["line"] == nline and q["code"] == "ambiguous" for q in asked), "a refused reading is asked about, not lost"
     plain = [x for x in p["changes"] if x["op"] == "remove"]
     assert all(x["warnings"] == [] for x in plain), "a removal is not a new reading"
 
@@ -547,4 +550,48 @@ def test_members_citing_different_lines_of_one_wrapped_sentence_get_one_question
     ex = CommitteeExtractor([("qa-manager", MODEL), ("organization", MODEL)], 2, cache_dir=tmp_path / "w", context=context_for(hub), call=call)
     [q] = ex.extract(frame).questions
     assert q["code"] == "disagreement" and q["line"] == line and q["text"].startswith(f"Lines {line}-{line + 1}, “{first_half} {second_half}”")
-    assert "qa-manager read: Approvals in purchase-to-pay are due within 1 days" in q["text"] and "organization read: Approvals in purchase-to-pay over 0 USD" in q["text"]
+    assert "qa-manager read: Approvals in purchase-to-pay are due within 1 days (this reading drops the prose's “not”)" in q["text"]
+    assert "organization read: Approvals in purchase-to-pay over 0 USD go to the controller;" not in q["text"]
+    assert "organization read: Approvals in purchase-to-pay over 0 USD go to the controller: which is meant?" in q["text"]
+
+
+def test_each_member_reads_from_its_own_perspective_and_the_same_material(prose_hub, tmp_path, monkeypatch):
+    """Committees bring differing perspectives: each member's instructions carry its own identity, persona and roles;
+    the diff, the rules in force and the answer format are the same for all, so the readings stay comparable."""
+    from hubproto import model as model_mod
+    from hubproto.llm_extract import DIFF_SYSTEM
+
+    hub = prose_hub
+    served = [{"name": "qwen3:14b", "params": "14.8B", "family": "qwen3", "quant": "Q4", "size_gb": 9.3}]
+    monkeypatch.setattr(model_mod, "ollama_models", lambda refresh=False: (served, ""))
+    monkeypatch.setattr(model_mod, "ollama_url", lambda: "http://ollama.test")
+    views = hub.compile_committee()["perspectives"]
+    b = hub.releases.bundle(hub.releases.current()["digest"])
+    assert set(views) == {"qa-manager", "organization"}
+    assert b["cogs"]["qa-manager"]["about"] in views["qa-manager"] and "ISO 9001" in views["qa-manager"]
+    assert "who decides what" in views["organization"] and "(policy-reader)" in views["organization"]
+    assert "quality-manager, reviewer" in views["qa-manager"] and all(len(v) < 2000 for v in views.values()), "short: the budget is for the change"
+    rewrite(hub, PROSE, PROSE.replace("5,000", "7,500"))
+    call, calls = reader(lambda user, system: {"changes": []})
+    ex = CommitteeExtractor([("qa-manager", MODEL), ("organization", MODEL)], 2, cache_dir=tmp_path / "p", context=context_for(hub),
+                            call=call, baseline=lambda: baseline_for(hub), perspectives=views, budget=100000)
+    ex.extract(hub.frames.get("finance-policy"))
+    qa, org = calls
+    assert qa["user"] == org["user"], "the same diff, rules in force and answer format"
+    assert qa["system"].startswith(DIFF_SYSTEM) and org["system"].startswith(DIFF_SYSTEM)
+    assert views["qa-manager"] in qa["system"] and views["organization"] not in qa["system"]
+    assert views["organization"] in org["system"] and views["qa-manager"] not in org["system"]
+    strip = {"qa-manager": qa["system"].replace(views["qa-manager"], "<view>").replace("qa-manager cog", "<who> cog"),
+             "organization": org["system"].replace(views["organization"], "<view>").replace("organization cog", "<who> cog")}
+    assert strip["qa-manager"] == strip["organization"], "only the perspective (and the name) differs"
+
+
+def test_a_negation_warning_survives_the_change_order_rebuilding_warnings(hub):
+    from hubproto import changecontrol as cc
+
+    co = hub.kernel.create("change-order", "Quality/Changes", {"title": "x", "description": "y", "requested_by": "bob"}, by="bob")
+    w = {"code": "negation", "ref": "add:k", "accepted": None, "text": "the prose says “not” and the rule as read does not"}
+    p = {"changes": [{"id": "add:k", "op": "add", "rule": {"kind": "threshold", "name": "x", "value": 1, "unit": "USD"},
+                      "warnings": [dict(w)], "read_warnings": [dict(w)], "decisions": []}], "questions": [], "findings": []}
+    cc._refresh(hub, hub.kernel.get(co["locator"]), p)
+    assert [x["code"] for x in p["changes"][0]["warnings"]] == ["negation"]

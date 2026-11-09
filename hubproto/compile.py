@@ -152,9 +152,11 @@ def stamp_origins(changes: list[dict], *, kind: str = "prose", by: str | None = 
         quote, explained = src.get("text") or "", origin.get("explained") or ""
         if c.get("op") == "add" and negated(quote) != negated(explained) and not any(w.get("code") == "negation" for w in c["warnings"]):
             said, read = ("says", "does not") if negated(quote) else ("does not say", "does")
-            c["warnings"].append({"code": "negation", "ref": c["id"], "accepted": None,
-                                  "text": f"the prose {said} “not” (or never, no, unless, except, without) and the rule as read {read}: "
-                                          f"“{quote}” was read as “{explained}”. Check the reading did not invert it."})
+            w = {"code": "negation", "ref": c["id"], "accepted": None,
+                 "text": f"the prose {said} “not” (or never, no, unless, except, without) and the rule as read {read}: "
+                         f"“{quote}” was read as “{explained}”. Check the reading did not invert it."}
+            c["warnings"].append(w)
+            c.setdefault("read_warnings", []).append(dict(w))  # the compiler's own: kept when a change order rebuilds warnings
     return changes
 
 

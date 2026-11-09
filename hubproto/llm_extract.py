@@ -134,8 +134,9 @@ says the same). Say nothing about rules on unchanged lines: they stay as they ar
 ambiguous ("larger bills go to the controller": over what amount?) rather than guess. Empty lists are a fine answer."""
 
 
-def _key(frame: Frame, context: dict, model: str, member: str = "") -> str:
-    blob = json.dumps({"text": frame.text, "context": context, "model": model, "member": member, "v": PROMPT_VERSION}, sort_keys=True)
+def _key(frame: Frame, context: dict, model: str, member: str = "", perspective: str = "") -> str:
+    blob = json.dumps({"text": frame.text, "context": context, "model": model, "member": member, "v": PROMPT_VERSION,
+                       **({"perspective": perspective} if perspective else {})}, sort_keys=True)
     return hashlib.sha256(blob.encode()).hexdigest()[:32]
 
 
@@ -173,8 +174,10 @@ def _names(context: dict) -> dict:
             "cogs": ", ".join(c.get("cogs") or []), "types": ", ".join(c.get("types") or [])}
 
 
-def _build_rule(frame: Frame, item: dict, read_by: str) -> tuple[dict | None, dict | None]:
-    """A rule the model returned, in the hub's shape and cited at its line; or (None, a note) when it may not return it."""
+def _build_rule(frame: Frame, item: dict, read_by: str, cogs=None) -> tuple[dict | None, dict | None]:
+    """A rule the model returned, in the hub's shape and cited at its line; or (None, a note) when it may not return it.
+    A note with ``ask`` is a reading that cannot stand but says the prose means something: it becomes a question.
+    ``cogs``: the cogs that exist (approval criteria are only for them)."""
     kind = item.get("kind")
     fields = item.get("fields") or {}
     line = item.get("line")
@@ -182,10 +185,14 @@ def _build_rule(frame: Frame, item: dict, read_by: str) -> tuple[dict | None, di
     if kind not in MODEL_KINDS or not isinstance(fields, dict) or kind not in KINDS:
         return None, {"frame": frame.name, "line": line or 0, "text": quote, "severity": "warning",
                       "note": f"the model returned a {kind!r} rule, which it may not (only {', '.join(MODEL_KINDS)})"}
-    if kind == "approval_criteria" and not str(fields.get("approver") or "").startswith("cog:"):
+    approver = str(fields.get("approver") or "")
+    if kind == "approval_criteria" and (not approver.startswith("cog:") or (cogs and approver[4:] not in cogs)):
         return None, {"frame": frame.name, "line": line or 0, "text": quote, "severity": "warning",
-                      "note": f"the model read approval criteria for {fields.get('approver')!r}; only a cog has approval criteria "
-                              "(what a person or role approves is a routing rule): left out"}
+                      "note": f"the model read approval criteria for {approver!r}; only a cog has approval criteria "
+                              "(what a person or role approves is a routing rule): left out",
+                      "ask": f"“{quote}” was read as approval criteria for {approver.partition(':')[2] or approver}, which is not a cog "
+                             "(only a cog has approval criteria). What does it mean: who these approvals go to (a routing rule), "
+                             "or who may approve them (a permission)?"}
     rule = {"kind": kind, **{k: v for k, v in fields.items() if k not in ("kind", "source")},
             "source": {"frame": frame.name, "version": frame.version, "line": line, "text": quote, "read_by": read_by}}
     if kind == "routing":
@@ -390,8 +397,10 @@ class ModelExtractor:
     name = "hybrid"
 
     def __init__(self, cache_dir: Path | None = None, context: dict | None = None, model: str | None = None, call=None,
-                 gateway=None, calls: bool = True, member: str = "", baseline=None, budget: int | None = None):
+                 gateway=None, calls: bool = True, member: str = "", baseline=None, budget: int | None = None,
+                 perspective: str = ""):
         self.member = member  # a committee member reads on its own: its reading is its own (cached apart)
+        self.perspective = perspective  # who this member is and what it answers for (``perspective_of``): its own view
         self.model = model or local_model()
         self.cache_dir = Path(cache_dir) if cache_dir else None
         self.context = context or {}
@@ -421,7 +430,13 @@ class ModelExtractor:
             return 24000
 
     def _system(self, base: str) -> str:
-        return base + (f"\nYou are the {self.member} cog, one member of a committee that reads this SOP; read it on your own." if self.member else "")
+        """The instructions every reader shares, then this member's own perspective: committees exist to bring different
+        views to the same material, so only this part differs between members (the diff, the rules in force and the
+        answer format are the same for all, and their readings stay comparable)."""
+        if not self.member:
+            return base
+        own = f"\n\nYour perspective (yours alone on the committee):\n{self.perspective}" if self.perspective else ""
+        return base + own + f"\nYou are the {self.member} cog, one member of a committee that reads this SOP; read it on your own."
 
     def _ask(self, path: Path | None, system: str, user: str) -> dict:
         """One call, cached at ``path`` (keyed by exactly what it is about)."""
@@ -445,7 +460,7 @@ class ModelExtractor:
 
     # -- a new SOP: read whole, as before
     def _read(self, frame: Frame, already: list[dict]) -> dict:
-        path = self._path(_key(frame, self.context, self.model, self.member))
+        path = self._path(_key(frame, self.context, self.model, self.member, self.perspective))
         if path is not None and path.exists():
             try:
                 return json.loads(path.read_text(encoding="utf-8"))
@@ -471,6 +486,17 @@ class ModelExtractor:
                                 code="ambiguous", quote=str(q.get("quote") or "")))
         return out
 
+    def _refused(self, frame: Frame, note: dict, out: "Reading") -> None:
+        """A reading that may not stand: a note, and (when the prose evidently means something) a question, so it is not
+        lost silently."""
+        from .compile import question
+
+        ask = note.pop("ask", None)
+        out.notes.append(note)
+        if ask:
+            out.questions.append(question(frame.name, note.get("line") if isinstance(note.get("line"), int) else 0, ask,
+                                          raised_by=self.member or self.model or "the model", code="ambiguous", quote=note.get("text") or ""))
+
     def whole_reading(self, frame: Frame, conv) -> Reading:
         """This reader's reading of a whole SOP (a new one): rules beyond the compiler's, and questions. Raises LookupError
         when it is not read yet and calls are off, and whatever the model's failure is."""
@@ -480,9 +506,9 @@ class ModelExtractor:
         for item in data.get("rules") or []:
             if not isinstance(item, dict):
                 continue
-            rule, note = _build_rule(frame, item, self.model)
+            rule, note = _build_rule(frame, item, self.model, self.context.get("cogs"))
             if rule is None:
-                out.notes.append(note)
+                self._refused(frame, note, out)
                 continue
             if rule_key(rule) in have:
                 continue
@@ -522,7 +548,8 @@ class ModelExtractor:
         # Cached by what the reading is about (the change, the readings in force, the sentences read exactly), not by the
         # names: a later release that leaves this SOP alone does not have the model read the same change again.
         key = hashlib.sha256(json.dumps({"frame": frame.name, "diff": diff, "in_force": in_force, "exact": exact, "model": self.model,
-                                         "member": self.member, "v": DIFF_PROMPT_VERSION}, sort_keys=True).encode()).hexdigest()[:32]
+                                         "member": self.member, "v": DIFF_PROMPT_VERSION,
+                                         **({"perspective": self.perspective} if self.perspective else {})}, sort_keys=True).encode()).hexdigest()[:32]
         return user, key
 
     def chunks(self, frame: Frame, plan: DiffPlan, conv) -> list[tuple[str, str]]:
@@ -584,9 +611,9 @@ class ModelExtractor:
                         out.removes.add(rule_key(r))
                     if op == "remove":
                         continue
-                rule, note = _build_rule(frame, item, self.model)
+                rule, note = _build_rule(frame, item, self.model, self.context.get("cogs"))
                 if rule is None:
-                    out.notes.append(note)
+                    self._refused(frame, note, out)
                     continue
                 if rule_key(rule) in have:
                     continue
@@ -626,6 +653,23 @@ class ModelExtractor:
         return _assemble(frame, conv, plan, rd.adds, rd.removes, rd.questions, rd.notes, read=True, processes=procs)
 
 
+PERSPECTIVE_CHARS = 1600  # a member's perspective stays short: the budget is for the SOP's change
+
+
+def perspective_of(bundle: dict, cog: str) -> str:
+    """A committee member's own perspective, from the release: who it is and how it works (its profile's About and its
+    persona's behaviour, composed as the cog's ``prompt``) and what it answers for (the roles it holds)."""
+    prof = (bundle.get("cogs") or {}).get(cog) or {}
+    text = (prof.get("prompt") or prof.get("about") or "").strip()
+    if len(text) > PERSPECTIVE_CHARS:
+        text = text[:PERSPECTIVE_CHARS].rsplit(" ", 1)[0] + " ..."
+    roles = ((bundle.get("members") or {}).get(cog) or {}).get("roles") or []
+    if roles:
+        text += (f"\nWhat you answer for: the work of your roles ({', '.join(roles)}). Read the change from that point of view; "
+                 "the rules you return are still only what the prose states.")
+    return text.strip()
+
+
 def context_for(hub) -> dict:
     """The names the model may use: from the release in force and the record types."""
     meta = hub.releases.current()
@@ -649,7 +693,7 @@ class CommitteeExtractor:
 
     def __init__(self, members: list[tuple[str, str]], quorum: int, cache_dir: Path | None = None, context: dict | None = None,
                  gateway=None, calls: bool = True, call=None, baseline=None, budget: int | None = None,
-                 unavailable: dict[str, str] | None = None):
+                 unavailable: dict[str, str] | None = None, perspectives: dict[str, str] | None = None):
         self.size = len(members)  # every member, with a model here or not: consensus needs each one's reading
         self.members = [(n, m) for n, m in members if m]
         # A member with no model here, and why (hub.compile_committee): the committee cannot agree without it.
@@ -659,7 +703,7 @@ class CommitteeExtractor:
         self.context = context or {}
         self.baseline = baseline if baseline is None or isinstance(baseline, _Baseline) else _Baseline(baseline)
         self.readers = [ModelExtractor(cache_dir=cache_dir, context=context, model=m, gateway=gateway, calls=calls, call=call, member=n,
-                                       baseline=self.baseline, budget=budget)
+                                       baseline=self.baseline, budget=budget, perspective=(perspectives or {}).get(n) or "")
                         for n, m in self.members]
         self.model = ", ".join(f"{n} ({m})" for n, m in self.members)
 
@@ -725,8 +769,14 @@ class CommitteeExtractor:
                   for k, who in votes.items() if len(who) == everyone]
         questions = [q for _, rd in readings for q in rd.questions]
 
+        from .compile import negated
+
         def plain(r: dict) -> str:
-            return _sentence(r, procs).rstrip(".")
+            said = _sentence(r, procs).rstrip(".")
+            quote = (r.get("source") or {}).get("text") or ""
+            if negated(quote) != negated(said):
+                said += " (this reading drops the prose's “not”)" if negated(quote) else " (this reading adds a “not”)"
+            return said
         # One question per sentence read differently: disputed lines that continue one sentence (the line before does
         # not end it) are asked about together, whichever of them each member cited.
         groups: list[list[int]] = []

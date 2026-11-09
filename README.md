@@ -76,7 +76,9 @@ or adds a "not" carries a `negation` warning. A rule that only moved in its file
 listed as moved, not as a change to decide. Direct changes on a change order are put into prose by the qa-manager cog
 and compiled back to check they give the same rule (`hubproto/prose_drafting.py`).
 
-**The committee reads by consensus.** Its members are cogs, and each reads with the model its profile bundles it with.
+**The committee reads by consensus.** Its members are cogs, and each reads with the model its profile bundles it with,
+from its own perspective (its About text, its persona's behaviour and the roles it holds); the diff, the rules in force
+and the answer format are the same for every member, so their readings stay comparable.
 A rule goes in only when every member reads it the same way; where members read a line differently, the proposal gets
 a `disagreement` question quoting the line and each member's reading, for a person to decide. The `Agree: n of m` line
 of the committee is still parsed, but agreement means every member. A member whose model is not available here (not
