@@ -24,8 +24,8 @@ nothing when it stops there. Each was found by rehearsing on fresh restores of t
    Frame, make the document obsolete at release, and drop the Frame from the release.
 3. **Nobody may answer the compile committee's blocking questions under v9.** The round raises 19 blocking
    `unread-rule` questions, one for each prose paragraph of the new texts. Only the committee's chair or a system
-   administrator may answer one (changecontrol.py:1821-1822), and an open one stops approval
-   (changecontrol.py:2511-2514). Under v9 the committee has no chair and nobody holds `system-administrator`; both
+   administrator may answer one (changecontrol.py:1876-1877), and an open one stops approval
+   (changecontrol.py:2585-2587). Under v9 the committee has no chair and nobody holds `system-administrator`; both
    arrive with this change order. One possible fix is that a policy owner who contributed nothing may answer when the
    release in force names neither. That is a governance decision for the product owner.
 4. **After the merge, the Frame files on disk decide which Frames are compiled.** `Hub.released_frames` takes the
@@ -39,7 +39,7 @@ These should be fixed too. They do not stop the change order.
 5. **15 of the 129 waiting runs cannot be decided by the person they wait for**, before or after the rollout: 13
    tasks, 1 training acknowledgement and 1 audit. Each is routed to a named field (assignee, auditor) who is also the
    run's owner. The earlier code saved their pending decision without a `route`, so the new runner uses `role:`
-   (runner.py:2383) and keeps the owner out as the item's preparer (runner.py:823-826). Fix: for a pending saved
+   (runner.py:2403) and keeps the owner out as the item's preparer (runner.py:823-826). Fix: for a pending saved
    without a route, derive it from `pending["route_rule"]`.
 6. **58 waiting runs have no `seen_digest` from `runner.load`.** Their pending has no `kind` (runner.py:108), so
    `hubproto decide` without `--seen` is refused (cli.py:855). The shell works: it computes the digest itself.
