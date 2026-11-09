@@ -95,9 +95,10 @@ def test_a_change_order_goes_round_the_loop_and_is_released(hub):
         "Collect the carried drafts and direct changes", "Compile the Frame", "Draft prose for direct changes", "Check the guards",
         "Stage it on the change order", "Suggest the panel", "Queue the panel's reviews", "Tell the people involved"]
     assert cc.current_round(co)["job"] == j["id"] and j["trigger"] == "alice requested review (round 1)"
-    # The panel: a limit is reviewed by the management cog, which is not a member yet: shown, not asked.
+    # The panel: a limit is reviewed by the management cog (a member since the cog model landed): asked, and its review is in.
     [m] = cc.current_round(co)["panel"]
-    assert m["who"] == "management" and not m["member"] and "limits" in m["reason"] and cc.current_round(co)["results"] == {}
+    assert m["who"] == "management" and m["member"] and "limits" in m["reason"]
+    assert cc.current_round(co)["results"]["management"]["status"] == "done"
     # The delta: the changed limit, read from alice's prose (the line and its words), and the wording change.
     add = next(i for i in items(hub, co) if i["op"] == "add")
     assert add["origin"]["kind"] == "prose" and add["origin"]["by"] == "alice" and add["origin"]["frame"] == "finance-policy"
