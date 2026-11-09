@@ -504,8 +504,13 @@ def carried_reasons(hub, co: dict) -> list[str]:
 
 
 def activate(hub, co: dict, digest: str) -> list[str]:
-    """The release automation's step: each carried layout comes into force (a new version), with its custom fields."""
+    """The release automation's step: each carried layout comes into force (a new version), with its custom fields.
+    Only for an approved change order (hubproto.closure)."""
     done = []
+    if any(((active_entry(hub, t) or {}).get("released_with") != co["number"]) for t in (co["fields"].get("form_changes") or {})):
+        from .closure import check_co_approved
+
+        check_co_approved(co, "its form layouts")
     for type_, c in (co["fields"].get("form_changes") or {}).items():
         now = active_entry(hub, type_) or {}
         if now.get("released_with") == co["number"]:

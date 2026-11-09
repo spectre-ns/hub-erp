@@ -25,6 +25,9 @@ reason written in the PR. Tests: `python -m pytest -q` (all must pass).
 | `hubproto/worker.py` | the CAD worker (its own image, docker/cad-worker): /invoke envelope seam over FreeCADCmd and kicad-cli, fake mode | core |
 | `frames/engineering/design-control-sop.frame.md` | design-release process (submit, export, reconcile BOM, risk, review, release part) | core |
 | `hubproto/app.py` | `Hub` wiring | core |
+| `hubproto/closure.py` | no configuration change without a change order once the SOPs are documents: the guards `Hub.compile`, `review`, `release` and `frame_draft` call; the sentence (`CO_ROUTE`) | core |
+| `hubproto/recordtypes.py` | record types under change control: the record types in force (`state/record-types`), changes carried on change orders (`carry`, `carried_reasons`, `delta_items`, `activate`), the file's drift | core |
+| `hubproto/cli_recordtypes.py` | CLI verbs `record-types status`, `show`, `carry` (`register(sub)`) | cli agent |
 | `hubproto/cli.py` | command line: policy, run, message and operations verbs; `main` returns the exit code; shared helpers (`fail`, `clean`, `require_member`, `resolve_*`) | cli agent |
 | `hubproto/shell/` | the workspace shell package (handler, pages, inbox, forms, actions, policy, css, text; stdlib http.server) | shell agent |
 | `hubproto/cli_records.py` | CLI verbs for runs waiting on people, records and documents (`register(sub)`) | cli agent |
@@ -67,7 +70,13 @@ what in your final report and work around it meanwhile.
 * `backup <dir>` copies `kernel.db` with `sqlite3.Connection.backup` plus `runs/`, `releases/`, `proposals/`,
   `blobs/`, `inbox/` and `proposal-numbers.json`, with a `backup.json` manifest; `restore <dir>` refuses a partial
   set and an existing state without `--force`. `status --check` exits 1 when no release is in force or the Frames
-  on disk differ from the release's bill of materials (the entrypoint prints that on later starts).
+  on disk differ from the release's bill of materials (the entrypoint prints that on later starts); once the SOPs are
+  documents, also when `config/record-types.json` differs from the record types in force or another config file from
+  what the release recorded.
+* Once the SOPs are documents a configuration change outside a change order is refused by the hub
+  (`closure.ChangeOrderRequired`, a `CompileError`): the verbs exit 1 with a sentence ending "Configuration changes only
+  through a change order: open one under Quality > Change orders." (`compile`, `review`, `release`,
+  `bootstrap-release --force`, `seed`). See `docs/design/config-paths.md`.
 
 ## The model in one paragraph
 
@@ -145,6 +154,17 @@ money, date, bool, list, object, ref, principal, enum:a,b), `required_by_state`
 (state -> fields that must be set before the record may enter it; waiting
 states are `awaiting-<checkpoint-id>`), `defaults` (`$owner`, `$today`),
 `retention`, `sensitivity`, `gapless`.
+
+The file is the source only until the SOPs are documents. From then on the
+record types in force are the hub's (`state/record-types/active.json`: the file
+as of the release in force, then each change order's `record_type_changes`
+released by `recordtypes.activate`), `kernel.types` is installed from there
+(`Kernel.types_hook` picks up a version another process released), and a file
+that differs is reported by `status --check` and not used. Change the file only
+to ship new types or fields with the software; on a converted hub, carry them
+on a change order (`hubproto record-types carry CO --from-file`). Tests that
+edit the file point `hubproto.kernel.CONFIG_DIR` at a copy (see
+`tests/test_config_closure.py`).
 
 ## APIs you will use
 

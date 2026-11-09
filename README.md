@@ -65,6 +65,28 @@ against an older release than the one in force) is refused with "compile
 again", and a release that only re-renders a process is reported as
 "re-rendered, no semantic change" instead of a pair of add/remove changes.
 
+## Once the SOPs are documents: change orders only
+
+After `hubproto sops convert --as <policy owner>` (or Policy > Convert in the
+shell) the Frame is compiled from the SOP documents, and configuration changes
+only through a change order (Quality > Change orders): `compile`, `review` and
+`release` of a proposal no change order staged, `bootstrap-release --force` and
+`seed` are refused (exit 1) with that sentence, and so are the shell's Frame
+drafts and proposal actions. The record types in force are kept by the hub from
+then on (`state/record-types`): an edited or newly shipped
+`config/record-types.json` is reported by `status --check` and not used until a
+change order carries what it adds:
+
+```bash
+docker compose exec hub hubproto record-types status                       # version in force, history, what the file says differently
+docker compose exec hub hubproto record-types carry CO-2026-0004 --from-file --as carol
+docker compose exec hub hubproto record-types carry CO-2026-0004 --as carol \
+    --changes '[{"op": "add_field", "type": "ncr", "field": "batch", "spec": "text"}]'
+```
+
+`docs/design/config-paths.md` lists every path that changes configuration and
+what happens on it.
+
 ## Who may do what
 
 `hubproto why --as <person> --action create|read|approve --object <bills|documents|...> --folder <Folder>`
