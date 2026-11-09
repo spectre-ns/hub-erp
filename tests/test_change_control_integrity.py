@@ -375,6 +375,7 @@ def test_the_demo_change_order_is_written_by_bob_so_carol_may_sign_it(hub):
     number = dev_demo.change_order(hub)
     [c] = eco.carried(hub, cc._co(hub, number))
     assert c["draft"]["fields"]["author"] == "bob" and "carol" not in cc.revision_authors(hub, number)
+    assert "carol" not in cc.contributors(hub, number), "she opened nothing on it either"
 
 
 def test_a_widening_made_by_a_policy_owner_passes_with_the_other_independent_owner(hub):  # fidelity 25

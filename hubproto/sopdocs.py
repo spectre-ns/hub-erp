@@ -269,6 +269,8 @@ def source_texts(hub, drafts: dict[str, str] | None = None) -> dict[str, str]:
     drafts = drafts or {}
     names = {d["fields"]["sop_name"] for d in hub.kernel.query(type_="document") if str(d["fields"].get("lineage", "")).startswith(LINEAGE)}
     for name in sorted(names):
+        if name in drafts and drafts[name] is None:  # retired by the change order: compiled as absent
+            continue
         rec = hub.kernel.get(drafts[name]) if name in drafts else in_force(hub.kernel, name)
         if rec is not None:
             out[name] = frame_text(hub, rec)
