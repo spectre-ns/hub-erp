@@ -66,7 +66,7 @@ details.apps>summary::-webkit-details-marker{{display:none}}details.apps>summary
 .named{{display:inline-flex;align-items:center;gap:6px;vertical-align:middle}}.named a{{text-decoration:none;font-weight:500;color:var(--fg)}}
 /* --- layout, rail --- */
 .layout{{display:grid;grid-template-columns:232px 1fr;min-height:calc(100vh - 48px)}}
-nav.rail{{background:var(--panel);border-right:1px solid var(--line);padding:var(--sp-4) var(--sp-3)}}
+nav.rail{{background:var(--panel);border-right:1px solid var(--line);padding:var(--sp-4) var(--sp-3);min-width:0}}
 nav.rail ul{{list-style:none;margin:0;padding:0}}nav.rail li a{{display:flex;align-items:center;gap:10px;padding:6px 10px;margin:1px 0;border-radius:var(--r);color:var(--fg);text-decoration:none;transition:background .12s var(--ease)}}nav.rail li a svg.i{{color:var(--muted)}}
 nav.rail li a:hover{{background:var(--hover)}}nav.rail li a[aria-current=page]{{background:var(--accent-soft);font-weight:500;color:var(--accent)}}nav.rail li a[aria-current=page] svg.i{{color:var(--accent)}}
 nav.rail h2{{font-size:var(--fs-s);font-weight:500;letter-spacing:.01em;color:var(--muted);margin:var(--sp-6) 0 var(--sp-1) 10px;border:0;padding:0}}
@@ -92,7 +92,7 @@ button.secondary,.button.secondary{{background:var(--panel);color:var(--fg);bord
 button.reject{{background:var(--panel);color:var(--crit);border:1px solid color-mix(in srgb,var(--crit) 55%,var(--line))}}button.reject:hover{{background:var(--crit-bg)}}button[disabled]{{opacity:.5;cursor:not-allowed}}
 button.ghost,.button.ghost{{background:transparent;color:var(--fg);border:1px solid var(--line-strong)}}button.ghost:hover,.button.ghost:hover{{background:var(--hover);border-color:var(--ctl)}}
 input,select,textarea{{padding:6px 10px;border:1px solid var(--ctl);border-radius:var(--r);background:var(--panel);color:var(--fg);font:inherit;width:100%;max-width:30em;min-height:34px;transition:border-color .15s var(--ease),box-shadow .15s var(--ease)}}input:hover,select:hover,textarea:hover{{border-color:var(--fg)}}input:focus,select:focus,textarea:focus{{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}}
-textarea{{min-height:4.5em}}input[type=checkbox]{{width:auto;min-height:0;vertical-align:middle;margin-right:var(--sp-1)}}input[type=file]{{padding:4px 0;border:0;background:none}}
+textarea{{min-height:4.5em}}input[type=checkbox],input[type=radio]{{width:auto;min-height:0;vertical-align:middle;margin-right:var(--sp-1)}}input[type=file]{{padding:4px 0;border:0;background:none}}
 form.inline{{display:inline-block;margin-right:var(--sp-2)}}
 .fields{{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:var(--sp-2) var(--sp-4);align-items:start}}
 label.f{{display:block;font-size:var(--fs-m)}}label.f>span{{display:block;color:var(--muted);font-size:var(--fs-s);font-weight:500;margin-bottom:4px}}label.f>span b{{color:var(--crit)}}

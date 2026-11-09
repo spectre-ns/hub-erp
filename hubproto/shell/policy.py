@@ -157,6 +157,7 @@ proposal <code>{esc(meta.get('proposal_id') or '-')}</code>{(' reviewed by ' + e
                                               [[esc(f"{(r.get('source') or {}).get('frame')} line {(r.get('source') or {}).get('line')}"), f"<span class='diff'><del>{esc((r.get('source') or {}).get('text', ''))}</del></span>", esc(RULE_WORDS.get(r.get("kind"), r.get("kind"))), who(r, "remove")] for r in diff["removed"]])
         if not any(diff.values()):
             body += "<p class='muted'>No sentence changed; the version was released again with the same rules.</p>"
+        body += self._release_divergences_html(meta)
         changed_frames = []
         old_sha = {f["name"]: f.get("sha256") for f in (parent_meta or {}).get("frames", [])}
         for f in meta.get("frames", []):
@@ -234,12 +235,17 @@ proposal <code>{esc(meta.get('proposal_id') or '-')}</code>{(' reviewed by ' + e
             if "unknown Frame" in str(e):
                 raise ShellError(f"There is no policy named '{self.arg}'. The list is under Policies.", 404) from None
             raise ShellError(f"The policies on disk could not be read: {e}. Fix that file; the release in effect still applies.", 503) from None
-        lines = "".join(f"<tr id='L{i}'><th scope='row'><a href='#L{i}' aria-label='line {i}'>{i}</a></th><td><pre class='src'>{esc(line) or ' '}</pre></td></tr>"
-                        for i, line in enumerate(frame.file_lines, start=1))
+        file_lines = frame.file_lines
+        if self.hub.sop_source():  # once the SOPs are documents, the text the release in force was compiled from
+            try:
+                file_lines = self.hub.released_frames().get(frame.name).file_lines
+            except Exception:
+                pass
         body = (f"<h1>{esc(frame.name)} {tag('v' + str(frame.version))}</h1><div class='card'>{esc(frame.description)}<br><span class='why'>scope {esc(frame.scope)}; maintained by {esc(frame.maintainer)}; "
                 f"visibility {esc(frame.visibility)}; inherits {esc(', '.join(frame.inherits) or 'nothing')}; file {esc(str(frame.path.name))}</span></div>"
-                f"<p class='why'>Line numbers are the file's own, frontmatter included, so a citation such as “line 34” matches an editor.</p>"
-                f"<div class='tbl'><table><thead><tr><th scope='col'>Line</th><th scope='col'>Text</th></tr></thead><tbody>{lines}</tbody></table></div>")
+                + self._divergence_card(frame.name)
+                + f"<p class='why'>Line numbers are the file's own, frontmatter included, so a citation such as “line 34” matches an editor.</p>"
+                + self._lines_with_markers(frame.name, file_lines))
         proposed = [q for q in self.hub.proposals.list() if q.get("status") == "open" and frame.name in (q.get("overrides") or {})]
         banner = "".join(f"<div class='card warn' role='status'>A change to this policy is proposed: <a href='{href('/proposal/' + q['id'], self.user)}'>"
                          f"proposal #{esc(q.get('number'))}</a>.</div>" for q in proposed)
@@ -329,6 +335,33 @@ proposal <code>{esc(meta.get('proposal_id') or '-')}</code>{(' reviewed by ' + e
         self._page("People and roles", body, crumbs=[("People and roles", None)])
 
     # ------------------------------------------------------------ conformance
+    def _divergence_rows(self, divs: list[dict]) -> list[list[str]]:
+        return [[esc(d.get("id")), self._co_frame_line(d.get("frame"), d.get("line")) + (f"<div class='why'>“{esc(d.get('prose') or '')}”</div>" if d.get("prose") else ""),
+                 esc(self._say(d.get("in_force")) if d.get("in_force") else "nothing (the rule the line states is not in force)"),
+                 f"{esc(d.get('accepted_by') or '-')} on {self._co_number_link(d.get('co'))}" + (f"<div class='why'>“{esc(d.get('meaning') or '')}”</div>" if d.get("meaning") else ""),
+                 esc(d.get("change_request") or "-"), "<span style='white-space:nowrap'>" + chip(d.get("status", "open"), "warn" if d.get("status", "open") == "open" else "ok") + "</span>"] for d in divs]
+
+    def _release_divergences_html(self, meta: dict) -> str:
+        """On the release diff: the change order that released it, its divergences (configuration differing from the prose)."""
+        divs = list(meta.get("divergences") or [])
+        resolved = list(meta.get("divergences_resolved") or [])
+        if not divs and not resolved and not meta.get("change_order"):
+            return ""
+        out = (f"<h2 id='divergences'>Divergences <span class='muted'>{len(divs)}</span></h2>"
+               + (f"<p class='why'>Released with {self._co_number_link(meta.get('change_order'))}.</p>" if meta.get("change_order") else ""))
+        out += table(["Divergence", "SOP line", "In force", "Accepted by", "Change request", "Status"], self._divergence_rows(divs),
+                     "None: the configuration in force is what the prose says.")
+        if resolved:
+            out += f"<p class='why'>Resolved by this release: {esc(', '.join(resolved))}.</p>"
+        return out
+
+    def _conformance_divergences_html(self) -> str:
+        divs = self._divergences_of()
+        out = (f"<h2 id='divergences'>Divergences <span class='muted'>{len(divs)}</span></h2><p class='why'>Lines of the SOPs where the configuration in "
+               "force differs from the prose, accepted on a change order. Each stays until a change order resolves it.</p>")
+        return out + table(["Divergence", "SOP line", "In force", "Accepted by", "Change request", "Status"], self._divergence_rows(divs),
+                           "None: the configuration in force is what the SOPs say.")
+
     def page_conformance(self):
         try:
             from .. import profile  # type: ignore
@@ -347,5 +380,6 @@ proposal <code>{esc(meta.get('proposal_id') or '-')}</code>{(' reviewed by ' + e
                          ", ".join(f'<a href="{href("/frame/" + f, self.user)}">{esc(f)}</a>' for f in frames) or "<span class='muted'>no policy claims it</span>"])
         n_cov, n_all = len(covered), len(titles)
         body = (f"<h1>Conformance</h1><p class='why'>Profile {esc(result.get('profile', ''))}: {n_cov} of {n_all} clauses are claimed by a policy under "
-                f"{self._version_html(result.get('release'))}.</p>" + table(["Clause", "Title", "Status", "Covered by"], rows, row_header=True))
+                f"{self._version_html(result.get('release'))}.</p>" + self._conformance_divergences_html()
+                + table(["Clause", "Title", "Status", "Covered by"], rows, row_header=True))
         self._page("Conformance", body, crumbs=[("Conformance", None)])

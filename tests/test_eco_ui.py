@@ -70,13 +70,13 @@ def test_carrying_an_sop_stages_the_frame_and_shows_what_blocks_approval(shell):
     hub = shell["hub"]
     co = new_co(shell)
     html = page(shell, co, "alice")
-    assert "Carries" in html and "Add an SOP or policy" in html and "finance-policy" in html
+    assert "What it carries" in html and "Add an SOP or policy" in html and "finance-policy" in html
     status, url, body = post(shell, "/co-add-sop", {"as": "alice", "co": co["locator"], "sop": "finance-policy"})
     assert status == 200, body[:400]
     [c] = eco.carried(hub, hub.kernel.get(co["locator"]))
     draft = c["draft"]
     html = page(shell, co, "alice")
-    assert draft["number"] in html and "being written" in html and "Staged Frame" in html
+    assert draft["number"] in html and "being written" in html and "The delta" in html
     write(hub, draft, OLD, NEW, "alice")
     html = page(shell, co, "alice")
     assert "1,500" in html and "was:" in html and "2,000" in html, "the changed rule as a sentence, with what it was"
