@@ -2,16 +2,24 @@
 
 **These are the author's observations, not facts about how the hub should work.** They list what looked unclear,
 inconsistent or surprising while the manual was written and brought up to date, for the product owner to decide on.
-Each note says what was seen and how: "ran the code" means it was reproduced on a throwaway copy of the hub with the
-repository's Frames (never the live hub); "read the code" means it follows from the code cited but was not run; "seen
-on the live hub" means a page of `http://localhost:8080`, read only. Notes carried over from the first edition were
-run at `26962fa` and not run again; the code they rest on has not changed since in a way that affects them, unless the
-note says so. Notes are grouped by area; the ones that seem to matter most are marked **[high]**.
+Each note says what was seen and how: "ran the code" means it was reproduced on a throwaway or development hub with the
+repository's Frames (never the live hub); "read the code" means it follows from the code cited but was not run.
+Notes carried over from earlier editions were checked again against `2c99c4d` (change control v2): the ones still
+listed are still open, with what changed said in the note. The ones that seem to matter most are marked **[high]**.
 
-**Resolved since the first edition, and dropped:** D5 (documents are now approved from their own page too, chapter
-5.4), C2 (the chat window no longer says the cog changes nothing; the repository's README still does), A4 (the live
-hub runs the repository's HEAD) and, from E9, the conversion of the SOPs, which is now a button (chapter 7.8). G1, C1
-and E4 are partly resolved; they are kept below with what is left.
+**Read 10.9 first.** It lists what is still open in change control v2 itself, the workflow this edition describes.
+
+**Resolved since the last edition, and dropped:** C5 (autonomy is derived per action now, chapter 6.2), E4 (anyone may
+put a model change or a new member on a change order; whether the prose can be written is 10.9, V6), E5 (a hub whose
+policy came from Settings: Settings edits are direct changes on a change order now), E8 (after the conversion no
+release writes the `.frame.md` files) and X2 (Settings no longer becomes the source of truth). C4, C8, G2, X3, X4, X7,
+A1, E1, E2, E9 and Q8 are partly resolved; they are kept below with what is left. E3 got worse.
+
+**No authentication.** Before anything else: the prototype has no sign-in. Whoever reaches the hub acts as anyone, by
+choosing a name ("Acting as", or `?as=` in a link) or by the command line's `--as` (hubproto/shell/handler.py: "This
+prototype has no sign-in"). Every segregation-of-duties rule, every signature, every "independent approver" and every
+audit trail in this manual assumes honest names. **No claim of electronic signatures under 21 CFR Part 11 (or EU GMP
+Annex 11) holds** until there is authentication and a signing ceremony.
 
 ## 10.1 All processes
 
@@ -26,9 +34,10 @@ to dave, not to the controller. dave approved it again and PO-0001 was issued fo
 history line reads "dave's approval at score the risk no longer matches", naming the step before the Gate. Question:
 should a retry that voids an approval also run the checks before the Gate again?
 
-**G2 [high]. Amount routing only works in USD.** Amount bands in routing sentences and in approval criteria compare
-only amounts in the currency the sentence names (hubproto/routing.py, `condition_holds`). Ran the code: a 50,000 EUR
-purchase request went to the buyer, not the controller; a 50,000 USD one went to the controller. The same applies to
+**G2 [high]. Amount routing only works in the currency the sentence names.** Amount bands in routing sentences and in
+approval criteria compare only amounts in the currency the sentence names (hubproto/routing.py, `condition_holds`).
+The grammar now reads "over 10,000 USD or the same in EUR", but no SOP of the example company uses it. Ran the code
+again at change control v2: a 50,000 EUR purchase request still went to dave, not the controller. The same applies to
 bills over 10,000 in another currency, and to stock adjustments of lots costed in another currency (read the code).
 The risk scorer and the order issuer, on the other hand, compare the number without the currency. Question: convert,
 refuse other currencies, or add sentences per currency?
@@ -194,9 +203,9 @@ field the step is routed by (the assignee) cannot be set, so the record stops at
 the document”", ran the code). A rejected acknowledgement notifies the run's owner, the document's approver (which may
 be a cog), where the work instruction says "the quality manager will follow up".
 
-**Q8. Management review is hard to fill in and its roles are blurred.** **Inputs** and **Outputs** are JSON objects
-typed into text boxes. The chair defaults to the management representative who prepared it (the SOP says top
-management chairs). Actions become tasks or change requests only by hand.
+**Q8. Management review is hard to fill in.** **Inputs** and **Outputs** are JSON objects typed into text boxes, and
+actions become tasks or change requests only by hand. (The chair now matches the SOP's Roles and responsibilities
+table.)
 
 **Q9. Internal audit independence is not checked.** "Auditors do not audit processes they own" has no rule behind it.
 Findings become nonconformances only by hand. "Notify the auditor" notifies whoever planned the audit.
@@ -258,28 +267,19 @@ window says the cog does "only what both it and you may do".
 to ask it to approve: it cannot act outside the release". "@qa-manager please approve" is now how the qa-manager is
 asked to sign (within the release).
 
-**C4. Cogs' roles carry more than their prompts suggest.** The quality-assistant and the qa-manager hold the
-quality-manager role (read all of Quality, open CAPAs, supplier evaluations and training records, approve-permission
-on most quality records); the quality-assistant now also holds author and reviewer, and the doc-reviewer holds author.
-Every cog on the staff may quarantine stock. Approvals at Gates are still limited by criteria, but starting processes
-and reading are not.
-
-**C5. Autonomy does not limit Gate approvals.** The doc-reviewer's autonomy is "propose", yet it signs minor revisions
-at Gates without anyone confirming, because Gate decisions follow the approval criteria. This may surprise someone who
-reads "propose" as "a person confirms".
+**C4. Cogs' roles carry more than their About lines suggest.** No cog holds the quality-manager role any more. The
+doc-reviewer still holds author, and every cog holding staff (quality-assistant, purchasing-assistant, qa-manager,
+stores) may quarantine stock. Approvals at Gates are limited by criteria; starting processes and reading are not.
 
 **C6. Standing duties only run when the duty service runs.** The quality-assistant's and purchasing-assistant's duties
 need the `agents` compose profile or `hubproto agent-duties`; neither runs by default.
 
-**C7. Every cog is offered on every task.** Every persona starts with the company scope, which includes the tasks SOP,
-so each of the seven cogs, the organization cog included (autonomy read, signs nothing), is offered as **Ask *cog* to
-review** on a task (ran the code). Elsewhere the Ops row offers only the cogs whose personas include the item's SOP.
+**C7. Every cog follows the tasks SOP.** The company scope, which includes the tasks SOP, is in every cog's context, so
+all eleven cogs follow it, the two seniors included (ran the code at `2c99c4d`), and each is offered on a task.
 
-**C8. Follows lines live on where personas replaced them.** A new cog proposed from the People page gets a **Follows**
-line for the procedures ticked, and no persona; and Settings > **Cog rails** still offers **Follows** boxes, which
-write a line that is ignored for a cog with a persona (the compiler warns "its persona decides what it follows")
-(read the code). The new-cog form also still says to "set an Anthropic key" when no model can be reached, though
-hosted models are off.
+**C8. The new-cog form still says to set an Anthropic key.** The Follows boxes are gone. When no model can be reached
+the new-cog form still says to "set an Anthropic key" (hubproto/shell/agents.py), and the profile of a senior cog says
+it "needs an Anthropic key" also when the key is set and only `HUBPROTO_HOSTED_MODELS` is off.
 
 ## 10.7 Policy, configuration and administration
 
@@ -288,14 +288,13 @@ anywhere else must be declared here", but the purchasing policy, the inventory p
 declare members, roles and folders (dave as buyer and storekeeper, the purchasing-assistant as buyer and stock
 reviewer, the stores cog, alice as design engineer, bob as design authority, the Inventory folders).
 
-**X2. Settings, once used, stops the Frames from being compiled.** After the first release from Settings the Frames
-are no longer compiled ("the Frames are the SOPs people and cogs read"), so the rule sentences in the Frames and the
-rules in force can drift apart unless someone keeps them in step.
+**X3. Routing and due dates are read-only on the Workflows page.** The workflow editor exists now (chapter 7.13); routes
+and due dates are changed under **Limits and due dates** and in the SOPs, not in the editor.
 
-**X3. Workflows and routing cannot be changed in Settings** ("edited in the workflow builder (coming next)").
-
-**X4 [high]. The committee's reading can block a release, and reads narrative Frames too.** Two findings, both ran the
-code with a stand-in reading in place of the model:
+**X4. The committee's reading can block a round.** The committee now reads only the changed lines of an SOP, and a
+line it cannot quote exactly is a question rather than a lost rule, but the findings of the last edition still
+describe the guard (ran the code then with a stand-in reading; read the code now: the hybrid reader still reads a
+`compile: none` document's changed prose):
 
 * A rule whose quoted words are not exactly the text of the line it cites is a grounding error ("cited text does not
   match the Frame at that line"), and errors block the release; rejecting the change does not clear it. Readings are
@@ -304,11 +303,10 @@ code with a stand-in reading in place of the model:
 * The quality manual and the work instructions are `compile: none`, but the committee reads them like any SOP: a rule
   read from wi-review-a-document was proposed as a change. "Narrative only" no longer means "no rules".
 
-**X5. After the conversion, some pages still name the Frame files.** The scopes page and the **Depends and depended
-on** cards show the source the release in force recorded, so on the live hub, whose SOPs are documents, they say
-"the Frame file (the SOPs are not documents yet)" until a release is compiled from the documents (seen on the live
-hub, policy version 9). The Policies page says "The rules are compiled from 49 SOP and policy documents." and then
-"The policy and procedure documents (Frames) the release is compiled from, as they are on disk now."
+**X5. After the first start, some pages still name the Frame files.** The scopes page, a person's page and the
+**Depends and depended on** cards show the source the release in force recorded, so on a new hub they say "the Frame
+file (the SOPs are not documents yet)" until the first change order is released (ran the code on a development
+hub).
 
 **X6 [high]. Form conditions for "required" and "read-only" are not enforced.** The Forms page says fields "shown,
 required or read-only only when a condition holds" are "checked by the hub when a record is saved or moves on", and the
@@ -317,10 +315,9 @@ hides the row. A read-only field gets a chip, but nothing calls the check that w
 required field (read the code: hubproto/formlayout.py, `check_change`, `required_now`, `readonly_now` have no caller
 outside the module).
 
-**X7. Personas say more than the hub does.** The scopes Frame says later layers "may only narrow what earlier ones
-allow"; nothing checks that, and every rule of every Frame applies to everyone whatever the personas (read the code).
-Roles with no persona have no required reading: buyer, design engineer, design authority and stock reviewer (ran the
-code), so the design-control SOP is required reading only through the design review committee.
+**X7. Scopes say more than the hub does.** Required reading comes from the Roles and responsibilities tables now
+(chapter 7.15). The scopes Frame still says later layers "may only narrow what earlier ones allow"; nothing checks
+that, and every rule of every Frame applies to everyone (read the code).
 
 **X8. What changed on a version's page can name the wrong cog.** The page pairs a removed and an added sentence when
 they sit on the same line or read alike (hubproto/cli.py, `release_diff`). Seen on the live hub's page for policy
@@ -331,12 +328,12 @@ profile is listed again as added. The proposal's own changes table (chapter 7.6)
 Inventory/Stock.", but the **Why?** page and Settings offer only create, read, approve, update and delete, so nobody
 can ask Why? about it or add such a permission in Settings (read the code).
 
-**A1. A backup leaves out some state.** `backup` does not copy `state/judgments` (cogs' failed reviews, which "bind for
-that version"), `state/automation` (automation jobs), `state/forms` (the form layouts in force and the drafts),
-`state/library` (the folders people added) or `state/extract-cache` (what the committee read). After a restore a cog
-may review a version again, automation history is gone, every form is the hub's own again, added folders vanish from
-the tree, and the next compile reads the SOP prose again, possibly not the same way (read the code: hubproto/cli.py,
-`BACKUP_PARTS`).
+**A1. A backup leaves out some state.** `backup` now copies the form layouts and the record types, and the cogs keep no
+review results of their own. It still does not copy `state/automation` (automation jobs), `state/library` (the folders
+people added), `state/extract-cache` (what the committee read) or the new `state/workflows` (the workflow layouts in
+force and the editor's drafts). After a restore the automation history is gone, added folders vanish from the tree,
+every workflow is drawn with the hub's own layout again, and the next compile reads the SOP prose again, possibly not
+the same way (read the code: hubproto/cli.py, `BACKUP_PARTS`).
 
 **A2. The README's queue worker default is out of date.** It says `HUBPROTO_COG_WORKERS` defaults to 1; the code starts
 one worker per cog.
@@ -345,37 +342,27 @@ one worker per cog.
 
 ## 10.8 Change orders and SOPs as documents
 
-**E1 [high]. A change order prepared by the quality manager cannot be approved.** Change orders are approved by the
-quality manager, and the preparer rule keeps the requester out. carol is the only person quality manager and also the
-document controller, the natural preparer of SOP changes; Settings changes she proposes become her own change order.
-Ran the code: carol's change order stopped with "Nobody can take “Approve the change order”: quality manager: carol:
-segregation of duties: they prepared this item".
+**E1 [high]. A change order carrying a revision the quality manager wrote cannot be approved.** Since `2c99c4d` a
+contributor other than a revision's author, the requester included, may sign alongside an independent approver; carol
+can sign her own Settings change order once someone else (bob) has approved every item. But the author of a carried
+revision never signs, and carol is the only quality manager and the document controller who writes most SOP
+revisions. Ran the code: the demo change order, whose finance-policy revision carol wrote, stopped with "Nobody can
+take “Approve the change order”: quality manager: carol: segregation of duties: they wrote a revision this change order
+carries, and never approve it". There is no deputy or fallback route.
 
-**E2. Policy owners approve only the widenings in a change order.** Rule changes that are not widenings (removing a
-permission, adding a "may not" or a segregation rule, a new route to a person, a lower limit) and every wording change
-are approved by document control and by the quality manager's approval of the change order; the release is recorded
-as made by "change-order:CO-...". In the Frame-draft path every change needs at least one policy owner, and a wording
-change to an SOP a cog follows needs two (hubproto/eco.py, `activate_frame`; hubproto/compile.py). Form layouts a
-change order carries are approved the same way, by the change order's approval alone, though they decide which fields
-people see. Question: should a policy owner still sign every rule change?
+**E2. Some parts of a change order are not decided item by item.** People now decide every rule item of the delta.
+Form layouts and record-type changes a change order carries are still covered by the change order's approval alone,
+with no item decision and no widening rule, though they decide which fields people see and what records hold. A wording
+change to a document a cog follows is flagged as a widening and then marked "covered", so no second policy owner
+decides it (ran the code).
 
-**E3. A minor SOP revision is approved by a cog even when it changes rules.** A revision declared minor is low risk
-(it revises a document in force), so it goes to the doc-reviewer cog, whose criterion is fixed ("when the change is
-minor"). Ran the code: an ncr-sop revision that shortened a due date was approved by the doc-reviewer at once. The
-cog does not see the rule changes; they show only on the change order's staged Frame.
-
-**E4. After the conversion, only two people can add members or change a cog's model.** Since the first edition these
-pages write the change into the organization model and cog-profiles documents on a change order instead of refusing.
-But only someone who may revise those documents can: their maintainer, "operations", is not a member, so only the
-document controller and the policy owners (carol and bob) may. Ran the code: dave's model change and new person were
-refused ("only operations, its author, a document controller or a policy owner revises DOC-..."), bob's were written
-onto one change order. The profile page and the People page still offer the forms to everyone (seen on the live hub:
-**Change model** on the stores cog's page, as dave).
-
-**E5. A hub whose policy came from Settings cannot use change orders.** If the release in force came from a Settings
-proposal before the conversion, every compile is refused ("the rules are edited in Settings since the release in force
-came from there ...", ran the code), so no change order can stage its Frame, and Settings changes, which now become
-change orders, cannot either.
+**E3 [high]. Document control can still replace an SOP without a change order.** A revision carried by a change order
+is approved by the change order's signature. But document control on its own still accepts a document titled like an
+SOP. Ran the code at `2c99c4d`, through the hub's Python interface: carol started document control for a "Nonconformance
+SOP", type sop, declared minor; the doc-reviewer cog approved it at once (its criterion is fixed: "when the change is
+minor"); DOC-0034 became effective "revises DOC-0013", and DOC-0013, the ncr-sop document, became Obsolete, so the hub
+then had no ncr-sop document in force. The release in force kept its rules. What a later change order to ncr-sop then
+does was not established.
 
 **E6. Some converted documents are owned by names that are not members.** A converted document is owned by its Frame's
 maintainer: the organization model, the cog profiles, the tasks SOP and the reference guide by "operations", the
@@ -383,17 +370,121 @@ design-control SOP by "engineering", and the quality manual by the placeholder "
 the code). Only document controllers, policy owners and whoever converted them may revise those.
 
 **E7. Revision letters depend on the path.** An SOP revision on a change order gets the next letter (B, C ...); a
-revision through document control alone starts again at A (D3).
+revision through document control alone starts again at A (D3, and E3).
 
-**E8. The repository's Frame files are rewritten by the hub.** When a change order is released, and when a draft is
-released from the web pages, the hub writes the released text into the `.frame.md` files, which in Docker are the
-repository's own files mounted into the container. A release from a draft written on an older text replaces edits on
-disk that no release carries; they are kept only by hash in the hub's state, and the policy owners are told (chapter
-7.6).
-
-**E9. Smaller points.** A change order's description is optional on the form but required before it can wait for
-approval (the run stops without it). Overdue change orders are only reported to the management representative, who
-may not approve them (G5). The Ops row of an open change order also offers "Start change order", a second way to send
-it for approval (the compiled-Frame check still applies). Converting makes a document of the reference guide too,
-which no release carries, though otherwise only released Frames have documents (ran the code: 49 documents for 48
+**E9. Smaller points.** Overdue change orders go to the management representative, who may not approve them (G5).
+Converting makes a document of the reference guide too, which no release carries (ran the code: 33 documents for 32
 released Frames).
+
+## 10.9 Change control v2: what is still open
+
+Checked against `2c99c4d`. Most findings of the five review reports written during the build are fixed; these are the
+ones that are not, and what this edition found while running the workflow for chapter 7.9. The first five matter most.
+
+**V1 [high]. Weakening a workflow is not always a widening.** Widening is judged by the shape of a rule, not by what
+people can then do. Removing an approval step, giving a gate to a cog, or moving a gate to a role with fewer
+safeguards is decided by one approver unless the editor's bypass check catches it (ran the review scripts again;
+hubproto/guards.py, `rule_identity`, has no entry for processes). Taking someone out of a group or role that carries a
+"may not" is not a widening either. Every threshold change, up or down, is one (ran the code: lowering the purchase
+approval threshold, which sends more purchases to the controller, "widens authority").
+
+**V2 [high]. A widening made by a policy owner can never be approved.** A widening needs two policy owners who did not
+make it, and the example company has two, bob and carol. Only document controllers and policy owners edit workflows,
+so any workflow change the bypass check marks as a widening, and any Settings widening bob or carol makes, can never
+get its second decision (follows from the rule; ran the code to the point where bob's workflow draft was marked "a
+mandatory gate bypassed, a widening"). A widening goes through only when someone who is not a policy owner makes it, as
+dave did in chapter 7.9. Together with E1 (the quality manager never signs a revision she wrote), this means the
+example company's people cannot approve much of their own configuration work. Question: deputies, more policy owners,
+or different rules?
+
+**V3 [high]. Validation evidence is self-declared and has no page.** The IT SOP's classes are enforced: a change order
+cannot be approved until its high-risk items have a passing test record and its medium-risk items a test note. But
+there is no page or command to record a test entry (in chapter 7.9 it was recorded through the Python interface), any
+member may record one, the author included, an entry that names no items covers all of them, and nothing checks it
+against the change (hubproto/validation.py, `record_evidence`).
+
+**V4 [high]. A direct change by someone who may not revise the SOP is never written into the prose.** The qa-manager
+drafts the prose in a revision started at the requester's request, and the requester must be allowed to revise that
+SOP. Ran the code: dave's tighter match tolerance, change-board group and committee could not be written ("only bob,
+its author, a document controller or a policy owner revises DOC-0009"; "only operations, ... revises DOC-0014"), so
+each was approved with the warning "prose does not read back" and came into force as a divergence. The same happens
+when another change order holds the SOP's draft. Anyone may make a direct change in Settings, so this is the common
+case for staff, and it turns principle 1 (the SOP says it) into a list of divergences.
+
+**V5 [high]. Divergences are open-ended and invisible on paper.** They have no expiry, risk or training notice; they
+are not marked on downloaded or printed copies (read the code: no marker in the download path); and the record keeps
+one acceptor's meaning (on dave's change order, which bob and carol both decided, "accepted by bob ... “agreed as the
+second policy owner”"). A divergence for a rule the release removed shows "accepted by -". The change-control SOP does
+not say when an override is allowed.
+
+**V6. A group or committee in force only as a divergence is not seen by the next compile.** Ran the code: bob's
+workflow change giving the disposition to the change-board committee stopped round 1 with "'Disposition the
+nonconformance' is decided by the change-board committee, which is not defined", although the committee was in force.
+It compiled once bob's change order also carried revisions stating the group and committee.
+
+**V7. The compile-frame committee reads nothing on a default installation, and its chair is not asked.** With hosted
+models off the seniors are unavailable, no junior reads in their place, and every compile reads only the sentence
+shapes. A changed sentence the grammar cannot read is a blocking question that names carol, but she gets no inbox
+entry for it and has no way to decide in a member's place for a compile (the review scripts, run again). The
+hosted-models switch itself is an environment variable: the hub does not record who switched it, when or why, and it
+lets any cog bundled with a `claude-*` model use the provider, not only the seniors (read the code: hubproto/model.py,
+`backend_for`; chapter 7.16).
+
+**V8. Signatures and records would not satisfy an inspector yet.** Besides the missing authentication (above):
+printed copies show a user id without full name, verdict or meaning category, and list cog decisions as signatures
+(hubproto/dms.py, `render_markdown`); the printed change order has no decided delta, overrides or divergences; the
+doc-reviewer cog approves minor documents and the quality-assistant cog dispositions low-risk nonconformances with no
+countersignature; the signing secret defaults to `state/.secret` beside the data, the kernel's chain is an unkeyed
+hash, and release records and automation jobs are rewritten in place; a release records no models, software version or
+hosted switch, although the IT SOP says every release records what it ran against.
+
+**V9. A release is not atomic, and rules come into force before training.** The configuration comes into force (**Bring
+the Frame into force**) before the revisions are published and training is assigned (hubproto/automation.py). Nothing
+holds routing until people are trained, and divergences and form changes produce no training. There is no planned
+effective date and no emergency change path.
+
+**V10. SOP sentences with no configuration behind them.** "An internal auditor does not audit system administration
+they perform" (bob is both); the quarterly access review and the restore test (the intervals exist, no duty schedules
+them); "the requester may add or remove reviewers before the panel reviews" (the panel is asked in the same step that
+suggests it). Under principle 1 these are silent divergences.
+
+**V11. A change order cannot add a record type and the process that files it.** The compile checks the process against
+the record types in force, and the release brings the process into force before the record types (ran the review
+script again: "process deviation needs record type 'deviation'").
+
+**V12. Renaming a status in the workflow editor still fails the round trip** for processes written as numbered steps:
+the ids of their automatic transitions are not kept, so the change becomes an unstated item and a divergence (ran the
+review script again). It no longer crashes the release.
+
+**V13. What the pages say does not always match.** Advisory findings are labelled "blocking finding" on the delta and in
+the I accept boxes (seen running). **What this does to each cog** leaves out a cog joining a group. The Gate card says
+"Reject closes it as rejected; nothing more can be done with it", but a rejected change order goes back to revising. The
+record page's old states table shows "role held by nobody" for a committee gate, and a "Returned" state the graph does
+not have. The run history shows "run release changed" and "run moved" in fallback words. The new-cog form records a
+cog whose name, roles or persona do not exist. A senior cog's profile blames the key when the switch is off (C8).
+
+**V14. Committees.** No process of the example company uses a committee, and "design-review-committee" is still a role,
+not a committee. When the members still to vote are paused, the chair may decide in the place of a member who is kept
+out by segregation of duties (seen running: "Decide in a member's place" offered dave, who prepared the item). An
+objection takes the transition back (on the nonconformance, Reject), not a way the committee chooses. A committee cog
+that suggested an item still reviews it. The junior-cogs group leaves out the purchasing-assistant and stores cogs, and
+no permission names either group.
+
+**V15. Cogs.** The prompt tells a cog to use effective revisions and a draft only when its task is about it, but the
+read tool returns a document's latest version whatever its state. A chat carries the last 12 lines only. A persona's
+`Reviews:` line changes only the prompt's wording; the number of reviews comes from the criterion. The run page offers
+**Confirm and carry them out** to the person who asked and to policy owners, while the hub carries an action out only
+for someone in the role the "when a *role* confirms" sentence names.
+
+**V16. Smaller governance gaps.** A warning can still be accepted with "all"; stand-in reviews count as reviews on a
+development hub; the command line's `review` still records unsigned decisions on a staged proposal (the change order then
+fails its delta check); text the qa-manager drafts that states an extra rule enters the delta as an ordinary item; a
+change request can be closed before its change order exists when no change order names it; links, retention and
+templates are outside change orders (docs/design/config-paths.md); there is no "Put on hold" transition and no page to
+take a global transition other than Cancel; a workflow draft carried on a change order outlives that change order's
+release.
+
+**V17. The design note is behind the code.** docs/design/change-control.md has not changed since it was agreed, so
+its sections on compiling (4), cogs (7), principle 7 and approval (3.6) do not say what was decided later (seniors on
+the compile committee, the independent approver, drafted revisions credited to the qa-manager). The Preview chapter
+this manual carried is now folded into chapters 3, 6 and 7.

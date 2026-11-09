@@ -315,22 +315,25 @@ document's page. Nothing in the hub reminds anyone when a review date passes (ch
 
 ### Documents carried by a change order
 
-A revision of an SOP or policy that a change order carries is approved through the same process, but on approval it
-is **held**: it waits in state Approved and becomes effective only when its change order is released, together with
-the other revisions and the compiled Frame (chapter 7.9).
+A revision of an SOP or policy that a change order carries is not approved through document control: the change
+order's signature approves it, and it becomes effective when the change order is released, together with the other
+revisions and the configuration (chapter 7.9). A carried draft sent through document control blocks the change order
+("withdraw it; the change order's approval approves it"). From the moment the change order is sent for approval the
+draft is **held** and takes no new version. Document control on its own still accepts a document titled like an SOP,
+which can replace the SOP without a change order (chapter 10, E3).
 
 ## 5.11 Policy documents and Frames as documents
 
 Every Frame in the release in force has a controlled document that carries its text, filed as what it is: SOPs and
 work instructions in Quality/Controlled Documents (types `sop` and `wi`, titled "Nonconformance SOP", "WI: run an
-internal audit"), and policies, the scopes and the personas in Policy (types `policy` and `persona`, "Organization
-model", "Persona: Staff"). Before the SOPs are converted (chapter 7.8) its revision is the Frame's version, for
+internal audit"), and policies, the scopes and the four personas in Policy (types `policy` and `persona`,
+"Organization model"). Before the SOPs are converted (chapter 7.8) its revision is the Frame's version, for
 example "1.6.0" (hubproto/app.py, `frame_document`).
 
 Only released Frames have documents. A Frame file on disk that no release has gets none, and the document of a Frame
 that leaves the release in force is retired (Obsolete); it comes back, the same document, when its Frame is released
-again. Policy owners approve documents in Policy. Editing a Frame through its document, and SOPs as documents, are
-covered in chapter 7.
+again. Policy owners approve documents in Policy. SOPs as documents, and changing them on a change order, are
+covered in chapters 7.8 and 7.9.
 
 ## 5.12 Templates
 
