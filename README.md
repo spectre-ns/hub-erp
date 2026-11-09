@@ -65,6 +65,20 @@ against an older release than the one in force) is refused with "compile
 again", and a release that only re-renders a process is reported as
 "re-rendered, no semantic change" instead of a pair of add/remove changes.
 
+Prose that is not in the sentence shapes is read by the compile-frame committee, **as a diff**: an SOP whose text
+is the one in force keeps the rules the release read from it, with no model call; a changed SOP's readers get the
+unified diff (with line numbers) and the rules in force from it, and answer with rules to add, remove or change and
+with **questions** where the changed prose is ambiguous (`proposal["questions"]`; a question the next compile no
+longer raises is closed). A large diff is read in parts that fit the model's window. Every change on a proposal
+says where it came from (`origin`: the SOP, line, words and reader). Direct changes on a change order are put into
+prose by the qa-manager cog and compiled back to check they give the same rule (`hubproto/prose_drafting.py`).
+
+| Compiler setting | Default | Effect |
+|---|---|---|
+| `HUBPROTO_EXTRACTOR` | `hybrid` with an Ollama (or with `HUBPROTO_COMPILE_HOSTED`), else `convention` | `convention` reads the sentence shapes only; `hybrid` has the committee read the prose too |
+| `HUBPROTO_COMPILE_HOSTED` | off | `1` (with `ANTHROPIC_API_KEY`) has Claude Opus (`claude-opus-5-5`) read the prose for compilation only, for every committee member; cogs keep their bundled models and hosted models stay off elsewhere (`HUBPROTO_HOSTED_MODELS` is not needed) |
+| `HUBPROTO_MODEL_MAX_CHARS` | the model's window | the most characters one reading may send; a larger diff is read in parts |
+
 ## Once the SOPs are documents: change orders only
 
 After `hubproto sops convert --as <policy owner>` (or Policy > Convert in the

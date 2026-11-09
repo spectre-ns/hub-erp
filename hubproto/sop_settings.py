@@ -119,8 +119,10 @@ def plan(base_rules: list[dict], new_rules: list[dict], processes: dict) -> dict
     return ops
 
 
-def apply_plan(hub, co_ref: str, plan_ops: dict[str, list[dict]], *, by: str) -> list[dict]:
-    """Write the edits into draft revisions on the change order. Returns a report per edit."""
+def apply_plan(hub, co_ref: str, plan_ops: dict[str, list[dict]], *, by: str, author: str | None = None,
+               note: str = "changes made in Settings") -> list[dict]:
+    """Write the edits into draft revisions on the change order (started by ``by``; the new version is ``author``'s, by
+    default ``by``'s: the qa-manager cog when it drafts the prose for direct changes). Returns a report per edit."""
     from . import edits, eco
 
     report = []
@@ -141,7 +143,7 @@ def apply_plan(hub, co_ref: str, plan_ops: dict[str, list[dict]], *, by: str) ->
             report.append({"sop": frame, "draft": draft["number"], "ok": ok, "detail": (rep[0]["detail"] if rep else ""),
                            "says": " / ".join(op.get("lines") or []) or "(removed)",
                            "was": (op.get("was") or {}).get("source", {}).get("text")})
-        hub.dms.add_version(draft["locator"], content, by=by, filename=v.get("filename") or f"{frame}.docx",
+        hub.dms.add_version(draft["locator"], content, by=author or by, filename=v.get("filename") or f"{frame}.docx",
                             mime=v.get("mime") or "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                            note="changes made in Settings")
+                            note=note)
     return report
