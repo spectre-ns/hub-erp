@@ -588,3 +588,18 @@ def test_a_policy_owner_who_made_a_widening_decides_it_with_its_superseded_half_
     assert cc.approval_reasons(hub, co["number"]) == [], cc.approval_reasons(hub, co["number"])
     ok(sign(shell, co))
     assert hub.kernel.get(co["locator"])["state"] == "released" and ap_limit(hub) == 5000.0
+
+
+def test_the_preview_leaves_a_sentence_the_grammar_cannot_read_to_the_compile_committee(shell):
+    """A page never calls a model, so the preview reads the drafts with the grammar alone. A changed sentence it cannot
+    read is not an error of the draft: the compile-frame committee (the senior cogs) reads the diff in the review round.
+    The preview says so, and does not tell the author to fix it first."""
+    co = new_co(shell, title="No cog limit")
+    # No full stop: the grammar does not read it (the committee does, and asks whether the sentence is complete).
+    carry_revision(shell, co, new="The ap-reviewer cog may approve purchase-to-pay bills with no upper limit")
+    html = co_page(shell, co, "alice")
+    assert "Not read yet." in html and "the senior cogs" in html and "request review" in html
+    assert "bills with no upper limit</q>" in html
+    assert "looks like a rule but does not parse" not in html and "Fix these first" not in html
+    assert "As the grammar alone reads the drafts" in html, "what follows from the unread sentence is marked as the grammar's"
+
