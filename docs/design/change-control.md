@@ -244,8 +244,87 @@ runner change belongs to workstream 7.
 
 ## 10. Workflow graphs
 
-To be written from the study of Jira's workflow model and editor (statuses, transitions, rules,
-editor interactions, migration of items in removed statuses), before workstreams 7 and 8 start.
+From the study `docs/design/jira-workflow-study.md` (read it: sections 4.1 to 4.5 are adopted as the
+MVP unless this section says otherwise). Jira made editing smooth by making publishing cheap; ours is
+deliberately not cheap (a change order), so smoothness comes from the draft, live checks and the
+review view.
+
+### 10.1 Model (contract between workstreams 7 and 8)
+One graph per process (one process per record type, no schemes), in the release bundle at
+`workflows[<process>]`:
+```
+{"process", "record_type",
+ "statuses": [{"id", "name", "category": "todo"|"in_progress"|"done", "outcome": "completed"|"rejected"|"cancelled"|"superseded" (done only), "sla_days"?}],
+ "transitions": [{"id", "type": "initial"|"directed"|"global", "from": [<status id>] (directed), "except": [...] (global; default the done statuses),
+                  "to", "name",
+                  "gate": {"kind": "person", "role", "not": ["author"|"<transition id>"]}
+                        | {"kind": "cog", "cog", "fallback": "<role>"}
+                        | {"kind": "auto", "when": "<closed-vocabulary condition>"|"actions-succeed"},
+                  "validators": [<closed list: fields_set, form condition, status_visited, linked records>],
+                  "actions": [<code step ids, notify, set field>], "fields": [<field names collected>]}],
+ "source": {"frame", "lines"}}
+```
+- Status and transition **ids are stable** (a rename keeps the id and needs no state map).
+- A failed action moves the item to the system `failed` status with a Retry loop. Today's returned,
+  failed, rejected and cancelled exits become ordinary statuses; Cancel and Put on hold become globals.
+- The **waiting decision at a status is derived**: one inbox Gate per status and decider, its options
+  the gated transitions out of that status (buttons named by the transitions), the due date from the
+  status. That is today's checkpoint, generalised.
+- **Layout is presentation**, not policy: `{process: {status id: [x, y]}}` on an 8 px grid, a
+  versioned configuration object carried on a CO like form layouts. Layout-only edits are one delta
+  item "Layout changed: no effect on how items move".
+- **Today's linear processes compile into this shape without changing meaning**; the whole existing
+  suite must still pass.
+
+### 10.2 Prose
+The SOP's `## Process:` section stays the source. The numbered-steps form remains valid (a linear
+shorthand). A graph form adds sentences the fast path reads exactly, for example:
+```
+Statuses: Open (to do), Awaiting disposition (in progress), Closed (done, completed), Cancelled (done, cancelled).
+From Open to Awaiting disposition: automatically, after the classifier, the filer and the risk scorer.
+From Awaiting disposition to Closed ("Disposition"): the quality manager decides, not the author; needs disposition; then the disposition applier and the CAPA opener run.
+From Awaiting disposition to Open ("Return"): the quality manager.
+From any status except done to Cancelled ("Cancel"): the quality manager.
+```
+Workstream 7 fixes the exact grammar; workstream 2's prose drafter writes these sentences as its
+stand-in, so editor changes round-trip.
+
+### 10.3 Checks (live in the editor, and at compile)
+Errors: no initial transition; an unreachable status; a non-done dead end; a role nobody holds; a cog
+gate without approval criteria; overlapping or gapped auto transitions out of one status. Warnings:
+widening; removing a status items are in; more than about 25 statuses. **Widening** includes a gate
+weakened (person → cog → auto), a validator or SoD rule removed, a global transition added, and a
+**mandatory gate bypassed** (every path from the initial transition to a `completed` status used to
+cross a person or cog gate and no longer does; the warning shows the path).
+
+### 10.4 Delta and visual diff
+Graph changes become delta items keyed by element id (status or transition added, removed, renamed,
+recategorised, rerouted; gate, validator, action or field changed), in words; a removed status is one
+parent item with its transitions as children. The CO page and the editor show **one drawing of old and
+new together** (added "+", removed dashed and struck "−", changed "~", rest muted; never colour alone),
+with a linked Changes list and Before/After views.
+
+### 10.5 Editor (MVP)
+Server-rendered inline SVG for the read-only graph on record pages (current status, path taken) and in
+Settings, **replacing Mermaid** (the shell's only CDN asset). The editor: toolbar, canvas and side panel
+on one page; Add status / Add transition dialogs (several From, Any status); drag from a handle to
+connect; click to select; separate curves for opposite transitions, arcs for loops, draggable labels;
+gate badge on each edge; every rule shown as a sentence; checks after every edit naming and selecting
+the element; Tidy (deterministic layered layout, undoable); zoom/pan/fit; undo/redo over an operation
+log; one autosaved draft per person and process, **Carry on a change order**; a complete no-JavaScript
+Text view; keyboard operation and accessible names for every element. State map asked at delete time
+in the editor, shown again on the CO page with item counts and consequences, applied at release
+without running rules, with pending decisions withdrawn explicitly and the move recorded on each item.
+
+### 10.6 Ownership
+- **Workstream 8 owns `hubproto/workflow_model.py`**: pure functions over the 10.1 shape: `validate`,
+  `checks` (10.3, including the bypass search), `diff(old, new) -> delta items` (10.4), `tidy(graph)`,
+  `apply_op(graph, op)` for the editor operations, and `from_linear(...)` helpers if useful. Plus the
+  SVG renderer, the editor, drafts, carrying on a CO, the visual diff and the state-map UI.
+- **Workstream 7 owns** the 10.2 grammar and compile into the 10.1 shape, the runner executing graphs
+  (derived Gates, options, auto transitions, failed/Retry, globals), items following the release in
+  force from the next move (5.1), applying state maps at release (5.2), cogs supplying fields, and "a
+  person signs a cog's work" as an SOP rule. It calls `workflow_model.checks` lazily if present.
 
 Rules for every workstream: stdlib only; keep the full suite green (`python -m pytest -q`); update
 tests that encoded the old behaviour rather than deleting them; no model calls in tests; say in the
