@@ -993,7 +993,10 @@ class ConventionExtractor:
         if m:
             conds, lenses = [], {}
             if m.group("conds"):
-                for phrase in m.group("conds").split(" and "):
+                # "A and B", "A, B and C", "A, B, and C": a list of conditions, every one of which must hold.
+                for phrase in re.split(r",\s*(?:and\s+)?|\s+and\s+", m.group("conds")):
+                    if not phrase.strip():
+                        continue
                     adv = re.match(r"^(\d+|two|three|four|five|six) adversarial reviews pass$", phrase.strip())
                     if adv:
                         conds.append("adversarial_reviews_pass")

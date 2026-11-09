@@ -97,3 +97,17 @@ class _Ctx:
 
     def __exit__(self, *a):
         return False
+
+
+def test_approval_criteria_read_a_list_of_conditions():
+    from pathlib import Path
+
+    from hubproto.extract import ConventionExtractor
+    from hubproto.frames import load_frame_text
+
+    head = '---\ntype: frame [0.2]\nname: x-policy\ndescription: x\nvisibility: internal\nversion: "1"\nscope: department\nmaintainer: bob\n---\n# X\n\n## Approval criteria\n'
+    for when in ("the supplier is approved, the part is active and its review passes",
+                 "the supplier is approved, the part is active, and its review passes"):
+        text = head + f"The purchasing-assistant cog may approve purchase-request purchase requests under 2,000 USD when {when}.\n"
+        [r] = ConventionExtractor().extract(load_frame_text(text, Path("x.frame.md"))).rules
+        assert r["conditions"] == ["supplier_approved", "part_active", "review_passes"] and r["max_amount"] == 2000.0, r
