@@ -558,3 +558,33 @@ def test_a_test_report_is_attached_as_validation_evidence_from_the_page(shell):
     assert "Limit test" in co_page(shell, co, "carol")
     ok(sign(shell, co))
     assert hub.kernel.get(co["locator"])["state"] == "released" and ap_limit(hub) == 1500.0
+
+
+def test_a_policy_owner_who_made_a_widening_decides_it_with_its_superseded_half_from_the_page(shell):
+    """A changed rule is two items, the change and the removal it supersedes (its "from"), shown and decided together. The
+    removal follows its change: a policy owner who made the widening may be one of its two owners for both halves, and the
+    removal needs no decision or test evidence of its own."""
+    from hubproto import validation
+
+    hub = shell["hub"]
+    co = new_co(shell, who="bob", title="Raise the AP cog limit")
+    carry_revision(shell, co, new=OLD.replace("2,000", "5,000"), who="bob")
+    ok(post(shell, "/co-review", {"as": "bob", "co": co["locator"], "choose": "own", "panel": ["management"]}))
+    ok(post(shell, "/co-send", {"as": "bob", "co": co["locator"]}))
+    [change] = [i for i in items(hub, co) if i["op"] == "add"]
+    [half] = [i for i in items(hub, co) if i.get("half_of")]
+    assert change["widening"] and half["half_of"] == change["id"] and "bob" in change["makers"]
+    ok(decide(shell, co, change, "carol", "checked against the SOP", accept=[w["ref"] for w in change["warnings"] + half["warnings"]]))
+    ok(decide(shell, co, change, "bob", "mine, and checked", accept=[w["ref"] for w in change["warnings"] + half["warnings"]]))
+    states = {i["id"]: i["state"] for i in items(hub, co)}
+    assert states == {change["id"]: "approved", half["id"]: "approved"}, states
+    reasons = cc.approval_reasons(hub, co["number"])
+    assert not any("segregation" in r or "superseded" in r or "not decided" in r for r in reasons), reasons
+    assert half["id"] not in {i["id"] for i in validation.items_of(hub, hub.kernel.get(co["locator"]))}, "its change's evidence covers it"
+    out = cc.decide_item(hub, co["number"], half["id"], "reject", "carol", "on its own")
+    assert out["state"] == "approved" and "decided with the change" in out["note"], "a half alone records nothing"
+    ok(post(shell, "/co-evidence", {"as": "dave", "co": co["locator"], "form": "evidence", "kind": "test-record", "result": "pass",
+                                    "text": "a 4,000 USD bill was approved by the cog", "expected": "approved", "actual": "approved"}))
+    assert cc.approval_reasons(hub, co["number"]) == [], cc.approval_reasons(hub, co["number"])
+    ok(sign(shell, co))
+    assert hub.kernel.get(co["locator"])["state"] == "released" and ap_limit(hub) == 5000.0

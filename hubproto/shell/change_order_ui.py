@@ -2049,7 +2049,7 @@ class ChangeOrderMixin:
                 raise ShellError("Tick I accept for each warning to approve it: " + "; ".join(w["text"] for w in missing[:3]) + ".")
         override = self._co_override_from_form(group[0]) if verdict == "override" else None
         try:
-            for i, c in enumerate(group):
+            for i, c in enumerate(x for x in group if not x.get("half_of")):  # a superseded removal follows its change
                 cc.decide_item(self.hub, co["locator"], c["id"], "reject" if verdict == "reject" else "approve", self.user, meaning,
                                accept_warnings=accept, override=override if i == 0 else None)
         except ValueError as e:

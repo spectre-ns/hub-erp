@@ -108,8 +108,7 @@ def test_every_decision_is_a_signed_event_the_signature_covers_and_tampering_is_
     # The Gate card drawn now is refused once the delta changes under it (the CO's delta seal is one of its fields).
     run = hub.runner.run_for_record(co["locator"])
     seen = hub.runner.seen_digest(hub.runner.load(run["id"]))
-    rest = next(i for i in items(hub, co) if i["id"] != add["id"])
-    cc.decide_item(hub, co["number"], rest["id"], "approve", "bob", "ok")
+    cc.decide_item(hub, co["number"], add["id"], "approve", "bob", "ok")  # its superseded removal follows it
     accept_co_warnings(hub, co)
     validated(hub, co)
     with pytest.raises(RunError, match="changed since you opened it"):
@@ -153,9 +152,10 @@ def test_who_made_a_change_does_not_decide_it_accept_against_it_or_count_on_its_
     assert any("needs two policy owners, one of whom contributed nothing to it (approved by bob)" in r for r in cc.approval_reasons(hub, co["number"]))
     out = cc.decide_item(hub, co["number"], add["id"], "approve", "carol", "ok", accept_warnings=["all"])
     assert out["state"] == "approved", "carol, who contributed nothing, is the other owner"
-    rest = next(i for i in items(hub, co) if i["id"] != add["id"] and not i["widening"])
-    with pytest.raises(ValueError, match="segregation of duties: bob made this change"):
-        cc.decide_item(hub, co["number"], rest["id"], "approve", "bob", "mine is fine", accept_warnings=["all"])
+    # The removal the change supersedes is its other half: it follows the change, and deciding it alone records nothing.
+    half = next(i for i in items(hub, co) if i["id"] != add["id"])
+    assert half["half_of"] == add["id"] and half["state"] == "approved"
+    assert cc.decide_item(hub, co["number"], half["id"], "reject", "bob", "mine is not fine")["state"] == "approved"
     w = next(w for w in cc.co_warnings(hub, co["number"]))
     with pytest.raises(ValueError, match="segregation of duties: bob contributed"):
         cc.accept_warning(hub, co["number"], w["ref"], "bob", "not needed")
