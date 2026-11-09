@@ -7,6 +7,7 @@ inbox. No model is called: cogs answer with their stand-ins."""
 
 import re
 import shutil
+import shutil
 from urllib.parse import quote
 
 import pytest
@@ -45,7 +46,9 @@ def co_page(shell, co, who):
 
 def ok(resp):
     status, url, body = resp
-    assert status == 200, plain(main_of(body) if '<main id="main">' in body else body)[:800]
+    if status != 200:
+        m = re.findall(r"class=.err. role=.alert.>([^<]*)|class=\"card crit\" role=\"alert\"><p>([^<]*)|class='err'[^>]*>([^<]*)", body)
+        assert status == 200, (m[:3], plain(main_of(body) if '<main id="main">' in body else body)[:300])
     return url, body
 
 
@@ -413,3 +416,87 @@ def test_usability_fixes_on_the_change_order_and_shell_pages(shell):
     page = main_of(get(shell, "/document/" + quote(doc["locator"], safe=":"), **{"as": "carol"})[1])
     text = page.split("<h2>Text</h2>")[1].split("<h2 id=")[0]
     assert "<table>" in text and "|---|" not in text and "<a href='/document/rec:document:DOC-" in text
+
+
+def test_printed_records_carry_signatures_the_decided_delta_and_divergence_markers(shell):
+    """QMS B3, B4 and divergences on copies: the change order record (the snapshot) holds the delta item by item with its
+    decision, accepted warnings and override; signatures print the signer, the time with its zone, the verdict and the
+    meaning; a downloaded SOP copy carries the divergence marker under its line."""
+    from hubproto.co_record import when_utc
+
+    hub = shell["hub"]
+    co = new_co(shell)
+    carry_revision(shell, co)
+    ok(post(shell, "/co-review", {"as": "alice", "co": co["locator"], "choose": "plus", "panel": ["bob"]}))
+    assert "bob" in {e["who"] for e in cc.current_round(hub.kernel.get(co["locator"]))["panel"]}, "the suggested panel plus the one ticked"
+    cc.submit_review(hub, co["number"], "bob", findings=[{"severity": "blocking", "text": "watch the queue"}])
+    ok(post(shell, "/co-send", {"as": "alice", "co": co["locator"]})) if not cc.send_reasons(hub, co["number"]) else None
+    if cc.stage_of(hub.kernel.get(co["locator"])) != "awaiting-approval":
+        ok(post(shell, "/co-review", {"as": "alice", "co": co["locator"], "choose": "own", "panel": ["management"]}))
+        ok(post(shell, "/co-send", {"as": "alice", "co": co["locator"]}))
+    limit = next(i for i in items(hub, co) if i["op"] == "add" and i["rule"]["kind"] == "approval_criteria")
+    html = co_page(shell, co, "carol")
+    assert "name='ov_max_amount'" in html and "name='ov_process'" not in html and "name='ov_approver'" not in html, "only the value that can change"
+    ok(decide(shell, co, limit, "bob", "1,200 is what we agreed", verdict="override", ov_max_amount="1200", accept=[w["ref"] for w in limit["warnings"]]))
+    for i in items(hub, co):
+        if i["state"] == "pending" and not (i["op"] == "remove" and i.get("changed_to")):
+            ok(decide(shell, co, i, "carol", "ok", accept=[w["ref"] for w in i["warnings"]]))
+    for w in cc.co_warnings(hub, co["number"]):
+        if not w.get("accepted"):
+            ok(post(shell, "/co-accept-warning", {"as": "carol", "co": co["locator"], "form": "acc", "ref": w["ref"], "confirm": "1", "meaning": "known"}))
+    page = co_page(shell, co, "dave")
+    assert "id='co-validation'" in page and "high risk" in page
+    ok(post(shell, "/co-evidence", {"as": "dave", "co": co["locator"], "form": "evidence", "kind": "test-record", "result": "pass",
+                                    "text": "a 1,300 USD bill", "expected": "it waits for a person", "actual": "it waited for dave"}))
+    ok(sign(shell, co))
+    url, body = ok(post(shell, "/snapshot", {"as": "carol", "record": co["locator"]}))
+    doc = hub.kernel.get("rec:document:" + url.split("rec:document:")[1].split("?")[0])
+    md = hub.dms.content(doc["locator"])[0].decode("utf-8")
+    assert "## The delta, item by item" in md and "1,200" in md and "Override by bob" in md and "accepted by" in md
+    assert "Decision: carol" in md and "## Divergences it leaves" in md and "## Review" in md and "## Validation evidence" in md and "risk class high" in md
+    sig = next(d for d in hub.kernel.get(co["locator"])["decisions"] if d["by"] == "carol")
+    assert f"| carol, " in md and when_utc(sig["at"]) in md and "| Approved | approval |" in md and '"rounds"' not in md
+    # On screen: the signature with the verdict and the time with its zone.
+    page = co_page(shell, co, "alice")
+    assert "Meaning category" in page and when_utc(sig["at"]) in page
+    # The SOP in force, downloaded with the marker under its line; Settings cites the rule with the marker.
+    policy = sopdocs.in_force(hub.kernel, "finance-policy")
+    status, text = get(shell, "/download-marked", **{"as": "dave", "doc": policy["locator"]})
+    assert status == 200 and "> In force differs from this line:" in text and "accepted by bob on " + co["number"] in text
+    lines = text.splitlines()
+    marker = next(i for i, ln in enumerate(lines) if ln.startswith("> In force differs"))
+    assert "1,500" in lines[marker - 1], "the marker sits under the line it names"
+    rails = main_of(get(shell, "/settings/rails", **{"as": "bob"})[1])
+    assert "in force differs from this line" in rails
+
+
+def test_a_committee_member_agrees_or_objects_and_a_cog_profile_lists_its_committees(tmp_path):
+    from test_committee_pages import serve
+
+    shutil.copytree(ROOT / "frames", tmp_path / "frames")
+    org = tmp_path / "frames" / "company" / "org-model.frame.md"
+    org.write_text(org.read_text().replace("- junior-cogs:", "- change-board: dave and it-admin\n- junior-cogs:")
+                   .replace("## Folders", "## Committee: change-board\nGroup: change-board\nChair: bob\nPurpose: Reviews changes to limits.\n\n## Folders"))
+    sop = tmp_path / "frames" / "iso9001" / "change-control-sop.frame.md"
+    sop.write_text(sop.read_text().replace("A change to roles, limits or segregation of duties is reviewed by the management cog.",
+                                           "A change to roles, limits or segregation of duties is reviewed by the change-board committee."))
+    hub = Hub(tmp_path)
+    hub.kernel.seed()
+    release_all(hub)
+    sopdocs.convert(hub, by="carol")
+    hub.kernel.set_fields(sopdocs.in_force(hub.kernel, "finance-policy")["locator"], {"owner": "alice"}, by="setup")
+    server, sh = serve(hub)
+    try:
+        co = new_co(sh)
+        carry_revision(sh, co)
+        ok(post(sh, "/co-review", {"as": "alice", "co": co["locator"]}))
+        page = co_page(sh, co, "dave")
+        assert "You review as a member of the change-board committee" in page and ">I agree</button>" not in page or "I agree" in page
+        refused(post(sh, "/co-submit-review", {"as": "dave", "co": co["locator"], "form": "committee-vote", "vote": "object", "objection": ""}))
+        ok(post(sh, "/co-submit-review", {"as": "dave", "co": co["locator"], "form": "committee-vote", "vote": "agree"}))
+        assert cc.committee_reviews(hub, co["number"])[0]["status"] == "agreed"
+        prof = main_of(get(sh, "/user/it-admin", **{"as": "dave"})[1])
+        assert "Committees" in prof and "change-board" in prof
+    finally:
+        server.shutdown()
+        server.server_close()

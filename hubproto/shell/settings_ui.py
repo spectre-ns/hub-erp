@@ -16,6 +16,7 @@ from ..settings import sentence
 from .forms import ShellError
 from .handler import hidden_as, href, log_line, table
 from .icons import icon
+from .change_order_ui import divergence_words
 from .text import chip, day, esc, version_label
 
 SECTIONS = [("overview", "Your changes", "edit"), ("people", "People and roles", "users"), ("groups", "Groups and committees", "group"), ("permissions", "Permissions", "lock"),
@@ -102,8 +103,11 @@ class SettingsMixin:
         if src.get("frame") == "settings":
             return f"<span class='muted'>settings, by {esc(src.get('by') or '?')} on {esc(day(str(src.get('at') or '')[:10]))}</span>{changed}"
         if src.get("frame"):
+            div = next((d for d in self._divergences_of(src["frame"]) if int(d.get("line") or 0) == int(src.get("line") or -1)), None)
+            mark = (f" <span class='chip warn' title='{esc(divergence_words(div, self._say))}'>in force differs from this line</span>"
+                    f"<div class='why'>{esc(divergence_words(div, self._say))}</div>" if div else "")
             return (f"<a class='muted' href='{href('/frame/' + src['frame'], self.user)}#L{src.get('line')}'>{esc(src['frame'])} line "
-                    f"{esc(src.get('line'))}</a>{changed}")
+                    f"{esc(src.get('line'))}</a>{changed}{mark}")
         return changed
 
     def _select(self, name: str, options: list[tuple[str, str]], value: str, *, label: str, blank: str = "") -> str:
@@ -135,6 +139,8 @@ class SettingsMixin:
         nav = "".join(f"<li><a href='{href('/settings/' + k, user)}'{' aria-current=\"page\"' if k == section else ''}>{icon(ic)}<span>{esc(n)}</span>"
                       + (f" <b class='count'>{len(draft['edits'])}</b>" if k == "overview" and draft and draft.get("edits") else "") + "</a></li>"
                       for k, n, ic in SECTIONS)
+        nav += (f"<li><a href='{href('/forms', user)}'>{icon('form')}<span>Forms</span></a></li>"
+                f"<li><a href='{href('/record-types', user)}'>{icon('grid')}<span>Record types</span></a></li>")
         top = ""
         if not self.hub.settings_source() and not self.hub.sop_source():
             top += ("<div class='card quiet'>The rules in force came from the Frames (the policy documents). Proposing a change from "
@@ -203,9 +209,10 @@ class SettingsMixin:
                 o = it.get("origin") or {}
                 words = (f"{sentence(old, self._processes())} → {sentence(new, self._processes())}" if old is not None and new is not None
                          else (sentence(new, self._processes()) if new is not None else "remove: " + sentence(old, self._processes())))
+                made = (f"suggested by {o.get('by')}, accepted by {o.get('accepted_by')}" if o.get("kind") == "suggested" else (o.get("by") or ""))
                 rows.append([f"<a href='{self._co_href(co)}#co-carries'>{esc(co['number'])}</a>" + (" " + chip("yours", "info") if cc.requester(co) == self.user else ""),
                              f"<span class='pre'>{esc(words)}</span>" + (" " + chip("widening", "warn") if it.get("widening") else ""),
-                             esc(o.get("by") or ""), esc(cc.stage_of(co).replace("-", " "))])
+                             esc(made), esc(cc.stage_of(co).replace("-", " "))])
         if not rows:
             return ""
         title = "Pending on change orders" if kinds is not None else "Every direct change pending on change orders"

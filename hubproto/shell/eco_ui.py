@@ -61,7 +61,15 @@ class EcoMixin:
             who = ", ".join(((run or {}).get("pending") or {}).get("assignees") or [])
             return "<span class='chip warn'>waiting for approval</span>" + (f" <span class='why'>by {esc(who)}</span>" if who else "")
         if d["state"] in ("draft", "open", "returned"):
-            return "<span class='chip'>being written</span>"
+            versions = self.hub.dms.versions(d["locator"]) if hasattr(self.hub.dms, "versions") else []
+            last = versions[-1] if versions else {}
+            reviewed = ""
+            rnd = changecontrol.current_round(co) or {}
+            seen = ((rnd.get("reviewed_from") or {}).get("drafts") or {}).get(d["fields"].get("sop_name"))
+            if seen is not None:
+                same = seen == str(d["fields"].get("content_sha") or "")
+                reviewed = f"; round {rnd.get('n')} reviewed {'it as it stands' if same else 'an earlier version'}"
+            return ("<span class='chip'>being written</span>" + (f" <span class='why'>version {len(versions)} by {esc(last.get('by'))}{reviewed}</span>" if versions else ""))
         return f"<span class='chip'>{esc(state_name(d['state']).lower())}</span>"
 
     def _change_requests(self) -> list[dict]:
@@ -89,7 +97,7 @@ class EcoMixin:
                          esc(", ".join([c["name"] for c in carried] + [f"{t} form" for t in sorted(f.get("form_changes") or {})]) or "-"),
                          esc(", ".join(f.get("implements") or []) or "-"),
                          (f"<span class='chip warn'>{len(f['staged_errors'])} error(s)</span>" if f.get("staged_errors") else
-                          (f"{int(f.get('staged_changes') or 0)} item(s)" if f.get("staged_proposal") else "-"))])
+                          (self._co_item_count(co) if f.get("staged_proposal") else "-"))])
         body = (f"<h1>{icon('layers', cls='lg')} Change orders</h1>"
                 "<p class='why'>A change request asks for a change and says why. A change order carries it out: revisions of the SOPs and "
                 "policies it changes, direct changes made in Settings and the editors, form, record-type and workflow changes. Review rounds "
@@ -98,6 +106,16 @@ class EcoMixin:
         body += table(["Change order", "Title", "Stage", "Carries", "Implements", "Delta"], rows, "No change orders yet.")
         body += self._co_new_form()
         self._page("Change orders", body, status=status, crumbs=[("Quality", href("/app/quality", user)), ("Change orders", None)])
+
+    def _co_item_count(self, co: dict) -> str:
+        """The delta's items as the change order's page numbers them (a change and the removal it replaces are one)."""
+        from .change_order_ui import groups
+
+        try:
+            n = len(groups(changecontrol.delta(self.hub, co["locator"])))
+        except Exception:
+            n = int(co["fields"].get("staged_changes") or 0)
+        return f"{n} item" + ("" if n == 1 else "s")
 
     def _co_new_form(self) -> str:
         user = self.user
@@ -162,7 +180,7 @@ class EcoMixin:
         except ValueError as e:
             raise ShellError(str(e), 403) from None
         log_line(f"change order {co['number']} carries {draft['number']} ({self._f('sop')}) by={self.user}")
-        self._redirect(self._once_finish(self._co_href(co) + "&done=" + quote(f"{draft['number']} is the draft revision of {self._f('sop')}: edit it, then send it for approval.")))
+        self._redirect(self._once_finish(self._co_href(co) + "&done=" + quote(f"{draft['number']} is the draft revision of {self._f('sop')}: edit it, then request review on {co['number']}.")))
 
     def post_co_remove_sop(self):
         self._need_release()
@@ -210,6 +228,7 @@ class EcoMixin:
         if not self._co_mine(co):
             raise ShellError("Only its requester or a document controller requests review of a change order.", 403)
         panel = None
+        plus = [n for n in self._multi("panel")] if self._f("choose") == "plus" else []
         if self._f("choose") == "own":
             members = (self.bundle or {}).get("members") or {}
             panel = [n for n in self._multi("panel") if n in members]
@@ -219,8 +238,17 @@ class EcoMixin:
             rnd = changecontrol.request_review(self.hub, co["locator"], self.user, panel=panel)
         except ValueError as e:
             raise ShellError(str(e)[:1].upper() + str(e)[1:] + ("" if str(e).endswith(".") else ".")) from None
+        added, later = [], []
+        for who in plus:  # the suggested panel and the ones ticked: added to the round
+            try:
+                changecontrol.add_reviewer(self.hub, co["locator"], who, self.user, reason=f"added by {self.user}")
+                added.append(who)
+            except ValueError:
+                later.append(who)
         log_line(f"change order review requested {co['number']} round={rnd['n']} by={self.user}")
-        self._redirect(self._once_finish(self._co_href(co) + "&done=" + quote(f"Review round {rnd['n']} of {co['number']} is under way.") + "#co-review"))
+        msg = f"Review round {rnd['n']} of {co['number']} is under way." + (f" Added {', '.join(added)}." if added else "") \
+            + (f" Add {', '.join(later)} under Review once the round is compiled." if later else "")
+        self._redirect(self._once_finish(self._co_href(co) + "&done=" + quote(msg) + "#co-review"))
 
     def post_co_send(self):
         self._need_release()
@@ -284,7 +312,7 @@ class EcoMixin:
                "stages the Frame it makes.")
         why = eco.may_change_sop(self.bundle or {}, rec, user)
         if why:
-            return out + f" <span class='why'>{esc(why)}.</span></div>"
+            return out + f" <span class='why'>{esc(why[:1].upper() + why[1:])}.</span></div>"
         mine = [c for c in self.hub.kernel.query(type_="change-order")
                 if self._co_preparing(c) and user in (c["fields"].get("requested_by"), c.get("created_by"))]
         opts = "".join(f"<option value='{esc(c['locator'])}'>{esc(c['number'])} {esc((c['fields'].get('title') or '')[:60])}</option>" for c in mine)

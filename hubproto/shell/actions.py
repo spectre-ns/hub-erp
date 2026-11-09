@@ -584,7 +584,13 @@ class ActionsMixin:
             return self._redirect(done)
         rec = self.hub.kernel.require(self._f("record"))
         self._require_read(rec["folder"])
-        doc = self.hub.dms.render_snapshot(rec["locator"], by=user)
+        body = None
+        if rec["type"] == "change-order":  # the change order as a complete record: the decided delta, the panel, the signatures
+            from ..co_record import co_record_markdown
+
+            body = co_record_markdown(self.hub, rec["locator"])
+        doc = self.hub.dms.render_snapshot(rec["locator"], by=user, members=(self.bundle or {}).get("members"), body=body,
+                                           title=f"{rec['number']} change order record at {rec['state']}" if body else "")
         self._redirect(self._once_finish(href("/document/" + quote(doc["locator"], safe=":"), user, done=f"Saved a snapshot of {rec['number']} as {doc['number']}.")))
 
     def post_folder_new(self):
