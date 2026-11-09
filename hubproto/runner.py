@@ -105,9 +105,53 @@ class Runner:
         tracked = Track(matches[0]).status()
         if tracked not in ("unknown", state.get("status")):
             state["status"] = tracked
-        if state.get("pending") and state["pending"].get("kind") == "decision":
+        pending = state.get("pending")
+        if pending and pending.get("kind", "decision") == "decision":
+            if "kind" not in pending or not pending.get("route"):
+                self._upgrade_pending(state)  # saved by earlier code: say what it is, and the route that put it there
             state["seen_digest"] = self.seen_digest(state)
         return state
+
+    def _upgrade_pending(self, state: dict) -> None:
+        """A Gate saved by earlier code names no ``kind`` and no ``route``. It is a decision, and its route is the routing
+        sentence it cites (``route_rule``, in the run's release, else the one in force), or the step's role when it cites
+        the process step. The route is set only when the people it names are the ones the Gate waits for, so this
+        never widens who may decide; otherwise it stays unset (the strict default)."""
+        pending = state["pending"]
+        pending.setdefault("kind", "decision")
+        if pending.get("route"):
+            return
+        rule = pending.get("route_rule") or {}
+        bundles = []
+        for d in (state.get("release"), (self.releases.current() or {}).get("digest")):
+            try:
+                if d:
+                    bundles.append(self.releases.bundle(d))
+            except KeyError:
+                continue
+        route = None
+        for b in bundles:
+            hit = next((r for r in b.get("routing") or [] if r.get("process") == state.get("process")
+                        and (r.get("source") or {}).get("text") == rule.get("text")), None)
+            if hit:
+                route = hit["assignee"]
+                break
+        if route is None and rule.get("frame") == "(process step)":
+            role = str(rule.get("text") or "").partition("]")[0].lstrip("[")
+            route = (f"field:{FIELD_ROLES[role]}" if role in FIELD_ROLES else f"role:{role}") if role else None
+        if route is None:
+            return
+        kind, _, name = route.partition(":")
+        rec = self.kernel.get(state["record"]) if state.get("record") else None
+        people = set(pending.get("assignees") or [])
+        if kind == "field":
+            value = ((rec or {}).get("fields") or {}).get(name)
+            named = {authz.principal_name(v) for v in (value if isinstance(value, list) else [value]) if v}
+            if not people or not people <= named:
+                return  # the Gate waits for someone the field does not name (escalated, reassigned): keep the strict default
+        elif kind == "person" and people != {name}:
+            return
+        pending["route"] = route
 
     def seen_digest(self, state: dict) -> str:
         """What a signer is confirming: the pending payload plus the record as it is now (fields, links, document
