@@ -588,6 +588,7 @@ The approval starts the **release-change-order** automation (hubproto/automation
 | Apply the record-type changes | 7.14 |
 | Assign training | acknowledgement tasks for people; republishes the required-training matrix when it changes (7.15) |
 | Record divergences | raises a change request for each new one (below) |
+| Link document references | the SOPs' citations of documents become links; an SOP still citing a document this release retired, or a revision it superseded, is flagged to its owner |
 | Send related changes back | below |
 | Compile every open change order | against the new release |
 | Tell the people involved | the change order becomes **Released**; its requester is told |

@@ -888,7 +888,7 @@ def _warnings(hub, co: dict, p: dict) -> tuple[dict[str, list[dict]], list[dict]
     changed = set(p.get("overrides") or {})
     for ref in p.get("references") or []:
         r = ref.get("resolved") or {}
-        if r.get("status") in (None, "in-force") or not (ref.get("frame") in changed or r.get("by_this_change")):
+        if r.get("status") in (None, "in-force", "self") or not (ref.get("frame") in changed or r.get("by_this_change")):
             continue
         attach({"frame": ref.get("frame"), "line": ref.get("line")},
                {"code": "reference", "ref": f"ref:{ref.get('frame')}:{ref.get('line')}:{ref.get('document')}"

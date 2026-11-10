@@ -112,18 +112,33 @@ recorded on each revision). Segregation of duties: the CO approver is not the au
 revision and not the maker of a direct change on it.
 
 ### 3.7 Release (automation `release-change-order`)
-Existing steps (check, frame into force, publish revisions, forms, training, tell) plus:
+The steps, in the order the code runs them (`hubproto.automation.AUTOMATIONS`): check the change
+order is ready; approve the carried revisions; bring the Frame into force; move items by the state
+map; publish the revisions; apply the form layouts; apply the record-type changes; assign training;
+record divergences; link document references; send related changes back; compile every open change
+order; tell the people involved. A job runs each step by its name, so a job saved before a step was
+added runs the steps it lists, and a step name the hub does not know stops the job. The steps of
+change control:
+- **Move items by the state map** (5.2), once the new release is in force.
 - **Record divergences** in the release, and raise a change request for each new one, to the SOP's
   owner ("bring <sop> line n in line with what is in force").
-- **Apply state maps** (5.2).
-- **Recompile every open change order** against the new release (mechanical; unchanged prose is not
-  re-read by a model; human-made and accepted items are kept; items that no longer apply become
-  questions). Tell each requester.
 - **Link document references** (issue #8, `hubproto.references`): each SOP in force cites by link
-  what its prose cites (`references` from its document, `referenced-by` on the cited one); a
-  citation it no longer makes loses its link, and a superseded revision keeps none. An SOP still
-  citing a document this release retired, or a revision it superseded, is flagged to its owner
-  (`citation_flags` on the document, a message in their inbox, a notice on the document's page).
+  what its prose in the release in force cites (`references` from its document, `referenced-by` on
+  the cited one; the hub's links, made by `hub`); a citation it no longer makes loses its link, a
+  superseded revision keeps none, and a link a person made is never taken off. An SOP still citing
+  a document this release retired, or a revision it superseded, is flagged: one flag per line
+  (`citation_flags` on the document, a notice on its page) and one message per citing document to
+  its owner (else its maintainer, else the change order's requester: the first that is a person).
+  The step works from the release in force, not the one the job started under, so retrying an old
+  job after a later release changes nothing that release made. A citing document on hold is left as
+  it is, and the step says so ("DOC-0034 is on hold: link not updated"); the release goes on. It
+  runs before the one model step, so a model that cannot be reached does not hold it back.
+  - Jobs saved before this step existed do not run it: their flags are not raised, and their links
+    catch up at the next release.
+  - Not covered: a document made obsolete outside a release (by hand in document control) flags
+    nothing; a flag is never cleared, it goes with the citing revision once a new one supersedes
+    it; a hub whose Frame files stay the source gets links only for Frames that have a mirror
+    document.
 - **Find related changes and send them back**:
   - *Related by definition* (hub, no model): an open CO that touches the same SOP, process, rule
     slot, record type, form or role as the released CO. Cannot be dismissed.
@@ -135,6 +150,9 @@ Existing steps (check, frame into force, publish revisions, forms, training, tel
   - A related CR: a review task to its approver with the cog's reason; the CR is flagged and no CO
     may be approved implementing it until the task is done.
   - The requester may dismiss a *by-meaning* flag with a reason and an accepted warning.
+- **Compile every open change order** against the new release (mechanical; unchanged prose is not
+  re-read by a model; human-made and accepted items are kept; items that no longer apply become
+  questions). Tell each requester.
 
 ## 4. Compilation
 
@@ -169,7 +187,15 @@ Existing steps (check, frame into force, publish revisions, forms, training, tel
   reviewed with the SOP). On a change order it is a warning the approver accepts when the change
   order makes it (an SOP it changes cites one, or it retires or supersedes a cited document); a
   stale citation in an SOP it does not touch was flagged to that SOP's owner at the release that
-  made it stale.
+  made it stale. What counts as a citation: a number of the `document` record type's numbering
+  (`DOC-0042-A2` is no citation of DOC-0042), with its revision (`rev A`, `rev a`, `revision A`);
+  a link to a document's page that is relative or on this hub's own host (`HUBPROTO_PUBLIC_URL`,
+  `HUBPROTO_WOPI_BASE`), a Markdown link with its text being one citation; not a number in another
+  site's URL, in code (inline, indented or fenced) or in a `## Cog:` section. A number with a
+  revision it is not (`DOC-0055 rev A` when DOC-0055 is revision B) is a warning; a citation of the
+  SOP's own lineage (a revision history) is no warning, no flag and no link.
+  - Not covered: a compile warning says the state of the document cited ("DOC-0040 is obsolete"),
+    so it tells the author that the document exists and its state even when they may not read it.
 
 ## 5. Work in flight
 

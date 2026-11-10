@@ -270,9 +270,10 @@ def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], re
     findings += doc_findings
     # Citations of documents in the prose (issue #8): recorded with their line; one of a document not in force is a
     # warning. A citation is no rule: it is part of the SOP's wording, reviewed with it, never an item of its own.
-    from .references import document_prefix, read_references, reference_guard
+    from .references import document_numbering, read_references, reference_guard
 
-    references = [ref for frame in frames for ref in read_references(frame, document_prefix(record_types))]
+    prefix, yearly = document_numbering(record_types)
+    references = [ref for frame in frames for ref in read_references(frame, prefix, yearly=yearly)]
     if resolve_reference is not None:
         findings += reference_guard(references, resolve_reference)
     findings += schema_guard(rules)

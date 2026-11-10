@@ -53,7 +53,7 @@ AUTOMATIONS = {
         "trigger": "a change order is approved",
         "steps": ["Check the change order is ready", "Approve the carried revisions", "Bring the Frame into force", "Move items by the state map", "Publish the revisions",
                   "Apply the form layouts", "Apply the record-type changes", "Assign training", "Record divergences",
-                  "Send related changes back", "Link document references", "Compile every open change order", "Tell the people involved"],
+                  "Link document references", "Send related changes back", "Compile every open change order", "Tell the people involved"],
     },
 }
 
@@ -173,7 +173,9 @@ def run(hub, job_id: str) -> dict:
     job.update({"status": "running", "attempt": int(job.get("attempt") or 0) + 1, "started_at": job.get("started_at") or utcnow()})
     hub.automation.save(job)
     steps = STEPS[job["automation"]]
-    by_name = dict(zip(AUTOMATIONS[job["automation"]]["steps"], steps))  # a job started before a step was added keeps its own
+    # Each step runs the function of its name, never of its position: a job saved before a step was added (or moved)
+    # runs the steps it lists, and a step this hub no longer knows stops the job rather than running another step.
+    by_name = dict(zip(AUTOMATIONS[job["automation"]]["steps"], steps))
     memo: dict = {}
     done_any = False
     for i, s in enumerate(job["steps"]):
@@ -185,7 +187,10 @@ def run(hub, job_id: str) -> dict:
         hub.automation.save(job)
         t0 = time.time()
         try:
-            detail, keep = by_name.get(s["name"], steps[i])(hub, job, memo)
+            fn = by_name.get(s["name"])
+            if fn is None:
+                raise StepError(f"unknown step {s['name']!r}: this hub's {job['automation']} has no such step")
+            detail, keep = fn(hub, job, memo)
             memo.update(keep or {})
             s.update({"status": "done", "detail": detail, "memo": keep or {}, "ms": int((time.time() - t0) * 1000), "finished_at": utcnow()})
             done_any = True
@@ -493,14 +498,19 @@ def r_related(hub, job, memo):
 def r_references(hub, job, memo):
     """The citations of documents in the SOPs in force become ``references`` links (and citations no longer made lose
     theirs); an SOP still citing a document this release made obsolete, or a revision it superseded, is flagged to its
-    owner (hubproto.references). A citation of a document's number follows its new revision and is not flagged."""
+    owner (hubproto.references). A citation of a document's number follows its new revision and is not flagged. Both
+    work from the release in force, not the one this job started under, so a retry after a later release changes
+    nothing that release made. A citing document on hold is left as it is, and the detail says so."""
     from . import references
 
-    links = references.sync_links(hub, memo["release"])
-    flags = references.flag_citations(hub, hub.kernel.get(job["subject"]), memo["release"])
+    links = references.sync_links(hub)
+    flags = references.flag_citations(hub, hub.kernel.get(job["subject"]))
+    told = [f"{t['citing']} ({t['frame']} {'; '.join(f'line {n} cites {x}' for n, x in t['lines'])}) to {t['to']}" for t in flags["told"]]
     parts = [f"linked {len(links['linked'])}" if links["linked"] else "", f"unlinked {len(links['unlinked'])}" if links["unlinked"] else "",
-             ("flagged " + ", ".join(f"{f['citing']} ({f['frame']} line {f['line']} cites {f['text']}) to {f['owner'] or 'nobody: it has no owner'}"
-                                     for f in flags)) if flags else ""]
+             ("flagged " + ", ".join(told)) if told else "",
+             (f"flagged {', '.join(flags['nobody'])}, with nobody to tell" if flags["nobody"] else ""),
+             "; ".join(f"{n} is on hold: link not updated" for n in links["held"]),
+             "; ".join(f"{n} is on hold: not flagged" for n in flags["held"])]
     parts = [x for x in parts if x]
     return ("; ".join(parts) if parts else "no citation changed"), {}
 
@@ -537,8 +547,8 @@ def r_tell(hub, job, memo):
 
 
 STEPS = {"compile-frame": [c_collect, c_compile, c_draft, c_guards, c_stage, c_panel, c_queue, c_tell],
-         "release-change-order": [r_check, r_revisions, r_frame, r_state_maps, r_publish, r_forms, r_record_types, r_training, r_divergences, r_related,
-                                  r_references, r_restage, r_tell]}
+         "release-change-order": [r_check, r_revisions, r_frame, r_state_maps, r_publish, r_forms, r_record_types, r_training, r_divergences, r_references,
+                                  r_related, r_restage, r_tell]}
 
 
 # ---------------------------------------------------------------- triggers

@@ -453,7 +453,7 @@ class Hub:
         from . import references
 
         drafts = dict(sop_drafts or {}) if self.sop_source() else {}
-        return lambda ref: references.resolve(self.kernel, ref["document"], ref.get("revision"), drafts=drafts)
+        return lambda ref: references.resolve(self.kernel, ref["document"], ref.get("revision"), drafts=drafts, citing=ref.get("frame"))
 
     # --- Frames and cog settings as documents ----------------------------------
     FRAME_FOLDER = "Policy/Frames"
@@ -786,7 +786,7 @@ class Hub:
         if not str(by).startswith("change-order:"):  # a change order's release links them once its revisions are published
             from . import references
 
-            references.sync_links(self, meta["digest"], by=by)
+            references.sync_links(self)  # the hub's links, made for the release, not by the person releasing
         return meta
 
     def _texts_for_release(self, proposal: dict, overrides: dict, rejected_text: set) -> dict[str, str]:
