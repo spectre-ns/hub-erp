@@ -119,6 +119,11 @@ Existing steps (check, frame into force, publish revisions, forms, training, tel
 - **Recompile every open change order** against the new release (mechanical; unchanged prose is not
   re-read by a model; human-made and accepted items are kept; items that no longer apply become
   questions). Tell each requester.
+- **Link document references** (issue #8, `hubproto.references`): each SOP in force cites by link
+  what its prose cites (`references` from its document, `referenced-by` on the cited one); a
+  citation it no longer makes loses its link, and a superseded revision keeps none. An SOP still
+  citing a document this release retired, or a revision it superseded, is flagged to its owner
+  (`citation_flags` on the document, a message in their inbox, a notice on the document's page).
 - **Find related changes and send them back**:
   - *Related by definition* (hub, no model): an open CO that touches the same SOP, process, rule
     slot, record type, form or role as the released CO. Cannot be dismissed.
@@ -153,6 +158,18 @@ Existing steps (check, frame into force, publish revisions, forms, training, tel
   (Claude Opus via the existing Claude extractor), with an API key; cogs keep their bundled models.
 - Tests never call a model: the readers take a `call=` fake, and the stand-in (HUBPROTO_ALLOW_STAND_IN)
   answers deterministically.
+- **Document references in the prose** (issue #8): the compile reads each citation of a document
+  (`DOC-0040`, `DOC-0040 rev B`, a link to `/document/DOC-0040`) with its line and records it in the
+  proposal and the release (not in the digest). A citation of a number names the document in its
+  revision in force (an SOP's lineage, or the records that supersede it), so a new revision leaves
+  it sound; one naming a revision names that revision. One of an unknown document, or of one not in
+  force once the compile is released (obsolete, superseded, withdrawn, retired by this change
+  order), is a guard **warning** at its frame and line, not an error: the citation configures
+  nothing, so it is no item of the delta and needs no decision of its own (the wording change is
+  reviewed with the SOP). On a change order it is a warning the approver accepts when the change
+  order makes it (an SOP it changes cites one, or it retires or supersedes a cited document); a
+  stale citation in an SOP it does not touch was flagged to that SOP's owner at the release that
+  made it stale.
 
 ## 5. Work in flight
 

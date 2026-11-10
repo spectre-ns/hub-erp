@@ -1056,6 +1056,11 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
         body += (f"<div class='sheet' id='sheet' data-live><h1 class='title'>{esc(rec['number'])} {tag('Document')} {self._state_chip(rec['state'])}</h1>"
                  f"<div class='subtitle'><b>{file_icon(f.get('filename'))} {esc(f.get('title'))}</b></div><dl class='sheetfields'>"
                  + "".join(f"<div class='fld'><dt>{esc(k)}</dt><dd>{v}</dd></div>" for k, v in meta if v) + "</dl></div>")
+        stale = [x for x in f.get("citation_flags") or [] if not x.get("cleared")]  # hubproto.references.flag_citations
+        if stale and rec["state"] == "effective":
+            body += ("<div class='card warn' role='status'><p><b>Cites documents no longer in force</b></p><ul>"
+                     + "".join(f"<li>Line {esc(x.get('line'))} cites {esc(x.get('text'))}: {esc(x.get('why'))} ({esc(x.get('by'))})</li>" for x in stale)
+                     + "</ul><p class='why'>Revise this document on a change order to cite a document in force, or take the citation out.</p></div>")
         if wopi.is_viewable(rec) and versions:
             editable = can and not immutable and rec["state"] in EDITABLE_DOC_STATES and wopi.is_editable(rec) and (not locked or locked == user)
             label = "Edit online" if editable else "Open in the viewer"

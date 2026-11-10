@@ -22,7 +22,9 @@ Two automations come with the hub (change control v2, docs/design/change-control
 * ``release-change-order``: brings an approved change order into force: the revisions it carries are approved with
   it, the decided delta comes into force with the revisions, forms and record types; training is assigned;
   divergences are recorded (a change request for each new one); related change orders and change requests are sent
-  back; every other open change order is compiled again. Triggered by the change order's approval.
+  back; the SOPs' citations of documents become links, and an SOP still citing a document the release retired or
+  superseded is flagged to its owner (hubproto.references); every other open change order is compiled again.
+  Triggered by the change order's approval.
 """
 
 from __future__ import annotations
@@ -51,7 +53,7 @@ AUTOMATIONS = {
         "trigger": "a change order is approved",
         "steps": ["Check the change order is ready", "Approve the carried revisions", "Bring the Frame into force", "Move items by the state map", "Publish the revisions",
                   "Apply the form layouts", "Apply the record-type changes", "Assign training", "Record divergences",
-                  "Send related changes back", "Compile every open change order", "Tell the people involved"],
+                  "Send related changes back", "Link document references", "Compile every open change order", "Tell the people involved"],
     },
 }
 
@@ -171,6 +173,7 @@ def run(hub, job_id: str) -> dict:
     job.update({"status": "running", "attempt": int(job.get("attempt") or 0) + 1, "started_at": job.get("started_at") or utcnow()})
     hub.automation.save(job)
     steps = STEPS[job["automation"]]
+    by_name = dict(zip(AUTOMATIONS[job["automation"]]["steps"], steps))  # a job started before a step was added keeps its own
     memo: dict = {}
     done_any = False
     for i, s in enumerate(job["steps"]):
@@ -182,7 +185,7 @@ def run(hub, job_id: str) -> dict:
         hub.automation.save(job)
         t0 = time.time()
         try:
-            detail, keep = steps[i](hub, job, memo)
+            detail, keep = by_name.get(s["name"], steps[i])(hub, job, memo)
             memo.update(keep or {})
             s.update({"status": "done", "detail": detail, "memo": keep or {}, "ms": int((time.time() - t0) * 1000), "finished_at": utcnow()})
             done_any = True
@@ -487,6 +490,21 @@ def r_related(hub, job, memo):
             + (f"; could not look for related changes by meaning: {'; '.join(errors)}" if errors else "")), {}
 
 
+def r_references(hub, job, memo):
+    """The citations of documents in the SOPs in force become ``references`` links (and citations no longer made lose
+    theirs); an SOP still citing a document this release made obsolete, or a revision it superseded, is flagged to its
+    owner (hubproto.references). A citation of a document's number follows its new revision and is not flagged."""
+    from . import references
+
+    links = references.sync_links(hub, memo["release"])
+    flags = references.flag_citations(hub, hub.kernel.get(job["subject"]), memo["release"])
+    parts = [f"linked {len(links['linked'])}" if links["linked"] else "", f"unlinked {len(links['unlinked'])}" if links["unlinked"] else "",
+             ("flagged " + ", ".join(f"{f['citing']} ({f['frame']} line {f['line']} cites {f['text']}) to {f['owner'] or 'nobody: it has no owner'}"
+                                     for f in flags)) if flags else ""]
+    parts = [x for x in parts if x]
+    return ("; ".join(parts) if parts else "no citation changed"), {}
+
+
 def r_restage(hub, job, memo):
     from . import changecontrol
 
@@ -520,7 +538,7 @@ def r_tell(hub, job, memo):
 
 STEPS = {"compile-frame": [c_collect, c_compile, c_draft, c_guards, c_stage, c_panel, c_queue, c_tell],
          "release-change-order": [r_check, r_revisions, r_frame, r_state_maps, r_publish, r_forms, r_record_types, r_training, r_divergences, r_related,
-                                  r_restage, r_tell]}
+                                  r_references, r_restage, r_tell]}
 
 
 # ---------------------------------------------------------------- triggers
