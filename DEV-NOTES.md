@@ -1,7 +1,7 @@
 # Developer notes (read before changing anything)
 
 This is the from-scratch prototype of the Intelligence Hub ERP plan. Standard
-library Python 3.11+, SQLite, files. No new runtime dependencies without a
+library Python 3.12+, SQLite, files. No new runtime dependencies without a
 reason written in the PR. Tests: `python -m pytest -q -n auto` (all must pass; `pip install -r requirements-dev.txt`
 for pytest-xdist, a development-only dependency; without `-n auto` the suite runs serially and must pass that way too).
 
