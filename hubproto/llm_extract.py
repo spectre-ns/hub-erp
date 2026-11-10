@@ -320,19 +320,26 @@ def picture_questions(frame: Frame, lines: set[int], chair: str = "") -> list[di
     pictures yet, and none is sent to a model. Each is a blocking ``unread-rule`` question, as a sentence nobody read
     is, for the committee's chair, whatever the section: a person looks at the picture and decides (it states no rule,
     it is recorded as a divergence, or the author states in words what it requires). An unchanged picture is not on
-    ``lines`` and asks nothing."""
+    ``lines`` and asks nothing. The question is the picture's, not its line's: its id is the SOP and the picture line,
+    so an answer stays with the picture when lines above it change (the same picture twice is one question)."""
     from .compile import question
+    from .rules import sha256_of
 
-    out = []
+    at: dict[str, list[int]] = {}
     for n in sorted(lines):
         text = (frame.line(n) or "").strip()
-        if not is_picture_line(text):
-            continue
-        out.append(question(frame.name, n, f"Line {n}, {text}, is a picture this revision puts in or replaces. No reader reads "
-                            "pictures yet, so nobody has read what it says: released as it is, it would come into force "
-                            "unread. The committee's chair looks at it and decides: it states no rule, it is recorded as a "
-                            "divergence, or the author states in words what it requires.", raised_by="hub", code="unread-rule",
-                            quote=text, blocking=True, lines=[n], picture=True, unread_note=True, **({"chair": chair} if chair else {})))
+        if is_picture_line(text):
+            at.setdefault(text, []).append(n)
+    out = []
+    for text, ns in at.items():
+        where = f"line {ns[0]}" if len(ns) == 1 else "lines " + ", ".join(map(str, ns))
+        q = question(frame.name, ns[0], f"The picture {text} ({where}) is put in or replaced by this revision. No reader reads "
+                     "pictures yet, so nobody has read what it says: released as it is, it would come into force unread. The "
+                     "committee's chair looks at it and decides: it states no rule, it is recorded as a divergence, or the "
+                     "author states in words what it requires.", raised_by="hub", code="unread-rule", quote=text, blocking=True,
+                     lines=ns, picture=True, unread_note=True, **({"chair": chair} if chair else {}))
+        q["id"] = "q-" + sha256_of({"frame": frame.name, "picture": text})[:12]
+        out.append(q)
     return out
 
 

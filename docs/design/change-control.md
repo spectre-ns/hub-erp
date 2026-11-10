@@ -141,14 +141,32 @@ Existing steps (check, frame into force, publish revisions, forms, training, tel
   unread. Checks on what was read (a process graph that does not close, a persona value outside
   its list) remain errors.
 - **Pictures** (issue #7): a picture in an SOP document is a line of the Frame text of its own,
-  `![<its description>](sha256:<hash of the picture>)`, after the paragraph, heading or table it
-  is in (`hubproto.office.picture_line`). An added, removed or replaced picture is therefore a
-  changed line of the diff; an editor renaming its media parts changes nothing. No reader reads
-  pictures yet and none is sent to a model, so a picture put in or replaced is a blocking
-  `unread-rule` question for a person, whatever the section; an unchanged picture asks nothing.
-  Words typed to look like a picture line read with a backslash in front, so they never stand in
-  for one. A revision the hub writes keeps its pictures (`sopdocs.to_docx` takes them from the
-  document the text was read from, and refuses a picture line it has no picture for).
+  `![<its description>](sha256:<hash>)`, after the paragraph, heading or table it is in
+  (`hubproto.office.PictureReader`). The hash is the picture's bytes; for a picture of several
+  images (an SVG and its PNG, an mc:Choice and an mc:Fallback that differ) or with a crop,
+  rotation or flip, it is the hash of all of that together. Each block is parsed with the
+  namespaces the document declares, and relationships are resolved as the package format says
+  (percent-encoded, case-insensitive part names); an internal relationship is never read as a
+  link. An added, removed or replaced picture is therefore a changed line of the diff; an editor
+  renaming its media parts changes nothing. No reader reads pictures yet and none is sent to a
+  model, so a picture put in or replaced is a blocking `unread-rule` question for a person,
+  whatever the section, keyed on the SOP and the picture (an answer stays with it when lines above
+  it move); an unchanged picture asks nothing. Words typed to look like a picture line (in a
+  document or a text file) read with a backslash in front, so they never stand in for one. A
+  revision the hub writes keeps its pictures (`sopdocs.to_docx` takes them from the document the
+  text was read from, and refuses a picture line it has no picture for or cannot write again).
+  - **Upgrading:** an SOP in force released when the hub read text only keeps the text of the
+    release in force for every compile and every change order that does not carry it
+    (`sopdocs.in_force_text`), so a new reading never changes an SOP nobody revised. The change
+    order that carries it reads its draft in full: its pictures are new lines there, each a
+    question, and they come into force with that release.
+  - **Not covered yet:** pictures in headers and footers (a logo is not the SOP's text), charts,
+    SmartArt and embedded objects other than their preview image, a picture linked from outside
+    the file (its line is its address, so a change to what the address serves is not seen),
+    crops, rotations and positions written in other ways (VML styles, ODF graphic styles), and
+    reference and persona Frames (with no unread-rule questions at all, they ask none for
+    pictures either). Showing the picture beside its line on the change-order pages, and a cog
+    that reads pictures, are later work.
 - **Prose, by the compile-frame committee** (organization + qa-manager cogs, quorum as today):
   reading is **diff-based**. For a frame whose text differs from the version in force, the reader is
   given the unified diff with line numbers and the rules currently in force for that frame (and the

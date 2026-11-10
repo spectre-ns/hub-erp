@@ -71,8 +71,7 @@ def to_docx(body: str, pictures: dict[str, dict] | None = None) -> bytes:
     paras = []
     lines = body_lines(body)
     tables = markdown_tables(lines)
-    pictures = pictures or {}
-    used: dict[str, str] = {}  # picture ref -> relationship id
+    writer = office.DocxPictureWriter(pictures)
     skip_to = -1
     for i, line in enumerate(lines):
         if i < skip_to:
@@ -90,14 +89,7 @@ def to_docx(body: str, pictures: dict[str, dict] | None = None) -> bytes:
             level = min(len(m.group(1)), 3) if len(m.group(1)) <= 3 else len(m.group(1))
             paras.append(f'<w:p><w:pPr><w:pStyle w:val="Heading{level}"/></w:pPr><w:r><w:t xml:space="preserve">{escape(m.group(2), quote=False)}</w:t></w:r></w:p>')
         elif pic:
-            ref = pic.group(2)
-            p = pictures.get(ref)
-            if p is None and not ref.startswith("link:"):
-                raise ValueError(f"line {i + 1} is a picture ({line}) that the document it was read from does not hold: "
-                                 "the revision would lose it")
-            rid = used.setdefault(ref, f"rIdPicture{len(used) + 1}")
-            cx, cy = ((p or {}).get("cx") or office.DEFAULT_EXTENT[0]), ((p or {}).get("cy") or office.DEFAULT_EXTENT[1])
-            paras.append(office.docx_picture_paragraph(len(paras) + 1, rid, pic.group(1), cx, cy, linked=ref.startswith("link:")))
+            paras.append(writer.paragraph(i + 1, pic.group(1), pic.group(2)))
         elif line:
             paras.append(f'<w:p><w:r><w:t xml:space="preserve">{escape(office.unescape_text_line(line), quote=False)}</w:t></w:r></w:p>')
         else:
@@ -107,18 +99,6 @@ def to_docx(body: str, pictures: dict[str, dict] | None = None) -> bytes:
 
     zin = zipfile.ZipFile(io.BytesIO(blank))
     out = io.BytesIO()
-    media: dict[str, bytes] = {}
-    if used:
-        rels, types = [], set()
-        for ref, rid in used.items():
-            if ref.startswith("link:"):
-                rels.append(f'<Relationship Id="{rid}" Type="{office._REL}/image" Target="{office._escape(ref[5:])}" TargetMode="External"/>')
-                continue
-            ext = pictures[ref]["name"].rsplit(".", 1)[-1].lower() if "." in pictures[ref]["name"] else "bin"
-            part = f"media/{ref[7:23]}.{ext}"  # named by what it holds
-            media["word/" + part] = pictures[ref]["data"]
-            types.add(ext)
-            rels.append(f'<Relationship Id="{rid}" Type="{office._REL}/image" Target="{part}"/>')
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         for item in zin.infolist():
             data = zin.read(item.filename)
@@ -127,19 +107,9 @@ def to_docx(body: str, pictures: dict[str, dict] | None = None) -> bytes:
                 sect = re.search(r"<w:sectPr[ >/].*?</w:sectPr>|<w:sectPr/>", xml, re.S)
                 xml = re.sub(r"(<w:body[^>]*>).*(</w:body>)", lambda mm: mm.group(1) + "".join(paras) + (sect.group(0) if sect else "") + mm.group(2),
                              xml, count=1, flags=re.S)
-                if used:  # the picture namespaces, declared once on the document
-                    decl = "".join(f' xmlns:{k}="{v}"' for k, v in office.DOCX_PICTURE_NAMESPACES.items() if f"xmlns:{k}=" not in xml)
-                    xml = re.sub(r"<w:document\b", lambda mm: mm.group(0) + decl, xml, count=1)
                 data = xml.encode("utf-8")
-            elif used and item.filename == "word/_rels/document.xml.rels":
-                data = data.decode("utf-8").replace("</Relationships>", "".join(rels) + "</Relationships>").encode("utf-8")
-            elif used and item.filename == "[Content_Types].xml":
-                xml = data.decode("utf-8")
-                add = "".join(f'<Default Extension="{e}" ContentType="{office.PICTURE_TYPES.get(e, "application/octet-stream")}"/>'
-                              for e in sorted(types) if f'Extension="{e}"' not in xml)
-                data = xml.replace("</Types>", add + "</Types>").encode("utf-8")
-            z.writestr(item, data)
-        for name, data in sorted(media.items()):
+            z.writestr(item, writer.finish(item.filename, data))  # what the pictures need (nothing without pictures)
+        for name, data in sorted(writer.media.items()):
             z.writestr(name, data)
     return out.getvalue()
 
@@ -186,20 +156,21 @@ def _docx_table(rows: list[str]) -> str:
     return "".join(out) + "</w:tbl>"
 
 
-def docx_lines(content: bytes, ext: str = "docx") -> list[str]:
+def docx_lines(content: bytes, ext: str = "docx", pictures: bool = True) -> list[str]:
     """A document read back as Frame lines: headings as '#' lines, each paragraph as a line (its text as written;
     a Word bullet as '- '), tables as '| a | b |' rows, and each picture as a line of its own after the paragraph,
     heading or table it is in (``office.picture_line``: its description and its hash). A paragraph whose words are
-    written like a picture line reads with a backslash in front (``office.escape_text_line``)."""
+    written like a picture line reads with a backslash in front (``office.escape_text_line``).
+
+    ``pictures=False`` reads as the hub did before pictures had lines (text only): what a release made then read."""
     from . import office
     from .edits import TextDoc
 
     doc = TextDoc(content, ext)
-    rels = office._docx_rels(doc.files) if ext == "docx" else {}
+    reader = office.PictureReader(doc.files, ext, getattr(doc, "head", "")) if pictures else None
     out: list[str] = []
     for b in doc.blocks:
-        pictures = [office.picture_line(p["alt"], p["ref"]) for p in office.pictures_in(b.raw or "", ext, doc.files, rels)] \
-            if b.kind != "sect" else []
+        found = [office.picture_line(p["alt"], p["ref"]) for p in reader.read(b.raw or "")] if reader and b.kind != "sect" else []
         if b.kind == "h":
             out.append("#" * max(1, min(b.level, 6)) + " " + b.text.strip())
         elif b.kind == "tbl":
@@ -211,31 +182,32 @@ def docx_lines(content: bytes, ext: str = "docx") -> list[str]:
         elif b.kind in ("p", "other"):
             t = b.text.rstrip()
             if not t.strip():
-                out.extend(pictures or [""])  # a paragraph that holds only a picture is the picture's line
+                out.extend(found or [""])  # a paragraph that holds only a picture is the picture's line
                 continue
             if t.lstrip().startswith("• "):
                 t = "- " + t.lstrip()[2:].strip()
             elif "<w:numPr>" in (b.raw or "") and not re.match(r"^\s*(?:[-*]|\d+[.)]) ", t):
                 t = "- " + t.strip()  # a Word list item someone added: a bullet line
-            out.append(office.escape_text_line(t))
-        out.extend(pictures)
+            out.append(office.escape_text_line(t) if pictures else t)
+        out.extend(found)
     return out
 
 
 def pictures_of(content: bytes, ext: str = "docx") -> dict[str, dict]:
     """{picture ref ("sha256:<hex>" or "link:<address>"): the picture} for every picture in a document's body
-    (``office.pictures_in``): what ``to_docx`` needs to write a revision's pictures back."""
+    (``office.PictureReader``): what ``to_docx`` needs to write a revision's pictures back."""
     from . import office
     from .edits import TextDoc
 
     if ext not in ("docx", "odt"):
         return {}
     doc = TextDoc(content, ext)
-    rels = office._docx_rels(doc.files) if ext == "docx" else {}
+    reader = office.PictureReader(doc.files, ext, doc.head)
     out: dict[str, dict] = {}
     for b in doc.blocks:
-        for p in office.pictures_in(b.raw or "", ext, doc.files, rels):
-            out.setdefault(p["ref"], p)
+        if b.kind != "sect":
+            for p in reader.read(b.raw or ""):
+                out.setdefault(p["ref"], p)
     return out
 
 
@@ -252,15 +224,47 @@ def header_text(meta: dict) -> str:
     return "\n".join(lines)
 
 
-def frame_text(hub, rec: dict, version: int | None = None) -> str:
-    """A policy or SOP document read back as Frame text: its header from the document, its body from the file."""
+def frame_text(hub, rec: dict, version: int | None = None, pictures: bool = True) -> str:
+    """A policy or SOP document read back as Frame text: its header from the document, its body from the file.
+    ``pictures=False``: as the hub read it before pictures had lines (``docx_lines``)."""
+    from .office import escape_text_line
+
     content, v = hub.dms.content(rec["locator"], version)
     ext = (v.get("filename") or "x.docx").rsplit(".", 1)[-1].lower()
-    lines = docx_lines(content, ext) if ext in ("docx", "odt") else body_lines(content.decode("utf-8", "replace"))
+    if ext in ("docx", "odt"):
+        lines = docx_lines(content, ext, pictures=pictures)
+    else:  # a text file holds no pictures: words written like a picture line are words
+        lines = [escape_text_line(x) if pictures else x for x in body_lines(content.decode("utf-8", "replace"))]
     head = rec["fields"].get("frame_header") or header_text(dict(rec["fields"].get("frame_meta") or {}))
     while lines and not lines[-1].strip():
         lines.pop()
     return head + "\n" + "\n".join(lines) + "\n" * int(rec["fields"].get("frame_tail") or 1)
+
+
+def in_force_text(hub, rec: dict, released: dict[str, str] | None) -> str:
+    """The Frame text of a document in force that no change order carries. Read as the hub reads documents now, unless
+    the only difference from the release in force (``released``: {name: text}) is what the hub reads now that it did
+    not when that release was made (its pictures' lines): then the release's text stands, so a new reading never
+    changes an SOP no change order carries. The pictures come in with the next revision of the SOP (its draft is read
+    in full, and a picture in it is a question for a person)."""
+    text = frame_text(hub, rec)
+    old = (released or {}).get(rec["fields"].get("sop_name"))
+    if old is not None and text != old and frame_text(hub, rec, pictures=False) == old:
+        return old
+    return text
+
+
+def _released_texts(hub) -> dict[str, str]:
+    meta = hub.releases.current()
+    if not meta:
+        return {}
+    texts = dict(hub.releases.frame_texts(meta["digest"]))
+    for f in meta.get("frames") or []:
+        if f.get("name") and f["name"] not in texts:
+            t = hub.releases.text_by_sha(f.get("sha256"))
+            if t is not None:
+                texts[f["name"]] = t
+    return texts
 
 
 def of_lineage(kernel, name: str) -> list[dict]:
@@ -332,13 +336,14 @@ def source_texts(hub, drafts: dict[str, str] | None = None) -> dict[str, str]:
     locator}, the SOP revisions an ECO carries)."""
     out = {}
     drafts = drafts or {}
+    released = _released_texts(hub)
     names = {d["fields"]["sop_name"] for d in hub.kernel.query(type_="document") if str(d["fields"].get("lineage", "")).startswith(LINEAGE)}
     for name in sorted(names):
         if name in drafts and drafts[name] is None:  # retired by the change order: compiled as absent
             continue
         rec = hub.kernel.get(drafts[name]) if name in drafts else in_force(hub.kernel, name)
         if rec is not None:
-            out[name] = frame_text(hub, rec)
+            out[name] = frame_text(hub, rec) if name in drafts else in_force_text(hub, rec, released)
     return out
 
 
@@ -412,6 +417,7 @@ def document_store(hub, drafts: dict[str, str | None] | None = None):
     drafts = dict(drafts or {})
     bom = {f["name"]: f for f in (hub.releases.current() or {}).get("frames") or []}
     frames = {}
+    released: dict[str, str] | None = None
     names = {d["fields"]["sop_name"] for d in hub.kernel.query(type_="document")
              if str(d["fields"].get("lineage", "")).startswith(LINEAGE) and d["state"] == "effective"} | set(drafts)
     for name in sorted(names):
@@ -420,7 +426,9 @@ def document_store(hub, drafts: dict[str, str | None] | None = None):
         rec = hub.kernel.get(drafts[name]) if name in drafts else in_force(hub.kernel, name)
         if rec is None:
             continue
-        frames[name] = (frame_text(hub, rec), _relpath(hub, name, rec, bom))
+        if released is None and name not in drafts:
+            released = _released_texts(hub)
+        frames[name] = (frame_text(hub, rec) if name in drafts else in_force_text(hub, rec, released), _relpath(hub, name, rec, bom))
     return _store_of(hub, frames)
 
 
