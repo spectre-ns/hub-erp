@@ -159,24 +159,26 @@ def _docx_table(rows: list[str]) -> str:
 def docx_lines(content: bytes, ext: str = "docx", pictures: bool = True) -> list[str]:
     """A document read back as Frame lines: headings as '#' lines, each paragraph as a line (its text as written;
     a Word bullet as '- '), tables as '| a | b |' rows, and each picture as a line of its own after the paragraph,
-    heading or table it is in (``office.picture_line``: its description and its hash). A paragraph whose words are
-    written like a picture line reads with a backslash in front (``office.escape_text_line``).
+    heading or table it is in (``office.picture_line``: its description and its hash), with one more line at the end
+    for the parts of the file with bytes that no picture line covers (``office.PictureReader``). A line of words
+    written like a picture line reads with a backslash in front (``office.escape_text``).
 
     ``pictures=False`` reads as the hub did before pictures had lines (text only): what a release made then read."""
     from . import office
     from .edits import TextDoc
 
     doc = TextDoc(content, ext)
-    reader = office.PictureReader(doc.files, ext, getattr(doc, "head", "")) if pictures else None
+    per, tail = office.PictureReader(doc.files, ext).read(doc.blocks) if pictures else ([[] for _ in doc.blocks], [])
+    words = office.escape_text if pictures else (lambda t: t)
     out: list[str] = []
-    for b in doc.blocks:
-        found = [office.picture_line(p["alt"], p["ref"]) for p in reader.read(b.raw or "")] if reader and b.kind != "sect" else []
+    for b, pics in zip(doc.blocks, per):
+        found = [office.picture_line(p["alt"], p["ref"]) for p in pics]
         if b.kind == "h":
-            out.append("#" * max(1, min(b.level, 6)) + " " + b.text.strip())
+            out.append(words("#" * max(1, min(b.level, 6)) + " " + b.text.strip()))
         elif b.kind == "tbl":
             rows = [r for r in b.text.split("\n") if r.strip()]
             for i, r in enumerate(rows):
-                out.append("| " + r + " |")
+                out.append(words("| " + r + " |"))
                 if i == 0:
                     out.append("|" + "---|" * (r.count("|") + 1))
         elif b.kind in ("p", "other"):
@@ -188,26 +190,29 @@ def docx_lines(content: bytes, ext: str = "docx", pictures: bool = True) -> list
                 t = "- " + t.lstrip()[2:].strip()
             elif "<w:numPr>" in (b.raw or "") and not re.match(r"^\s*(?:[-*]|\d+[.)]) ", t):
                 t = "- " + t.strip()  # a Word list item someone added: a bullet line
-            out.append(office.escape_text_line(t) if pictures else t)
+            out.append(words(t))
         out.extend(found)
+    out.extend(office.picture_line(p["alt"], p["ref"]) for p in tail)
     return out
 
 
 def pictures_of(content: bytes, ext: str = "docx") -> dict[str, dict]:
-    """{picture ref ("sha256:<hex>" or "link:<address>"): the picture} for every picture in a document's body
-    (``office.PictureReader``): what ``to_docx`` needs to write a revision's pictures back."""
+    """{picture ref ("sha256:<hex>" or "link:<address>"): the picture} for every picture line of a document
+    (``office.PictureReader``): what ``to_docx`` needs to write a revision's pictures back. A picture that appears twice
+    is writable only if both places are."""
     from . import office
     from .edits import TextDoc
 
     if ext not in ("docx", "odt"):
         return {}
     doc = TextDoc(content, ext)
-    reader = office.PictureReader(doc.files, ext, doc.head)
+    per, tail = office.PictureReader(doc.files, ext).read(doc.blocks)
     out: dict[str, dict] = {}
-    for b in doc.blocks:
-        if b.kind != "sect":
-            for p in reader.read(b.raw or ""):
-                out.setdefault(p["ref"], p)
+    for p in [p for ps in per for p in ps] + tail:
+        if p["ref"] in out:
+            out[p["ref"]]["writable"] = out[p["ref"]]["writable"] and p["writable"]
+        else:
+            out[p["ref"]] = p
     return out
 
 

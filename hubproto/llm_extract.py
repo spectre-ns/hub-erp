@@ -333,10 +333,11 @@ def picture_questions(frame: Frame, lines: set[int], chair: str = "") -> list[di
     out = []
     for text, ns in at.items():
         where = f"line {ns[0]}" if len(ns) == 1 else "lines " + ", ".join(map(str, ns))
-        q = question(frame.name, ns[0], f"The picture {text} ({where}) is put in or replaced by this revision. No reader reads "
-                     "pictures yet, so nobody has read what it says: released as it is, it would come into force unread. The "
-                     "committee's chair looks at it and decides: it states no rule, it is recorded as a divergence, or the "
-                     "author states in words what it requires.", raised_by="hub", code="unread-rule", quote=text, blocking=True,
+        q = question(frame.name, ns[0], f"The picture {text} ({where}) is not in the SOP's text in force: this revision puts it "
+                     "in or replaces one, or it was in the document already and is read for the first time (the release in force "
+                     "was made before the hub read pictures). No reader reads pictures yet, so nobody has read what it says: "
+                     "released as it is, it would come into force unread. The committee's chair looks at it and decides: it "
+                     "states no rule, it is recorded as a divergence, or the author states in words what it requires.", raised_by="hub", code="unread-rule", quote=text, blocking=True,
                      lines=ns, picture=True, unread_note=True, **({"chair": chair} if chair else {}))
         q["id"] = "q-" + sha256_of({"frame": frame.name, "picture": text})[:12]
         out.append(q)
