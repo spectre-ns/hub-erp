@@ -140,6 +140,15 @@ Existing steps (check, frame into force, publish revisions, forms, training, tel
   rule, it is recorded as a divergence, or the author rewrites it), so prose still never ships
   unread. Checks on what was read (a process graph that does not close, a persona value outside
   its list) remain errors.
+- **Pictures** (issue #7): a picture in an SOP document is a line of the Frame text of its own,
+  `![<its description>](sha256:<hash of the picture>)`, after the paragraph, heading or table it
+  is in (`hubproto.office.picture_line`). An added, removed or replaced picture is therefore a
+  changed line of the diff; an editor renaming its media parts changes nothing. No reader reads
+  pictures yet and none is sent to a model, so a picture put in or replaced is a blocking
+  `unread-rule` question for a person, whatever the section; an unchanged picture asks nothing.
+  Words typed to look like a picture line read with a backslash in front, so they never stand in
+  for one. A revision the hub writes keeps its pictures (`sopdocs.to_docx` takes them from the
+  document the text was read from, and refuses a picture line it has no picture for).
 - **Prose, by the compile-frame committee** (organization + qa-manager cogs, quorum as today):
   reading is **diff-based**. For a frame whose text differs from the version in force, the reader is
   given the unified diff with line numbers and the rules currently in force for that frame (and the

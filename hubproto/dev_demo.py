@@ -56,7 +56,8 @@ def change_order(hub) -> str:
     _, body = text.split("\n---\n", 1)
     if AP_OLD not in body:
         raise ValueError("the finance policy no longer states the ap-reviewer limit this demo lowers")
-    hub.dms.add_version(draft["locator"], sopdocs.to_docx(body.replace(AP_OLD, AP_NEW)), by=draft["fields"].get("author") or "carol",
+    content, _ = hub.dms.content(draft["locator"])
+    hub.dms.add_version(draft["locator"], sopdocs.to_docx(body.replace(AP_OLD, AP_NEW), sopdocs.pictures_of(content)), by=draft["fields"].get("author") or "carol",
                         filename=f"{draft['fields']['sop_name']}.docx", note="lower the ap-reviewer limit to 1,500 USD",
                         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
     print(f"change order {co['number']} prepared by bob, carrying {draft['number']} (finance-policy rev "

@@ -3,6 +3,7 @@ document and a comment written in the editor ("@quality-assistant can you review
 
 from __future__ import annotations
 
+import html
 import io
 import re
 import zipfile
@@ -600,3 +601,148 @@ by name when you rely on it. If the procedures you follow do not cover the quest
 
 def writing_interface(kind: str) -> str:
     return WRITING_INTERFACE.get(kind, "")
+
+
+# ---------------------------------------------------------------- pictures in a text document
+# A picture in an SOP has a place in the Frame text: a line of its own, ``![<its description>](sha256:<the picture's
+# hash>)`` (``link:<address>`` for a picture linked from outside the file), after the paragraph, heading or table it is
+# in. The line names what the picture is and what it holds, never where the file keeps it (an editor renumbers its
+# media parts on save), so an unchanged picture reads the same and an added, removed or replaced one is a changed line.
+_PICTURE = r"!\[[^\[\]\n]*\]\((?:sha256:[0-9a-f]{64}|link:[^\s()]+)\)"
+PICTURE_LINE = re.compile(r"!\[([^\[\]\n]*)\]\((sha256:[0-9a-f]{64}|link:[^\s()]+)\)")
+_LOOKS_LIKE_PICTURE = re.compile(rf"^(\s*)(\\*{_PICTURE})(\s*)$")
+PICTURE_ALT = "picture"  # the description a picture with none reads as
+DEFAULT_EXTENT = (2743200, 2057400)  # 3 x 2.25 inches, in EMU, for a picture whose size the text does not keep
+EMU = {"cm": 360000, "mm": 36000, "in": 914400, "pt": 12700, "pc": 152400, "px": 9525}
+PICTURE_TYPES = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "gif": "image/gif", "bmp": "image/bmp",
+                 "tif": "image/tiff", "tiff": "image/tiff", "svg": "image/svg+xml", "emf": "image/x-emf", "wmf": "image/x-wmf",
+                 "webp": "image/webp"}
+_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_RELS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+
+
+def is_picture_line(line: str) -> bool:
+    """True for a Frame line that stands for a picture in the document (``picture_line``)."""
+    return bool(PICTURE_LINE.fullmatch((line or "").strip()))
+
+
+def picture_line(alt: str, ref: str) -> str:
+    alt = " ".join(re.sub(r"[\[\]]", " ", alt or "").split()) or PICTURE_ALT
+    return f"![{alt}]({ref})"
+
+
+def escape_text_line(text: str) -> str:
+    """A paragraph whose words are written like a picture line reads with a backslash in front, so typed text never reads
+    as a picture (and a picture the document does not hold never hides behind it). ``unescape_text_line`` undoes it."""
+    m = _LOOKS_LIKE_PICTURE.match(text)
+    return f"{m.group(1)}\\{m.group(2)}{m.group(3)}" if m else text
+
+
+def unescape_text_line(line: str) -> str:
+    m = _LOOKS_LIKE_PICTURE.match(line)
+    return f"{m.group(1)}{m.group(2)[1:]}{m.group(3)}" if m and m.group(2).startswith("\\") else line
+
+
+def _length_emu(value: str) -> int | None:
+    m = re.fullmatch(r"\s*([\d.]+)\s*(cm|mm|in|pt|pc|px)\s*", value or "")
+    try:
+        return int(float(m.group(1)) * EMU[m.group(2)]) if m else None
+    except ValueError:
+        return None
+
+
+def _attr(tag: str, name: str) -> str:
+    m = re.search(rf'\s{name}="([^"]*)"', tag)
+    return html.unescape(m.group(1)) if m else ""
+
+
+def _docx_rels(files: dict[str, bytes]) -> dict[str, tuple[str, bool]]:
+    """{relationship id: (part name or address, external)} of word/document.xml."""
+    import posixpath
+
+    data = files.get("word/_rels/document.xml.rels")
+    if not data:
+        return {}
+    try:
+        root = ElementTree.fromstring(data)
+    except ElementTree.ParseError:
+        return {}
+    out = {}
+    for rel in root.iter(_RELS + "Relationship"):
+        target, external = rel.get("Target") or "", (rel.get("TargetMode") or "").lower() == "external"
+        if not external:
+            target = target.lstrip("/") if target.startswith("/") else posixpath.normpath(posixpath.join("word", target))
+        out[rel.get("Id") or ""] = (target, external)
+    return out
+
+
+def pictures_in(raw: str, ext: str, files: dict[str, bytes], rels: dict | None = None) -> list[dict]:
+    """The pictures in one block of a document's body XML (a paragraph, a heading, a table), in order: each
+    {"ref": "sha256:<hex>" or "link:<address>", "alt", "name" (its part in the file), "data" (its bytes), "cx", "cy"
+    (its size in EMU, or None)}. Only the body is read; a header's or footer's logo is not part of the SOP's text."""
+    from hashlib import sha256
+    from urllib.parse import quote
+
+    out: list[dict] = []
+
+    def add(target: str, external: bool, alt: str, cx, cy):
+        data = None if external else files.get(target)
+        if data is None:
+            out.append({"ref": "link:" + quote(target, safe=":/?#@!$&'*+,;=%~.-_"), "alt": alt, "name": target, "data": None, "cx": cx, "cy": cy})
+        else:
+            out.append({"ref": "sha256:" + sha256(data).hexdigest(), "alt": alt, "name": target.rsplit("/", 1)[-1], "data": data, "cx": cx, "cy": cy})
+
+    if ext == "docx":
+        if "<w:drawing" not in raw and "<w:pict" not in raw and "<w:object" not in raw:
+            return out
+        rels = _docx_rels(files) if rels is None else rels
+        body = re.sub(r"<mc:Fallback\b.*?</mc:Fallback>", "", raw, flags=re.S)  # the same drawing again, for old readers
+        for seg in re.finditer(r"<w:drawing\b.*?</w:drawing>|<w:pict\b.*?</w:pict>|<w:object\b.*?</w:object>", body, re.S):
+            s = seg.group(0)
+            pr = re.search(r"<wp:docPr\b[^>]*>", s)
+            alt = (_attr(pr.group(0), "descr") or _attr(pr.group(0), "title")) if pr else ""
+            ext_m = re.search(r'<wp:extent\b[^>]*\bcx="(\d+)"[^>]*\bcy="(\d+)"', s)
+            cx, cy = (int(ext_m.group(1)), int(ext_m.group(2))) if ext_m else (None, None)
+            for tag in re.findall(r"<(?:\w+:)?blip\b[^>]*>|<(?:\w+:)?imagedata\b[^>]*>", s):
+                rid = _attr(tag, r"r:embed") or _attr(tag, r"r:link") or _attr(tag, r"r:id")
+                if rid not in rels:
+                    continue
+                target, external = rels[rid]
+                add(target, external, alt or _attr(tag, "o:title"), cx, cy)
+    elif ext == "odt":
+        if "<draw:image" not in raw:
+            return out
+        for seg in re.finditer(r"<draw:frame\b.*?</draw:frame>", raw, re.S):
+            s = seg.group(0)
+            img = re.search(r"<draw:image\b[^>]*>", s)  # the first: the others are the same picture in another format
+            if img is None:
+                continue
+            desc = re.search(r"<svg:desc>(.*?)</svg:desc>", s, re.S) or re.search(r"<svg:title>(.*?)</svg:title>", s, re.S)
+            alt = html.unescape(re.sub(r"<[^>]+>", "", desc.group(1))) if desc else ""
+            href = _attr(img.group(0), "xlink:href")
+            frame = re.match(r"<draw:frame\b[^>]*>", s).group(0)
+            cx, cy = _length_emu(_attr(frame, "svg:width")), _length_emu(_attr(frame, "svg:height"))
+            internal = not re.match(r"^[a-z][a-z0-9+.-]*:", href, re.I) and not href.startswith(("/", ".."))
+            add(href.removeprefix("./") if internal else href, not internal, alt, cx, cy)
+    return out
+
+
+def docx_picture_paragraph(n: int, rid: str, alt: str, cx: int, cy: int, linked: bool = False) -> str:
+    """A paragraph holding one picture (an inline DrawingML picture), as ``sopdocs.to_docx`` writes it."""
+    d = _escape(alt)
+    blip = f'<a:blip r:{"link" if linked else "embed"}="{rid}"/>'
+    return (f'<w:p><w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="{cx}" cy="{cy}"/>'
+            f'<wp:docPr id="{n}" name="Picture {n}" descr="{d}"/><wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/>'
+            '</wp:cNvGraphicFramePr><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+            f'<pic:pic><pic:nvPicPr><pic:cNvPr id="{n}" name="Picture {n}" descr="{d}"/><pic:cNvPicPr/></pic:nvPicPr>'
+            f'<pic:blipFill>{blip}<a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/>'
+            f'<a:ext cx="{cx}" cy="{cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic>'
+            "</a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>")
+
+
+DOCX_PICTURE_NAMESPACES = {
+    "wp": "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
+    "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+    "pic": "http://schemas.openxmlformats.org/drawingml/2006/picture",
+    "r": _REL,
+}

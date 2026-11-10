@@ -54,18 +54,25 @@ def body_lines(body: str) -> list[str]:
     return [ln.rstrip() for ln in (body or "").splitlines()]
 
 
-def to_docx(body: str) -> bytes:
+def to_docx(body: str, pictures: dict[str, dict] | None = None) -> bytes:
     """The SOP as a .docx: '#' lines as headings (Heading 1 to 3, the editor's styles), every other line as its own
     paragraph with its text exactly as written (indentation, list marks and table rows included), so the document
-    reads back as the same Frame text. Formatting people add later in Collabora is theirs."""
+    reads back as the same Frame text. Formatting people add later in Collabora is theirs.
+
+    A picture line (``office.picture_line``) is that picture, in a paragraph of its own: ``pictures`` holds them
+    (``pictures_of`` the document the text was read from), and a picture line whose picture is not there is refused,
+    never written as words (a revision would lose the picture and read back the same)."""
     from html import escape
 
+    from . import office
     from .wopi import blank_document
 
     blank, _ = blank_document("docx")
     paras = []
     lines = body_lines(body)
     tables = markdown_tables(lines)
+    pictures = pictures or {}
+    used: dict[str, str] = {}  # picture ref -> relationship id
     skip_to = -1
     for i, line in enumerate(lines):
         if i < skip_to:
@@ -78,11 +85,21 @@ def to_docx(body: str) -> bytes:
             skip_to = end
             continue
         m = re.match(r"^(#{1,6}) (.*)$", line)
+        pic = office.PICTURE_LINE.fullmatch(line)
         if m:
             level = min(len(m.group(1)), 3) if len(m.group(1)) <= 3 else len(m.group(1))
             paras.append(f'<w:p><w:pPr><w:pStyle w:val="Heading{level}"/></w:pPr><w:r><w:t xml:space="preserve">{escape(m.group(2), quote=False)}</w:t></w:r></w:p>')
+        elif pic:
+            ref = pic.group(2)
+            p = pictures.get(ref)
+            if p is None and not ref.startswith("link:"):
+                raise ValueError(f"line {i + 1} is a picture ({line}) that the document it was read from does not hold: "
+                                 "the revision would lose it")
+            rid = used.setdefault(ref, f"rIdPicture{len(used) + 1}")
+            cx, cy = ((p or {}).get("cx") or office.DEFAULT_EXTENT[0]), ((p or {}).get("cy") or office.DEFAULT_EXTENT[1])
+            paras.append(office.docx_picture_paragraph(len(paras) + 1, rid, pic.group(1), cx, cy, linked=ref.startswith("link:")))
         elif line:
-            paras.append(f'<w:p><w:r><w:t xml:space="preserve">{escape(line, quote=False)}</w:t></w:r></w:p>')
+            paras.append(f'<w:p><w:r><w:t xml:space="preserve">{escape(office.unescape_text_line(line), quote=False)}</w:t></w:r></w:p>')
         else:
             paras.append("<w:p/>")
     import io
@@ -90,6 +107,18 @@ def to_docx(body: str) -> bytes:
 
     zin = zipfile.ZipFile(io.BytesIO(blank))
     out = io.BytesIO()
+    media: dict[str, bytes] = {}
+    if used:
+        rels, types = [], set()
+        for ref, rid in used.items():
+            if ref.startswith("link:"):
+                rels.append(f'<Relationship Id="{rid}" Type="{office._REL}/image" Target="{office._escape(ref[5:])}" TargetMode="External"/>')
+                continue
+            ext = pictures[ref]["name"].rsplit(".", 1)[-1].lower() if "." in pictures[ref]["name"] else "bin"
+            part = f"media/{ref[7:23]}.{ext}"  # named by what it holds
+            media["word/" + part] = pictures[ref]["data"]
+            types.add(ext)
+            rels.append(f'<Relationship Id="{rid}" Type="{office._REL}/image" Target="{part}"/>')
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         for item in zin.infolist():
             data = zin.read(item.filename)
@@ -98,8 +127,20 @@ def to_docx(body: str) -> bytes:
                 sect = re.search(r"<w:sectPr[ >/].*?</w:sectPr>|<w:sectPr/>", xml, re.S)
                 xml = re.sub(r"(<w:body[^>]*>).*(</w:body>)", lambda mm: mm.group(1) + "".join(paras) + (sect.group(0) if sect else "") + mm.group(2),
                              xml, count=1, flags=re.S)
+                if used:  # the picture namespaces, declared once on the document
+                    decl = "".join(f' xmlns:{k}="{v}"' for k, v in office.DOCX_PICTURE_NAMESPACES.items() if f"xmlns:{k}=" not in xml)
+                    xml = re.sub(r"<w:document\b", lambda mm: mm.group(0) + decl, xml, count=1)
                 data = xml.encode("utf-8")
+            elif used and item.filename == "word/_rels/document.xml.rels":
+                data = data.decode("utf-8").replace("</Relationships>", "".join(rels) + "</Relationships>").encode("utf-8")
+            elif used and item.filename == "[Content_Types].xml":
+                xml = data.decode("utf-8")
+                add = "".join(f'<Default Extension="{e}" ContentType="{office.PICTURE_TYPES.get(e, "application/octet-stream")}"/>'
+                              for e in sorted(types) if f'Extension="{e}"' not in xml)
+                data = xml.replace("</Types>", add + "</Types>").encode("utf-8")
             z.writestr(item, data)
+        for name, data in sorted(media.items()):
+            z.writestr(name, data)
     return out.getvalue()
 
 
@@ -147,12 +188,18 @@ def _docx_table(rows: list[str]) -> str:
 
 def docx_lines(content: bytes, ext: str = "docx") -> list[str]:
     """A document read back as Frame lines: headings as '#' lines, each paragraph as a line (its text as written;
-    a Word bullet as '- '), tables as '| a | b |' rows."""
+    a Word bullet as '- '), tables as '| a | b |' rows, and each picture as a line of its own after the paragraph,
+    heading or table it is in (``office.picture_line``: its description and its hash). A paragraph whose words are
+    written like a picture line reads with a backslash in front (``office.escape_text_line``)."""
+    from . import office
     from .edits import TextDoc
 
     doc = TextDoc(content, ext)
+    rels = office._docx_rels(doc.files) if ext == "docx" else {}
     out: list[str] = []
     for b in doc.blocks:
+        pictures = [office.picture_line(p["alt"], p["ref"]) for p in office.pictures_in(b.raw or "", ext, doc.files, rels)] \
+            if b.kind != "sect" else []
         if b.kind == "h":
             out.append("#" * max(1, min(b.level, 6)) + " " + b.text.strip())
         elif b.kind == "tbl":
@@ -164,13 +211,31 @@ def docx_lines(content: bytes, ext: str = "docx") -> list[str]:
         elif b.kind in ("p", "other"):
             t = b.text.rstrip()
             if not t.strip():
-                out.append("")
+                out.extend(pictures or [""])  # a paragraph that holds only a picture is the picture's line
                 continue
             if t.lstrip().startswith("• "):
                 t = "- " + t.lstrip()[2:].strip()
             elif "<w:numPr>" in (b.raw or "") and not re.match(r"^\s*(?:[-*]|\d+[.)]) ", t):
                 t = "- " + t.strip()  # a Word list item someone added: a bullet line
-            out.append(t)
+            out.append(office.escape_text_line(t))
+        out.extend(pictures)
+    return out
+
+
+def pictures_of(content: bytes, ext: str = "docx") -> dict[str, dict]:
+    """{picture ref ("sha256:<hex>" or "link:<address>"): the picture} for every picture in a document's body
+    (``office.pictures_in``): what ``to_docx`` needs to write a revision's pictures back."""
+    from . import office
+    from .edits import TextDoc
+
+    if ext not in ("docx", "odt"):
+        return {}
+    doc = TextDoc(content, ext)
+    rels = office._docx_rels(doc.files) if ext == "docx" else {}
+    out: dict[str, dict] = {}
+    for b in doc.blocks:
+        for p in office.pictures_in(b.raw or "", ext, doc.files, rels):
+            out.setdefault(p["ref"], p)
     return out
 
 
@@ -366,7 +431,11 @@ def roundtrip_problems(hub, frames=None) -> list[str]:
     problems = []
     for name in sorted(store.frames):
         frame = store.get(name)
-        lines = docx_lines(to_docx(frame.body))
+        try:
+            lines = docx_lines(to_docx(frame.body))
+        except ValueError:  # a picture line with no picture to write
+            problems.append(name)
+            continue
         while lines and not lines[-1].strip():
             lines.pop()
         head = "\n".join((frame.text or "").splitlines()[: max(0, frame.body_start - 1)])

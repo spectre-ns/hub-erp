@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .frames import Frame, load_frame_text
+from .office import is_picture_line
 from .rules import CONDITION_VOCABULARY, KINDS, rule_key, validate_rule
 
 PROMPT_VERSION = "3"
@@ -254,8 +255,8 @@ def sentence_groups(frame: Frame) -> list[list[int]]:
         if not line:
             prev = ""
             continue
-        own = line.startswith(("#", "|")) or bool(_ITEM.match(raw))
-        if groups and prev and not own and not prev.startswith(("#", "|")) and not prev.endswith(_TERMINATORS):
+        own = line.startswith(("#", "|")) or bool(_ITEM.match(raw)) or is_picture_line(line)
+        if groups and prev and not own and not prev.startswith(("#", "|")) and not prev.endswith(_TERMINATORS) and not is_picture_line(prev):
             groups[-1].append(n)
         else:
             groups.append([n])
@@ -303,7 +304,7 @@ def unread_rule_questions(frame: Frame, lines: set[int], rules: list[dict], note
             if not set(group) & unparsed:  # the grammar read these lines (a structured section is read line by line)
                 continue
         text = " ".join((frame.line(n) or "").strip() for n in group)
-        if text.startswith(("#", "|")) or not _RULE_LIKE.search(text):
+        if text.startswith(("#", "|")) or is_picture_line(text) or not _RULE_LIKE.search(text):  # a picture: picture_questions
             continue
         where = f"Line {group[0]}" if len(group) == 1 else f"Lines {group[0]}-{group[-1]}"
         out.append(question(frame.name, group[0], f"{where}, “{text}”, reads like a rule, but neither the sentence grammar nor the "
@@ -314,9 +315,31 @@ def unread_rule_questions(frame: Frame, lines: set[int], rules: list[dict], note
     return out
 
 
+def picture_questions(frame: Frame, lines: set[int], chair: str = "") -> list[dict]:
+    """A picture on ``lines`` (one put in or replaced, ``office.picture_line``) was read by no one: no reader reads
+    pictures yet, and none is sent to a model. Each is a blocking ``unread-rule`` question, as a sentence nobody read
+    is, for the committee's chair, whatever the section: a person looks at the picture and decides (it states no rule,
+    it is recorded as a divergence, or the author states in words what it requires). An unchanged picture is not on
+    ``lines`` and asks nothing."""
+    from .compile import question
+
+    out = []
+    for n in sorted(lines):
+        text = (frame.line(n) or "").strip()
+        if not is_picture_line(text):
+            continue
+        out.append(question(frame.name, n, f"Line {n}, {text}, is a picture this revision puts in or replaces. No reader reads "
+                            "pictures yet, so nobody has read what it says: released as it is, it would come into force "
+                            "unread. The committee's chair looks at it and decides: it states no rule, it is recorded as a "
+                            "divergence, or the author states in words what it requires.", raised_by="hub", code="unread-rule",
+                            quote=text, blocking=True, lines=[n], picture=True, unread_note=True, **({"chair": chair} if chair else {})))
+    return out
+
+
 def with_unread_rules(frame: Frame, out, baseline: dict | None, chair: str = ""):
     """``out`` (an SOP's reading) with an ``unread-rule`` question for each changed sentence that reads like a rule and
-    gave none (``unread_rule_questions``); for a new SOP, every sentence. Only against a release in force (a first
+    gave none (``unread_rule_questions``) and for each picture put in or replaced (``picture_questions``); for a new
+    SOP, every sentence and every picture. Only against a release in force (a first
     compile has nothing to compare with), and not where the committee's disagreement already asks about that sentence."""
     from .compile import merge_questions
 
@@ -330,7 +353,8 @@ def with_unread_rules(frame: Frame, out, baseline: dict | None, chair: str = "")
     else:
         lines = plan.changed_lines
     asked = {q.get("line") for q in out.questions if q.get("code") == "disagreement"}
-    new = [q for q in unread_rule_questions(frame, lines, out.rules, out.notes, chair or (baseline or {}).get("chair") or "")
+    chair = chair or (baseline or {}).get("chair") or ""
+    new = [q for q in unread_rule_questions(frame, lines, out.rules, out.notes, chair) + picture_questions(frame, lines, chair)
            if not set(q.get("lines") or [q["line"]]) & asked]
     out.questions = merge_questions(list(out.questions) + new)
     return out
