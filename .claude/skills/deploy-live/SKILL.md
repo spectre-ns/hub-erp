@@ -17,17 +17,21 @@ An earlier rollout with its rehearsal and a tried recipe: `docs/rollout/cc2.md`.
 
 ## Deploy
 
+Shell variables do not survive from one command (or session) to the next, so this recipe keeps nothing in them:
+write the old commit and the backup name down in your notes and in your report to the user, and type them into the
+later steps where they appear as `<old commit>` and `<backup name>`.
+
 Run from the clone the live hub is built from, on the branch that tracks `origin/main`:
 
 ```bash
-git status --short                 # must be empty: see "Pitfalls" for changes under frames/
+git status --short                   # must be empty: see "Pitfalls" for changes under frames/
 git fetch origin
-OLD=$(git rev-parse HEAD)          # what runs now, for a rollback
+git rev-parse HEAD                   # the old commit: what runs now; write it down for a rollback
 git log --oneline HEAD..origin/main  # what the deployment brings; tell the user
 ```
 
 1. **The suite passes on what will run.** In a worktree at `origin/main`:
-   `python -m pytest -q -n auto; echo $?` must print 0.
+   `python -m pytest -q -n 4; echo $?` must print 0 (`-n auto` on a machine of your own).
 2. **Wait for the cog queue to be empty**, so no cog is mid-task and no automation (a review round, a release) is
    half done when the hub restarts:
 
@@ -42,12 +46,13 @@ git log --oneline HEAD..origin/main  # what the deployment brings; tell the user
 
    Repeat until it prints `0 open`. A task that stays `working` for long is a stuck cog: tell the user rather than
    restarting over it.
-3. **Back up**, and copy the backup off the volume, outside any checkout (it holds the signing secret `.secret`):
+3. **Back up**, and copy the backup off the volume, outside any checkout (it holds the signing secret `.secret`).
+   Choose the name once (for example `pre-deploy-<date>-<time>`), write it down, and use it in both commands:
 
    ```bash
-   B=pre-deploy-$(date +%Y%m%d-%H%M)
-   docker compose exec hub hubproto backup /hub/state/backups/$B
-   docker compose cp hub:/hub/state/backups/$B <backups dir>/$B
+   docker compose exec hub hubproto backup /hub/state/backups/<backup name>
+   docker compose cp hub:/hub/state/backups/<backup name> <backups dir>/<backup name>
+   ls <backups dir>/<backup name>/backup.json     # the copy is there
    ```
 
 4. **Update and rebuild**, right after one another (the bind-mounted `./frames` changes with the checkout):
@@ -68,32 +73,49 @@ git log --oneline HEAD..origin/main  # what the deployment brings; tell the user
    curl -s http://localhost:8080/healthz          # "ok"; "ok; cog queue stalled" means the worker died
    docker compose exec hub hubproto status --check; echo $?   # 0: a release in force, Frames and config match it
    docker compose exec hub hubproto verify; echo $?           # 0: event chain, Tracks, signatures, files intact
+   git rev-parse HEAD                                         # the commit now running
    ```
 
-6. **Report** to the user: the commit now running, the checks and their exit codes, and the backup name.
+6. **Report** to the user: the commit now running, the old commit, the backup name and where its copy is, and the
+   checks with their exit codes. A rollback, possibly in another session, starts from these.
 
 ## Roll back
 
+Take the old commit and the backup name from the deployment's report (or ask the user); never from a shell
+variable. If you do put them in variables for one command line, guard them, so an empty value stops the command
+instead of acting on the current commit: `git switch --detach "${OLD:?set OLD to the old commit}"`.
+
 Code first, state only if needed:
 
-1. **Previous commit**: `git switch --detach $OLD && docker compose build hub && docker compose up -d hub`, then the
-   checks above. Tell the user; `main` still has the change, so a fix or a revert goes through a PR. The clone is
-   now detached: switch it back to its `main` branch (`git switch -`) before the next deployment.
-2. **Restore the backup** only when the new code changed the state in a way the old code cannot use (a check above
-   fails on the old commit), and only with the user's decision: it loses everything done on the hub since the
-   backup.
+1. **Previous commit**:
 
    ```bash
-   docker compose stop hub
-   docker compose run --rm --no-deps -v <backups dir>/$B:/backup:ro --entrypoint sh hub \
-     -c 'hubproto restore --force /backup && touch /hub/state/.bootstrapped'
+   git switch --detach <old commit> && git rev-parse HEAD     # must print the old commit, not the new one
+   docker compose build hub && docker compose up -d hub
+   ```
+
+   Then the checks above, and `docker compose exec hub hubproto status` to see the release in force. Tell the user;
+   `main` still has the change, so a fix or a revert goes through a PR. The clone is now detached: switch it back to
+   its `main` branch before the next deployment.
+2. **Restore the backup** only when the new code changed the state in a way the old code cannot use (a check above
+   fails on the old commit), and only with the user's decision: it loses everything done on the hub since the
+   backup. Every service that mounts the `hub-state` volume must be stopped first, or it keeps writing while the
+   state is replaced: `hub`, and `cog-users` and `agents` when they run. Do not run the one-off `tick` service (or
+   any other `docker compose run` on the hub image) during a restore.
+
+   ```bash
+   docker compose ps --services --status running      # note which of hub, cog-users, agents are running
+   docker compose --profile cog-users --profile agents stop hub cog-users agents
+   docker compose run --rm --no-deps -v <backups dir>/<backup name>:/backup:ro --entrypoint sh hub \
+     -c 'test -f /backup/backup.json && hubproto restore --force /backup && touch /hub/state/.bootstrapped'
    docker compose up -d hub
+   docker compose --profile cog-users --profile agents up -d cog-users agents   # only the ones that were running
    ```
 
    `restore --force` refuses a partial backup and sets the replaced state aside inside the volume
    (`/hub/state/.before-restore-<time>`), because `/hub/state` is a mount point. The `.bootstrapped` marker is not
-   in a backup; without the `touch` the next start takes the first-start path (harmless, but it tries to seed again).
-   Then run the checks.
+   in a backup (issue #14); without the `touch` the next start takes the first-start path (harmless, but it tries to
+   seed again). Drop the `touch` once #14 is fixed. Then run the checks.
 
 ## Pitfalls
 
@@ -109,7 +131,9 @@ Code first, state only if needed:
 - Never print or copy `.env`; never commit a backup; keep backups outside the repo.
 - `docker compose run` for the restore must have `--no-deps` and its own `--entrypoint`, or it starts the other
   services and the entrypoint's start-up steps.
+- Stopping a service that is not running is harmless, so stop all three before a restore; but start again only
+  the ones that were running (the optional services stay off unless they were on).
 - A backup holds the kernel, runs, releases, proposals, blobs, inbox, agents, settings, forms, record types, the
   queue and the signing secret (`BACKUP_PARTS`, `SQLITE_PARTS` in `hubproto/cli.py`), not the automation job history
   (`state/automation`) or the library folders (`state/library`): after a restore they are empty (the earlier ones
-  are in the set-aside copy), so tell the user what a restore would lose.
+  are in the set-aside copy), so tell the user what a restore would lose (issue #14).

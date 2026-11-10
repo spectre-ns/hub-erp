@@ -35,8 +35,8 @@ python -m pytest -q -n auto      # about 1,100 tests, about a minute; all must p
 - Tests never call a model: `tests/conftest.py` sets `HUBPROTO_ALLOW_STAND_IN=1`, so cogs answer with the
   deterministic stand-in, or a test passes a `call=` fake (skill `write-hub-test`).
 - One known timing-sensitive test under heavy parallel load:
-  `tests/test_cog_queue.py::test_a_question_in_the_chatter_gets_an_answer_not_a_review`. If it alone fails, rerun it on
-  its own; if it fails alone, it is real.
+  `tests/test_cog_queue.py::test_a_question_in_the_chatter_gets_an_answer_not_a_review`. If only this test fails in a
+  full run, rerun it on its own; if it still fails, the failure is real.
 - Run one test: `python -m pytest -q tests/test_x.py -k name`.
 
 ## Hard rules

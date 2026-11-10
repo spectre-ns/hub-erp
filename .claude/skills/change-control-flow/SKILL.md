@@ -36,7 +36,7 @@ functions, in the same order. Each step's work is in `changecontrol` (`round_*`)
    `llm_extract.CommitteeExtractor`: each member cog (`hub.compile_committee()`, the `senior-cogs` group) reads the
    diff with its own model; a rule goes in only when every member reads it the same way (consensus). Disagreement,
    an unavailable member and a rule-like sentence nobody read become blocking questions for the committee's chair
-   (`COMMITTEE_CODES`: `member-unavailable`, `disagreement`, `outside-diff`, `unread-rule`).
+   (`changecontrol.COMMITTEE_CODES`: `member-unavailable`, `disagreement`, `outside-diff`, `unread-rule`).
 3. `c_draft` -> `round_draft`: the qa-manager cog drafts prose for direct changes (`prose_drafting`), checked by a
    round trip (the prose must read back as the change; otherwise a `round-trip` question).
 4. `c_guards` -> `round_check`: compile errors stop the round. The guards themselves ran in
@@ -59,8 +59,10 @@ no panel).
 - `decide_item(hub, co, item_id, verdict, by, meaning, accept_warnings=(), override=None)`: approve or reject one
   delta item with a meaning; every warning on it must be accepted; an `override` edits the value and may leave a
   **divergence** between configuration and prose.
-- `item_state`: a widening needs two policy owners, at least one of whom contributed nothing to the CO; a decision
-  by one of the item's `makers` does not count; decisions made before the baseline changed are `stale`.
+- `item_state`: whoever made a change is never its only approver. For an item that is not a widening, a decision
+  by one of its `makers` does not count. A widening needs two policy owners, at least one of whom contributed
+  nothing to the CO; a maker who is a policy owner may be the other one. Decisions made before the baseline changed
+  are `stale` and do not count.
 - A removal that a change supersedes is that change's other half: `half_of` points at the add, `halves()` finds
   them, `state_in` gives the half its change's state. Never decide a half on its own.
 - Who may not sign: `may_not_sign` = `revision_authors` always, plus every `contributors` name unless
@@ -93,7 +95,7 @@ applies what was signed.
   `StepError`, stops the job (`some-errors` or `failed`, retryable with `automation.retry`) and marks the round
   failed. Keep refusals as sentences, never codes.
 - `AUTOMATIONS[...]["steps"]` (titles) and `STEPS[...]` (functions) are parallel lists, and `MODEL_STEPS` is keyed
-  by title: renaming or reordering a step without the other list breaks the job or silently drops its model note.
+  by automation name, then step title (`MODEL_STEPS["compile-frame"]["Compile the Frame"]`): renaming or reordering a step without the other list breaks the job or silently drops its model note.
   If a step starts calling a model, add it to `MODEL_STEPS`.
 - Anything that changes what a frozen CO carries sends it back to revising with its decisions void (`sync`,
   `changed_since_sent`, `_back_to_revising`). A test that edits after sending must expect that.

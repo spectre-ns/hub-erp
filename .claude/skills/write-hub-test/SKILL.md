@@ -70,8 +70,11 @@ The suite runs under pytest-xdist; any test may run on any worker, in any order:
 ## A test must be able to fail
 
 1. Write the test and run it alone: `python -m pytest -q tests/test_x.py::test_name`.
-2. Make it fail on purpose: undo the fix (`git stash` the source change, keep the test) or break the behaviour, and
-   run it again. It must fail, with a message that says what is wrong. If it passes, it tests nothing.
+2. Make it fail on purpose: undo the fix but keep the test, or break the behaviour, and run it again. It must fail,
+   with a message that says what is wrong. If it passes, it tests nothing. To set aside only the source change:
+   `git diff -- hubproto/ > /tmp/fix.patch && git checkout -- hubproto/`, then `git apply /tmp/fix.patch` to put it
+   back; or `git stash push -- hubproto/<file>.py` and `git stash pop`. The stash list is shared by every worktree
+   of the clone, so pop your own entry right away (check `git stash list`) and never `git stash` with no paths.
 3. Restore the fix; it passes. Assert on the outcome a person sees (the record's state, the sentence on the page,
    the release's rule), with a message string where the reason is not obvious.
 4. Run the suite with the exit code: `python -m pytest -q -n 4; echo $?` (or `-n auto` on a machine of your own).
