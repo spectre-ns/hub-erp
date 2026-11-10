@@ -78,6 +78,10 @@ The repo is https://github.com/spectre-ns/hub-erp (`main`). The user gives high-
    then `Co-Authored-By:` for the agent. No secrets, no `state/`, no generated videos.
 5. **Pull request** linking the issue (`Fixes #n`), with the test result.
 6. **Review** by a reviewer who sees the issue and the diff only; address findings; merge.
+   Everything an agent posts on GitHub (issues, comments, reviews, PR bodies) is signed, so readers can tell it from
+   the maintainer's own words. Issues, comments and reviews end with a rule and
+   `*— <agent name> 🤖 (AI agent, via <tool>)*`, e.g. `*— Claude 🤖 (AI agent, via [Claude Code](https://claude.com/claude-code))*`;
+   a PR body puts `*— <agent name> (AI agent)*` on its own line before any tool footer.
 7. **Deploy** to the live hub only when asked (skill `deploy-live`).
 
 Write user-facing text the way the hub speaks: plain sentences that say what happened and what to do next
