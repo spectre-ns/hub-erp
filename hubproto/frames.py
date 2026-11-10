@@ -67,19 +67,79 @@ def _parse_scalar(raw: str):
     raw = raw.strip()
     if not raw:
         return ""
-    if (raw[0] == raw[-1]) and raw[0] in "\"'" and len(raw) >= 2:
-        return raw[1:-1]
-    if raw.startswith("{") and raw.endswith("}"):  # a one-line JSON object (e.g. workflow_ids), read as YAML would
-        import json
-
+    if raw[0] in "{[":  # a flow mapping or sequence on one line (e.g. workflow_ids), read as YAML would
         try:
-            return json.loads(raw)
+            value, end = _flow(raw, 0)
         except ValueError as e:
             raise FrameError(f"cannot parse frontmatter value {raw!r}: {e}") from None
-    if raw.startswith("[") and raw.endswith("]"):
-        inner = raw[1:-1].strip()
-        return [_parse_scalar(x) for x in inner.split(",")] if inner else []
+        except IndexError:
+            raise FrameError(f"cannot parse frontmatter value {raw!r}: a bracket or a quote is not closed") from None
+        if raw[end:].strip():
+            raise FrameError(f"cannot parse frontmatter value {raw!r}: unexpected text after the closing bracket")
+        return value
+    if (raw[0] == raw[-1]) and raw[0] in "\"'" and len(raw) >= 2:
+        return raw[1:-1]
     return raw
+
+
+def _flow(s: str, i: int):
+    """YAML flow style without PyYAML (the Docker image and CI have none): ``{a: b, c: {d: e}}``, ``[x, 'y, z']``,
+    keys and values bare or quoted, nested to any depth; JSON is flow YAML, so it reads too. Scalars stay strings, as
+    the rest of the frontmatter subset does. Returns (value, index after it)."""
+    def ws(j):
+        while j < len(s) and s[j] in " \t":
+            j += 1
+        return j
+
+    def scalar(j, stops):
+        j = ws(j)
+        if j < len(s) and s[j] in "\"'":
+            q, k, out = s[j], j + 1, []
+            while s[k] != q:  # IndexError: an unterminated quote
+                if q == '"' and s[k] == "\\":
+                    k += 1
+                out.append(s[k])
+                k += 1
+            return "".join(out), k + 1
+        k = j
+        while k < len(s) and s[k] not in stops:
+            k += 1
+        return s[j:k].strip(), k
+
+    i = ws(i)
+    if s[i] == "{":
+        out: dict = {}
+        i = ws(i + 1)
+        if s[i] == "}":
+            return out, i + 1
+        while True:
+            key, i = scalar(i, ":}")
+            i = ws(i)
+            if s[i] != ":":
+                raise ValueError(f"expected ':' after the key {key!r}")
+            value, i = _flow(s, i + 1)
+            out[key] = value
+            i = ws(i)
+            if s[i] == "}":
+                return out, i + 1
+            if s[i] != ",":
+                raise ValueError(f"expected ',' or '}}' after the value of {key!r}")
+            i += 1
+    if s[i] == "[":
+        items: list = []
+        i = ws(i + 1)
+        if s[i] == "]":
+            return items, i + 1
+        while True:
+            value, i = _flow(s, i)
+            items.append(value)
+            i = ws(i)
+            if s[i] == "]":
+                return items, i + 1
+            if s[i] != ",":
+                raise ValueError("expected ',' or ']' in a list")
+            i += 1
+    return scalar(i, ",}]")
 
 
 def _mini_yaml(text: str) -> dict:
