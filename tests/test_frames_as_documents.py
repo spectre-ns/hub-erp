@@ -171,3 +171,35 @@ def test_frontmatter_flow_values_read_without_pyyaml(monkeypatch):
     for bad, why in (("{a b}", "expected ':'"), ('{a: "b}', "not closed"), ("[base, 'x]", "not closed"), ("[a, {b}]", "expected ':'")):
         with pytest.raises(frames.FrameError, match=why):
             frames.parse_frontmatter(f"---\nv: {bad}\n---\n")
+
+
+def test_frontmatter_quoted_scalars_unescape_without_pyyaml(monkeypatch):
+    """Without PyYAML, top-level double-quoted scalars unescape backslashes/quotes via JSON
+    and single-quoted scalars unescape doubled single quotes, matching PyYAML and flow values (#9)."""
+    import pytest
+
+    import hubproto.frames as frames
+
+    monkeypatch.setattr(frames, "yaml", None)
+    data, _ = frames.parse_frontmatter(
+        '---\n'
+        'name: x\n'
+        'description: "He said \\"hi\\""\n'
+        'escaped_path: "C:\\\\tools\\\\bin"\n'
+        'newline: "line 1\\nline 2"\n'
+        "quote_in_single: 'It''s a standard'\n"
+        'items:\n'
+        '  - "A \\"quote\\" in list"\n'
+        "  - 'Another ''item'''\n"
+        '---\nbody\n'
+    )
+    assert data["description"] == 'He said "hi"'
+    assert data["escaped_path"] == 'C:\\tools\\bin'
+    assert data["newline"] == 'line 1\nline 2'
+    assert data["quote_in_single"] == "It's a standard"
+    assert data["items"] == ['A "quote" in list', "Another 'item'"]
+
+    for bad in ('"unclosed', "'unclosed", '"extra" text', "'extra' text"):
+        with pytest.raises(frames.FrameError):
+            frames.parse_frontmatter(f"---\nv: {bad}\n---\n")
+

@@ -87,9 +87,44 @@ def _parse_scalar(raw: str):
             why = ("a bracket or a quote is not closed" if isinstance(e, IndexError)
                    else "nested too deeply" if isinstance(e, RecursionError) else str(e))
             raise FrameError(f"cannot parse frontmatter value {raw!r}: {why}") from None
-    if (raw[0] == raw[-1]) and raw[0] in "\"'" and len(raw) >= 2:
-        return raw[1:-1]
-    return raw
+    text = _strip_comment(raw)
+    if text.startswith('"'):
+        try:
+            k = 1
+            while k < len(text) and text[k] != '"':
+                k += 2 if text[k] == "\\" else 1
+            if k >= len(text):
+                raise IndexError("a quote is not closed")
+            if text[k + 1:].strip():
+                raise ValueError("unexpected text after the closing quote")
+            import json
+
+            return json.loads(text[:k + 1], strict=False)
+        except (ValueError, IndexError) as e:
+            why = "a bracket or a quote is not closed" if isinstance(e, IndexError) else str(e)
+            raise FrameError(f"cannot parse frontmatter value {raw!r}: {why}") from None
+    if text.startswith("'"):
+        try:
+            k = 1
+            out = []
+            while k < len(text):
+                if text[k] == "'":
+                    if k + 1 < len(text) and text[k + 1] == "'":
+                        out.append("'")
+                        k += 2
+                        continue
+                    break
+                out.append(text[k])
+                k += 1
+            if k >= len(text) or text[k] != "'":
+                raise IndexError("a quote is not closed")
+            if text[k + 1:].strip():
+                raise ValueError("unexpected text after the closing quote")
+            return "".join(out)
+        except (ValueError, IndexError) as e:
+            why = "a bracket or a quote is not closed" if isinstance(e, IndexError) else str(e)
+            raise FrameError(f"cannot parse frontmatter value {raw!r}: {why}") from None
+    return text
 
 
 def _no_constant(name: str):
