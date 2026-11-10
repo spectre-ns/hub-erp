@@ -70,19 +70,20 @@ def _parse_scalar(raw: str):
     if raw[0] in "{[":  # a flow mapping or sequence on one line (e.g. workflow_ids), read as YAML would
         import json
 
-        try:
-            return json.loads(raw)  # exact JSON first: the hub writes some values as JSON (numbers, escapes, null)
-        except ValueError:
-            pass
+        if raw[0] == "{":
+            try:  # exact JSON first: the hub writes mappings as JSON (workflow_ids), numbers and escapes included
+                return json.loads(raw, parse_constant=_no_constant)
+            except ValueError:
+                pass
         text = _strip_comment(raw)
+        if not text.endswith("}" if raw[0] == "{" else "]"):
+            return raw  # as before: a value such as "[Draft] Supplier review" or "{Company} policy" is a plain string
         try:
             value, end = _flow(text, 0)
             if text[end:].strip():
                 raise ValueError("unexpected text after the closing bracket")
             return value
         except (ValueError, IndexError, RecursionError) as e:
-            if raw[0] == "[":
-                return raw  # as before: a value such as "[Draft] Supplier review" is a plain string
             why = ("a bracket or a quote is not closed" if isinstance(e, IndexError)
                    else "nested too deeply" if isinstance(e, RecursionError) else str(e))
             raise FrameError(f"cannot parse frontmatter value {raw!r}: {why}") from None
@@ -91,14 +92,20 @@ def _parse_scalar(raw: str):
     return raw
 
 
+def _no_constant(name: str):
+    raise ValueError(f"{name} is not a frontmatter value")
+
+
 def _strip_comment(s: str) -> str:
     """The value without a trailing YAML comment (`` # ...`` outside quotes)."""
-    quote = None
+    quote, escaped = None, False
     for k, ch in enumerate(s):
         if quote:
-            if ch == "\\" and quote == '"':
-                continue
-            if ch == quote and not (quote == '"' and k and s[k - 1] == "\\"):
+            if escaped:
+                escaped = False
+            elif ch == "\\" and quote == '"':
+                escaped = True
+            elif ch == quote:
                 quote = None
         elif ch in "\"'":
             quote = ch
@@ -108,11 +115,12 @@ def _strip_comment(s: str) -> str:
 
 
 def _flow(s: str, i: int):
-    """YAML flow style without PyYAML (the Docker image and CI have none): ``{a: b, c: {d: e}}``, ``[x, 'y, z']``,
+    """YAML flow style without PyYAML (the Docker image has none): ``{a: b, c: {d: e}}``, ``[x, 'y, z']``,
     keys and values bare or quoted, nested to any depth, trailing commas allowed. A key ends at a colon followed by a
     space or the end of the item (so ``{http://x: y}`` keeps its URL); double-quoted strings take JSON escapes, and
-    ``''`` inside single quotes is a quote. Bare scalars stay strings and an empty value is ``""``, as in the rest of
-    the frontmatter subset. Returns (value, index after it)."""
+    ``''`` inside single quotes is a quote. Bare scalars stay strings (so ``[7.2, 7.10]`` keeps ``7.10``, and ``{a: 1}``
+    reads ``"1"`` where the JSON ``{"a": 1}`` reads ``1``) and an empty value is ``""``, as in the rest of the
+    frontmatter subset. Returns (value, index after it)."""
     import json
 
     def ws(j):
@@ -126,7 +134,7 @@ def _flow(s: str, i: int):
         if q == '"':
             while s[k] != '"':  # IndexError: an unterminated quote
                 k += 2 if s[k] == "\\" else 1
-            return json.loads(s[j:k + 1]), k + 1
+            return json.loads(s[j:k + 1], strict=False), k + 1
         out = []
         while True:
             if s[k] == "'":

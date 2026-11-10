@@ -163,6 +163,11 @@ def test_frontmatter_flow_values_read_without_pyyaml(monkeypatch):
     assert data["json"] == {"a": "x\ny", "n": 1, "t": True, "z": None}, "JSON reads exactly"
     assert data["tags"] == ["x", "y, z", "it's"] and data["url"] == {"http://x": "y"} and data["note"] == ["a", "b"]
     assert data["title"] == "[Draft] Supplier review"
-    for bad, why in (("{a b}", "expected ':'"), ("{a: b", "not closed"), ('{"a": "b', "not closed")):
+    data, _ = frames.parse_frontmatter('---\nclauses: [7.2, 7.10]\nmixed: [1, true, NaN]\nmap: {"a": NaN}\n'
+                                       'company: {Company} quality policy\nesc: ["a\\\\", b] # c\n---\n')
+    assert data["clauses"] == ["7.2", "7.10"], "list items stay strings: 7.10 is not 7.1"
+    assert data["mixed"] == ["1", "true", "NaN"] and data["map"] == {"a": "NaN"}
+    assert data["company"] == "{Company} quality policy" and data["esc"] == ["a\\", "b"]
+    for bad, why in (("{a b}", "expected ':'"), ('{a: "b}', "not closed"), ("[base, 'x]", "not closed"), ("[a, {b}]", "expected ':'")):
         with pytest.raises(frames.FrameError, match=why):
             frames.parse_frontmatter(f"---\nv: {bad}\n---\n")
