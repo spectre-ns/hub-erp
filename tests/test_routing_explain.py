@@ -157,3 +157,4 @@ def test_a_reviews_summary_reads_right_where_a_signature_quotes_it():
 
     src = inspect.getsource(review)
     assert "listed above" not in src.split("summary = text or")[1].split("\n")[1]
+
