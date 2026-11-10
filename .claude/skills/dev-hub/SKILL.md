@@ -74,15 +74,16 @@ EOF
 ## Snapshot, restore, and a hub from a copy of another hub's state
 
 `hubproto backup` copies a consistent snapshot even while the hub serves (SQLite backup API). A backup holds the
-hub's signing secret (`.secret`): keep it outside the checkout and never commit it. It does not hold the
+hub's signing secret (`.secret`): keep it outside the checkout and never commit it. It holds the hub's Frames
+(`frames/`), and a restore puts them in place. It does not hold the
 automation job history (`state/automation`) or the library folders (`state/library`); copy the whole root
 (`dev stop` first, then `cp -a`) when you need those too.
 
 ```bash
 python -m hubproto --root <state dir> backup <backup dir>              # a new or empty directory
-# a new hub from that backup: a root with frames/, then restore, then serve it as it is
-mkdir -p <new root> && cp -a <state dir>/frames <new root>/
-python -m hubproto --root <new root> restore <backup dir>
+# a new hub from that backup: restore creates <new root>/frames from it, then serve it as it is
+mkdir -p <new root>
+python -m hubproto --root <new root> restore <backup dir>     # prints whether the Frames match the restored release
 python -m hubproto dev serve --detach --name <slug>-copy --state-dir <new root> --keep
 ```
 
@@ -90,8 +91,8 @@ python -m hubproto dev serve --detach --name <slug>-copy --state-dir <new root> 
   <backup dir>` (the old state is set aside beside it), then `dev serve --detach --name <slug> --state-dir <state dir>
   --keep`.
 - A copy of the live hub's state is the same recipe with a backup of the live hub, and only when the user asked
-  for it: the `backup` and `docker compose cp` steps of the `deploy-live` skill, with the `frames/` of the checkout
-  the live hub runs from. Work on the copy, never on the live volume.
+  for it: the `backup` and `docker compose cp` steps of the `deploy-live` skill; the backup holds the live hub's Frames
+  (its `hub-frames` volume). Work on the copy, never on the live volumes.
 
 ## Stop and clean
 

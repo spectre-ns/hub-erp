@@ -6,6 +6,7 @@ mistake raises ``CliExit`` (a ``SystemExit`` with ``code`` 1 or 2 and the senten
 
 import io
 import json
+import os
 import shutil
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import date
@@ -564,6 +565,35 @@ def test_a_backup_without_frames_restores_and_leaves_the_frames_alone(released, 
     assert _tree(target / "frames", skip_aside=False) == before
 
 
+def test_a_backup_with_an_empty_frames_folder_leaves_the_hubs_frames_in_place(released, tmp_path):
+    rc, _ = run_cli(released, "backup", str(tmp_path / "bk"))
+    assert rc == 0
+    shutil.rmtree(tmp_path / "bk" / "frames")
+    (tmp_path / "bk" / "frames").mkdir()  # a hub whose Frames were missing when it was backed up
+    before = _tree(released / "frames", skip_aside=False)
+    rc, out = run_cli(released, "restore", str(tmp_path / "bk"), "--force")
+    assert rc == 0 and "WARNING" in out and "holds no Frame files" in out, out
+    assert _tree(released / "frames", skip_aside=False) == before, "not set aside, not emptied"
+    assert "Frames on disk match the release in force" in out
+
+
+def test_a_restore_says_when_the_frames_do_not_match_the_restored_release(released, tmp_path):
+    rc, _ = run_cli(released, "backup", str(tmp_path / "bk"))
+    assert rc == 0
+    shutil.rmtree(tmp_path / "bk" / "frames")
+    manifest = json.loads((tmp_path / "bk" / "backup.json").read_text())
+    del manifest["parts"]["frames"]  # an older backup: state only
+    (tmp_path / "bk" / "backup.json").write_text(json.dumps(manifest))
+    policy = released / "frames" / "finance" / "finance-policy.frame.md"
+    policy.write_text(policy.read_text() + "\nA sentence no release holds.\n")
+    rc, out = run_cli(released, "restore", str(tmp_path / "bk"), "--force")
+    assert rc == 0 and "holds no Frames" in out, out
+    assert "Frames on disk differ from the release in force" in out and "changed: frames/finance/finance-policy.frame.md" in out
+    assert "may not be the ones the restored release was made from" in out
+    rc, status = run_cli(released, "status", "--check")
+    assert rc == 1 and "changed: frames/finance/finance-policy.frame.md" in status, "the same drift status reports"
+
+
 # ------------------------------------------------------------------ the entrypoint's Frames (issue #5)
 ENTRYPOINT = ROOT / "docker" / "entrypoint.sh"
 STUB = """#!/bin/sh
@@ -575,9 +605,8 @@ exit 0
 """
 
 
-def _entrypoint(root: Path, seed: Path, tmp_path: Path) -> tuple[str, list[str]]:
+def _entrypoint(root: Path, seed: Path, tmp_path: Path, check: bool = True) -> tuple[str, list[str]]:
     """Run docker/entrypoint.sh on ``root`` with a stand-in ``hubproto`` that logs its arguments."""
-    import os
     import subprocess
 
     bin_dir = tmp_path / "bin"
@@ -586,7 +615,7 @@ def _entrypoint(root: Path, seed: Path, tmp_path: Path) -> tuple[str, list[str]]
     (bin_dir / "hubproto").chmod(0o755)
     env = dict(os.environ, HUBPROTO_ROOT=str(root), HUBPROTO_SEED_FRAMES=str(seed), PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     done = subprocess.run(["sh", str(ENTRYPOINT), "version"], env=env, capture_output=True, text=True, timeout=60)
-    assert done.returncode == 0, done.stdout + done.stderr
+    assert done.returncode == 0 or not check, done.stdout + done.stderr
     log = root / "calls.log"
     return done.stdout, log.read_text().splitlines() if log.exists() else []
 
@@ -621,6 +650,26 @@ def test_a_later_start_never_writes_the_images_frames_over_the_hubs(tmp_path, se
     assert "copying the Frames" not in out and "WARNING" not in out
     assert _tree(root / "frames", skip_aside=False) == hub_frames
     assert "status --check" in calls
+
+
+@pytest.mark.skipif(shutil.which("sh") is None or os.geteuid() == 0, reason="needs a POSIX shell and a user who cannot read a mode-000 file")
+def test_a_first_start_copy_that_stopped_partway_is_finished_on_the_next_start(tmp_path, seed_frames):
+    root = tmp_path / "hub"
+    (root / "frames").mkdir(parents=True)
+    blocked = seed_frames / "finance" / "finance-policy.frame.md"
+    blocked.chmod(0o000)  # the copy fails on it, partway, and the container exits
+    try:
+        out, calls = _entrypoint(root, seed_frames, tmp_path, check=False)
+    finally:
+        blocked.chmod(0o644)
+    marker = root / "frames" / ".first-start-copy-in-progress"
+    assert marker.exists() and calls == [], "stopped before init, the copy marked unfinished"
+    assert any((root / "frames").iterdir()), "a partial copy: the folder is not empty"
+    out, calls = _entrypoint(root, seed_frames, tmp_path)
+    assert "did not finish last time" in out and "WARNING" not in out
+    assert not marker.exists()
+    assert _tree(root / "frames", skip_aside=False) == _tree(seed_frames, skip_aside=False)
+    assert calls[0] == "init"
 
 
 @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")

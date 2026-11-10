@@ -9,8 +9,9 @@ services:
       - hub-state:/hub/state
       # The hub's Frames: its own volume, filled on the first start with the Frames the image ships; every release
       # writes the released texts into it, never into this checkout. The profiles and config come from the image.
-      # To work on Frames and profiles in this checkout's folders instead (a development hub, never the live one):
-      #   docker compose -f docker-compose.yml -f docker-compose.frames-dir.yml up -d
+      # To work on Frames and profiles in this checkout's folders instead: docker-compose.frames-dir.yml, a separate
+      # development hub (its own project, hub-dev, with its own containers, image tag and ports; see its header).
+      # It never replaces this volume for the live hub.
       - hub-frames:/hub/frames
     environment:
       HUBPROTO_ROOT: /hub

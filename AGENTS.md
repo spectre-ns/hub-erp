@@ -99,7 +99,12 @@ Write user-facing text the way the hub speaks: plain sentences that say what hap
   paragraph, the sentence grammar, record types, APIs.
 - [docs/design/](docs/design/): change control v2 (the design note), configuration paths, the Jira workflow study.
 - [docs/manual/](docs/manual/): the user manual (one chapter per area; chapter 7 is policy and change control).
-- [docs/rollout/](docs/rollout/): how a release of the hub itself was rolled out, with the rollback recipe.
-- `frames/`: the example company's SOPs as Frames; `frames/reference/writing-policy-frames.frame.md`: the sentence
-  shapes for people; `profiles/iso9001/`: the seed profile; `config/`: record types, link vocabulary, retention classes.
-- `docker-compose.yml`, `Dockerfile`, `docker/entrypoint.sh`: the deployed hub (first start, later-start checks).
+- [docs/rollout/](docs/rollout/): how a release of the hub itself was rolled out, with the rollback recipe;
+  `frames-volume.md` moves a hub whose Frames were still bind-mounted from the checkout into its frames volume.
+- `frames/`: the example company's SOPs as Frames (a new hub starts from them; they are never a running hub's
+  policy); `frames/reference/writing-policy-frames.frame.md`: the sentence shapes for people; `profiles/iso9001/`: the
+  seed profile; `config/`: record types, link vocabulary, retention classes.
+- `docker-compose.yml`, `Dockerfile`, `docker/entrypoint.sh`: the deployed hub (first start, later-start checks). Its
+  state is the `hub-state` volume and its Frames the `hub-frames` volume, which every release writes into; nothing is
+  mounted from the checkout (issue #5). `docker-compose.frames-dir.yml`: a separate development hub (`hub-dev`) that
+  reads and writes the checkout's `frames/`.

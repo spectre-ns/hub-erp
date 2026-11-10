@@ -14,21 +14,28 @@
 # state yet, it is filled with the Frames the image ships ($SEED_FRAMES). It is
 # never filled again: on a hub with state its Frames are that hub's, and an empty
 # folder there means they were not copied in (docs/rollout/frames-volume.md).
+# The copy is marked in progress ($SEEDING, written first, removed last): if it
+# stops partway (the container exits, set -e), the next start sees the marker
+# and copies again, instead of taking the partial copy for the hub's Frames.
 set -e
 cd "${HUBPROTO_ROOT:-/hub}"
 SEED_FRAMES="${HUBPROTO_SEED_FRAMES:-/usr/local/share/hubproto/frames}"
+SEEDING=frames/.first-start-copy-in-progress
 mkdir -p frames
-if [ -z "$(ls -A frames)" ]; then
-  if [ ! -f state/kernel.db ]; then
-    if [ -d "$SEED_FRAMES" ]; then
-      echo "first start: copying the Frames the image ships ($SEED_FRAMES) into $PWD/frames"
-      cp -R "$SEED_FRAMES"/. frames/
+if [ -f "$SEEDING" ] || { [ -z "$(ls -A frames)" ] && [ ! -f state/kernel.db ]; }; then
+  if [ -d "$SEED_FRAMES" ]; then
+    if [ -f "$SEEDING" ]; then
+      echo "first start: the copy of the image's Frames did not finish last time; copying them again"
     fi
-  else
-    echo "WARNING: $PWD/frames is empty but this hub has state: its Frames were not copied in, and the image's are not"
-    echo "  copied over a hub that has state. Copy the hub's Frames into the frames volume (docs/rollout/frames-volume.md);"
-    echo "  until then status reports them missing."
+    echo "first start: copying the Frames the image ships ($SEED_FRAMES) into $PWD/frames"
+    : > "$SEEDING"
+    cp -R "$SEED_FRAMES"/. frames/
+    rm -f "$SEEDING"
   fi
+elif [ -z "$(ls -A frames)" ]; then
+  echo "WARNING: $PWD/frames is empty but this hub has state: its Frames were not copied in, and the image's are not"
+  echo "  copied over a hub that has state. Copy the hub's Frames into the frames volume (docs/rollout/frames-volume.md);"
+  echo "  until then status reports them missing."
 fi
 if [ ! -f state/.bootstrapped ]; then
   echo "bootstrapping hub state in /hub/state"

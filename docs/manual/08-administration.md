@@ -24,7 +24,8 @@ The hub's program code, the seed profiles, `config/` and the repository's Frames
 built; nothing from the checkout is mounted, so the hub never writes into it. After a code change, rebuild: `docker
 compose up --build`. The repository's Frames only fill a new hub's `hub-frames` volume: a newer image's Frames reach a
 running hub through a change order. For a development hub that reads and writes the checkout's `frames/` and
-`profiles/`, add `docker-compose.frames-dir.yml` (never for the live hub; see its header). A hub set up before the
+`profiles/`, use `docker-compose.frames-dir.yml`: a separate hub with its own Compose project (`hub-dev`), containers,
+image tag and ports, never the live hub (see its header). A hub set up before the
 Frames had a volume (they were in the checkout) is moved with `docs/rollout/frames-volume.md`.
 
 ## 8.2 Installing and first start
@@ -152,8 +153,11 @@ release, a run is pinned to a release digest), so a backup is only usable as a w
 What `backup` copies: `kernel.db` and `queue.db` through the SQLite backup API (a consistent snapshot even while the
 hub runs); the directories `runs`, `releases`, `proposals`, `blobs`, `inbox`, `agents`, `settings`, `forms` and
 `record-types`; `frame-files-kept.json`; the signing secret `.secret`; `proposal-numbers.json`; the hub's Frames
-(`frames/`, the `hub-frames` volume); and a `backup.json` manifest (hubproto/cli.py, `BACKUP_PARTS`). For a copy consistent across all parts, stop
-the hub first (`docker compose stop hub`) or back up when nobody is working.
+(`frames/`, the `hub-frames` volume); and a `backup.json` manifest (hubproto/cli.py, `BACKUP_PARTS`). For a copy
+consistent across all parts, stop the hub first (`docker compose stop hub`) or back up when nobody is working. The
+Frames in particular are copied after the kernel's snapshot, with no lock: a release during the backup of a running hub
+can leave them newer than the state, and a restore of that backup then shows drift (`restore` prints it, as `status
+--check` would).
 
 Not copied: the automation jobs (`state/automation`), the folders people added to the library (`state/library`),
 what the committee read from the SOPs (`state/extract-cache`) and **the workflow layouts in force and the editor's
@@ -170,7 +174,8 @@ themselves are documents in the kernel and the blobs, so they are in the backup.
 `restore` refuses a partial set (every part the manifest lists must be present) and refuses to overwrite a live state
 without `--force`. With it, the previous state is moved beside the new one (`state.before-restore-<time>`). The Frames
 in the backup replace the hub's, which are kept in `frames/.before-restore-<time>/`; a backup made before backups held
-the Frames leaves them as they are.
+the Frames, or one whose `frames/` holds no Frame files (it says so with a `WARNING`), leaves them as they are. Then
+`restore` says whether the Frames match the release it restored and lists any that differ, as `status --check` would.
 
 ## 8.6 Verifying the evidence
 

@@ -79,7 +79,9 @@ what in your final report and work around it meanwhile.
   `blobs/`, `inbox/`, `proposal-numbers.json` and the hub's `frames/` (less what a restore set aside), with a
   `backup.json` manifest; `restore <dir>` refuses a partial set and an existing state without `--force`, and puts the
   backup's Frames in place of the hub's (those set aside in `frames/.before-restore-<time>/`; an older backup without
-  Frames leaves them alone). `status --check` exits 1 when no release is in force or the Frames
+  Frames, or one whose `frames/` holds no Frame files, leaves them alone, with a warning for the second), then prints
+  the Frames' drift from the restored release (`frames_drift`). The Frames are copied after the kernel snapshot with no
+  lock, so only a backup of a stopped hub is consistent across all parts. `status --check` exits 1 when no release is in force or the Frames
   on disk differ from the release's bill of materials (the entrypoint prints that on later starts); once the SOPs are
   documents, also when `config/record-types.json` differs from the record types in force or another config file from
   what the release recorded.

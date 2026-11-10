@@ -1336,9 +1336,15 @@ def cmd_backup(args) -> int:
         shutil.copyfile(state / ".secret", dest / ".secret")
         parts[".secret"] = 1
     frames = Path(args.root) / "frames"
-    if frames.is_dir():  # the hub's Frames (in Docker its frames volume): every release writes the released texts there
+    # The hub's Frames (in Docker its frames volume): every release writes the released texts there. They are copied
+    # after the kernel snapshot, with no lock: a release during the backup can leave Frames newer than the state, which
+    # a restore then reports as drift. Stop the hub for a backup consistent across all parts.
+    if frames.is_dir():
         shutil.copytree(frames, dest / "frames", symlinks=False, ignore=_not_set_aside(frames))
         parts["frames"] = sum(1 for _ in (dest / "frames").rglob("*") if _.is_file())
+        if not _frame_files(dest / "frames"):
+            print(f"WARNING: {frames} holds no Frame files; a restore of this backup leaves the Frames where it restores "
+                  "as they are")
     cur = hub.releases.current()
     manifest = {"created_at": utcnow(), "root": str(Path(args.root).resolve()), "kernel": "kernel.db", "parts": parts,
                 "release": cur["digest"] if cur else None}
@@ -1430,7 +1436,13 @@ def cmd_restore(args) -> int:
         if (src / name).exists():
             shutil.copyfile(src / name, state / name)
     frames = root / "frames"
-    if (src / "frames").is_dir():  # the Frames as the hub had them when it was backed up (older backups hold none)
+    with_frames = (src / "frames").is_dir()  # the Frames as the hub had them when it was backed up (older backups hold none)
+    if with_frames and not _frame_files(src / "frames"):
+        # Putting them in place would set the hub's Frames aside and leave none: every Frame of the release missing.
+        print(f"WARNING: {src / 'frames'} holds no Frame files (the hub had none when it was backed up), so the Frames in "
+              f"{frames} are left as they are, not replaced by an empty folder")
+        with_frames = False
+    elif with_frames:
         if frames.is_dir() and any(frames.iterdir()):
             print(f"previous Frames moved to {_set_aside_frames(frames, stamp)}")
         frames.mkdir(parents=True, exist_ok=True)
@@ -1442,9 +1454,29 @@ def cmd_restore(args) -> int:
     print(f"restored {src} (taken {manifest.get('created_at', '?')}) into {state}")
     if hub:
         print(f"release in force: {version_of(hub, cur['digest']) if cur else 'none'}; runs: {len(hub.runner.list())}; records: {len(hub.kernel.query())}")
+        drift = frames_drift(hub, cur) if cur else {}
+        if any(drift.values()):  # what `status --check` will report
+            print(f"Frames on disk differ from the release in force ({version_of(hub, cur['digest'])}):")
+            for kind in ("changed", "missing", "new"):
+                for path in drift[kind]:
+                    print(f"  {kind}: {path}")
+            if with_frames:
+                print("if the backup was taken while the hub ran, its Frames and its state may be from different moments "
+                      "(stop the hub for a consistent backup); `hubproto status` says how to bring them into line")
+            else:
+                print("this backup holds no Frames, so the Frames here may not be the ones the restored release was made "
+                      "from: put the hub's Frames from that time in place, or see `hubproto status`")
+        elif cur:
+            print("Frames on disk match the release in force")
     else:
         print("no frames/ directory beside the restored state yet; copy the Frames in before compiling")
     return 0
+
+
+def _frame_files(frames: Path) -> list[Path]:
+    """The Frame files the Frame store reads (dot-directories such as .retired and .replaced left out)."""
+    return [p for p in frames.rglob("*.frame.md")
+            if not any(part.startswith(".") for part in p.relative_to(frames).parts)]
 
 
 # ------------------------------------------------------------------ parser
@@ -1637,7 +1669,7 @@ def build_parser() -> argparse.ArgumentParser:
                                                                "stay the source and changes are released without change orders (recorded, "
                                                                "shown by status; for work on the Frames themselves)")
     s.set_defaults(fn=cmd_bootstrap_release)
-    s = sub.add_parser("backup", help="copy the hub's state (kernel via the SQLite backup API, runs, releases, proposals, blobs, inbox) and its Frames into a directory")
+    s = sub.add_parser("backup", help="copy the hub's state (kernel via the SQLite backup API, runs, releases, proposals, blobs, inbox) and its Frames into a directory; stop the hub first for a copy consistent across all parts")
     s.add_argument("dir", help="a new or empty directory to write the backup into")
     s.set_defaults(fn=cmd_backup)
     s = sub.add_parser("restore", help="restore a complete backup into --root/state, and the Frames it holds into --root/frames; refuses a partial set")
