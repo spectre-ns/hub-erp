@@ -61,6 +61,7 @@ The gauge list is at [the gauge list](/document/rec:document:DOC-0051?as=bob) an
 NCR-2026-0001 is a nonconformance, not a document, and XDOC-0001 is no number.
 Supplier specs: https://supplier.example/specs/DOC-0040.pdf and https://other.example/document/DOC-0041; DOC-0042-A2 is a part.
 The form is `DOC-0043`, and [DOC-0048 rev A](/document/DOC-0048) is one citation; so is DOC-0049 rev b.
+Copies: www.supplier.example/specs/DOC-0057.pdf, [the wiki](https://wiki.example/Gauge_(DOC-0054)) and https://wiki.example/Caliper_(DOC-0055).
 
     DOC-0044 in an indented code block
 
@@ -71,6 +72,9 @@ DOC-0045 in a fence of tildes
 DOC-0046 in a fence of backticks
 ```
 - a list item that cites DOC-0047
+    ```
+    DOC-0056 in a fence in a list
+    ```
 
     and its indented continuation, which is prose: DOC-0050
 
@@ -78,27 +82,58 @@ DOC-0046 in a fence of backticks
 About: checks gauges.
 Prompt from: DOC-0060
 
+### Notes for the cog
+Also DOC-0061, still the cog's.
+
+# Appendix
+The appendix cites DOC-0062.
+
 ## Permissions
 Quality managers may read Quality.
 """
 
 
+def line_of(text, words):
+    return next(n for n, ln in enumerate(text.splitlines(), start=1) if words in ln)
+
+
 def test_the_compile_reads_document_numbers_revisions_and_site_links_with_their_lines(tmp_path):
-    from hubproto.references import read_references
+    from hubproto.references import read_references, reference_guard
 
     frame = load_frame_text(CALIBRATION, tmp_path / "calibration-sop.frame.md")
     refs = read_references(frame, hosts=("hub.example",))
+    at = lambda w: line_of(CALIBRATION, w)  # noqa: E731
     assert [(r["line"], r["document"], r["revision"], r["form"]) for r in refs] == [
         (12, "DOC-0040", None, "number"), (12, "DOC-0012", "A", "number"),
         (13, "DOC-0051", None, "link"), (13, "DOC-0052", None, "link"),
+        (15, "DOC-0041", None, "other-site"),
         (16, "DOC-0048", "A", "link"), (16, "DOC-0049", "B", "number"),
-        (26, "DOC-0047", None, "number"), (28, "DOC-0050", None, "number")], \
-        "one per document a line cites; no other site's links, no part numbers, no code, no cog's profile"
+        (at("a list item"), "DOC-0047", None, "number"), (at("its indented continuation"), "DOC-0050", None, "number"),
+        (at("The appendix"), "DOC-0062", None, "number")], \
+        "one per document a line cites; no other site's URLs, no part numbers, no code, no cog's section"
     assert all(CALIBRATION.splitlines()[r["line"] - 1].count(r["document"]) for r in refs), "the line is the file's line"
     assert refs[1]["text"] == "DOC-0012 rev A" and refs[2]["text"] == "/document/rec:document:DOC-0051"
-    assert refs[4]["text"] == "DOC-0048 rev A", "a Markdown link is one citation, its revision from its text"
-    assert [r["document"] for r in read_references(frame, hosts=()) if r["line"] == 13] == ["DOC-0051"], \
-        "an absolute link counts only on this hub's own host"
+    assert refs[5]["text"] == "DOC-0048 rev A", "a Markdown link is one citation, its revision from its text"
+    [w] = reference_guard(refs, lambda ref: {"status": "in-force", "why": "in force"})
+    assert (w.line, w.severity) == (15, "warning") and "another site" in w.detail, "a page link on another host is said, not dropped"
+
+
+def test_a_link_counts_only_on_this_hubs_host_and_port(tmp_path, monkeypatch, capsys):
+    from hubproto import references
+
+    frame = load_frame_text(CALIBRATION, tmp_path / "calibration-sop.frame.md")
+
+    def line13(hosts):
+        return [(r["document"], r["form"]) for r in references.read_references(frame, hosts=hosts) if r["line"] == 13]
+
+    assert line13(()) == [("DOC-0051", "link"), ("DOC-0052", "other-site")], "with no host configured, only relative links count"
+    assert line13(("http://HUB.example:80/",)) == line13(("hub.example",)) == [("DOC-0051", "link"), ("DOC-0052", "link")], \
+        "the scheme's default port is filled in"
+    assert line13(("http://hub.example:8080",))[1] == ("DOC-0052", "other-site") and line13(("https://hub.example",))[1][1] == "other-site"
+    monkeypatch.setenv("HUBPROTO_PUBLIC_URL", "hub.example:8080")
+    monkeypatch.setenv("HUBPROTO_WOPI_BASE", "https://hub.example/")
+    assert references.hub_hosts() == (("hub.example", 443),)
+    assert "HUBPROTO_PUBLIC_URL='hub.example:8080' is not an http(s) URL" in capsys.readouterr().err, "a value with no scheme is said"
 
 
 @pytest.fixture
@@ -322,6 +357,21 @@ def test_a_held_citing_document_does_not_stop_a_release_that_does_not_involve_it
     assert step(j, "Tell the people involved")["status"] == "done"
     held = hub.kernel.get(fin["locator"])
     assert cited_by_links(hub, held) == [dc["number"]] and not held["fields"].get("citation_flags"), "left as it was"
+    notes = lambda: [m for m in hub.inbox.on_record(fin["locator"]) if "cites documents" in (m.get("subject") or "")]  # noqa: E731
+    [note] = notes()
+    assert note["to"] == "alice" and "line 18 cites" in note["body"], "a message writes nothing on the document: its owner is told"
+
+    hub.kernel.hold(fin["locator"], False, "released from the hold", by="carol")
+    co3 = new_co(hub, title="Change control, reworded")
+    revise(hub, co3, "change-control-sop", "# Change control SOP\n", "# Change control SOP\n\nFor every site.\n")
+    released(hub, co3)
+    assert release_job(hub, co3)["status"] == "success"
+    flags = hub.kernel.get(fin["locator"])["fields"]["citation_flags"]
+    assert [(f["line"], f["status"], f["by"]) for f in flags] == [(18, "superseded", co3["number"])], \
+        "the flag a hold held back follows at the next release"
+    assert len(notes()) == 1, "its owner was told already: not twice"
+    assert cited_by_links(hub, hub.kernel.get(fin["locator"])) == sorted([dc["number"], doc(hub, "document-control-sop")["number"]]), \
+        "and the links catch up"
 
 
 def test_retrying_an_old_release_job_after_a_later_release_keeps_what_the_later_one_linked(hub, monkeypatch):
@@ -405,7 +455,8 @@ def test_an_sop_citing_its_own_lineage_gets_no_warning_flag_or_link(hub):
 
 
 def test_jobs_run_their_steps_by_name_and_an_unknown_step_stops_the_job(hub, monkeypatch):
-    """A job saved before "Link document references" existed lists the 12 steps it had; a retry runs those, by name."""
+    """A job saved before "Link document references" existed lists the 12 steps it had; a retry runs them by name, with
+    the new step in its place. A step name the hub does not know stops the job."""
     from hubproto import automation
 
     dc = doc(hub, "document-control-sop")
@@ -420,7 +471,11 @@ def test_jobs_run_their_steps_by_name_and_an_unknown_step_stops_the_job(hub, mon
     monkeypatch.undo()
     j = release_job(hub, co)
     assert j["status"] == "some-errors" and step(j, "Send related changes back")["status"] == "failed"
+    assert step(j, "Link document references")["status"] == "done" and cited_by_links(hub, doc(hub, "finance-policy")) == [dc["number"]], \
+        "the links are made before the model step, which may fail"
     old = [s for s in j["steps"] if s["name"] != "Link document references"]  # the job as it was saved before the upgrade
+    for s in old[9:]:
+        s.update({"status": "waiting", "detail": ""})
     assert [s["name"] for s in old] == [n for n in automation.AUTOMATIONS["release-change-order"]["steps"] if n != "Link document references"]
     step(j, "Compile every open change order")["name"] = "Recompile everything"  # a step this hub does not know
     j["steps"] = old
@@ -432,6 +487,107 @@ def test_jobs_run_their_steps_by_name_and_an_unknown_step_stops_the_job(hub, mon
     step(j, "Recompile everything")["name"] = "Compile every open change order"
     hub.automation.save(j)
     j = hub.automation.load(automation.retry(hub, j["id"], by="alice")["id"])
-    assert j["status"] == "success" and len(j["steps"]) == 12, j.get("outcome")
+    assert j["status"] == "success" and [s["name"] for s in j["steps"]] == automation.AUTOMATIONS["release-change-order"]["steps"], j.get("outcome")
+    assert step(j, "Link document references")["status"] == "done", "a step added since the job was saved is run in its place"
     assert step(j, "Send related changes back")["detail"].startswith("no related change") and step(j, "Tell the people involved")["status"] == "done"
     assert hub.kernel.get(co["locator"])["state"] == "released"
+
+
+def test_a_failed_write_of_cites_never_leaves_a_hub_link_looking_like_a_persons(hub, monkeypatch):
+    from hubproto import automation
+
+    dc = doc(hub, "document-control-sop")
+    co = new_co(hub, title="Cite document control")
+    cite(hub, co, f"For documents, see {dc['number']}.")
+    set_fields, failed = hub.kernel.set_fields, []
+
+    def once(ref, fields, **kw):
+        if "cites" in fields and not failed:
+            failed.append(ref)
+            raise OSError("disk full")
+        return set_fields(ref, fields, **kw)
+
+    monkeypatch.setattr(hub.kernel, "set_fields", once)
+    released(hub, co)
+    j = release_job(hub, co)
+    assert failed and j["status"] == "some-errors" and step(j, "Link document references")["status"] == "failed"
+    monkeypatch.undo()
+    j = hub.automation.load(automation.retry(hub, j["id"], by="alice")["id"])
+    assert j["status"] == "success", j.get("outcome")
+    fin = doc(hub, "finance-policy")
+    assert cited_by_links(hub, fin) == [dc["number"]] and fin["fields"]["cites"] == [dc["locator"]], "the hub's link, managed as such"
+
+    co2 = new_co(hub, title="Drop the citation")
+    revise(hub, co2, "finance-policy", f"\nFor documents, see {dc['number']}.", "")
+    released(hub, co2)
+    assert cited_by_links(hub, hub.kernel.get(fin["locator"])) == [], "so it is taken off with the citation"
+
+
+def test_a_link_a_person_made_is_not_taken_over_when_the_prose_cites_it_too(hub, monkeypatch):
+    from hubproto import automation, references
+
+    dc = doc(hub, "document-control-sop")
+    co = new_co(hub, title="Cite document control")
+    cite(hub, co, f"For documents, see {dc['number']}.")
+    monkeypatch.setattr(references, "sync_links", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("stopped")))
+    released(hub, co)
+    monkeypatch.undo()
+    fin = doc(hub, "finance-policy")
+    hub.kernel.link(fin["locator"], "references", dc["locator"], by="carol")  # carol links it first, by hand
+    j = hub.automation.load(automation.retry(hub, release_job(hub, co)["id"], by="alice")["id"])
+    assert j["status"] == "success" and step(j, "Link document references")["detail"] == "no citation changed"
+    assert not hub.kernel.get(fin["locator"])["fields"].get("cites"), "carol's link stays carol's"
+
+    co2 = new_co(hub, title="Drop the citation")
+    revise(hub, co2, "finance-policy", f"\nFor documents, see {dc['number']}.", "")
+    released(hub, co2)
+    assert cited_by_links(hub, hub.kernel.get(fin["locator"])) == [dc["number"]], "the hub never takes off a person's link"
+
+
+def link_events(hub, rec):
+    return [e["by"] for e in hub.kernel.events(aggregate=rec["locator"])
+            if e["type"] in ("record.linked", "record.unlinked") and e["data"].get("rel") == "references"]
+
+
+def test_the_hub_makes_the_citation_links_not_the_person_releasing(hub, tmp_path):
+    from hubproto.app import Hub
+
+    dc = doc(hub, "document-control-sop")
+    co = new_co(hub, title="Cite document control")
+    cite(hub, co, f"For documents, see {dc['number']}.")
+    released(hub, co)
+    assert link_events(hub, doc(hub, "finance-policy")) == ["hub"], "a change order's release"
+
+    root = tmp_path / "first"  # a new hub's first release (by bob, without a change order) converts the SOPs and links them
+    shutil.copytree(ROOT / "frames", root / "frames")
+    path = root / "frames/finance/finance-policy.frame.md"
+    path.write_text(path.read_text(encoding="utf-8").replace(INTRO, INTRO.replace("person.", "person (see DOC-0001).")), encoding="utf-8")
+    h = Hub(root)
+    h.kernel.seed()
+    release_all(h, keep_frame_files=False)
+    fin = doc(h, "finance-policy")
+    assert h.releases.current()["released_by"] == "bob" and cited_by_links(h, fin) == ["DOC-0001"] and link_events(h, fin) == ["hub"]
+
+
+def test_a_stale_citation_in_an_sop_the_change_order_does_not_touch_is_not_put_to_its_approver(hub):
+    co = new_co(hub, title="Cite an archive")
+    cite(hub, co, "The archive is DOC-9999.")
+    released(hub, co)
+    co2 = new_co(hub, title="Document control, reissued")
+    revise(hub, co2, "document-control-sop", "# Document control SOP\n", "# Document control SOP\n\nIssued for the whole site.\n")
+    cc.request_review(hub, co2["number"], "alice", panel=[])
+    assert [f["frame"] for f in reference_findings(eco.preview(hub, co2["number"]))] == ["finance-policy"], "still a finding on the compile"
+    assert not [w for w in cc.co_warnings(hub, co2["number"]) if w["code"] == "reference"], \
+        "its owner heard of it with the release that made it: co2's approver is not asked"
+
+
+def test_a_link_or_a_flag_is_no_new_content_for_a_reviewing_cog(hub):
+    from types import SimpleNamespace
+
+    from hubproto.cogs import ReviewerCog
+
+    fin = doc(hub, "finance-policy")
+    ctx = SimpleNamespace(kernel=hub.kernel, record=fin["locator"], dms=None)
+    before = ReviewerCog._content_key(ctx)
+    hub.kernel.set_fields(fin["locator"], {"cites": ["rec:document:DOC-0001"], "citation_flags": [{"document": "DOC-0001", "line": 1}]}, by="hub")
+    assert ReviewerCog._content_key(ctx) == before, "the cog's judgment of the document still stands"

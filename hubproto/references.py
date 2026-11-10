@@ -5,8 +5,9 @@ document. The compile reads every such citation with the Frame and line it is on
 in the proposal and the release; ``reference_guard`` reports a citation of an unknown document, or of one not in force
 (obsolete, superseded, withdrawn, not yet effective), as a warning with its frame and line. When a release puts an SOP
 in force, ``sync_links`` makes its citations ``references`` links from its document to the cited ones (``referenced-by``
-on theirs) and takes off the links of citations it no longer makes. When a change order's release makes a document
-obsolete or supersedes the revision cited, ``flag_citations`` flags each SOP still citing it to its owner.
+on theirs) and takes off the links of citations it no longer makes. After a change order's release, ``flag_citations``
+flags each SOP in force still citing a document no longer in force (obsolete, or the revision cited superseded) to its
+owner, once.
 
 What a citation names. Each revision of an SOP is its own document record (DOC-0040 revision A, DOC-0055 revision B
 that supersedes it), so a bare number could mean either "this record" or "this document, in its current revision". A
@@ -24,8 +25,8 @@ reading as the lineage's revision A. An SOP citing its own lineage ("Revision hi
 no flag and no link to itself.
 
 Not covered (on purpose, for now): a document made obsolete outside a release (retired by hand in document control) is
-not flagged, as only a change order's release flags; a flag is never cleared, it goes with the citing revision when a
-new one supersedes it; a compile warning names the state of the document cited ("DOC-0040 is obsolete"), which tells
+flagged only at the next change order's release; a flag is never cleared, it goes with the citing revision when a new
+one supersedes it (a new revision that still cites the document is flagged again); a compile warning names the state of the document cited ("DOC-0040 is obsolete"), which tells
 the author that it exists and its state though they may not be allowed to read it; and a hub whose Frame files stay the
 source gets links only for Frames that have a mirror document.
 """
@@ -34,6 +35,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from urllib.parse import urlsplit
 
 from .guards import Finding
@@ -47,10 +49,14 @@ SOUND = ("in-force", "self")  # resolutions that are no finding: a document in f
 # A revision after a number: "rev B", "rev. B", "revision B", "(rev. B)", ", revision 2"; a single lower-case letter too
 # ("rev a"), read as its capital.
 _REV = r"(?:,?\s*(?P<paren>\()?(?i:rev(?:ision)?\.?)\s*(?P<rev>[A-Z]{1,2}|[a-z]\b|\d+)\b(?(paren)\)))?"
-_URL = re.compile(r"https?://[^\s<>()\[\]\"'`]+", re.IGNORECASE)
-_MD_LINK = re.compile(r"\[(?P<t>[^\]]*)\]\((?P<u>[^)\s]+)(?:\s+\"[^\"]*\")?\)")
+# A URL may hold balanced parentheses ("https://wiki.example/Gauge_(metrology)"), one level deep.
+_URL_CHARS = r"(?:[^\s<>()\[\]\"'`]|\([^\s<>()\[\]\"'`]*\))+"
+_URL = re.compile(r"https?://" + _URL_CHARS, re.IGNORECASE)
+_MD_LINK = re.compile(r"\[(?P<t>[^\]]*)\]\((?P<u>" + _URL_CHARS + r")(?:\s+\"[^\"]*\")?\)")
 _INLINE_CODE = re.compile(r"(`+)(?:(?!\1).)+?\1")
-_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+_FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
+_HEADING = re.compile(r"^ {0,3}(#{1,6})\s")
+OTHER_SITE = "other-site"  # the form of a link to a document's page on another host: no citation, a warning
 _LIST_ITEM = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s")
 
 
@@ -67,7 +73,7 @@ def _patterns(prefix: str, yearly: bool = False) -> tuple[re.Pattern, re.Pattern
     colon = r"(?::|%3[Aa])"
     path = re.compile(rf"/(?:document|doc|record)/(?:rec{colon}document{colon})?(?P<num>{num})")
     relative = re.compile(r"(?<![\w/.:%-])" + path.pattern)
-    bare = re.compile(rf"(?<![\w-])(?P<num>{num})" + _REV)
+    bare = re.compile(rf"(?<![\w/.:%-])(?P<num>{num})" + _REV)  # not inside a path or a host ("www.x.example/DOC-0040.pdf")
     return path, relative, bare
 
 
@@ -77,15 +83,55 @@ def document_numbering(record_types: dict | None) -> tuple[str, bool]:
     return str(td.get("prefix") or "DOC"), bool(td.get("yearly"))
 
 
-def hub_hosts() -> tuple[str, ...]:
-    """The hosts (with their port) this hub is reached at: an absolute link to a document's page counts as a citation
-    only on one of them. From ``HUBPROTO_PUBLIC_URL`` (the address people use) and ``HUBPROTO_WOPI_BASE`` (the address
-    the editor uses); with neither set, only relative links ("/document/DOC-0040") count."""
-    out = []
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+_told_bad: set[tuple[str, str]] = set()
+
+
+def host_key(url: str) -> tuple[str, int] | None:
+    """(host name, port) of an absolute http(s) URL, the scheme's default port filled in; None for anything else."""
+    try:
+        parts = urlsplit(url.strip())
+        port = parts.port
+    except ValueError:
+        return None
+    scheme = parts.scheme.lower()
+    if scheme not in _DEFAULT_PORTS or not parts.hostname:
+        return None
+    return parts.hostname.lower(), port or _DEFAULT_PORTS[scheme]
+
+
+def hub_hosts() -> tuple[tuple[str, int], ...]:
+    """The (host, port) pairs this hub is reached at: an absolute link to a document's page counts as a citation only
+    on one of them. From ``HUBPROTO_PUBLIC_URL`` (the address people use) and ``HUBPROTO_WOPI_BASE`` (the address the
+    editor uses); with neither set, only relative links ("/document/DOC-0040") count. A value with no http(s) scheme
+    ("hub.example:8080") names no host: it is left out, and said once on stderr."""
+    out: list[tuple[str, int]] = []
     for var in ("HUBPROTO_PUBLIC_URL", "HUBPROTO_WOPI_BASE"):
-        host = urlsplit((os.environ.get(var) or "").strip()).netloc.lower()
-        if host and host not in out:
-            out.append(host)
+        value = (os.environ.get(var) or "").strip()
+        if not value:
+            continue
+        key = host_key(value)
+        if key is None:
+            if (var, value) not in _told_bad:
+                _told_bad.add((var, value))
+                sys.stderr.write(f"warning: {var}={value!r} is not an http(s) URL; links to this hub's pages in SOP prose are read only "
+                                 "when relative\n")
+            continue
+        if key not in out:
+            out.append(key)
+    return tuple(out)
+
+
+def _hosts(hosts) -> tuple[tuple[str, int], ...]:
+    """Hosts as given (an URL, "host[:port]" for http, or a (host, port) pair) as (host, port) pairs."""
+    out = []
+    for h in hosts:
+        if isinstance(h, tuple):
+            out.append((str(h[0]).lower(), int(h[1])))
+            continue
+        key = host_key(h if "://" in h else "http://" + h)
+        if key:
+            out.append(key)
     return tuple(out)
 
 
@@ -93,16 +139,17 @@ def _blank(s: str, a: int, b: int) -> str:
     return s[:a] + " " * (b - a) + s[b:]
 
 
-def _site_link(target: str, path: re.Pattern, hosts) -> tuple[str, str] | None:
-    """(number, the link as cited) when ``target`` is a link to a document's page on this hub, else None."""
+def _site_link(target: str, path: re.Pattern, hosts) -> tuple[str, str, bool] | None:
+    """(number, the link as cited, on this hub) when ``target`` is a link to a document's page, else None. A link
+    to such a page on another host is no citation (the third item is False): the guard warns about it."""
     if re.match(r"https?://", target, re.IGNORECASE):
         parts = urlsplit(target)
-        if parts.netloc.lower() not in hosts:
-            return None  # another site's page: no citation of this hub's document
         m = path.match(parts.path)
-        return (m.group("num"), target[:target.find(parts.path) + m.end()]) if m else None
+        if not m:
+            return None
+        return m.group("num"), target[:target.find(parts.path) + m.end()], host_key(target) in hosts
     m = path.match(target)
-    return (m.group("num"), m.group(0)) if m else None
+    return (m.group("num"), m.group(0), True) if m else None
 
 
 def _line_citations(line: str, pats, hosts) -> list[tuple[int, str, str | None, str, str]]:
@@ -115,6 +162,9 @@ def _line_citations(line: str, pats, hosts) -> list[tuple[int, str, str | None, 
         hit = _site_link(m.group("u"), path, hosts)
         line = _blank(line, m.start("u"), m.end("u"))  # a link's target is no number cited in the prose
         if hit is None:
+            continue
+        if not hit[2]:
+            found.append((m.start("u"), hit[0], None, OTHER_SITE, hit[1]))
             continue
         num, text, rev = hit[0], hit[1], None
         t0 = m.start("t")
@@ -130,7 +180,7 @@ def _line_citations(line: str, pats, hosts) -> list[tuple[int, str, str | None, 
         hit = _site_link(m.group(0), path, hosts)
         line = _blank(line, m.start(), m.end())  # any absolute URL: the number in it is no citation, unless it is ours
         if hit is not None:
-            found.append((m.start(), hit[0], None, "link", hit[1]))
+            found.append((m.start(), hit[0], None, "link" if hit[2] else OTHER_SITE, hit[1]))
     for m in relative.finditer(line):
         found.append((m.start(), m.group("num"), None, "link", m.group(0)))
         line = _blank(line, m.start(), m.end())
@@ -142,30 +192,32 @@ def _line_citations(line: str, pats, hosts) -> list[tuple[int, str, str | None, 
 def read_references(frame, prefix: str = "DOC", *, yearly: bool = False, hosts=None) -> list[dict]:
     """The citations of documents in a Frame's body: [{"frame", "line", "document", "revision", "form", "text"}], in
     line order, one per document (and revision) a line cites. ``form`` is "number" or "link" (a link to a document's
-    page, relative or on one of ``hosts``, by default ``hub_hosts()``). Left out: cog sections (their "Prompt from:"
-    and "References:" are pinned with the cog), code (fenced with ``` or ~~~, indented, or inline), and links to other
-    sites."""
+    page, relative or on one of ``hosts``, by default ``hub_hosts()``), or ``OTHER_SITE``: a link to a document's page
+    on another host, which is no citation (it is not recorded in the release nor linked) but a warning. Left out: cog
+    sections (to the next heading of their level or higher; their "Prompt from:" and "References:" are pinned with the
+    cog), code (fenced with ``` or ~~~, in a list too, indented, or inline), and other sites' URLs."""
     pats = _patterns(prefix, yearly)
-    hosts = tuple(h.lower() for h in (hub_hosts() if hosts is None else hosts))
+    hosts = _hosts(hub_hosts() if hosts is None else hosts)
     out: list[dict] = []
-    in_cog = in_indented = in_list = False
+    in_indented = in_list = False
+    cog_level = 0  # the level of the "## Cog:" heading whose section this is, 0 outside one
     fence = ""
     prev_blank = True
     for n, raw in enumerate(frame.lines, start=frame.body_start):
         s = raw.strip()
+        expanded = raw.expandtabs(4)
+        indent = len(expanded) - len(expanded.lstrip(" "))
         if fence:
             if s.startswith(fence) and not s.strip(fence[0]):
                 fence = ""
             continue
         fm = _FENCE.match(raw)
-        if fm:
+        if fm and (indent <= 3 or in_list):  # a fence (in a list item it is indented); else indented code, below
             fence = fm.group(1)
             continue
         if not s:
             prev_blank = True
             continue
-        expanded = raw.expandtabs(4)
-        indent = len(expanded) - len(expanded.lstrip(" "))
         if indent >= 4 and (in_indented or (prev_blank and not in_list)):
             in_indented, prev_blank = True, False  # an indented code block
             continue
@@ -175,15 +227,20 @@ def read_references(frame, prefix: str = "DOC", *, yearly: bool = False, hosts=N
         elif indent == 0 and prev_blank or s.startswith("#"):
             in_list = False
         prev_blank = False
-        if s.startswith("## "):
-            in_cog = s.startswith("## Cog:")
-        if in_cog:
+        hm = _HEADING.match(raw)
+        if hm:
+            level = len(hm.group(1))
+            if cog_level and level <= cog_level:
+                cog_level = 0
+            if s.startswith("## Cog:"):
+                cog_level = level
+        if cog_level:
             continue
         seen: set[tuple] = set()
         for _, num, rev, form, text in _line_citations(raw, pats, hosts):
-            if (num, rev) in seen:
+            if (num, rev, form == OTHER_SITE) in seen:
                 continue
-            seen.add((num, rev))
+            seen.add((num, rev, form == OTHER_SITE))
             out.append({"frame": frame.name, "line": n, "document": num, "revision": rev, "form": form, "text": text})
     return out
 
@@ -314,6 +371,13 @@ def reference_guard(references: list[dict], resolve_one) -> list[Finding]:
     reference gets its resolution (``resolved``) recorded on it."""
     out = []
     for ref in references:
+        if ref.get("form") == OTHER_SITE:
+            why = f"{ref['text']} is a document's page on another site, not this hub: it is not read as a citation"
+            ref["resolved"] = {"status": OTHER_SITE, "why": why, "lineage": None, "by_this_change": False, "record": None, "target": None}
+            out.append(Finding(GUARD, "warning", f"links to {why}; link to this hub's page (a relative link, /document/{ref['document']}), "
+                                                 "or to the other site's page without a number of this hub",
+                               rule_key=f"reference:{ref['document']}@{OTHER_SITE}", frame=ref["frame"], line=int(ref["line"])))
+            continue
         r = resolve_one(ref)
         ref["resolved"] = summary(r)
         if r["status"] in SOUND:
@@ -328,7 +392,7 @@ def reference_guard(references: list[dict], resolve_one) -> list[Finding]:
 def recorded(references: list[dict]) -> list[dict]:
     """The citations as a release records them: what the prose says, not what it resolved to then."""
     keys = ("frame", "line", "document", "revision", "form", "text")
-    return [{k: r.get(k) for k in keys} for r in references or []]
+    return [{k: r.get(k) for k in keys} for r in references or [] if r.get("form") != OTHER_SITE]
 
 
 # ---------------------------------------------------------------- at release
@@ -361,7 +425,9 @@ def sync_links(hub, *, by: str = "hub") -> dict:
     however late: a retried job never puts back the citations of the release it started under): a ``references`` link
     from it to each document cited (to the revision in force for a citation of a number), and none to a document it no
     longer cites. A document no longer in force keeps no citation links. Only the links made here (the ``cites`` field)
-    are ever taken off: a link a person made stays. A document on hold is left as it is. Idempotent. Returns
+    are ever taken off: a link a person made stays, and is not taken over when the prose cites it too. ``cites`` is
+    written before any link is made or taken off (with every target it is about to touch), so a crash part-way leaves
+    no link of the hub's looking like a person's. A document on hold is left as it is. Idempotent. Returns
     {"linked": [(from, to)], "unlinked": [(from, to)], "held": [number]}."""
     k = hub.kernel
     meta = hub.releases.current() or {}
@@ -396,20 +462,21 @@ def sync_links(hub, *, by: str = "hub") -> dict:
             if sorted(have) != sorted(targets):
                 out["held"].append(rec["number"])
             continue
-        keep = []
-        for t in targets:
-            if t in have:
-                keep.append(t)
-            elif not _linked(rec, t):
-                k.link(loc, LINK, t, by=by, release=digest)
+        # The hub's links once this is done: the ones it has, and the new ones not already there by a person's hand.
+        keep = [t for t in targets if t in have or not _linked(rec, t)]
+        drop = [t for t in have if t not in targets]
+        touching = keep + [t for t in drop if t not in keep]
+        if sorted(touching) != sorted(have):  # first say which links are the hub's, then make them
+            rec = k.set_fields(loc, {CITES: touching}, by=by, release=digest)
+        for t in keep:
+            if not _linked(rec, t):
+                rec = k.link(loc, LINK, t, by=by, release=digest)
                 out["linked"].append((rec["number"], k.get(t)["number"]))
-                keep.append(t)
-            # a link someone made by hand stays theirs: it is not added to the managed ones
-        for t in have:
-            if t not in targets and k.get(t) is not None and _linked(k.get(loc), t):
-                k.unlink(loc, LINK, t, by=by, release=digest)
+        for t in drop:
+            if k.get(t) is not None and _linked(rec, t):
+                rec = k.unlink(loc, LINK, t, by=by, release=digest)
                 out["unlinked"].append((rec["number"], k.get(t)["number"]))
-        if sorted(keep) != sorted(have):
+        if sorted(keep) != sorted(touching):
             k.set_fields(loc, {CITES: keep}, by=by, release=digest)
     return out
 
@@ -433,37 +500,39 @@ def _recipient(hub, doc: dict, frame: str, co: dict) -> str:
         maintainer = None
     if person(maintainer):
         return maintainer
-    return co["fields"].get("requested_by") or co.get("created_by") or ""
+    requester = co["fields"].get("requested_by") or co.get("created_by") or ""
+    return requester if person(requester) else ""
 
 
-def _subject(doc: dict, co: dict) -> str:
-    return f"{doc['number']} cites documents that {co['number']} took out of force"
+STALE = ("obsolete", "superseded")  # a document that was in force and is no longer: a citation of it is flagged
+
+
+def _key(f: dict) -> tuple:
+    return (f.get("document"), f.get("revision"), int(f.get("line") or 0))
 
 
 def flag_citations(hub, co: dict) -> dict:
-    """After a change order's release: each document in force whose SOP, in the release in force, still cites a
-    document the change order made obsolete (a retirement) or a revision it superseded (a new revision of a citation
-    naming that revision) is flagged: one flag per line on the citing document (``citation_flags``), and one message to
-    its owner listing them. A citation of a number follows the new revision and is not flagged; one a later release
-    took out is not flagged either. Idempotent, and safe to retry part-way: a message not yet sent for flags already
-    kept is sent on the next run. A document on hold is not flagged. Returns {"flagged": [flag], "held": [number],
-    "told": [{"citing", "frame", "to", "lines"}], "nobody": [number] (flagged, with no one to tell)}."""
-    from . import eco
+    """After a change order's release: each citation in the release in force of a document that was in force and no
+    longer is (obsolete, or a revision superseded), in an SOP whose document is in force and that has no flag for it
+    yet, is flagged: one flag per line on the citing document (``citation_flags``), and one message to its owner
+    listing the lines not yet told. A citation of a number follows the new revision and is not flagged; one a later
+    release took out is not flagged either. Whatever made it stale (this change order, an earlier one whose flag a hold
+    held back, a document retired by hand) is caught at the first release after. A document on hold is not flagged,
+    but its owner is told (a message writes nothing on the document) and the flag follows at a later release once the
+    hold is lifted. An unknown document or a revision that is not the number's is the compile's warning, not a flag.
+    Idempotent and safe to retry part-way: each message carries the citations it tells of, and its id follows from
+    them, so a line is told once. Returns {"flagged": [flag], "held": [number], "told": [{"citing", "frame", "to",
+    "lines"}], "nobody": [number] (with lines to tell and no one to tell them to)}."""
+    import json
+
     from .release import utcnow
+    from .rules import sha256_of
 
     k = hub.kernel
     meta = hub.releases.current() or {}
     digest = meta.get("digest") or ""
     refs = meta.get("references") or []
     out: dict = {"flagged": [], "held": [], "told": [], "nobody": []}
-    if not refs:
-        return out
-    retired = eco.retirements(co)
-    gone = {r["locator"] for r in retired.values() if r.get("locator")}
-    for c in eco.carried(hub, co):
-        old = k.get(f"rec:document:{c['draft']['fields'].get('revises')}") if c["draft"]["fields"].get("revises") else None
-        if old is not None:
-            gone.add(old["locator"])
     stale: dict[str, list[tuple[dict, dict]]] = {}  # citing document -> [(reference, resolution)]
     frames: dict[str, str] = {}
     for ref in refs:
@@ -471,41 +540,42 @@ def flag_citations(hub, co: dict) -> dict:
         if doc is None:
             continue
         r = resolve(k, ref["document"], ref.get("revision"), citing=ref["frame"])
-        rec = r.get("record")
-        if r["status"] in SOUND or rec is None:
-            continue
-        if not (rec["locator"] in gone or (not ref.get("revision") and r.get("lineage") in retired)):
+        if r["status"] not in STALE or r.get("record") is None:
             continue
         stale.setdefault(doc["locator"], []).append((ref, r))
         frames[doc["locator"]] = ref["frame"]
     for loc in sorted(stale):
         doc = k.get(loc)
-        if _held(doc):
-            out["held"].append(doc["number"])
-            continue
         flags = list(doc["fields"].get(FLAGS) or [])
+        flagged = {_key(f) for f in flags}
         new = []
         for ref, r in stale[loc]:
-            key = (ref["document"], ref.get("revision"), int(ref["line"]), co["number"])
-            if any((f.get("document"), f.get("revision"), int(f.get("line") or 0), f.get("by")) == key for f in flags + new):
-                continue
-            new.append({"document": ref["document"], "revision": ref.get("revision"), "line": int(ref["line"]), "frame": ref["frame"],
-                        "text": ref.get("text"), "status": r["status"], "why": r["why"], "by": co["number"], "release": digest,
-                        "at": utcnow(), "cleared": None})
-        if new:
+            f = {"document": ref["document"], "revision": ref.get("revision"), "line": int(ref["line"]), "frame": ref["frame"],
+                 "text": ref.get("text"), "status": r["status"], "why": r["why"], "by": co["number"], "release": digest,
+                 "at": utcnow(), "cleared": None}
+            if _key(f) not in flagged and _key(f) not in {_key(x) for x in new}:
+                new.append(f)
+        if _held(doc):
+            if new:
+                out["held"].append(doc["number"])
+        elif new:
             doc = k.set_fields(loc, {FLAGS: flags + new}, by="hub", release=digest)
-        mine = sorted((f for f in doc["fields"].get(FLAGS) or [] if f.get("by") == co["number"]), key=lambda f: int(f.get("line") or 0))
+            out["flagged"] += [{**f, "citing": doc["number"]} for f in new]
+        told = {tuple(c) for m in hub.inbox.on_record(loc) for c in m.get("citations") or []}
+        tell = sorted((f for f in list(doc["fields"].get(FLAGS) or []) + new if _key(f) not in told), key=_key)
+        tell = [f for i, f in enumerate(tell) if _key(f) not in {_key(x) for x in tell[:i]}]
+        if not tell:
+            continue
         who = _recipient(hub, doc, frames[loc], co)
-        for f in new:
-            out["flagged"].append({**f, "citing": doc["number"], "owner": who})
-        if mine and not who:
+        if not who:
             out["nobody"].append(doc["number"])
-        if not mine or not who or any(m.get("subject") == _subject(doc, co) for m in hub.inbox.on_record(loc)):
-            continue  # told already (an earlier run), or no one to tell
-        hub.inbox.notify(who, kind="task", subject=_subject(doc, co),
-                         body=f"{co['number']} took out of force documents that {doc['number']} ({frames[loc]}) cites:\n"
-                              + "".join(f"- line {f['line']} cites {f['text']}: {f['why']}\n" for f in mine)
+            continue
+        keys = [list(_key(f)) for f in tell]
+        hub.inbox.notify(who, kind="task", subject=f"{doc['number']} cites documents no longer in force ({co['number']})",
+                         body=f"{doc['number']} ({frames[loc]}) cites documents no longer in force:\n"
+                              + "".join(f"- line {f['line']} cites {f['text']}: {f['why']}\n" for f in tell)
                               + f"Revise {doc['number']} on a change order to cite documents in force, or take the citations out.",
-                         record=loc)
-        out["told"].append({"citing": doc["number"], "frame": frames[loc], "to": who, "lines": [(f["line"], f["text"]) for f in mine]})
+                         record=loc, key="cite-" + sha256_of({"doc": loc, "co": co["number"], "citations": json.dumps(keys)})[:16],
+                         data={"citations": keys})
+        out["told"].append({"citing": doc["number"], "frame": frames[loc], "to": who, "lines": [(f["line"], f["text"]) for f in tell]})
     return out

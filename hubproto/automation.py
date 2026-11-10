@@ -172,10 +172,15 @@ def run(hub, job_id: str) -> dict:
         return job
     job.update({"status": "running", "attempt": int(job.get("attempt") or 0) + 1, "started_at": job.get("started_at") or utcnow()})
     hub.automation.save(job)
-    steps = STEPS[job["automation"]]
-    # Each step runs the function of its name, never of its position: a job saved before a step was added (or moved)
-    # runs the steps it lists, and a step this hub no longer knows stops the job rather than running another step.
-    by_name = dict(zip(AUTOMATIONS[job["automation"]]["steps"], steps))
+    names = AUTOMATIONS[job["automation"]]["steps"]
+    # Each step runs the function of its name, never of its position. A job saved before a step was added (its names
+    # are the current ones, in order, with some missing) gets the missing steps, waiting, in their places; a step this
+    # hub does not know (a job saved under names since changed) stops the job rather than running another step.
+    by_name = dict(zip(names, STEPS[job["automation"]]))
+    saved = [s["name"] for s in job["steps"]]
+    if saved != names and _in_order(saved, names):
+        have = {s["name"]: s for s in job["steps"]}
+        job["steps"] = [have.get(n) or {"name": n, "status": "waiting", "detail": "added since this job started"} for n in names]
     memo: dict = {}
     done_any = False
     for i, s in enumerate(job["steps"]):
@@ -212,6 +217,12 @@ def run(hub, job_id: str) -> dict:
         hub.automation.save(job)
     job.update({"status": "success", "finished_at": utcnow(), "outcome": job["steps"][-1].get("detail") or "done"})
     return hub.automation.save(job)
+
+
+def _in_order(names: list[str], within: list[str]) -> bool:
+    """True when ``names`` are some of ``within``, in its order."""
+    it = iter(within)
+    return all(n in it for n in names)
 
 
 def _tell_failure(hub, job: dict) -> None:
@@ -510,7 +521,8 @@ def r_references(hub, job, memo):
              ("flagged " + ", ".join(told)) if told else "",
              (f"flagged {', '.join(flags['nobody'])}, with nobody to tell" if flags["nobody"] else ""),
              "; ".join(f"{n} is on hold: link not updated" for n in links["held"]),
-             "; ".join(f"{n} is on hold: not flagged" for n in flags["held"])]
+             "; ".join(f"{n} is on hold: not flagged" + (" (its owner is told)" if n in {t["citing"] for t in flags["told"]} else "")
+                       for n in flags["held"])]
     parts = [x for x in parts if x]
     return ("; ".join(parts) if parts else "no citation changed"), {}
 
@@ -549,6 +561,9 @@ def r_tell(hub, job, memo):
 STEPS = {"compile-frame": [c_collect, c_compile, c_draft, c_guards, c_stage, c_panel, c_queue, c_tell],
          "release-change-order": [r_check, r_revisions, r_frame, r_state_maps, r_publish, r_forms, r_record_types, r_training, r_divergences, r_references,
                                   r_related, r_restage, r_tell]}
+# A step's name is how a saved job finds its function: one name for each function, in the same order.
+assert all(len(AUTOMATIONS[a]["steps"]) == len(STEPS[a]) for a in AUTOMATIONS) and set(AUTOMATIONS) == set(STEPS), \
+    "AUTOMATIONS and STEPS must list the same steps"
 
 
 # ---------------------------------------------------------------- triggers
