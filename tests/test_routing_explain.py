@@ -158,19 +158,3 @@ def test_a_reviews_summary_reads_right_where_a_signature_quotes_it():
     src = inspect.getsource(review)
     assert "listed above" not in src.split("summary = text or")[1].split("\n")[1]
 
-
-def test_frontmatter_flow_values_read_without_pyyaml(monkeypatch):
-    """The Docker image and CI have no PyYAML: the frontmatter subset reads YAML flow style itself, nested, bare or
-    quoted, and JSON (which is flow YAML), the way PyYAML would; a malformed value says what is wrong."""
-    import pytest
-
-    from hubproto import frames
-
-    monkeypatch.setattr(frames, "yaml", None)
-    data, _ = frames.parse_frontmatter('---\nname: x\nworkflow_ids: {gizmo-review: {in-review: review}}\n'
-                                       'json: {"a": "b"}\ntags: [x, \'y, z\']\n---\nbody\n')
-    assert data["workflow_ids"] == {"gizmo-review": {"in-review": "review"}}
-    assert data["json"] == {"a": "b"} and data["tags"] == ["x", "y, z"]
-    for bad, why in (("{a b}", "expected ':'"), ("{a: b", "not closed"), ("['x", "not closed")):
-        with pytest.raises(frames.FrameError, match=why):
-            frames.parse_frontmatter(f"---\nv: {bad}\n---\n")

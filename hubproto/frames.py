@@ -68,39 +68,89 @@ def _parse_scalar(raw: str):
     if not raw:
         return ""
     if raw[0] in "{[":  # a flow mapping or sequence on one line (e.g. workflow_ids), read as YAML would
+        import json
+
         try:
-            value, end = _flow(raw, 0)
-        except ValueError as e:
-            raise FrameError(f"cannot parse frontmatter value {raw!r}: {e}") from None
-        except IndexError:
-            raise FrameError(f"cannot parse frontmatter value {raw!r}: a bracket or a quote is not closed") from None
-        if raw[end:].strip():
-            raise FrameError(f"cannot parse frontmatter value {raw!r}: unexpected text after the closing bracket")
-        return value
+            return json.loads(raw)  # exact JSON first: the hub writes some values as JSON (numbers, escapes, null)
+        except ValueError:
+            pass
+        text = _strip_comment(raw)
+        try:
+            value, end = _flow(text, 0)
+            if text[end:].strip():
+                raise ValueError("unexpected text after the closing bracket")
+            return value
+        except (ValueError, IndexError, RecursionError) as e:
+            if raw[0] == "[":
+                return raw  # as before: a value such as "[Draft] Supplier review" is a plain string
+            why = ("a bracket or a quote is not closed" if isinstance(e, IndexError)
+                   else "nested too deeply" if isinstance(e, RecursionError) else str(e))
+            raise FrameError(f"cannot parse frontmatter value {raw!r}: {why}") from None
     if (raw[0] == raw[-1]) and raw[0] in "\"'" and len(raw) >= 2:
         return raw[1:-1]
     return raw
 
 
+def _strip_comment(s: str) -> str:
+    """The value without a trailing YAML comment (`` # ...`` outside quotes)."""
+    quote = None
+    for k, ch in enumerate(s):
+        if quote:
+            if ch == "\\" and quote == '"':
+                continue
+            if ch == quote and not (quote == '"' and k and s[k - 1] == "\\"):
+                quote = None
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "#" and k and s[k - 1] in " \t":
+            return s[:k].rstrip()
+    return s
+
+
 def _flow(s: str, i: int):
     """YAML flow style without PyYAML (the Docker image and CI have none): ``{a: b, c: {d: e}}``, ``[x, 'y, z']``,
-    keys and values bare or quoted, nested to any depth; JSON is flow YAML, so it reads too. Scalars stay strings, as
-    the rest of the frontmatter subset does. Returns (value, index after it)."""
+    keys and values bare or quoted, nested to any depth, trailing commas allowed. A key ends at a colon followed by a
+    space or the end of the item (so ``{http://x: y}`` keeps its URL); double-quoted strings take JSON escapes, and
+    ``''`` inside single quotes is a quote. Bare scalars stay strings and an empty value is ``""``, as in the rest of
+    the frontmatter subset. Returns (value, index after it)."""
+    import json
+
     def ws(j):
         while j < len(s) and s[j] in " \t":
             j += 1
         return j
 
-    def scalar(j, stops):
+    def quoted(j):
+        q = s[j]
+        k = j + 1
+        if q == '"':
+            while s[k] != '"':  # IndexError: an unterminated quote
+                k += 2 if s[k] == "\\" else 1
+            return json.loads(s[j:k + 1]), k + 1
+        out = []
+        while True:
+            if s[k] == "'":
+                if k + 1 < len(s) and s[k + 1] == "'":
+                    out.append("'")
+                    k += 2
+                    continue
+                return "".join(out), k + 1
+            out.append(s[k])
+            k += 1
+
+    def key(j):
         j = ws(j)
         if j < len(s) and s[j] in "\"'":
-            q, k, out = s[j], j + 1, []
-            while s[k] != q:  # IndexError: an unterminated quote
-                if q == '"' and s[k] == "\\":
-                    k += 1
-                out.append(s[k])
-                k += 1
-            return "".join(out), k + 1
+            return quoted(j)
+        k = j
+        while k < len(s) and s[k] != "}" and not (s[k] == ":" and (k + 1 == len(s) or s[k + 1] in " \t,}]")):
+            k += 1
+        return s[j:k].strip(), k
+
+    def bare(j, stops):
+        j = ws(j)
+        if j < len(s) and s[j] in "\"'":
+            return quoted(j)
         k = j
         while k < len(s) and s[k] not in stops:
             k += 1
@@ -110,36 +160,32 @@ def _flow(s: str, i: int):
     if s[i] == "{":
         out: dict = {}
         i = ws(i + 1)
-        if s[i] == "}":
-            return out, i + 1
-        while True:
-            key, i = scalar(i, ":}")
+        while s[i] != "}":
+            k, i = key(i)
             i = ws(i)
             if s[i] != ":":
-                raise ValueError(f"expected ':' after the key {key!r}")
+                raise ValueError(f"expected ':' after the key {k!r}")
             value, i = _flow(s, i + 1)
-            out[key] = value
+            out[k] = value
             i = ws(i)
-            if s[i] == "}":
-                return out, i + 1
-            if s[i] != ",":
-                raise ValueError(f"expected ',' or '}}' after the value of {key!r}")
-            i += 1
+            if s[i] == ",":
+                i = ws(i + 1)
+            elif s[i] != "}":
+                raise ValueError(f"expected ',' or '}}' after the value of {k!r}")
+        return out, i + 1
     if s[i] == "[":
         items: list = []
         i = ws(i + 1)
-        if s[i] == "]":
-            return items, i + 1
-        while True:
+        while s[i] != "]":
             value, i = _flow(s, i)
             items.append(value)
             i = ws(i)
-            if s[i] == "]":
-                return items, i + 1
-            if s[i] != ",":
+            if s[i] == ",":
+                i = ws(i + 1)
+            elif s[i] != "]":
                 raise ValueError("expected ',' or ']' in a list")
-            i += 1
-    return scalar(i, ",}]")
+        return items, i + 1
+    return bare(i, ",}]")
 
 
 def _mini_yaml(text: str) -> dict:

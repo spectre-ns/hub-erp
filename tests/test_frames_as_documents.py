@@ -145,3 +145,24 @@ def test_the_stdlib_frontmatter_parser_reads_a_one_line_json_value(monkeypatch):
     monkeypatch.setattr(frames, "yaml", None)
     data, _ = frames.parse_frontmatter('---\nname: x\nworkflow_ids: {"gizmo-review": {"in-review": "review"}}\n---\nbody\n')
     assert data["workflow_ids"] == {"gizmo-review": {"in-review": "review"}}
+
+
+def test_frontmatter_flow_values_read_without_pyyaml(monkeypatch):
+    """The Docker image and CI have no PyYAML: the frontmatter subset reads YAML flow style itself (nested, bare or
+    quoted keys and values, trailing commas, a trailing comment) the way PyYAML would, JSON exactly (numbers, escapes,
+    null), and a malformed value says what is wrong; a bracketed title that is no list stays a string, as before."""
+    import pytest
+
+    import hubproto.frames as frames
+
+    monkeypatch.setattr(frames, "yaml", None)
+    data, _ = frames.parse_frontmatter(
+        '---\nname: x\nworkflow_ids: {gizmo-review: {in-review: review}}\njson: {"a": "x\\ny", "n": 1, "t": true, "z": null}\n'
+        "tags: [x, 'y, z', 'it''s', ]\nurl: {http://x: y}\nnote: [a, b] # a comment\ntitle: [Draft] Supplier review\n---\nbody\n")
+    assert data["workflow_ids"] == {"gizmo-review": {"in-review": "review"}}
+    assert data["json"] == {"a": "x\ny", "n": 1, "t": True, "z": None}, "JSON reads exactly"
+    assert data["tags"] == ["x", "y, z", "it's"] and data["url"] == {"http://x": "y"} and data["note"] == ["a", "b"]
+    assert data["title"] == "[Draft] Supplier review"
+    for bad, why in (("{a b}", "expected ':'"), ("{a: b", "not closed"), ('{"a": "b', "not closed")):
+        with pytest.raises(frames.FrameError, match=why):
+            frames.parse_frontmatter(f"---\nv: {bad}\n---\n")

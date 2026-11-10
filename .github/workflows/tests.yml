@@ -12,20 +12,26 @@ permissions:
 
 concurrency:
   group: tests-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}   # every push to main keeps its result
 
 jobs:
   pytest:
-    name: pytest (Python ${{ matrix.python-version }})
+    name: pytest (Python ${{ matrix.python-version }}${{ matrix.pyyaml && ', with PyYAML' || '' }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.12", "3.14"]   # the oldest supported (requires-python) and the newest
+        pyyaml: [false]                    # as the Docker image: the frontmatter subset reads its own YAML
+        include:
+          - python-version: "3.14"
+            pyyaml: true                   # as a developer venv: PyYAML reads the frontmatter
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0   # v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -33,6 +39,6 @@ jobs:
             pyproject.toml
             requirements-dev.txt
       - name: Install
-        run: python -m pip install -e ".[test]" -r requirements-dev.txt
+        run: python -m pip install -e . -r requirements-dev.txt ${{ matrix.pyyaml && 'pyyaml' || '' }}
       - name: Test
         run: python -m pytest -q -n auto
