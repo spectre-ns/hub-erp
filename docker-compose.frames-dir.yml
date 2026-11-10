@@ -1,0 +1,30 @@
+# Development only: the containers read and write the Frames (and read the seed profiles) in this checkout's frames/
+# and profiles/ folders instead of the hub-frames volume and the image's profiles, so a Frame edited on the host is
+# what they compile, and every release writes the released texts back into the checkout (they show up in
+# `git status`). Never use it for the live hub: its policy would live in the working tree, the tests run from the
+# checkout would read it, and it could be committed by accident (issue #5). For most development work a hub from
+# `hubproto dev serve` is simpler (DEV-NOTES.md, "Running hubs for development and for agents").
+#
+#   docker compose -p hub-dev -f docker-compose.yml -f docker-compose.frames-dir.yml up -d
+#   docker compose -p hub-dev -f docker-compose.yml -f docker-compose.frames-dir.yml exec hub hubproto compile
+#
+# (or COMPOSE_FILE=docker-compose.yml:docker-compose.frames-dir.yml in the shell you work in). Give it a project name
+# of its own (-p): under the live hub's project it would point the live hub's state at the checkout's Frames. The
+# container names and host ports in docker-compose.yml are fixed, so beside a running hub change them too.
+services:
+  hub:
+    volumes:
+      - ./frames:/hub/frames
+      - ./profiles:/hub/profiles
+  cog-users:
+    volumes:
+      - ./frames:/hub/frames
+      - ./profiles:/hub/profiles
+  agents:
+    volumes:
+      - ./frames:/hub/frames
+      - ./profiles:/hub/profiles
+  tick:
+    volumes:
+      - ./frames:/hub/frames
+      - ./profiles:/hub/profiles

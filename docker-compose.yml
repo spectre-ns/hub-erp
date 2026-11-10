@@ -7,10 +7,11 @@ services:
       - "127.0.0.1:8080:8080"
     volumes:
       - hub-state:/hub/state
-      # Edit Frames on the host and recompile from inside the container:
-      #   docker compose exec hub hubproto compile
-      - ./frames:/hub/frames
-      - ./profiles:/hub/profiles
+      # The hub's Frames: its own volume, filled on the first start with the Frames the image ships; every release
+      # writes the released texts into it, never into this checkout. The profiles and config come from the image.
+      # To work on Frames and profiles in this checkout's folders instead (a development hub, never the live one):
+      #   docker compose -f docker-compose.yml -f docker-compose.frames-dir.yml up -d
+      - hub-frames:/hub/frames
     environment:
       HUBPROTO_ROOT: /hub
       HUBPROTO_CAD_WORKER_URL: http://cad-worker:9000
@@ -64,8 +65,7 @@ services:
     command: ["hubproto", "cog-users", "--loop", "3"]
     volumes:
       - hub-state:/hub/state
-      - ./frames:/hub/frames
-      - ./profiles:/hub/profiles
+      - hub-frames:/hub/frames
     environment:
       HUBPROTO_ROOT: /hub
       HUBPROTO_CAD_WORKER_URL: http://cad-worker:9000
@@ -85,8 +85,7 @@ services:
     command: ["hubproto", "agent-duties", "--loop", "900"]
     volumes:
       - hub-state:/hub/state
-      - ./frames:/hub/frames
-      - ./profiles:/hub/profiles
+      - hub-frames:/hub/frames
     environment:
       HUBPROTO_ROOT: /hub
       HUBPROTO_OLLAMA_URL: ${HUBPROTO_OLLAMA_URL:-http://host.docker.internal:11434}
@@ -136,9 +135,9 @@ services:
     profiles: ["tools"]
     volumes:
       - hub-state:/hub/state
-      - ./frames:/hub/frames
-      - ./profiles:/hub/profiles
+      - hub-frames:/hub/frames
     entrypoint: ["hubproto", "tick"]
 
 volumes:
   hub-state:
+  hub-frames:

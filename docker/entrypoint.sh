@@ -6,10 +6,30 @@
 # state/.bootstrap-failed, and the shell still starts (with no release in
 # effect) so the operator can fix the Frame and run one command.
 # Later starts keep the existing state, seed only what a newer version needs
-# and the state lacks, and say when the Frames in the image differ from the
-# Frames in the release in force.
+# and the state lacks, and say when the Frames in the hub's frames folder (the
+# frames volume, docker-compose.yml) differ from the Frames in the release in force.
+#
+# The Frames: /hub/frames is the hub's own (a volume; every release writes the
+# released texts into it). On the first start, when it is empty and there is no
+# state yet, it is filled with the Frames the image ships ($SEED_FRAMES). It is
+# never filled again: on a hub with state its Frames are that hub's, and an empty
+# folder there means they were not copied in (docs/rollout/frames-volume.md).
 set -e
-cd /hub
+cd "${HUBPROTO_ROOT:-/hub}"
+SEED_FRAMES="${HUBPROTO_SEED_FRAMES:-/usr/local/share/hubproto/frames}"
+mkdir -p frames
+if [ -z "$(ls -A frames)" ]; then
+  if [ ! -f state/kernel.db ]; then
+    if [ -d "$SEED_FRAMES" ]; then
+      echo "first start: copying the Frames the image ships ($SEED_FRAMES) into $PWD/frames"
+      cp -R "$SEED_FRAMES"/. frames/
+    fi
+  else
+    echo "WARNING: $PWD/frames is empty but this hub has state: its Frames were not copied in, and the image's are not"
+    echo "  copied over a hub that has state. Copy the hub's Frames into the frames volume (docs/rollout/frames-volume.md);"
+    echo "  until then status reports them missing."
+  fi
+fi
 if [ ! -f state/.bootstrapped ]; then
   echo "bootstrapping hub state in /hub/state"
   hubproto init

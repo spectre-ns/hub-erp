@@ -521,6 +521,122 @@ def test_backup_and_restore_refuse_a_partial_set(released, tmp_path):
     assert rc == 0 and "previous state moved to" in out
 
 
+def _tree(root: Path, skip_aside: bool = True) -> dict[str, bytes]:
+    return {str(p.relative_to(root)): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()
+            and not (skip_aside and p.relative_to(root).parts[0].startswith(".before-restore-"))}
+
+
+def test_the_backup_holds_the_frames_and_a_restore_puts_them_back(fresh, tmp_path):
+    """In Docker the Frames are the hub's own volume (issue #5), so the backup carries them with the state."""
+    release_all(Hub(fresh))
+    frames = fresh / "frames"
+    rc, out = run_cli(fresh, "backup", str(tmp_path / "bk"))
+    assert rc == 0 and "frames (" in out
+    assert json.loads((tmp_path / "bk" / "backup.json").read_text())["parts"]["frames"] == len(_tree(frames))
+    assert _tree(tmp_path / "bk" / "frames") == _tree(frames), "every file, the dot-directories (.replaced) too"
+    before = _tree(frames)
+    (frames / "finance" / "finance-policy.frame.md").unlink()
+    (frames / "stray.frame.md").write_text("not this hub's\n")
+    rc, out = run_cli(fresh, "restore", str(tmp_path / "bk"), "--force")
+    assert rc == 0 and "previous Frames moved to" in out, out
+    assert _tree(frames) == before
+    aside = [p for p in frames.iterdir() if p.name.startswith(".before-restore-")]
+    assert len(aside) == 1 and (aside[0] / "stray.frame.md").exists(), "the Frames replaced are kept, not lost"
+    rc, out = run_cli(fresh, "status", "--check")
+    assert rc == 0 and "Frames on disk match" in out, out
+    rc, out = run_cli(fresh, "backup", str(tmp_path / "bk2"))
+    assert rc == 0 and _tree(tmp_path / "bk2" / "frames", skip_aside=False) == before, "what a restore set aside is not backed up"
+
+
+def test_a_backup_without_frames_restores_and_leaves_the_frames_alone(released, tmp_path):
+    rc, _ = run_cli(released, "backup", str(tmp_path / "bk"))
+    assert rc == 0
+    shutil.rmtree(tmp_path / "bk" / "frames")
+    target = new_root(tmp_path, "restored")
+    code, text = refused(target, "restore", str(tmp_path / "bk"))
+    assert code == 2 and "missing frames" in text, "a backup that lists its Frames must have them"
+    manifest = json.loads((tmp_path / "bk" / "backup.json").read_text())
+    del manifest["parts"]["frames"]  # a backup made before backups copied the Frames
+    (tmp_path / "bk" / "backup.json").write_text(json.dumps(manifest))
+    before = _tree(target / "frames")
+    rc, out = run_cli(target, "restore", str(tmp_path / "bk"))
+    assert rc == 0 and "holds no Frames" in out and "release in force: v1 (" in out
+    assert _tree(target / "frames", skip_aside=False) == before
+
+
+# ------------------------------------------------------------------ the entrypoint's Frames (issue #5)
+ENTRYPOINT = ROOT / "docker" / "entrypoint.sh"
+STUB = """#!/bin/sh
+echo "$@" >> "$HUBPROTO_ROOT/calls.log"
+case "$1" in
+  init) mkdir -p "$HUBPROTO_ROOT/state" && touch "$HUBPROTO_ROOT/state/kernel.db" ;;
+esac
+exit 0
+"""
+
+
+def _entrypoint(root: Path, seed: Path, tmp_path: Path) -> tuple[str, list[str]]:
+    """Run docker/entrypoint.sh on ``root`` with a stand-in ``hubproto`` that logs its arguments."""
+    import os
+    import subprocess
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    (bin_dir / "hubproto").write_text(STUB)
+    (bin_dir / "hubproto").chmod(0o755)
+    env = dict(os.environ, HUBPROTO_ROOT=str(root), HUBPROTO_SEED_FRAMES=str(seed), PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    done = subprocess.run(["sh", str(ENTRYPOINT), "version"], env=env, capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stdout + done.stderr
+    log = root / "calls.log"
+    return done.stdout, log.read_text().splitlines() if log.exists() else []
+
+
+@pytest.fixture
+def seed_frames(tmp_path) -> Path:
+    seed = tmp_path / "image-frames"
+    shutil.copytree(ROOT / "frames", seed)
+    return seed
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+def test_the_first_start_fills_an_empty_frames_folder_from_the_image(tmp_path, seed_frames):
+    root = tmp_path / "hub"
+    (root / "frames").mkdir(parents=True)  # the new, empty volume
+    out, calls = _entrypoint(root, seed_frames, tmp_path)
+    assert "first start: copying the Frames the image ships" in out
+    assert _tree(root / "frames", skip_aside=False) == _tree(seed_frames, skip_aside=False)
+    assert calls[:3] == ["init", "seed iso9001", "bootstrap-release --as bob --second carol --if-needed"] and calls[-1] == "version"
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+def test_a_later_start_never_writes_the_images_frames_over_the_hubs(tmp_path, seed_frames):
+    root = tmp_path / "hub"
+    root.mkdir()  # no frames folder at all (a run without the volume): created and filled
+    _entrypoint(root, seed_frames, tmp_path)
+    released = root / "frames" / "finance" / "finance-policy.frame.md"
+    released.write_text(released.read_text() + "\nA sentence this hub released.\n")
+    (seed_frames / "company" / "new-in-the-image.frame.md").write_text("---\nname: x\n---\n")
+    hub_frames = _tree(root / "frames", skip_aside=False)
+    out, calls = _entrypoint(root, seed_frames, tmp_path)
+    assert "copying the Frames" not in out and "WARNING" not in out
+    assert _tree(root / "frames", skip_aside=False) == hub_frames
+    assert "status --check" in calls
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+def test_a_hub_with_state_and_no_frames_is_warned_not_filled(tmp_path, seed_frames):
+    """An existing hub moved to the frames volume without its Frames copied in (docs/rollout/frames-volume.md)."""
+    root = tmp_path / "hub"
+    (root / "frames").mkdir(parents=True)
+    (root / "state").mkdir()
+    (root / "state" / "kernel.db").write_bytes(b"")
+    (root / "state" / ".bootstrapped").write_text("")
+    out, calls = _entrypoint(root, seed_frames, tmp_path)
+    assert "WARNING" in out and "frames is empty but this hub has state" in out and "frames-volume.md" in out
+    assert not any((root / "frames").iterdir()), "the image's Frames are never copied over a hub that has state"
+    assert "status --check" in calls and "seed iso9001" not in calls
+
+
 # ------------------------------------------------------------------ documents (cli-admin-16)
 def test_doc_checkin_needs_the_checkout_by_the_same_person(released, tmp_path):
     src = tmp_path / "sop.md"

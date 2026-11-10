@@ -12,7 +12,7 @@ docker-compose.yml).
 
 | Service | Started by `docker compose up` | What it does |
 |---|---|---|
-| **hub** | yes | the web shell on `127.0.0.1:8080`, and by default the worker threads that work the cogs' queues. Its state lives in the `hub-state` volume (`/hub/state`). `./frames` and `./profiles` from the repository are mounted into it; once the SOPs are documents, which happens at the first start, Frame files edited on the host are reported as differing and are not used (chapter 7.5) |
+| **hub** | yes | the web shell on `127.0.0.1:8080`, and by default the worker threads that work the cogs' queues. Its state lives in the `hub-state` volume (`/hub/state`) and its Frames in the `hub-frames` volume (`/hub/frames`), which the first start fills with the Frames the image ships and every release writes the released texts into; once the SOPs are documents, which happens at the first start, a Frame file that differs from the release is reported and not used (chapter 7.5) |
 | **ollama-relay** | yes | forwards the host's Ollama (which listens on 127.0.0.1 only) to the Docker bridge, so the containers can reach the local model. Remove it if Ollama listens on all interfaces |
 | **collabora** | yes | Collabora Online, the office editor, on `127.0.0.1:9980` |
 | **cad-worker** | yes | FreeCAD and KiCad behind an `/invoke` interface, for design exports and checks. Built with `CAD_TOOLS=none`, or with `HUBPROTO_CAD_FAKE=1`, it answers with synthetic exports |
@@ -20,8 +20,12 @@ docker-compose.yml).
 | **agents** | only with `--profile agents` | takes up the cogs' standing duties (`hubproto agent-duties --loop 900`) |
 | **tick** | only on demand (`docker compose run --rm tick`) | escalates overdue items once (8.7) |
 
-The hub's program code is copied into the image when it is built; only `frames/` and `profiles/` are mounted. After a
-code change, rebuild: `docker compose up --build`.
+The hub's program code, the seed profiles, `config/` and the repository's Frames are copied into the image when it is
+built; nothing from the checkout is mounted, so the hub never writes into it. After a code change, rebuild: `docker
+compose up --build`. The repository's Frames only fill a new hub's `hub-frames` volume: a newer image's Frames reach a
+running hub through a change order. For a development hub that reads and writes the checkout's `frames/` and
+`profiles/`, add `docker-compose.frames-dir.yml` (never for the live hub; see its header). A hub set up before the
+Frames had a volume (they were in the checkout) is moved with `docs/rollout/frames-volume.md`.
 
 ## 8.2 Installing and first start
 
@@ -147,8 +151,8 @@ release, a run is pinned to a release digest), so a backup is only usable as a w
 
 What `backup` copies: `kernel.db` and `queue.db` through the SQLite backup API (a consistent snapshot even while the
 hub runs); the directories `runs`, `releases`, `proposals`, `blobs`, `inbox`, `agents`, `settings`, `forms` and
-`record-types`; `frame-files-kept.json`; the signing secret `.secret`; `proposal-numbers.json`; and a `backup.json`
-manifest (hubproto/cli.py, `BACKUP_PARTS`). For a copy consistent across all parts, stop
+`record-types`; `frame-files-kept.json`; the signing secret `.secret`; `proposal-numbers.json`; the hub's Frames
+(`frames/`, the `hub-frames` volume); and a `backup.json` manifest (hubproto/cli.py, `BACKUP_PARTS`). For a copy consistent across all parts, stop
 the hub first (`docker compose stop hub`) or back up when nobody is working.
 
 Not copied: the automation jobs (`state/automation`), the folders people added to the library (`state/library`),
@@ -164,7 +168,9 @@ themselves are documents in the kernel and the blobs, so they are in the backup.
 3. `docker compose start hub`, then `docker compose exec hub hubproto status`.
 
 `restore` refuses a partial set (every part the manifest lists must be present) and refuses to overwrite a live state
-without `--force`. With it, the previous state is moved beside the new one (`state.before-restore-<time>`).
+without `--force`. With it, the previous state is moved beside the new one (`state.before-restore-<time>`). The Frames
+in the backup replace the hub's, which are kept in `frames/.before-restore-<time>/`; a backup made before backups held
+the Frames leaves them as they are.
 
 ## 8.6 Verifying the evidence
 

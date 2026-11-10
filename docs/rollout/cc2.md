@@ -46,6 +46,11 @@ models are switched on.
 Run these from `~/source/hub-erp-proto` once the four blocking changes are fixed and a rehearsal on the final
 `change-control-v2` commit is clean (`cc2-rehearsal.md`).
 
+Written when `./frames` was bind-mounted into the hub. Since issue #5 the hub's Frames are its own `hub-frames`
+volume (`frames-volume.md`), so `/hub/frames` is no longer the repository's: a rollout like this one mounts the
+repository's Frames beside it (`-v "$PWD/frames:/repo-frames:ro"`, `--frames-from /repo-frames`), the release writes
+into the volume, not into `./frames`, and a rollback copies the volume's Frames, not the checkout's.
+
 ```bash
 # 0. The old commit, for a rollback.
 OLD=$(git rev-parse master)                      # 833f20c at the time of writing
