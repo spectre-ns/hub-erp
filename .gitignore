@@ -3,3 +3,5 @@ state/
 __pycache__/
 *.egg-info/
 .env
+.github-token
+*.mp4
