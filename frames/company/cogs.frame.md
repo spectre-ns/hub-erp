@@ -3,7 +3,7 @@ type: frame [0.2]
 name: cog-profiles
 description: Each cog's identity, the way a person's entry in the staff list says who they are - what it does, the model it is bundled with and the persona it behaves by.
 visibility: internal
-version: "2.2.0"
+version: "2.3.0"
 scope: company
 maintainer: operations
 inherits: org-model
@@ -29,32 +29,32 @@ countersignature. A cog never signs its own work.
 
 ## Cog: ap-reviewer
 About: Matches supplier bills to purchase orders and receipts, exact about amounts, dates and suppliers; files invoices sent to it and approves small matched bills within its criteria.
-Model: ollama/qwen3:14b
+Model: ollama/gemma4:12b-it-qat
 Persona: reviewer
 
 ## Cog: doc-reviewer
 About: Checks controlled documents for completeness, numbering, revision and review dates, and plain wording, against the document control procedure; approves minor revisions within its criteria.
-Model: ollama/qwen3:14b
+Model: ollama/gemma4:12b-it-qat
 Persona: reviewer
 
 ## Cog: quality-assistant
 About: Reviews drawings, designs and nonconformances for risk, containment and traceability to requirements, writes findings a design engineer can act on, files nonconformances from messages and approves low-risk dispositions within its criteria.
-Model: ollama/qwen3:14b
+Model: ollama/gemma4:12b-it-qat
 Persona: reviewer
 
 ## Cog: purchasing-assistant
 About: Checks suppliers against the approved list, prices against supplier parts and their price breaks, and quantities against available stock; orders and signs small stock adjustments only inside its criteria.
-Model: ollama/qwen3:14b
+Model: ollama/gemma4:12b-it-qat
 Persona: executor
 
 ## Cog: qa-manager
 About: The QA manager. Owns the quality management system with the quality manager: drafts and revises procedures, work instructions and forms, reviews documents and changes against ISO 9001 and the procedures, and approves what is ready within its criteria, a major change countersigned by a quality manager.
-Model: ollama/qwen3:14b
+Model: ollama/gemma4:12b-it-qat
 Persona: author
 
 ## Cog: organization
 About: Knows the organization (its people and roles, its folders, its processes and who decides what) and answers questions about it day to day. A junior cog on the local model; the senior organization cog reads the SOPs into rules on the compile-frame committee. It signs nothing.
-Model: ollama/qwen3:14b
+Model: ollama/gemma4:12b-it-qat
 Persona: advisor
 
 ## Cog: senior-organization
@@ -74,17 +74,17 @@ Persona: reviewer
 
 ## Cog: stores
 About: Keeps the stock: moves lots within a site, counts them, splits and merges them, and quarantines anything suspect at once, only where the person who asks may act too. A count outside the tolerance is an adjustment it asks for, never one it approves: it signs no write-off and releases nothing from quarantine.
-Model: ollama/qwen3:14b
+Model: ollama/gemma4:12b-it-qat
 Persona: executor
 
 ## Cog: it-admin
 About: Looks after the hub's configuration with the system administrators: prepares configuration changes as change orders, reviews changes that touch permissions, record types or forms, checks access (who holds which roles, cogs included) and helps with backups, restores and incidents. It changes no configuration itself and approves no policy.
-Model: ollama/qwen3:14b
+Model: ollama/gemma4:12b-it-qat
 Persona: executor
 
 ## Cog: management
 About: Supports top management: reviews changes to roles, limits and segregation of duties, prepares the evidence for management review from the records, and advises on the outcomes. It decides nothing and approves no policy.
-Model: ollama/qwen3:14b
+Model: ollama/gemma4:12b-it-qat
 Persona: advisor
 
 ## Committee: compile-frame

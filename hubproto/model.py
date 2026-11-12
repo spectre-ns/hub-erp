@@ -191,9 +191,10 @@ MAX_IMAGES_B64 = 20 * 1024 * 1024  # every picture of one call together, as sent
 MAX_IMAGES = 20  # pictures in one call
 # Ollama models that read pictures, by family: only for a development hub where the stand-in answers in place of an
 # Ollama model (no Ollama to ask). A real Ollama is asked (``/api/show``); a family never stands in for its answer, as
-# a family may have text-only sizes. Families with text-only sizes (gemma3, llama4) are not listed.
+# a family may have text-only sizes. Families with text-only sizes (gemma3, llama4) are not listed; gemma4 is, as every
+# size and build Ollama's library has of it reads pictures (the junior cogs' gemma4:12b-it-qat among them).
 VISION_FAMILIES = ("llava", "bakllava", "llama3.2-vision", "qwen2.5vl", "qwen3-vl", "minicpm-v", "moondream", "granite3.2-vision",
-                   "llava-llama3", "llava-phi3")
+                   "llava-llama3", "llava-phi3", "gemma4")
 _CAPS: dict[str, list[str]] = {}  # what Ollama answered, by model; a lookup that failed is not kept (asked again next time)
 
 

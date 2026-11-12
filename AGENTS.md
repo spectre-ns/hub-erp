@@ -38,6 +38,11 @@ python -m pytest -q -n auto      # about 1,100 tests, about a minute; all must p
   `tests/test_cog_queue.py::test_a_question_in_the_chatter_gets_an_answer_not_a_review`. If only this test fails in a
   full run, rerun it on its own; if it still fails, the failure is real.
 - Run one test: `python -m pytest -q tests/test_x.py -k name`.
+- **The local-inference suite**, `python -m pytest tests_inference -v`, runs the cogs on the models the Frames name,
+  on the local Ollama (`HUBPROTO_OLLAMA_URL`, default `http://localhost:11434`), with no stand-in and no hosted model.
+  Run it after any change to the prompts, the model gateway (`model.py`), the cog profiles or the models in the
+  Frames, and put its result in the PR. It is never collected from the repository root, GitHub CI does not run it (no
+  GPU), and a model that is not pulled skips its tests with what to pull (DEV-NOTES.md, "The local-inference suite").
 
 ## Hard rules
 

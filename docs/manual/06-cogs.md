@@ -15,8 +15,8 @@ person is, by a change order to the organization model; an SOP that gives a cog 
 What makes a cog different:
 
 * **It comes with its model.** Each cog's profile names the model it is bundled with. Nine cogs use the local
-  `ollama/qwen3:14b`; the two **senior** cogs use the hosted `claude-opus-5-5` (6.12). If a cog's model cannot be
-  reached, the cog is **not available**: Gates route past it to the next person, a committee it sits on pauses, and
+  `ollama/gemma4:12b-it-qat` (Gemma 4 12B, which reads pictures); the two **senior** cogs use the hosted
+  `claude-opus-5-5` (6.12). If a cog's model cannot be reached, the cog is **not available**: Gates route past it to the next person, a committee it sits on pauses, and
   chat, mentions, tasks and reviews tell you so. Nothing stands in for it (hubproto/model.py, `cog_availability`).
 * **Models draft and answer; they never sign.** Whether a cog may sign is decided by the hub from the approval-criteria
   sentences in the SOPs. A model's review can be one of the conditions, never the whole rule. A cog never signs a
@@ -66,15 +66,15 @@ Both are documents under change control: changing a cog's model, persona or Abou
 
 | Cog | Roles | Group | Persona | Model | May approve on its own |
 |---|---|---|---|---|---|
-| **ap-reviewer** | finance clerk, payables reviewer | junior-cogs | reviewer | ollama/qwen3:14b | supplier bills under 2,000 USD when the three-way match is within tolerance and the supplier is approved |
-| **doc-reviewer** | author, reviewer | junior-cogs | reviewer | ollama/qwen3:14b | controlled documents when the change is minor |
-| **quality-assistant** | design review committee, staff | junior-cogs | reviewer | ollama/qwen3:14b | nonconformance dispositions when the risk is low |
-| **purchasing-assistant** | buyer, staff, stock reviewer | none | executor | ollama/qwen3:14b | purchase requests under 500 USD when the supplier is approved and the part is active; stock adjustments under 100 USD when the variance is within tolerance |
-| **qa-manager** | author, reviewer, staff | junior-cogs | author | ollama/qwen3:14b | only when asked: documents after 3 adversarial reviews pass (a minor change on its own signature, any other countersigned by a quality manager); change requests when its review passes, countersigned by a quality manager |
-| **organization** | policy reader | junior-cogs | advisor | ollama/qwen3:14b | nothing |
-| **stores** | staff, storekeeper | none | executor | ollama/qwen3:14b | nothing: it keeps stock (chapter 4.9) |
-| **it-admin** | system administrator | junior-cogs | executor | ollama/qwen3:14b | nothing ("It changes no configuration itself and approves no policy") |
-| **management** | management reviewer | junior-cogs | advisor | ollama/qwen3:14b | nothing |
+| **ap-reviewer** | finance clerk, payables reviewer | junior-cogs | reviewer | ollama/gemma4:12b-it-qat | supplier bills under 2,000 USD when the three-way match is within tolerance and the supplier is approved |
+| **doc-reviewer** | author, reviewer | junior-cogs | reviewer | ollama/gemma4:12b-it-qat | controlled documents when the change is minor |
+| **quality-assistant** | design review committee, staff | junior-cogs | reviewer | ollama/gemma4:12b-it-qat | nonconformance dispositions when the risk is low |
+| **purchasing-assistant** | buyer, staff, stock reviewer | none | executor | ollama/gemma4:12b-it-qat | purchase requests under 500 USD when the supplier is approved and the part is active; stock adjustments under 100 USD when the variance is within tolerance |
+| **qa-manager** | author, reviewer, staff | junior-cogs | author | ollama/gemma4:12b-it-qat | only when asked: documents after 3 adversarial reviews pass (a minor change on its own signature, any other countersigned by a quality manager); change requests when its review passes, countersigned by a quality manager |
+| **organization** | policy reader | junior-cogs | advisor | ollama/gemma4:12b-it-qat | nothing |
+| **stores** | staff, storekeeper | none | executor | ollama/gemma4:12b-it-qat | nothing: it keeps stock (chapter 4.9) |
+| **it-admin** | system administrator | junior-cogs | executor | ollama/gemma4:12b-it-qat | nothing ("It changes no configuration itself and approves no policy") |
+| **management** | management reviewer | junior-cogs | advisor | ollama/gemma4:12b-it-qat | nothing |
 | **senior-organization** | policy reader | senior-cogs | advisor | claude-opus-5-5 | nothing: it sits on the compile-frame committee |
 | **senior-qa-manager** | policy reader | senior-cogs | author | claude-opus-5-5 | nothing: it sits on the compile-frame committee |
 | **auditor** | internal auditor | none | reviewer | claude-opus-5-5 | nothing: it runs the internal audit and records findings; the quality manager accepts them (6.14) |
@@ -446,7 +446,7 @@ version whatever its state (read the code; chapter 10.9).
 ## 6.12 Senior and junior cogs
 
 Seniority distinguishes models. A **senior** cog is bundled with `claude-opus-5-5`, a hosted model; a **junior** cog
-with `qwen3:14b`, served locally. The groups **senior-cogs** and **junior-cogs** say which is which (chapter 7.6).
+with `gemma4:12b-it-qat`, served locally. The groups **senior-cogs** and **junior-cogs** say which is which (chapter 7.6).
 
 * The seniors, **senior-organization** (knows the organization; reads SOPs into rules; signs nothing) and
   **senior-qa-manager** (the quality system), are the compile-frame committee: they read the prose of changed SOPs into

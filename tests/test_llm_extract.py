@@ -114,7 +114,7 @@ def test_the_compile_op_is_read_by_the_senior_cogs_committee(hub, monkeypatch):
     from hubproto import model as model_mod
     from hubproto.llm_extract import CommitteeExtractor
 
-    served = [{"name": "qwen3:14b", "params": "14.8B", "family": "qwen3", "quant": "Q4", "size_gb": 9.3}]
+    served = [{"name": "gemma4:12b-it-qat", "params": "12B", "family": "gemma4", "quant": "Q4_0", "size_gb": 7.2}]
     monkeypatch.setattr(model_mod, "ollama_models", lambda refresh=False: (served, ""))
     monkeypatch.setattr(model_mod, "ollama_url", lambda: "http://ollama.test")
     monkeypatch.delenv("HUBPROTO_HOSTED_MODELS", raising=False)
@@ -123,7 +123,7 @@ def test_the_compile_op_is_read_by_the_senior_cogs_committee(hub, monkeypatch):
     assert c["members"] == ["senior-organization", "senior-qa-manager"] and c["quorum"] == 2
     assert (c["group"], c["chair"]) == ("senior-cogs", "carol") and b["groups"]["senior-cogs"]["resolved"] == c["members"]
     assert {b["cogs"][n]["model"] for n in c["members"]} == {"claude-opus-5-5"}
-    assert b["cogs"]["organization"]["model"] == b["cogs"]["qa-manager"]["model"] == "ollama/qwen3:14b", "the juniors stay local"
+    assert b["cogs"]["organization"]["model"] == b["cogs"]["qa-manager"]["model"] == "ollama/gemma4:12b-it-qat", "the juniors stay local"
     assert "organization" in b["groups"]["junior-cogs"]["resolved"] and "qa-manager" in b["groups"]["junior-cogs"]["resolved"]
     assert b["members"]["senior-organization"] == {**b["members"]["senior-organization"], "type": "cog", "roles": ["policy-reader"]}, \
         "it signs nothing: it only reads the policy"

@@ -266,7 +266,7 @@ Each cog takes one task at a time, oldest first; different cogs work side by sid
 
 * `worker` (what `hubproto shell` and the compose hub use): a thread in the hub works the queues. It holds the
   hub lock while it reads and writes and gives it up while the model thinks, so pages keep loading during a
-  70-second qwen answer. `HUBPROTO_COG_WORKERS` (default 1) sets how many tasks run at once across cogs.
+  minute-long local answer. `HUBPROTO_COG_WORKERS` (default 1) sets how many tasks run at once across cogs.
 * `service`: the hub only queues; `hubproto cog-users --loop 3` (the `cog-users` compose profile) works the
   queues in its own process, the production shape of cogs as service accounts.
 * `inline` (library, CLI verbs and tests): a task is worked the moment it is asked, so callers see the result.

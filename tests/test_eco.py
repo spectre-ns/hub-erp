@@ -183,7 +183,7 @@ def test_once_the_sops_are_documents_a_model_change_is_a_direct_change_on_a_chan
     assert c["name"] == "cog-profiles"
     text = sopdocs.frame_text(hub, c["draft"])
     section = text.split("## Cog: quality-assistant", 1)[1].split("\n## ", 1)[0]
-    assert "Model: claude-opus-5-5" in section and "Model: ollama/qwen3:14b" in text, "only that cog's Model line changes"
+    assert "Model: claude-opus-5-5" in section and "Model: ollama/gemma4:12b-it-qat" in text, "only that cog's Model line changes"
     pv = eco.preview(hub, co["number"])
     assert any((ch.get("rule") or {}).get("kind") == "cog" and (ch.get("rule") or {}).get("model") == "claude-opus-5-5" for ch in pv["changes"])
     new = hub.propose_new_cog(name="audit-helper", roles=["staff"], model="ollama/qwen3:14b", about="Helps with audits.",

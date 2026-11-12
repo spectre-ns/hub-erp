@@ -266,7 +266,7 @@ changed) stops the job with "unknown step". The steps of change control:
   what amount?). An unchanged frame keeps the release's rules for it with no model call.
 - Every guard still applies (grounding: the quote is at that line; schema; consistency; scope;
   widening needs two owners).
-- The local model is `qwen3:14b` (`HUBPROTO_EXTRACTOR_MODEL` may name another installed model). If
+- The local model is `gemma4:12b-it-qat` (`HUBPROTO_EXTRACTOR_MODEL` may name another installed model). If
   extraction quality is a problem, an administrator may switch hosted models on for compilation only
   (Claude Opus via the existing Claude extractor), with an API key; cogs keep their bundled models.
 - Tests never call a model: the readers take a `call=` fake, and the stand-in (HUBPROTO_ALLOW_STAND_IN)
@@ -509,14 +509,15 @@ final report every place you needed another workstream's code and what you assum
 ### 11.1 Senior and junior cogs; the compile Op (agreed 2026-11-09)
 
 - **Seniority distinguishes models.** A senior cog is bundled with `claude-opus-5-5`; a junior cog
-  with `qwen3:14b` (local). Groups `senior-cogs` and `junior-cogs` carry what the SOPs give each.
+  with `gemma4:12b-it-qat` (local; `qwen3:14b` until issue #46). Groups `senior-cogs` and `junior-cogs`
+  carry what the SOPs give each.
 - **Compilation is an Op** run by the existing Op machinery: the `compile-frame` automation, started
   as the first step of a review round (section 3.3), each step recorded and retryable.
 - **The compile Op's committee is composed of senior cogs**: the compile-frame committee is defined on
   the `senior-cogs` group and decides by consensus. Initial seniors: `senior-organization` (knows the
   organization; reads SOPs into rules; signs nothing) and `senior-qa-manager` (the quality system),
   new cogs on Opus with the existing personas. The existing `organization` and `qa-manager` stay as
-  juniors on qwen for day-to-day work (chat, drafting, reviews).
+  juniors on the local model for day-to-day work (chat, drafting, reviews).
 - Seniors are usable only where the administrator has switched hosted models on
   (`HUBPROTO_HOSTED_MODELS`, `ANTHROPIC_API_KEY`, IT SOP); an unavailable senior means the committee
   cannot reach consensus and a person intervenes (a `member-unavailable` question).

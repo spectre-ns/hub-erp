@@ -1,6 +1,6 @@
 ---
 name: write-hub-test
-description: "Write a test the suite's way: the conftest fixtures and helpers, page tests over HTTP, stand-in models and call= fakes, parallel safety, and a test that can fail. Use whenever you add or change a test under tests/."
+description: "Write a test the suite's way: the conftest fixtures and helpers, page tests over HTTP, stand-in models and call= fakes, parallel safety, a test that can fail, and the local-inference suite. Use whenever you add or change a test under tests/ or tests_inference/."
 ---
 
 # Write a hub test
@@ -46,8 +46,8 @@ Pass the person as a parameter: `get(shell, "/inbox", **{"as": "carol"})`; `post
 
 ## Models: stand-in and fakes
 
-- conftest sets `HUBPROTO_ALLOW_STAND_IN=1`: every cog answers with the deterministic stand-in. Never make a test
-  call Ollama or Anthropic.
+- conftest sets `HUBPROTO_ALLOW_STAND_IN=1`: every cog answers with the deterministic stand-in. Never make a test under
+  `tests/` call Ollama or Anthropic (a real model belongs in `tests_inference/`, below).
 - Model readings: pass `call=` to `llm_extract.ModelExtractor` or `CommitteeExtractor`, and to
   `prose_drafting.draft_direct_changes`. The fake is `call(model, system, user) -> str` and returns the JSON the
   model would (see `fake()` in `tests/test_llm_extract.py`); give the extractor `cache_dir=tmp_path / "cache"`. A
@@ -58,6 +58,21 @@ Pass the person as a parameter: `get(shell, "/inbox", **{"as": "carol"})`; `post
   `"MEANING"` (related by meaning), `"PANEL"` (the panel suggestion); signatures are in the comments beside them in
   `hubproto/changecontrol.py`.
 - Hosted models are off unless a test turns them on on purpose: `monkeypatch.setenv("HUBPROTO_HOSTED_MODELS", "on")`.
+
+## Tests on a real model: `tests_inference/`
+
+The rule above holds for `tests/`. A test of what a real model does (does its answer parse, does it follow the output
+format, does it use its tools, how long does it take) goes in `tests_inference/`, the local-inference suite
+(DEV-NOTES.md, "The local-inference suite"), never in `tests/`:
+
+- its `conftest.py` gives `released` (a released hub, Frame files kept), `JUNIOR` (the junior cogs' model, read from
+  cog-profiles), `need(*models)` (skips, saying what to pull, unless Ollama answers and has them), `timed()` (the test's
+  model calls stayed inside a bound) and `raw()` (the raw output so far, for an assertion's message);
+- it does not import `tests/conftest.py` (that would switch the stand-in on);
+- assert properties the hub depends on, not the model's words; never loosen an assertion until a weak model passes:
+  report what it got wrong instead;
+- mark a test that asks a model more than once or reads a whole SOP diff `@pytest.mark.slow`;
+- a hub bug such a test finds is fixed with a stand-in test here in `tests/` that fails without the fix.
 
 ## Parallel safety
 

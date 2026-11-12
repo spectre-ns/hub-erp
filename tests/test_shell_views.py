@@ -342,11 +342,11 @@ def test_people_page_and_cog_profile(shell):
     status, text = get(shell, "/people", **{"as": "alice"})
     assert status == 200 and "<h2>Cogs" in text and 'href="/user/ap-reviewer?as=alice"' in text and 'href="/user/bob?as=alice"' in text
     cog_card = text.split('href="/user/ap-reviewer?as=alice"')[0].rsplit('<div class="card">', 1)[1] + text.split('href="/user/ap-reviewer?as=alice"')[1].split("</div></div>")[0]
-    assert "ollama/qwen3:14b" in cog_card and 'href="/frame/finance-policy?as=alice">finance-policy</a>' in cog_card and "avatar cog" in cog_card
+    assert "ollama/gemma4:12b-it-qat" in cog_card and 'href="/frame/finance-policy?as=alice">finance-policy</a>' in cog_card and "avatar cog" in cog_card
     status, text = get(shell, "/user/ap-reviewer", **{"as": "alice"})
     assert status == 200 and "<h1>ap-reviewer" in text and "payables reviewer" in text and "finance clerk" in text
     about = text.split("About this cog")[1].split("May approve")[0]
-    assert "ollama/qwen3:14b" in about and "Matches supplier bills" in about and 'href="/frame/finance-policy?as=alice">finance-policy</a>' in about
+    assert "ollama/gemma4:12b-it-qat" in about and "Matches supplier bills" in about and 'href="/frame/finance-policy?as=alice">finance-policy</a>' in about
     assert "persona-reviewer" in about and "Derived" in about, "its persona, and what it follows derived from the SOPs"
     assert re.search(r"\d+ model calls? since the hub started", about) and "Version" in about and "Reaches" in about
     assert "up to 2,000.00 USD" in text.split("May approve")[1].split("</ul>")[0]

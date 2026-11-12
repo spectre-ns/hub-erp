@@ -182,8 +182,8 @@ Contributors other than a revision's author may sign only alongside one (chapter
 
 **Item (archived).** The inventory record before parts and lots; readable, never filed or changed again (chapter 4.10).
 
-**Junior cog.** A cog bundled with the local model qwen3:14b, in the junior-cogs group: chat, drafting, reviews and
-approvals within its rails (chapter 6.12).
+**Junior cog.** A cog bundled with the local model gemma4:12b-it-qat (Gemma 4 12B, which reads pictures), in the
+junior-cogs group: chat, drafting, reviews and approvals within its rails (chapter 6.12).
 
 **Ledger (stock).** The events on a lot (received, moved, counted, adjusted, split, merged, quarantined, released,
 scrapped, returned, sent for rework, status changed), each with the lot's resulting quantity, place and status, in the

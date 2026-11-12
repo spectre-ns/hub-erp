@@ -59,7 +59,7 @@ def test_bad_requests_are_refused(released, tools):
     assert "changed nothing" in tools.execute("propose_policy_change", {"frame": "finance-policy", "reason": "x", "ops": "@@ delete: not in the frame"})["error"]
     out = tools.execute("propose_member", {"kind": "person", "name": "erin", "roles": ["wizard"]})
     assert "no such role: wizard" in out["error"]
-    assert "already uses" in tools.execute("propose_cog_model", {"cog": "quality-assistant", "model": "ollama/qwen3:14b"})["error"]
+    assert "already uses" in tools.execute("propose_cog_model", {"cog": "quality-assistant", "model": "ollama/gemma4:12b-it-qat"})["error"]
     assert "not a cog" in tools.execute("propose_cog_model", {"cog": "bob", "model": "ollama/qwen3:8b"})["error"]
 
 
