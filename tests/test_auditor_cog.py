@@ -172,7 +172,7 @@ def test_an_audit_is_filed_without_findings_verdicts_or_actions_by_any_path(rele
                                                                                   "planned": "2026-12-01", key: planted[key]}})
         assert "an audit starts without " + key in res["error"], res
     with pytest.raises(RunError, match="an audit starts without findings, finding_decisions"):
-        hub.runner.submit("internal-audit", {"record": {"title": "x", "processes": ["nonconformance"], **planted}}, owner="bob")
+        hub.runner.submit("internal-audit", {"record": {"title": "x", "processes": ["capa"], **planted}}, owner="bob")
     assert not hub.kernel.query(type_="audit")
 
 
@@ -181,7 +181,7 @@ def test_the_findings_are_the_auditors_and_the_verdicts_the_quality_managers(rel
     rewriting the findings, a rejection with no reason, a verdict signed in someone else's name."""
     hub = released
     ncr = hub.kernel.create("ncr", "Quality/Nonconformances", {"title": "x", "description": "y"}, by="carol")
-    run_id = hub.runner.submit("internal-audit", {"record": {"title": "NCR audit", "processes": ["nonconformance"], "planned": "2026-12-01"}},
+    run_id = hub.runner.submit("internal-audit", {"record": {"title": "CAPA audit", "processes": ["capa"], "planned": "2026-12-01"}},
                                owner="bob")
     good = [{"id": "F-1", "clause": "8.7", "criterion": "c", "found": "f", "evidence": [ncr["number"]], "grade": "minor", "action": "capa"}]
 
@@ -253,7 +253,7 @@ def test_a_finding_is_parsed_into_its_shape_and_its_evidence_must_exist(released
 
 def test_the_gate_refuses_findings_citing_evidence_that_does_not_exist_whatever_path_they_take(released):
     hub = released
-    run_id = hub.runner.submit("internal-audit", {"record": {"title": "NCR audit", "processes": ["nonconformance"], "planned": "2026-12-01"}},
+    run_id = hub.runner.submit("internal-audit", {"record": {"title": "CAPA audit", "processes": ["capa"], "planned": "2026-12-01"}},
                                owner="bob")
     fake = [{"id": "F-1", "clause": "8.7", "criterion": "c", "found": "f", "evidence": ["NCR-2099-0001"], "grade": "minor", "action": "ncr"}]
     with pytest.raises(RunError, match="NCR-2099-0001 does not exist"):
@@ -363,7 +363,7 @@ def test_the_quality_manager_accepts_or_rejects_each_finding_on_the_audit_page(r
 
     hub = released
     ncr = hub.kernel.create("ncr", "Quality/Nonconformances", {"title": "Loose screw", "description": "y"}, by="carol")
-    run_id = hub.runner.submit("internal-audit", {"record": {"title": "NCR audit", "processes": ["nonconformance"], "planned": "2026-12-01"}},
+    run_id = hub.runner.submit("internal-audit", {"record": {"title": "CAPA audit", "processes": ["capa"], "planned": "2026-12-01"}},
                                owner="bob")
     findings = audit.number_findings([
         {"clause": "8.7", "criterion": "Dispositioned within 5 days.", "found": "Late.", "evidence": [ncr["number"]], "grade": "minor", "action": "capa"},
@@ -396,7 +396,7 @@ def test_the_quality_manager_accepts_or_rejects_each_finding_on_the_audit_page(r
 
 def test_only_a_cog_in_the_internal_auditors_seat_can_be_named_the_auditor(released, hosted):
     hub = released
-    run_id = hub.runner.submit("internal-audit", {"record": {"title": "x", "processes": ["nonconformance"], "planned": "2026-12-01",
+    run_id = hub.runner.submit("internal-audit", {"record": {"title": "x", "processes": ["capa"], "planned": "2026-12-01",
                                                              "auditor": "quality-assistant"}}, owner="bob")
     skipped = [e for e in hub.runner.track(run_id) if e["type"] == "gate.skipped"]
     assert skipped and "quality-assistant is a cog that does not hold the internal auditor role" in skipped[0]["reason"]
@@ -502,3 +502,81 @@ def test_only_the_auditor_is_offered_the_audit_tools(released, hosted):
     mine = {s["name"] for s in Agent(released, "auditor").prepare("look", by="carol")["specs"]}
     theirs = {s["name"] for s in Agent(released, "quality-assistant").prepare("look", by="carol")["specs"]}
     assert AUDIT_TOOLS <= mine and not (AUDIT_TOOLS & theirs)
+
+
+# ---------------------------------------------------------------- re-review findings N1 to N5
+def test_the_chain_check_sees_an_in_place_change_to_a_kernel_event(released):
+    hub = released
+    hub.kernel.create("ncr", "Quality/Nonconformances", {"title": "x", "description": "y"}, by="carol")
+    assert audit.audit_checks(hub)["checks"]["chain"]["count"] == 0
+    seq = hub.kernel.db.execute("SELECT MIN(seq) FROM events WHERE chain IS NOT NULL").fetchone()[0]
+    hub.kernel.db.execute("UPDATE events SET by = 'mallory' WHERE seq = ?", (seq,))
+    hub.kernel.db.commit()
+    found = audit.audit_checks(hub)["checks"]["chain"]["findings"]
+    assert any(f["evidence"] == [f"event:{seq}"] for f in found), "the count and the last event did not change: no cache may hide it"
+
+
+def test_the_chain_check_sees_a_same_length_track_edit_with_its_time_put_back(released):
+    import os
+
+    hub = released
+    run_id = hub.runner.submit("task", {"record": {"title": "closed one", "assignee": "alice"}}, owner="alice")
+    assert audit.audit_checks(hub)["checks"]["chain"]["count"] == 0
+    path = hub.runner.root / run_id / "track.jsonl"
+    st = os.stat(path)
+    text = path.read_text()
+    assert '"run.submitted"' in text
+    path.write_text(text.replace('"run.submitted"', '"run.submittex"', 1))
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+    assert os.stat(path).st_size == st.st_size and os.stat(path).st_mtime_ns == st.st_mtime_ns
+    found = audit.audit_checks(hub)["checks"]["chain"]["findings"]
+    assert any(f["evidence"] == [f"track:{run_id}#1"] for f in found), found
+
+
+@pytest.mark.parametrize("process", ["purchase-request", "purchase-to-pay"])
+def test_a_routing_sentence_makes_its_assignee_an_owner(released, process):
+    """"Approvals in purchase-request over 10,000 USD go to the controller.": bob, the controller, owns purchase requests
+    and bills, so he audits neither. An overdue escalation owns nothing."""
+    hub = released
+    b = bundle(hub)
+    assert process in audit.owned_processes(b, "bob")
+    with pytest.raises(RunError, match=f"bob owns {process}"):
+        hub.runner.submit("internal-audit", {"record": {"title": "x", "processes": [process], "planned": "2026-12-01"}}, owner="bob")
+    assert "calibration" not in audit.owned_processes(b, "bob"), "receiving calibration's overdue items is not owning it"
+
+
+def test_record_the_findings_refuses_an_auditor_who_owns_the_process_or_cannot_read_the_evidence(released, monkeypatch):
+    """The Gate's own checks, behind the filing guard: an audit's processes changed after it was filed, and evidence its
+    auditor may not read."""
+    hub = released
+    ncr = hub.kernel.create("ncr", "Quality/Nonconformances", {"title": "x", "description": "y"}, by="carol")
+    good = [{"id": "F-1", "clause": "8.7", "criterion": "c", "found": "f", "evidence": [ncr["number"]], "grade": "minor"}]
+
+    def file():
+        run_id = hub.runner.submit("internal-audit", {"record": {"title": "x", "processes": ["capa"], "planned": "2026-12-01"}},
+                                   owner="bob")
+        return run_id, hub.runner.load(run_id)["record"]
+    run_id, loc = file()
+    hub.kernel.set_fields(loc, {"processes": ["management-review"]}, by="hub")  # behind the filing guard's back
+    with pytest.raises(RunError, match="bob owns management-review"):
+        hub.runner.decide(run_id, "bob", "approve", fields={"findings": good}, meaning="m", payload_digest=seen(hub.runner, run_id))
+    run_id, loc = file()
+    real = audit.reader_for
+    monkeypatch.setattr(audit, "reader_for", lambda b, who: (lambda folder: folder != "Quality/Nonconformances") if who == "bob" else real(b, who))
+    with pytest.raises(RunError, match="may not be read"):
+        hub.runner.decide(run_id, "bob", "approve", fields={"findings": good}, meaning="m", payload_digest=seen(hub.runner, run_id))
+
+
+def test_the_refusal_at_accept_says_what_the_quality_manager_can_do(released):
+    hub = released
+    ncr = hub.kernel.create("ncr", "Quality/Nonconformances", {"title": "x", "description": "y"}, by="carol")
+    run_id = hub.runner.submit("internal-audit", {"record": {"title": "x", "processes": ["capa"], "planned": "2026-12-01"}}, owner="bob")
+    good = [{"id": "F-1", "clause": "8.7", "criterion": "c", "found": "f", "evidence": [ncr["number"]], "grade": "minor"}]
+    hub.runner.decide(run_id, "bob", "approve", fields={"findings": good}, meaning="m", payload_digest=seen(hub.runner, run_id))
+    with pytest.raises(RunError) as e:
+        hub.runner.decide(run_id, "carol", "approve", fields={"findings": [{**good[0], "found": "other"}]}, meaning="m",
+                          payload_digest=seen(hub.runner, run_id))
+    assert "reject a finding that is wrong" in str(e.value) and "ends it as rejected, and file a new one" in str(e.value)
+    assert "send the audit back" not in str(e.value)
+    state = hub.runner.decide(run_id, "carol", "reject", meaning="wrong scope", payload_digest=seen(hub.runner, run_id))
+    assert hub.kernel.get(state["record"])["state"] == "rejected", "as the message says: rejecting ends the audit"

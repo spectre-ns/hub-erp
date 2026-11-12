@@ -599,7 +599,9 @@ management representative. "Accept the findings" has no due date.
 **On reject:** Rejected.
 
 The SOP's "Auditors do not audit processes they own" is enforced: an auditor owns a process when one of its roles
-decides a step in it (starting one, as staff file a nonconformance, is not owning it). An audit is refused when it is
+decides a step in it, or a routing sentence sends a step's decision to them or their role at any threshold ("Approvals
+in purchase-request over 10,000 USD go to the controller."). Starting one (as staff file a nonconformance) is not
+owning it, and neither is receiving its overdue items. An audit is refused when it is
 filed, whoever files it and however (the form, a cog's tools, the library), if its auditor owns a process it names, or
 if it names none (it would audit every process); "Record the findings" refuses it too. An audit is also filed without
 findings, verdicts or actions: each is given at its own step. At "Accept the findings" the findings stand as recorded,

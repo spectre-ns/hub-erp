@@ -17,8 +17,9 @@ For: internal auditors and the quality manager.
 1. Open the **Quality/Audits** board and choose *New audit* (process
    `internal-audit`). Give the title, the planned date, the processes in
    scope (their names as in the policy release, for example
-   `document-control`) and the clauses covered. You are the auditor unless
-   you name another.
+   `nonconformance`) and the clauses covered: never a process you own (one of
+   your roles decides a step in it, or a routing sentence sends one to you).
+   You are the auditor unless you name another.
 2. Submit. The checklist drafter builds one question per step of each process
    in scope from the current policy release. The record waits for you at
    `awaiting-record-the-findings`, due in 30 days.
@@ -30,7 +31,6 @@ For: internal auditors and the quality manager.
    the evidence (record numbers and Track entries) and the grade (major,
    minor, observation, opportunity), and ncr or capa where action is needed.
    A finding with no number, or whose evidence does not exist, is refused.
-   You never audit a process one of your roles decides a step in.
 5. The quality manager receives "Accept the findings": on the audit's page
    they accept or reject each finding (a rejection says why), set the
    `summary` and sign once. Each accepted finding that needs action is raised

@@ -479,7 +479,8 @@ comments nowhere, files no nonconformance and signs nothing within criteria.
 
 **Each month** (`hubproto agent-duties`), it takes the audit SOP's duty: "Every month the auditor cog audits the next
 process in the programme." The programme is every process in the release, the one audited longest ago first, never one
-it owns (internal-audit is its own: its role decides a step in it). It plans the audit (`plan_audit`); the audit then waits for it at "Record the
+it owns (internal-audit is its own: its role decides a step in it; a process whose
+routing sends a decision to it would be its own too). It plans the audit (`plan_audit`); the audit then waits for it at "Record the
 findings", which it works as assigned work:
 
 1. **Exact checks** (`audit_checks`, no model): items waiting past their due date; approvals by whoever prepared the

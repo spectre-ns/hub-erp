@@ -293,7 +293,7 @@ def check_independence(bundle: dict, auditor: str, processes) -> None:
     procs = list(processes or []) or sorted((bundle.get("processes") or {}))
     mine = sorted(set(procs) & owned_processes(bundle, auditor))
     if mine:
-        raise KernelGuardError("audit-independence", f"{auditor} owns {', '.join(mine)} (one of their roles decides a step in it) and does not "
+        raise KernelGuardError("audit-independence", f"{auditor} owns {', '.join(mine)} (they decide a step in it, or a Routing sentence sends one to them) and does not "
                                                      f"audit {'it' if len(mine) == 1 else 'them'} (audit-sop: Auditors do not audit processes "
                                                      "they own); name the processes to audit, and another auditor for these")
 
@@ -324,8 +324,9 @@ def decision_guard(kernel, rec: dict, verdict: str, *, by: str, fields: dict, bu
     if "finding_decisions" in fields and not at_accept:
         raise KernelGuardError("audit-verdicts", "the verdicts on the findings are the quality manager's, given at Accept the findings")
     if "findings" in fields and not at_record and fields["findings"] != f.get("findings"):
-        raise KernelGuardError("audit-findings", "the findings stand as the auditor recorded them at Record the findings; reject the step "
-                                                 "to send the audit back instead")
+        raise KernelGuardError("audit-findings", "the findings stand as the auditor recorded them at Record the findings and are not "
+                                                 "changed here: give your verdict on each (reject a finding that is wrong, saying why), "
+                                                 "or reject the audit, which ends it as rejected, and file a new one")
     criteria = load_clauses(kernel.config_dir)
     try:
         if at_record:
@@ -373,9 +374,21 @@ def decision_guard(kernel, rec: dict, verdict: str, *, by: str, fields: dict, bu
 
 # ---------------------------------------------------------------- who owns what; the programme
 def owned_processes(bundle: dict, member: str) -> set[str]:
-    """The processes a member owns: those in which one of its roles decides a step (a checkpoint, a person's Gate).
-    Starting a process (filing a nonconformance, as staff do) is not owning it. An auditor audits none of them."""
+    """The processes a member owns, which an auditor audits none of:
+
+    - one of its roles decides a step in it (a checkpoint, a person's Gate on a transition); starting one (as staff file
+      a nonconformance) is not owning it;
+    - a Routing sentence sends a step's decision to it, to one of its roles or to a group it is in, at any threshold
+      ("Approvals in purchase-request over 10,000 USD go to the controller." makes the controller an owner of
+      purchase-request).
+
+    Overdue escalations ("Overdue items in X go to the management representative.") are NOT counted: every process has
+    one, and counting them would make whoever receives them own everything. Whether an escalation is ownership is the
+    maintainer's call (issue #25). A route to a field of the record (the auditor, the requester) names no one in advance
+    and is not counted either."""
     roles = authz.roles_of(bundle, member)
+    name_ = authz.principal_name(member)
+    groups = authz.groups_of(bundle, name_)
     out = set()
     for name, proc in (bundle.get("processes") or {}).items():
         if any(s.get("kind") == "checkpoint" and s.get("role") in roles for s in proc.get("steps") or []):
@@ -385,6 +398,13 @@ def owned_processes(bundle: dict, member: str) -> set[str]:
             g = t.get("gate") or {}
             if t.get("type") != "initial" and g.get("kind") == "person" and g.get("role") in roles:
                 out.add(name)
+    for r in bundle.get("routing") or []:
+        cond = r.get("condition") if isinstance(r.get("condition"), dict) else {}
+        if r.get("mode", "assign") != "assign" or cond.get("field") == "overdue" or not r.get("process"):
+            continue
+        kind, _, who = str(r.get("assignee") or "").partition(":")
+        if (kind == "role" and who in roles) or (kind in ("person", "cog") and who == name_) or (kind == "group" and who in groups):
+            out.add(r["process"])
     return out
 
 
@@ -450,23 +470,26 @@ def _routed(track: list[dict], upto: int) -> set[str]:
     return out
 
 
-# What the checks read of each run's Track, kept while the Track is unchanged (its size and time are its head: it is
-# only ever appended to), so a check over a large hub, or a cog paging through one, reads and verifies each Track once.
-_TRACKS: dict[str, tuple[tuple, dict]] = {}
-_KERNEL_CHAIN: dict[str, tuple[tuple, list[str]]] = {}
+# What the checks parsed and verified of each run's Track, kept while the Track's bytes are unchanged (keyed on their
+# hash: a cache must never change what the chain check answers). The kernel's chain is verified afresh every time.
+_TRACKS: dict[str, tuple[str, dict]] = {}
 CACHE_LIMIT = 50000
 
 
 def track_view(hub, run_id: str) -> dict:
-    """{"events", "problems"} of one run's Track: its entries, and what is wrong with its chain or its signatures."""
+    """{"events", "problems"} of one run's Track: its entries, and what is wrong with its chain or its signatures. The
+    cache is keyed on a hash of the file's bytes, so any change to the content (an edit of the same length with its time
+    put back included) is read and verified afresh; only the parsing and verifying of an unchanged Track is saved."""
+    import hashlib
+
     from .track import Track, verify_signature
 
     path = hub.runner._dir(run_id) / "track.jsonl"
     try:
-        st = path.stat()
-        head = (st.st_size, st.st_mtime_ns)
+        raw = path.read_bytes()
     except OSError:
         return {"events": [], "problems": []}
+    head = hashlib.sha256(raw).hexdigest()
     hit = _TRACKS.get(str(path))
     if hit and hit[0] == head:
         return hit[1]
@@ -482,17 +505,6 @@ def track_view(hub, run_id: str) -> dict:
         _TRACKS.clear()
     _TRACKS[str(path)] = (head, view)
     return view
-
-
-def kernel_chain(kernel) -> list[str]:
-    row = kernel.db.execute("SELECT COUNT(*), MAX(seq) FROM events").fetchone()
-    key = (tuple(row), str(kernel.path))
-    hit = _KERNEL_CHAIN.get(str(kernel.path))
-    if hit and hit[0] == key:
-        return hit[1]
-    problems = kernel.verify_chain()
-    _KERNEL_CHAIN[str(kernel.path)] = (key, problems)
-    return problems
 
 
 def audit_checks(hub, process: str | None = None, today: str | None = None, reader=None) -> dict:
@@ -589,7 +601,7 @@ def audit_checks(hub, process: str | None = None, today: str | None = None, read
 
     # The chains.
     if not process:
-        for p in kernel_chain(hub.kernel):
+        for p in hub.kernel.verify_chain():  # never cached: an in-place change shows at once
             if "not chained" not in p:
                 m = re.match(r"event (\d+)", p)
                 out["chain"].append({"found": f"kernel: {p}", "evidence": [f"event:{m[1]}"] if m else []})
