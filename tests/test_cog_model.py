@@ -49,7 +49,7 @@ def test_a_persona_is_a_behaviour_document_shared_by_cogs(released):
     assert rev["stance"] == "reviewer" and rev["tone"] == "formal" and rev["lenses"] == ["compliance", "consistency", "impact"]
     assert rev["passes"] == 3 and rev["escalates"].startswith("when an item is outside its approval criteria")
     assert rev["behaviour"].startswith("You review items against the procedures you follow") and "quoting it" in rev["behaviour"]
-    assert rev["cogs"] == ["ap-reviewer", "doc-reviewer", "quality-assistant"], "one persona, many cogs"
+    assert rev["cogs"] == ["ap-reviewer", "auditor", "doc-reviewer", "quality-assistant"], "one persona, many cogs"
     assert b["personas"]["executor"]["cogs"] == ["it-admin", "purchasing-assistant", "stores"]
     # The cog's merged profile carries its persona's behaviour; lenses drive its adversarial reviews.
     qa = b["cogs"]["qa-manager"]

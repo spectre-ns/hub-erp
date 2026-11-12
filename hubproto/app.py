@@ -150,10 +150,14 @@ class Hub:
 
             # Each member cog reads with its own bundled model, through the gateway (Ollama, or the Anthropic API where
             # hosted models are switched on); a member without one is a question, not skipped.
+            # A picture put in or replaced is read from its bytes in the SOP's documents (issue #31).
+            from . import sopdocs
+
+            pictures = (lambda name, ref: sopdocs.picture_images(self, name, ref)) if self.sop_source() else None
             return CommitteeExtractor(committee["members"], committee["quorum"], cache_dir=Path(self.root) / "state" / "extract-cache",
                                       context=context_for(self), gateway=self.model, calls=calls, baseline=baseline,
                                       unavailable=committee.get("unavailable"), perspectives=committee.get("perspectives"),
-                                      chair=committee.get("chair") or "")
+                                      chair=committee.get("chair") or "", pictures=pictures)
         ex.baseline = baseline
         if not __import__("os").environ.get("HUBPROTO_EXTRACTOR_MODEL"):
             ex.model = self.compiler_model() or ex.model
@@ -305,12 +309,14 @@ class Hub:
 
     def compile(self, scopes: list[str] | None = None, extractor=None, now: str | None = None,
                 overrides: dict[str, str] | None = None, drafts: dict[str, str] | None = None, save: bool = True,
-                by: str | None = None, sop_drafts: dict[str, str] | None = None, from_release: bool = False) -> dict:
+                by: str | None = None, sop_drafts: dict[str, str] | None = None, from_release: bool = False,
+                picture_readings: dict[str, dict[str, list[str]]] | None = None) -> dict:
         """Compile the Frames into a proposal. ``overrides`` are drafts of Frames (name -> text) compiled in place of the
         files, written only when the proposal is released; ``drafts`` names the draft document of each. Drafts already in
         an open proposal on the same base carry forward, so a recompile never drops someone's pending policy change.
         Once the SOPs are documents a compile saved for release compiles the drafts a change order carries
-        (``sop_drafts``) and nothing else (hubproto.closure)."""
+        (``sop_drafts``) and nothing else (hubproto.closure). ``picture_readings`` ({SOP: {picture ref: sentences}}): the
+        readings a change order confirmed for its drafts' pictures, compiled into their text (``picture_reading``)."""
         from . import closure
 
         closure.check_compile(self, save=save, sop_drafts=sop_drafts)
@@ -332,7 +338,7 @@ class Hub:
             # Which Frames: one per document in force, plus a new SOP the change order carries (eco.add_new_sop), minus
             # one it retires (eco.retire_sop: the name with None in ``sop_drafts``). Never the files on disk.
             released = self.released_frames()
-            frames = sopdocs.document_store(self, drafts=sop_drafts or {})
+            frames = sopdocs.document_store(self, drafts=sop_drafts or {}, readings=picture_readings)
             changed = {n: f.text for n, f in frames.frames.items() if n not in released.frames or released.get(n).text != f.text}
             overrides = {**changed, **{n: t for n, t in (overrides or {}).items() if n in frames.frames}}
             drafts = {**{n: loc for n, loc in (sop_drafts or {}).items() if n in changed}, **(drafts or {})}

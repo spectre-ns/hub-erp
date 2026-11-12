@@ -77,14 +77,15 @@ Both are documents under change control: changing a cog's model, persona or Abou
 | **management** | management reviewer | junior-cogs | advisor | ollama/qwen3:14b | nothing |
 | **senior-organization** | policy reader | senior-cogs | advisor | claude-opus-5-5 | nothing: it sits on the compile-frame committee |
 | **senior-qa-manager** | policy reader | senior-cogs | author | claude-opus-5-5 | nothing: it sits on the compile-frame committee |
+| **auditor** | internal auditor | none | reviewer | claude-opus-5-5 | nothing: it runs the internal audit and records findings; the quality manager accepts them (6.14) |
 
-(frames/company/cogs.frame.md, version 2.1.0; frames/company/org-model.frame.md; the `## Members` lines of the
+(frames/company/cogs.frame.md, version 2.2.0; frames/company/org-model.frame.md; the `## Members` lines of the
 purchasing policy, the inventory policy and the design-control SOP; the approval-criteria sentences in the SOPs;
 checked by running the code.)
 
 | Persona | Tone | Stance | Lenses | Passes | Cogs |
 |---|---|---|---|---|---|
-| reviewer | formal | reviewer | compliance, consistency, impact | 3 | ap-reviewer, doc-reviewer, quality-assistant |
+| reviewer | formal | reviewer | compliance, consistency, impact | 3 | ap-reviewer, auditor, doc-reviewer, quality-assistant |
 | author | formal | author | compliance, consistency, impact | 3 | qa-manager, senior-qa-manager |
 | executor | informal | executor | compliance | 1 | it-admin, purchasing-assistant, stores |
 | advisor | formal | advisor | consistency, impact | 2 | management, organization, senior-organization |
@@ -92,7 +93,7 @@ checked by running the code.)
 **Duties** (SOP sentences): every day the quality-assistant (ncr-sop) and the purchasing-assistant (purchasing-policy);
 every week the it-admin reviews the open change orders that touch permissions, record types or forms (it-sop); every
 month the management cog summarises the nonconformances, corrective actions and audit results and comments the summary
-on the open management review (management-review-sop).
+on the open management review (management-review-sop). Every month the auditor cog audits the next process in the programme (audit-sop).
 
 **What is new.** The **it-admin** cog works with bob, who also holds the system-administrator role, under the IT SOP
 (chapter 7.16): it reviews changes that touch permissions, record types, forms, cog profiles and personas. The
@@ -317,7 +318,9 @@ When a cog is assigned an item (chapter 2.7), or a task names it as assignee (ch
 person picking up an assignment (hubproto/workqueue.py, `assigned_work`): it reads the item and the instruction, works
 where the SOPs let it, and reports on the chatter. A step assigned to it it either completes with a summary, which
 becomes its signature's meaning, or hands back to the person who filed the item with the reason. If it does neither,
-for example because its actions wait for confirmation, the step goes back to that person with what it found.
+for example because its actions wait for confirmation, the step goes back to that person with what it found (when a
+cog filed the item, to a person who holds the step's role). An audit's "Record the findings", routed to the auditor,
+is assigned work the same way: the auditor cog completes it with its findings (6.14).
 
 ## 6.8 Agent runs and confirming proposed actions
 
@@ -456,6 +459,8 @@ with `qwen3:14b`, served locally. The groups **senior-cogs** and **junior-cogs**
   bundled with claude-opus-5-5, which this hub cannot use: claude-opus-5-5 needs an Anthropic key (ANTHROPIC_API_KEY)
   ...", even when the key is set and the switch is off (checked by running the code).
 * No permission sentence names either group, and the purchasing-assistant and stores cogs are in neither.
+* The **auditor** cog is senior too (claude-opus-5-5) but is in neither group: the senior-cogs group is the
+  compile-frame committee's membership, and the auditor audits what the committee reads, so it reads no SOP into rules.
 
 ## 6.13 What is recorded of a cog's work
 
@@ -464,3 +469,37 @@ criteria)" or the stand-in), its persona and the persona's version, the profile'
 it its context (a `cog.worked` event; hubproto/cogs.py, `provenance`). The item's history shows it as "*cog* decided at
 its turn: ... · model *x*, persona *y* *v*, trained by release v*n*". A drafted revision records that its lines are the
 qa-manager's, never the person who made the direct change. The prompt itself is not stored on the record.
+
+## 6.14 The auditor cog
+
+The auditor cog holds the **internal auditor** role and nothing else. What it may do is what the audit SOP gives that
+role, so a person holding the role has the same reach: read every folder (Engineering, Finance, Inventory, Policy,
+Purchasing, Quality, Tasks), create and approve audits in Quality/Audits, and create documents there (its report). It
+comments nowhere, files no nonconformance and signs nothing within criteria.
+
+**Each month** (`hubproto agent-duties`), it takes the audit SOP's duty: "Every month the auditor cog audits the next
+process in the programme." The programme is every process in the release, the one audited longest ago first, never one
+it owns (internal-audit is its own: its role decides a step in it; a process whose
+routing sends a decision to it would be its own too). It plans the audit (`plan_audit`); the audit then waits for it at "Record the
+findings", which it works as assigned work:
+
+1. **Exact checks** (`audit_checks`, no model): items waiting past their due date; approvals by whoever prepared the
+   item; decisions by someone the item was not routed to; documents in force whose table names people who were never
+   assigned their training; the kernel's event chain and every run's Track and signatures; clauses no Frame cites, for
+   ISO 9001:2015, ISO 13485:2016, 21 CFR 820 (QMSR) and 21 CFR Part 11 (`config/standard-clauses.json`: numbers and
+   short titles only); audits whose auditor owns a process they audit. Each result cites its evidence.
+2. **Samples** (`sample_records`): a few items of the process, spread over its history, with the Track entries of
+   their decisions, read against the SOP text.
+3. **Findings** (`record_finding`): clause, what was expected, what was found, the evidence, the grade (major, minor,
+   observation or opportunity) and, where action is needed, ncr or capa. Each is checked before it is kept: the clause
+   must be one of the criteria, and every evidence reference (a record number, `track:<run>#<seq>`, `event:<seq>`,
+   `release:<digest>`) must exist; otherwise it is refused, and the Gate refuses it again.
+4. **The report** (`draft_audit_report`): a controlled draft document on the audit with the findings and the checks; a
+   person sends it through document control.
+5. **Completing the step** (`submit_findings`): the findings go onto the audit with the step's completion.
+
+An audit run has a larger, bounded budget: 30 actions and 40 model rounds by default (`HUBPROTO_AUDIT_ACTIONS`,
+`HUBPROTO_AUDIT_ROUNDS`, or a caller's `--actions`; never more than 80 and 100). The checks are computed once per run and paged
+from there, and each Track is read and verified once until it changes; they show only what the auditor's role reads. Without its hosted model the duty stays due and nothing stands in.
+The quality manager then accepts or rejects each finding (3.11); only an accepted finding with an action becomes a
+nonconformance or a CAPA. It is an internal audit against the organization's own SOPs, not a certification.

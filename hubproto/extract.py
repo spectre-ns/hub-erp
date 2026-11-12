@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass, field
 
 from .frames import Frame
-from .office import is_picture_line
+from .office import READING_LINE, is_picture_line
 from .rules import CONDITION_VOCABULARY, NUMBER_WORDS
 
 RULE_SECTIONS = (
@@ -655,7 +655,14 @@ class ConventionExtractor:
             line = raw.strip()
             if not line:
                 continue
-            if is_picture_line(line):  # a picture: no reader reads one yet (a changed one is a question, llm_extract.picture_questions)
+            if is_picture_line(line):  # a picture: the grammar reads none (a changed one is a question, llm_extract.picture_questions)
+                continue
+            reading = READING_LINE.fullmatch(line)  # a sentence of a picture's confirmed reading (hubproto.picture_reading)
+            if reading and section not in RULE_SECTIONS:
+                # Prose, never part of a structure (a process's steps, a cog's profile, a table): the grammar does not read it
+                # here, and a rule-like one nobody read is a question (llm_extract.unread_rule_questions).
+                out.notes.append({"frame": frame.name, "line": n, "text": line,
+                                  "note": "a sentence of a picture's reading; the sentence grammar reads one only in a rule section"})
                 continue
             m = _SCOPE_HEAD.match(line) or _PERSONA_HEAD.match(line) or _COMMITTEE_HEAD.match(line)
             if m:
@@ -873,7 +880,10 @@ class ConventionExtractor:
                 continue
             if section not in RULE_SECTIONS:
                 continue
-            matched = self._match_sentence(line, n, section, add)
+            if reading:  # read as the sentence it is, cited at its whole line (the grounding guard checks the line)
+                matched = self._match_sentence(reading.group(2), n, section, lambda kind, n_, _text, **f: add(kind, n_, line, **f))
+            else:
+                matched = self._match_sentence(line, n, section, add)
             if not matched:
                 note = {"frame": frame.name, "line": n, "text": line, "note": f"unparsed sentence in the {section!r} section"}
                 if section == "validation":

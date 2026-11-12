@@ -37,7 +37,7 @@ from .inbox import parse_eml
 from .kernel import KernelGuardError
 from .release import strip_sources, utcnow
 from .closure import CO_ROUTE
-from .rules import rule_key, CONDITION_VOCABULARY
+from .rules import rule_key, sha256_of, CONDITION_VOCABULARY
 from .runner import RunError
 
 DIGEST = 12
@@ -1209,7 +1209,26 @@ def config_drift(hub: Hub, cur: dict) -> bool:
             print(f"  in force, not in the file: {clean(line)}")
         print(f"to bring a change into force: put it on a change order (hubproto config propose FILE.json --as <person>), then "
               "approve and release the change order")
+    recorded = cur.get("config") or {}  # any other configuration file (the audit's standard clauses): reported only
+    governed = {recordtypes.FILE, *configdocs.DOCS.values()}
+    for name in sorted(hub.kernel.config_digests):
+        if name in governed or name not in recorded:
+            continue
+        current = _config_sha(Path(hub.kernel.config_dir) / name)
+        if current != recorded[name]:
+            differs = True
+            print(f"config/{name} differs from what the release in force, {version_of(hub, cur['digest'])}, recorded: it is used as it "
+                  "is (it is not under change control)")
     return differs
+
+
+def _config_sha(path: Path) -> str:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    data.pop("$comment", None)
+    return sha256_of(data)
 
 
 def cmd_status(args) -> int:

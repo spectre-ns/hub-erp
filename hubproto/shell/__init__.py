@@ -49,6 +49,7 @@ from .automation_ui import AutomationMixin
 from .scopes_ui import ScopesMixin
 from .forms_ui import FormsMixin
 from .inventory_ui import InventoryMixin
+from .audit_ui import AuditMixin
 from .views import ViewsMixin
 from .workflow_ui import WorkflowsMixin
 from ..workqueue import CogWorker
@@ -59,7 +60,7 @@ __all__ = ["Handler", "ShellError", "coerce", "make_server", "serve", "serve_in_
            "when", "why_sentence", "sentence_diff", "widget", "prefill", "chip", "esc", "href", "table"]
 
 
-class Handler(WorkflowsMixin, SettingsMixin, TemplatesMixin, ChangeOrderMixin, ConfigMixin, RecordTypesMixin, CommitteesMixin, EcoMixin, AutomationMixin, ScopesMixin, FormsMixin, InventoryMixin, QueueMixin, PagesMixin, ViewsMixin, InboxMixin, PolicyMixin, ActionsMixin, EditorMixin, MessengerMixin, PolicyDocsMixin, McpMixin, AgentsMixin, NewMemberMixin, BaseHandler):
+class Handler(WorkflowsMixin, SettingsMixin, TemplatesMixin, ChangeOrderMixin, ConfigMixin, RecordTypesMixin, CommitteesMixin, EcoMixin, AutomationMixin, ScopesMixin, FormsMixin, InventoryMixin, AuditMixin, QueueMixin, PagesMixin, ViewsMixin, InboxMixin, PolicyMixin, ActionsMixin, EditorMixin, MessengerMixin, PolicyDocsMixin, McpMixin, AgentsMixin, NewMemberMixin, BaseHandler):
     """The request handler: the plumbing in BaseHandler, the pages and actions in the mixins."""
 
 

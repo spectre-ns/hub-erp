@@ -552,3 +552,25 @@ def test_a_configuration_file_is_carried_from_a_change_order_page(shell):
     assert hub.kernel.get(co["locator"])["fields"]["config_changes"] == got["config_changes"]
     status, url, body = _post_file(shell, "/co-cfg-uncarry", {"as": "alice", "co": co["locator"], "form": "cfg-cfg-1", "change": "cfg-1"}, [])
     assert status == 200 and not hub.kernel.get(co["locator"])["fields"]["config_changes"]
+
+
+def test_the_auditor_cog_and_its_duty_are_in_the_export_and_carried_like_any_rule(hub):
+    doc = exported(hub)
+    assert {"principal": "auditor", "principal_type": "cog", "roles": ["internal-auditor"]} in doc["policy"]["members"]
+    assert {"name": "internal-auditor"} in doc["policy"]["roles"] and entry(doc, "cogs", name="auditor")
+    assert entry(doc, "permissions", subject="role:internal-auditor", action="read", resource="folder:Policy")["effect"] == "allow"
+    duty = entry(doc, "duties", cog="auditor")
+    assert duty["every"] == "month" and "finding_decisions" in doc["record_types"]["audit"]["fields"]
+    duty["every"] = "week"
+    co = hub.kernel.get(configjson.propose(hub, doc, by="bob")["locator"])
+    [it] = co["fields"]["direct_changes"]
+    assert it["op"] == "change" and it["rule"]["kind"] == "duty" and it["rule"]["every"] == "week" and it["was"]["every"] == "month"
+
+
+def test_status_still_reports_the_audit_clauses_file_which_is_not_under_change_control(hub, config_dir):
+    path = config_dir / "standard-clauses.json"
+    data = json.loads(path.read_text())
+    data["default"] = "iso13485"
+    path.write_text(json.dumps(data))
+    rc, out = run_cli(hub.root, "status", "--check")
+    assert rc == 1 and "config/standard-clauses.json differs from what the release in force, v1 (" in out and "it is used as it is" in out

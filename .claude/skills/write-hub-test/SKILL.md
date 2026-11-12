@@ -50,7 +50,10 @@ Pass the person as a parameter: `get(shell, "/inbox", **{"as": "carol"})`; `post
   call Ollama or Anthropic.
 - Model readings: pass `call=` to `llm_extract.ModelExtractor` or `CommitteeExtractor`, and to
   `prose_drafting.draft_direct_changes`. The fake is `call(model, system, user) -> str` and returns the JSON the
-  model would (see `fake()` in `tests/test_llm_extract.py`); give the extractor `cache_dir=tmp_path / "cache"`.
+  model would (see `fake()` in `tests/test_llm_extract.py`); give the extractor `cache_dir=tmp_path / "cache"`. A
+  picture call passes `images=[{"data", "media_type"}]` too: a fake for the committee reading pictures takes
+  `images=None` (see `Seniors` in `tests/test_picture_reading.py`). The stand-in gateway takes pictures for a model
+  that reads them and names each by its hash.
 - Change-order seams: `monkeypatch.setattr(changecontrol, "REVIEWER", fn)` (a cog's review text),
   `"MEANING"` (related by meaning), `"PANEL"` (the panel suggestion); signatures are in the comments beside them in
   `hubproto/changecontrol.py`.

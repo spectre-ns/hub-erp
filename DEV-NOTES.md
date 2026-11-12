@@ -23,6 +23,7 @@ for pytest-xdist, a development-only dependency; without `-n auto` the suite run
 | `hubproto/process_graph.py` | processes as graphs (change control 10.1): compile numbered steps and graph sentences into one shape, read it (options, verdicts, globals), write it back as sentences, the earlier shape's view | core |
 | `hubproto/cogs.py` | Cog catalog (code cogs, context stand-ins, reviewer cogs) | core |
 | `hubproto/groups.py` | groups (listed, by role) and committees (on a group, a chair, consensus): who is in each, resolving a role-like name to a group | core |
+| `hubproto/audit.py`, `hubproto/agent_audit.py`, `hubproto/shell/audit_ui.py` | the internal audit and the auditor cog (issue #25): exact checks from records and the Track, the clause criteria (`config/standard-clauses.json`), findings validated against their evidence (and again at the Gate: `runner.DECISION_FIELD_GUARDS`), the programme, the audit budget, the quality manager's per-finding verdicts, the audit-action-raiser cog; the cog's audit tools; the findings panel on an audit's page | core |
 | `hubproto/org_cog.py` | the organization cog (junior) and the senior cogs of the compile-frame committee | core |
 | `hubproto/inbox.py` | DMs and email to people and cogs | core |
 | `hubproto/cad.py` | CAD/ECAD: FreeCAD and KiCad stdlib extraction, worker client, cad-exporter, bom-reconciler, part-releaser cogs | core |
@@ -367,6 +368,21 @@ From any status except done to Cancelled ("Cancel"): the quality manager.
 * **The compile-frame committee** is defined on the `senior-cogs` group (cogs bundled with `claude-opus-5-5`, change
   control 11.1); `hub.compile_committee()` gives its members with their models, those unavailable (hosted models off, no
   key) and its chair; an unavailable member is a `member-unavailable` question naming the chair, never skipped.
+* **Pictures** (issue #31, `hubproto.picture_reading`): the committee's members read each picture put in or replaced
+  (`CommitteeExtractor.read_pictures`, the picture's bytes from `sopdocs.picture_images`); the reading, its
+  divergences from the prose and the `Process:` section, and each member's answer are on the picture's `unread-rule`
+  question. The chair answers with `answer_question(..., picture="confirm" | "confirm:<member>" | "correct" | "nothing",
+  reading_text=)` ("confirm" only when the members agreed); any answer to a picture's question only while the CO is
+  editable, and an answer that writes lines records no acceptance of the question's warning; the confirmed reading is
+  the CO's `picture_readings` and, from the next compile, lines of the Frame text right after the picture
+  (`> Picture sha256:<12 hex>: <sentence>`), compared with the prose again, in force with the release and kept by an
+  unchanged picture. Whoever confirmed or corrected it wrote SOP text: a contributor (`contributors`) and a maker of
+  every item read from those lines (`_makers`).
+* **Pictures in a model call**: `gateway.complete(..., images=[{"data", "media_type"}])` for a model that reads them
+  (`model.supports_images`: Claude models; an Ollama model whose `/api/show` reports "vision", refused when Ollama does not
+  say; by family, `VISION_FAMILIES`, only where the stand-in answers); any other raises `ImagesNotSupported` with a
+  sentence. Limits are on the base64 size (5 MB a picture, 20 MB a call). The call's record and `prompt_digest` name
+  each picture by its sha256. Fakes: `call(model, system, user, images=None)`.
 
 ## Record types (`config/record-types.json`)
 
@@ -430,7 +446,7 @@ Cog ids available for process steps: record-filer, record-linker, notifier,
 document-renderer, risk-scorer, invoice-extractor, three-way-matcher,
 ledger-poster, document-drafter, document-publisher, ncr-classifier,
 capa-opener, ncr-opener, capa-drafter, effectiveness-scheduler,
-audit-checklist-drafter, document-classifier; reviewer cogs (members):
+audit-checklist-drafter, audit-action-raiser, document-classifier; reviewer cogs (members):
 ap-reviewer, doc-reviewer, quality-assistant.
 
 Workflow bundle shape (change control 10.1): `bundle["workflows"][process] = {process, record_type, form: steps|graph,
