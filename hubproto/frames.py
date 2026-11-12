@@ -24,6 +24,9 @@ except ImportError:  # pragma: no cover - exercised only without PyYAML
 
 REQUIRED_FIELDS = ("type", "name", "description", "visibility")
 _TYPE_RE = re.compile(r"^frame(?: \[(\d+)\.(\d+)\])?$")
+# Line breaks in a Frame's header, as YAML has them: not str.splitlines(), which also breaks at U+2028, U+2029 and U+0085,
+# characters a description may hold and that sopdocs.header_text writes as they are (json.dumps, ensure_ascii=False).
+_LINE_BREAK = re.compile(r"\r\n|\r|\n")
 
 
 class FrameError(ValueError):
@@ -54,8 +57,12 @@ class Frame:
 
     @property
     def file_lines(self) -> list[str]:
-        """Every line of the file, frontmatter included, so index i is file line i+1."""
-        return (self.text or self.body).splitlines()
+        """Every line of the file, frontmatter included, so index i is file line i+1: the header's lines, ended at line
+        breaks only as ``body_start`` counts them (a U+2028 in a description ends no line), then the body's ``lines``,
+        which the rules cite from ``body_start`` on."""
+        if not self.text:
+            return self.body.splitlines()
+        return _LINE_BREAK.split(self.text)[: max(0, self.body_start - 1)] + self.lines
 
     def line(self, n: int) -> str | None:
         """The text on file line n (1-based, as an editor shows it); None when out of range."""
@@ -206,7 +213,7 @@ def _mini_yaml(text: str) -> dict:
     """Parse the flat key/value + simple list subset Frames use."""
     out: dict = {}
     key = None
-    for line in text.splitlines():
+    for line in _LINE_BREAK.split(text):
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         if line.startswith((" ", "\t")) and line.strip().startswith("- "):
@@ -245,6 +252,13 @@ def parse_frontmatter_offset(text: str) -> tuple[dict, str, int]:
     if not isinstance(data, dict):
         raise FrameError("frontmatter must be a mapping of key: value lines")
     return data, body, body_start
+
+
+def header_of(text: str, body_start: int) -> str:
+    """The file lines of a Frame's text before ``body_start`` (its frontmatter, the closing ``---`` and any blank lines
+    after it), as the hub keeps them on a document (``frame_header``). Lines end at line breaks only, as
+    ``body_start`` counts them, so a description holding U+2028 does not push the closing ``---`` out of the header."""
+    return "\n".join(_LINE_BREAK.split(text or "")[: max(0, body_start - 1)])
 
 
 def load_frame(path: Path) -> Frame:

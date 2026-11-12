@@ -2,6 +2,8 @@
 compiled into a proposal, reviewed by the policy owners and written into the Frame when released. A cog profile links
 documents for its prompt and its references, pinned to a version by each release."""
 
+import json
+
 import pytest
 
 from conftest import edit_frame, release_all
@@ -188,3 +190,63 @@ def test_a_quoted_frontmatter_value_reads_its_escapes_without_pyyaml(monkeypatch
     assert data["description"] == said and data["listed"] == [said] and data["inline"] == [said], "top level and lists agree"
     assert data["single"] == "it's" and data["plain"] == "no escapes"
     assert data["win"] == "C:\\path", "an escape JSON has no reading for keeps the old reading"
+
+
+# json.dumps(..., ensure_ascii=False) writes these as they are; str.splitlines() breaks a line at each of them.
+LINE_SEPARATORS = [" ", " ", "\x85"]
+
+
+def _header_text_with(sep: str) -> tuple[dict, str]:
+    from hubproto import sopdocs
+
+    meta = {"type": "frame [0.2]", "name": "x", "description": f"first{sep}second", "visibility": "internal", "version": "1.0.0",
+            "inherits": ["org-model"]}
+    return meta, sopdocs.header_text(meta) + "\n# X\n\nbody\n"
+
+
+@pytest.mark.parametrize("sep", LINE_SEPARATORS, ids=["U+2028", "U+2029", "U+0085"])
+def test_a_line_separator_in_a_description_reads_back_without_pyyaml(monkeypatch, sep):
+    """A description holding U+2028, U+2029 or U+0085 reads back as header_text wrote it (#32): the stdlib subset ends a
+    frontmatter line at a line break only, as YAML does, and the header kept on a document ends with its ``---``."""
+    from pathlib import Path
+
+    import hubproto.frames as frames
+
+    monkeypatch.setattr(frames, "yaml", None)
+    meta, text = _header_text_with(sep)
+    frame = frames.load_frame_text(text, Path("x.frame.md"))
+    assert frame.frontmatter == meta and frame.description == meta["description"]
+    assert frame.body.startswith("# X"), "the body starts after the closing ---"
+    head = frames.header_of(text, frame.body_start)
+    assert head.endswith("\n---") and head + "\n# X\n\nbody\n" == text, "the kept header is the whole frontmatter block"
+
+
+@pytest.mark.parametrize("sep", [" ", " "], ids=["U+2028", "U+2029"])
+def test_a_line_separator_in_a_description_reads_as_pyyaml_reads_it(monkeypatch, sep):
+    """With PyYAML installed the stdlib subset reads the header as PyYAML does. (Not U+0085: PyYAML folds it inside
+    double quotes into a space, so with PyYAML that one does not read back exactly.)"""
+    yaml = pytest.importorskip("yaml")
+    import hubproto.frames as frames
+
+    meta, text = _header_text_with(sep)
+    assert yaml.safe_load(text.split("\n---", 1)[0][3:]) == meta
+    monkeypatch.setattr(frames, "yaml", None)
+    assert frames.parse_frontmatter(text)[0] == meta
+
+
+def test_a_converted_sop_keeps_its_whole_header_when_its_description_holds_a_line_separator(hub):
+    """Converting the SOPs keeps each Frame's header on its document: with a U+2028 in a description the header still
+    ends with its closing ``---``, and the document reads back as the Frame's text."""
+    from hubproto import sopdocs
+
+    said = "Who may file and approve supplier bills, how they are routed, and how purchase-to-pay runs."
+    edit_frame(hub, "finance-policy", "description: Who may file and approve supplier bills, how they are routed, and how "
+               "purchase-to-pay runs.", f"description: {json.dumps(said, ensure_ascii=False)}")
+    assert hub.frames.get("finance-policy").description == said
+    release_all(hub)
+    assert "finance-policy" not in sopdocs.roundtrip_problems(hub), "the header and the body read back as the Frame"
+    sopdocs.convert(hub, by="carol")
+    doc = sopdocs.in_force(hub.kernel, "finance-policy")
+    head = doc["fields"]["frame_header"]
+    assert head.startswith("---\n") and head.endswith("\n---"), f"the stored header lost its closing ---: {head!r}"
+    assert sopdocs.frame_text(hub, doc).startswith(head + "\n# Finance policy")
