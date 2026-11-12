@@ -81,7 +81,7 @@ ALLOWED_CALLS = {
     # reading: the standard library, for a module an allowed one imports lazily (open and openat only read-only, below)
     "read": (0, 63), "pread64": (17, 67), "readv": (19, 65), "close": (3, 57), "lseek": (8, 62), "fstat": (5, 80),
     "stat": (4, None), "lstat": (6, None), "newfstatat": (262, 79), "statx": (332, 291), "getdents64": (217, 61),
-    "getcwd": (79, 17), "readlink": (89, None), "readlinkat": (267, 78), "access": (21, None), "faccessat": (269, 48),
+    "getcwd": (79, 17), "access": (21, None), "faccessat": (269, 48),
     "faccessat2": (439, 439),
     # writing: only to descriptors it already holds (its answer, its standard output)
     "write": (1, 64), "writev": (20, 66),
@@ -96,9 +96,12 @@ ALLOWED_CALLS = {
     "getgid": (104, 176), "getegid": (108, 177), "uname": (63, 160), "getrandom": (318, 278), "getrusage": (98, 165),
     "times": (100, 153), "restart_syscall": (219, 128), "exit": (60, 93), "exit_group": (231, 94),
 }
-# open and openat only to read: no O_WRONLY, O_RDWR, O_CREAT, O_TRUNC or O_APPEND (args[1] for open, args[2] for openat).
+# open and openat only to read: no O_WRONLY, O_RDWR, O_CREAT, O_TRUNC or O_APPEND (args[1] for open, args[2] for openat),
+# and no O_PATH (a descriptor to a path outside, which Landlock does not check). readlink is not on the list either: the
+# trace of the representative run showed CPython needs neither once the filter is in place.
 OPEN_READ_ONLY = {"open": ((2, None), 1), "openat": ((257, 56), 2)}
-OPEN_WRITE_FLAGS = 0o1 | 0o2 | 0o100 | 0o1000 | 0o2000
+O_PATH = 0o10000000
+OPEN_WRITE_FLAGS = 0o1 | 0o2 | 0o100 | 0o1000 | 0o2000 | O_PATH
 # fcntl and ioctl are allowed only for these commands (args[1]); F_SETFL only without O_ASYNC (args[2]), so no
 # F_SETOWN, F_SETOWN_EX, F_SETSIG, F_SETLEASE, F_NOTIFY, FIOSETOWN, SIOCSPGRP or FIOASYNC: no signal to anyone.
 FCNTL = {"fcntl": (72, 25)}

@@ -481,11 +481,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send(self, code: int, obj) -> None:
         data = json.dumps(obj).encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True  # whoever asked has gone: nothing to tell, nothing to log
 
     def do_GET(self):
         if self.path == "/healthz":
@@ -535,6 +538,11 @@ def _answer_busy(request) -> None:
 
 class _Bounded:
     """At most MAX_CONNECTIONS requests served at once; past that, a busy answer from the accepting thread itself."""
+
+    def handle_error(self, request, client_address):
+        if isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError)):
+            return  # the client closed first (a health check that has read enough): not an error worth a traceback
+        super().handle_error(request, client_address)
 
     def _bounded_init(self):
         self._active = 0
@@ -630,7 +638,12 @@ def answers(path: str, within: float = 5.0) -> str:
     try:
         s.connect(path)
         s.sendall(b"GET /healthz HTTP/1.0\r\n\r\n")
-        head = s.recv(64)
+        head = b""
+        while len(head) < 65536:  # the whole answer, so the worker never writes to a closed connection
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            head += chunk
     except OSError as e:
         return f"the worker did not answer on {path} within {within:g} s ({type(e).__name__}: {e})"
     finally:

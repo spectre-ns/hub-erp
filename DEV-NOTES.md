@@ -550,5 +550,6 @@ Tests drive `run_local` and the /invoke server on a socket in `tmp_path`; they n
 never offered over /invoke: `check=False` (no allow-list), `tripwire=False` (no audit hook), `_skip`/`_claim` (a kernel
 layer left out, and said to be there). Not covered: the kernel restrictions need Linux with Landlock and seccomp on
 x86_64 or aarch64 and Landlock ABI 3 or later (elsewhere scripts are refused); Landlock (to ABI 7) does not restrict
-`stat` or `access` of a path, so a run can learn whether a path exists and its size, mode and times, not read it; the
+`stat` or `access` of a path, so a run can learn whether a path exists and its size, mode and times, not read it
+(readlink and `O_PATH` are refused by the run's allow-list); the
 fallback has no container around it.

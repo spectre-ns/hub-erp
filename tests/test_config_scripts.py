@@ -1235,3 +1235,43 @@ result = {"class_text": ("{0." + d + "class" + d + "}").format(())}
     out = scriptcheck.check(t1)
     assert any(".format is not allowed: it reads attributes by names written in the text" in r for r in out), out
     assert any(".gi_frame" in r or "the text" in r for r in out), out
+
+
+# ------------------------------------------------------------------ the fourth review of PR #55 (L1, L2)
+def test_l1_readlink_and_o_path_are_refused_and_the_representative_run_needs_neither():
+    from hubproto import script_sandbox as sb
+
+    assert "readlink" not in sb.ALLOWED_CALLS and "readlinkat" not in sb.ALLOWED_CALLS
+    prog = sb.filter_program("x86_64")
+    assert _bpf(prog, 89) == "deny" and _bpf(prog, 267) == "deny", "readlink, readlinkat"
+    assert _bpf(prog, 257, (-100, 0, sb.O_PATH, 0, 0, 0)) == "deny" and _bpf(prog, 2, (0, sb.O_PATH, 0, 0, 0, 0)) == "deny", "O_PATH"
+    assert _bpf(prog, 257, (-100, 0, 0o2000000, 0, 0, 0)) == "allow", "O_CLOEXEC alone is a read"
+    got = escaped("""
+attempt("readlink", lambda: os.readlink("/etc/localtime"))
+attempt("O_PATH", lambda: os.open("/etc/passwd", 0o10000000))
+attempt("stat (a known limit)", lambda: os.stat("/etc/passwd").st_size > 0)
+""")
+    assert got["readlink"] == "refused PermissionError" and got["O_PATH"] == "refused PermissionError", got
+    assert got["stat (a known limit)"] == "WORKED True", "stat is documented as not covered"
+    test_r1_a_representative_script_runs_under_the_allow_list()
+
+
+def test_l2_a_health_check_leaves_no_traceback_in_the_workers_log(tmp_path, capsys):
+    import socket as socket_
+
+    sock = tmp_path / "w.sock"
+    server = scriptworker.serve_in_thread(socket_path=str(sock))
+    try:
+        for _ in range(5):
+            assert scriptworker.answers(str(sock), 2.0) == ""
+        for _ in range(5):  # a client that asks and goes before reading: handled quietly
+            s = socket_.socket(socket_.AF_UNIX)
+            s.connect(str(sock))
+            s.sendall(b"GET /healthz HTTP/1.0\r\n\r\n")
+            s.close()
+        time.sleep(0.5)
+    finally:
+        server.shutdown()
+        server.server_close()
+    err = capsys.readouterr().err
+    assert "Traceback" not in err and "BrokenPipeError" not in err, err[-600:]
