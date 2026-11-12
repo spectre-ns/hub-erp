@@ -564,7 +564,7 @@ class ChangeOrderMixin:
                 return ("<p><b>Next:</b> carry what it changes: start a revision of an SOP or policy below, make a direct change in "
                         f"<a href='{href('/settings', self.user)}'>Settings</a>, the <a href='{href('/forms', self.user)}'>forms editor</a>, "
                         f"the <a href='{href('/workflows', self.user)}'>workflow editor</a> or on the <a href='{href('/record-types', self.user)}'>record types</a> page, "
-                        "or carry a configuration file (JSON) below. Then request review.</p>")
+                        "or carry a configuration file (JSON) or run a configuration script below. Then request review.</p>")
             first = "when the revisions say what you mean, request review" if eco.carried(self.hub, co) else "request review"
             return (f"<p><b>Next:</b> {first}. Round 1 compiles the delta from the prose, drafts "
                     "the prose for direct changes, suggests the panel and asks it.</p><div class='actions'>" + self._co_request_form(ctx, False) + "</div>")
@@ -612,6 +612,7 @@ class ChangeOrderMixin:
         out += self._forms_co_section(co, ctx["mine"], prep)
         out += self._co_rt_html(ctx)
         out += self._co_config_html(ctx)  # link vocabulary, retention classes, and a configuration file to carry (issue #33)
+        out += self._co_scripts_html(ctx)  # configuration scripts: each run, its output, and a script to submit (issue #34)
         wfc = f.get("workflow_changes") or {}
         if wfc:
             out += (f"<h3>{icon('workflow')}Workflows</h3><p>{len(wfc)} workflow change(s): {esc(', '.join(sorted(wfc)))}; drawn under "

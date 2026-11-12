@@ -6,7 +6,9 @@
 # the entrypoint copies them into an empty /hub/frames on a hub's first start only.
 FROM python:3.14-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 HUBPROTO_ROOT=/hub
+# HUBPROTO_DEPLOYED: a hub run from this image is deployed: it runs a configuration script only in the script worker
+# (HUBPROTO_SCRIPT_WORKER_URL), never in a local subprocess (issue #34). Unset it only for a development hub.
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 HUBPROTO_ROOT=/hub HUBPROTO_DEPLOYED=1
 WORKDIR /hub
 
 RUN useradd --create-home --uid 1000 hub
@@ -16,6 +18,8 @@ COPY frames /usr/local/share/hubproto/frames
 COPY --chown=hub:hub profiles ./profiles
 COPY --chown=hub:hub config ./config
 COPY --chown=hub:hub examples ./examples
+# The configuration document's JSON Schema: a script's output is held to it (hubproto.schemacheck).
+COPY --chown=hub:hub docs/design/config-json.schema.json ./docs/design/config-json.schema.json
 COPY --chown=hub:hub docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN pip install --no-cache-dir -e . && chmod +x /usr/local/bin/entrypoint.sh \
     && mkdir -p /hub/state /hub/frames && chown hub:hub /hub/state /hub/frames

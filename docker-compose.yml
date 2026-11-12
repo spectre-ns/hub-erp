@@ -13,9 +13,14 @@ services:
       # development hub (its own project, hub-dev, with its own containers, image tag and ports; see its header).
       # It never replaces this volume for the live hub.
       - hub-frames:/hub/frames
+      # The script worker's socket, read-only here: the hub connects to it and can put nothing beside it.
+      - script-worker-socket:/run/script-worker:ro
     environment:
       HUBPROTO_ROOT: /hub
       HUBPROTO_CAD_WORKER_URL: http://cad-worker:9000
+      # Configuration scripts (issue #34) run only in the script-worker service below, reached over its Unix socket. The
+      # image sets HUBPROTO_DEPLOYED=1, so without this the hub refuses to run a script rather than run one beside itself.
+      HUBPROTO_SCRIPT_WORKER_URL: unix:///run/script-worker/worker.sock
       # Largest request body the shell accepts (bytes); larger uploads get 413.
       HUBPROTO_MAX_UPLOAD: "26214400"
       # The integrated editor (Collabora Online, WOPI): where the browser reaches the editor, where the editor
@@ -41,6 +46,7 @@ services:
     depends_on:
       - cad-worker
       - collabora
+      - script-worker
     restart: unless-stopped
 
   # Ollama on this machine listens on 127.0.0.1 only; this relay listens on the Docker bridge address (what
@@ -130,6 +136,49 @@ services:
       - "9000"
     restart: unless-stopped
 
+  # Configuration scripts (issue #34): a person's script runs here, once, and its output goes on a change order.
+  # The operating system is the boundary:
+  #   - network_mode none: no interface but loopback, so it reaches nothing, the hub included (on a shared network it
+  #     could reach the hub's port 8080). The hub reaches it over a Unix socket on the script-worker-socket volume
+  #     (a 1 MB tmpfs owned by the worker's user), mounted read-only in the hub;
+  #   - a read-only root with a small noexec tmpfs for the runs' temporary folders; no hub state, no secrets, no
+  #     Docker socket, no other volume;
+  #   - every capability dropped, no-new-privileges, an unprivileged user (10001);
+  #   - a seccomp allow-list (docker/script-worker/seccomp.json: socket only for AF_UNIX; no connect, ptrace, mount,
+  #     unshare, setns or bpf), and inside each run a stricter filter of its own (no execve, fork or socket at all);
+  #   - pids, memory and CPU limits for the container, and per run hard rlimits, a timeout and an output cap.
+  # It is long-running, with a fresh subprocess and temporary folder per run: a fresh container per run would need a
+  # launcher holding the Docker socket (issue #35, decision 1), and the hub must never hold it.
+  script-worker:
+    build:
+      context: .
+      dockerfile: docker/script-worker/Dockerfile
+    image: hub-erp-script-worker:local
+    container_name: hub-erp-script-worker
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777,noexec,nosuid,nodev
+    volumes:
+      - script-worker-socket:/run/script-worker
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./docker/script-worker/seccomp.json
+    user: "10001:10001"
+    ipc: none
+    pids_limit: 16
+    mem_limit: 768m
+    memswap_limit: 768m
+    cpus: 1.0
+    ulimits:
+      nofile: 256
+      core: 0
+    environment:
+      HUBPROTO_SCRIPT_SOCKET: /run/script-worker/worker.sock
+    restart: unless-stopped
+
   # One-off escalation tick for SLAs; run with: docker compose run --rm tick
   tick:
     image: hub-erp-proto:local
@@ -142,3 +191,9 @@ services:
 volumes:
   hub-state:
   hub-frames:
+  # Holds only the script worker's Unix socket: a small tmpfs, owned by the worker's user, gone when stopped.
+  script-worker-socket:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "size=1m,uid=10001,gid=10001,mode=0755"

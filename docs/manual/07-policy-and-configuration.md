@@ -216,6 +216,7 @@ sentence "Configuration changes only through a change order: open one under Qual
 | Settings, the workflow editor, the forms editor, the record types page, a cog's **Change model**, **Add someone** | the change is recorded on a change order as a direct change (7.7, 7.12 to 7.14; chapter 6.10) |
 | `hubproto record-types carry CO-...` | carries a record-type change on that change order (7.14) |
 | `hubproto config propose FILE.json`, a change order's **Propose a configuration file (JSON)** | carries what an edited export changes on a change order, by the paths above; refused with every reason and nothing carried when any part cannot be (7.14) |
+| `hubproto config propose SCRIPT.py`, a change order's **Run a configuration script (Python)** | runs the script once, in the script worker, and carries its output as a configuration file is carried; the script and its output are kept on the change order (7.14) |
 
 An edit to a `.frame.md` file on disk is not policy: `hubproto status --check` reports it ("they are not used: the
 Frame is compiled from the SOP documents") and exits 1. So does a `config/record-types.json` that differs from the
@@ -900,6 +901,39 @@ are preparing. What it changes is carried exactly as the same edit made in Setti
 types page would be (rules become direct changes whose prose the review round writes into the SOP), with the same
 review, widenings and signature. A file exported before another release came into force is refused ("export again"),
 and so is anything that cannot be carried, with nothing carried. The format: docs/design/config-json.md.
+
+**Configuration scripts.** For a change that is easier to compute than to type (forty members, a threshold retuned in
+every SOP), write a short Python script instead. It reads the configuration in force as `config` (the document above)
+and leaves what it proposes in `result`: the whole document, or only the parts it changes, with the `schema`, `hub`,
+`release` and `versions` it read. For example:
+
+```python
+th = next(e for e in config["policy"]["thresholds"] if e["name"] == "purchase-approval-threshold")
+th["value"] = 8000.0
+result = {k: config[k] for k in ("schema", "hub", "release", "versions")}
+result["policy"] = {"thresholds": config["policy"]["thresholds"]}
+```
+
+Submit it with `hubproto config propose tune.py --as carol [--co CO-...]`, or **Run a configuration script (Python)**
+under **What it carries** on a change order you are preparing. What happens:
+
+1. The hub checks the script first and refuses, naming the line, an import other than json, math, re, datetime,
+   decimal, collections, itertools, functools, statistics, string and typing; `eval`, `exec`, `compile`, `__import__`,
+   `open`, `globals`, `locals`, `vars`; `getattr`, `setattr` or `delattr` with a computed name; and any `__dunder__`
+   name or attribute ("Line 2: import os is not allowed: ...").
+2. It runs once, in the **script worker**: a container of its own with no network, a read-only file system, no
+   privileges and nothing of the hub's in it, under limits of time, memory, processor and output. A script that tries
+   to start a program, open a connection or a file, or reach Python's internals is stopped, and the change order says
+   what it tried. A development hub without the worker runs it in a local subprocess with the same limits, and the
+   change order says **weaker isolation**; a deployed hub refuses to.
+3. Its output is read as data, exactly as an uploaded configuration file: checked against the format and carried, or
+   refused with every reason and nothing carried.
+
+The change order keeps every run: the script and its sha256, the digest of the configuration it read, its output, what
+it printed, where it ran and why it stopped. Reviewers and approvers see all of it under **Configuration scripts**, with
+the changes it carried decided item by item like any other. The release applies the output that was signed and never
+runs the script again. Only a person submits a script; no cog may write or run one. A run recorded after a review round
+needs another round, like any change to what the change order carries.
 
 ## 7.15 Roles and responsibilities, and required training
 

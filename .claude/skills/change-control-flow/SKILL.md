@@ -18,7 +18,7 @@ first three.
 
 | Stage | What happens | Where |
 |---|---|---|
-| preparing | carry SOP revisions, new or retired SOPs; direct changes from Settings and the editors; form, record-type, workflow, link and retention changes; or a whole JSON document (`configjson.propose`) | `eco.add_sop`, `eco.add_new_sop`, `eco.retire_sop`; `changecontrol.add_direct_change`, `rules_to_change_order` (Settings); `configdocs.carry`; pages in `shell/change_order_ui.py` |
+| preparing | carry SOP revisions, new or retired SOPs; direct changes from Settings and the editors; form, record-type, workflow, link and retention changes; or a whole JSON document (`configjson.propose`), or a configuration script's output (`scripts.propose`: checked, run once in the script worker, its output carried by `configjson.propose`, the run kept in `config_scripts`) | `eco.add_sop`, `eco.add_new_sop`, `eco.retire_sop`; `changecontrol.add_direct_change`, `rules_to_change_order` (Settings); `configdocs.carry`; pages in `shell/change_order_ui.py` |
 | in-review | a **review round**: `request_review` starts the `compile-frame` automation job | `changecontrol.request_review`, `automation.start` |
 | revising | answer questions, accept or reject suggestions, request review again | `answer_question`, `accept_suggestion`, `reject_suggestion` |
 | awaiting-approval | `send_for_approval` (requester or a document controller) once `send_reasons` is empty: the CO is frozen and sealed, and the change-order process waits at the quality manager's Gate; approvers decide each delta item | `send_for_approval`, `decide_item`, `accept_warning` |
@@ -103,6 +103,10 @@ applies what was signed.
   sentence shapes only. Test the committee with `call=` fakes (skill `write-hub-test`), not a served hub.
 - A cog never signs a change order and never reviews a change that widens its own authority; keep both true in
   any new path (`r_check`, `round_panel`).
+- A configuration script (issue #34) is never run by the release: the release applies what its output carried. Keep
+  every release step free of `hubproto.scripts`; `config_scripts` is part of `content_digest` (key `scripts`, one of
+  `OPTIONAL_KEYS`), so a run recorded after a round or after sending is caught. Only a person submits one
+  (`scripts.refuse_cog`); tests: `tests/test_config_scripts.py`.
 - Tests for this loop: `tests/test_change_control.py`, `test_change_control_integrity.py`,
   `test_change_control_documents.py`, `test_change_order_pages.py`, `test_widening.py`, `test_automation.py`,
   `test_committees.py`, `test_committee_pages.py`, `test_validation.py`, `test_eco.py`.

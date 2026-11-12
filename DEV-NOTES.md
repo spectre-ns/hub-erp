@@ -36,6 +36,11 @@ for pytest-xdist, a development-only dependency; without `-n auto` the suite run
 | `hubproto/recordtypes.py` | record types under change control: the record types in force (`state/record-types`), changes carried on change orders (`carry`, `carried_reasons`, `delta_items`, `activate`), the file's drift | core |
 | `hubproto/configdocs.py` | the link vocabulary and the retention classes under change control, as record types are: what is in force (`state/config/links`, `state/config/retention`), changes carried on change orders (`config_changes`: `carry`, `carried_reasons`, `delta_items`, `activate`), the files' drift | core |
 | `hubproto/configjson.py` | the configuration in force as one JSON document (`export`, `dumps`; format in docs/design/config-json.md) and a document proposed on a change order (`plan`, `propose`: through Settings' direct changes, `recordtypes.carry`, `formlayout.carry`, `configdocs.carry`; all or nothing) | core |
+| `hubproto/scripts.py` | configuration scripts on a change order (issue #34): `propose` (a person only; allow-list check, run in the script worker or, on a hub not deployed, a local subprocess labelled weaker isolation; output parsed, held to the schema and carried by `configjson.propose`; each run kept in the CO's `config_scripts`), `where_it_runs`, `run`, the worker client (`unix://` or `http://`) | core |
+| `hubproto/scriptcheck.py` | the `ast` allow-list check of a script, in the hub, before anything is sent (imports, eval/exec/open, computed getattr, dunder and frame attributes); each refusal names its line | core |
+| `hubproto/scriptworker.py` | the script worker (its own image, docker/script-worker): /invoke envelope seam on a Unix socket; `run_local`: one fresh `python -I -S -B` subprocess per run, empty temp folder, PATH only, timeout, output cap | core |
+| `hubproto/script_sandbox.py` | the run's own process (never imported by the hub): hard rlimits, a seccomp filter (no execve, fork, socket, ...), an audit-hook tripwire, restricted builtins, then the script | core |
+| `hubproto/schemacheck.py` | a document held to `docs/design/config-json.schema.json` (the keywords it uses), standard library only | core |
 | `hubproto/cli_dev.py`, `hubproto/dev_demo.py`, `hubproto/__main__.py` | `python -m hubproto`; CLI verbs `dev serve`, `dev list`, `dev stop`, `dev clean` (`register(sub)`): development hubs on localhost, the registry, ports; the demo data a served hub gets | dev tooling |
 | `hubproto/cli_recordtypes.py` | CLI verbs `record-types status`, `show`, `carry` (`register(sub)`) | cli agent |
 | `hubproto/cli_config.py` | CLI verbs `config export`, `config propose` (`register(sub)`) | cli agent |
@@ -96,6 +101,15 @@ what in your final report and work around it meanwhile.
   or nothing to carry, 1 refused (every reason printed, nothing carried; not JSON, a repeated key, a number that is not
   finite, a look-alike name, a document from another hub or with stale or missing versions included), 2 no such file. The format is
   docs/design/config-json.md (and its JSON Schema, config-json.schema.json).
+* `config propose SCRIPT.py --as PERSON [--co CO]` (or `--script FILE`) runs a configuration script (issue #34): the
+  allow-list check (exit 1 with the lines refused), one run in the script worker (`HUBPROTO_SCRIPT_WORKER_URL`,
+  `unix:///run/script-worker/worker.sock` in compose) or, with no worker on a hub that is not deployed, a local
+  subprocess with the same limits, filter and tripwire, labelled weaker isolation; a deployed hub (`HUBPROTO_DEPLOYED=1`,
+  set by the hub's Dockerfile) refuses that. The script reads `config` (the export) and leaves `result` (the whole
+  document or a part, with `schema`, `hub`, `release` and `versions`); its output is carried as `config propose
+  FILE.json` carries a document, and the run (script, sha256, snapshot digest, output, run record) is kept on the
+  change order's `config_scripts`, part of its content digest. The release applies what was carried; it never runs a
+  script. See docs/design/config-paths.md and docs/manual/07-policy-and-configuration.md 7.14.
 * Once the SOPs are documents a configuration change outside a change order is refused by the hub
   (`closure.ChangeOrderRequired`, a `CompileError`): the verbs exit 1 with a sentence ending "Configuration changes only
   through a change order: open one under Quality > Change orders." (`compile`, `review`, `release`,
@@ -502,3 +516,24 @@ BOM lines to `item` records by MPN and manufacturer and attaches proposals for
 unknown lines. `part-releaser` creates or revises the `part` after the design
 authority's approval. The worker answers with synthetic exports when
 `HUBPROTO_CAD_FAKE=1` (tests, and `CAD_TOOLS=none` images).
+
+## Configuration scripts and the script worker (issue #34)
+
+A script is a generator of a proposed change: its output, never the script, goes on the change order. Layers, outside
+in:
+
+| Layer | Where | What it stops |
+|---|---|---|
+| `ast` allow-list | `scriptcheck.check`, in the hub (and again in the worker) | imports off the list, eval/exec/compile/`__import__`/open, computed getattr, dunder and frame attributes, `string.Formatter`; a sentence per line, before anything runs |
+| the container | `docker-compose.yml` `script-worker` | `network_mode: none` (it reaches nothing, the hub included; the hub reaches it over a Unix socket on a tmpfs volume mounted read-only in the hub), read-only root, `cap_drop: ALL`, no-new-privileges, uid 10001, pids/memory/CPU limits, no hub state, secrets or Docker socket |
+| the container's seccomp profile | `docker/script-worker/seccomp.json` | an allow-list: socket only for AF_UNIX; no connect, ptrace, mount, unshare, setns, bpf, execveat, module loading |
+| the run's own seccomp filter | `script_sandbox.install_kernel_filter` (ctypes, before the script) | execve, execveat, fork, vfork, clone, socket, connect, kill, ptrace, mount, unshare, setns, bpf, ... return EPERM: the "no execve after start" a container profile cannot say |
+| rlimits, timeout, output cap | `script_sandbox.main`, `scriptworker.run_local` | CPU seconds, address space, file size, open files, no processes; wall-clock timeout; at most `output_bytes` back; excerpts cut at `excerpt_chars` |
+| audit-hook tripwire | `script_sandbox.main` (`sys.addaudithook`) | os.system, subprocess, exec/spawn/fork, socket, ctypes, open for writing outside the temp folder (or reading outside it and the standard library), imports off the list, frame introspection: the run ends and the change order records why |
+
+The worker is long-running with a fresh subprocess and temp folder per run: a fresh container per run needs a launcher
+holding the Docker socket (issue #35, decision 1), and the hub never holds it. Tests drive `run_local` and the /invoke
+server on a socket in `tmp_path`; they need no Docker. `scriptworker.run_local(check=False)` (tests only, never over
+/invoke) skips the allow-list to show the tripwire and limits hold behind it. Not covered: the audit hook is not a
+sandbox (PEP 578); the local subprocess has no container around it (labelled); the kernel filter needs Linux on x86_64
+or aarch64 (elsewhere the run says "unavailable").
