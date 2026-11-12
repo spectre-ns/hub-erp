@@ -220,16 +220,23 @@ changed) stops the job with "unknown step". The steps of change control:
 - **Reading a picture** (issue #31): at compile, each senior cog of the compile-frame committee
   reads each picture put in or replaced, from its bytes in the SOP's document
   (`sopdocs.picture_images`, PNG, JPEG, GIF or WebP), through the model gateway with the picture
-  as an image (`model.prepare_images`; a member whose model reads text only is refused with a
-  sentence, and the picture stays unread). It writes what the picture states (sentences, the
+  as an image (`model.prepare_images`; a member whose model reads text only, or an Ollama model
+  Ollama does not say reads pictures, is refused with a sentence, and the picture stays unread). It writes what the picture states (sentences, the
   steps and who does each, the rules it states); the answer is data, parsed and guarded as a
   prose reading is (`picture_reading.parse`: one plain sentence a line, each rule built and
   validated and quoting one of its sentences), compared between members (`agreed`) and with the
   SOP (`divergences`: a rule the prose states otherwise or not at all, a step the `Process:`
   section does not have, has done by someone else or in another order). Each divergence is a
   warning on the compile and a line of the picture's question, which stays open and blocking.
-  The committee's chair answers it (`changecontrol.answer_question(picture=...)`): confirm the
-  reading, correct it, or say the picture states nothing (a divergence may also be recorded).
+  The committee's chair (or a system administrator) answers it (`changecontrol.answer_question(picture=...)`):
+  confirm the reading (only when the members read it the same way; otherwise one member's reading,
+  chosen by name), correct it, or say the picture states nothing (a divergence may also be
+  recorded). A picture's answer is given only while the change order is editable. Whoever
+  confirms or corrects a reading writes SOP text: they are a contributor of the change order and
+  a maker of every item read from its lines, so they never approve those items alone. At the next
+  compile the reading in the text is compared with the prose again, and its divergences are
+  warnings and words of the question; a confirmed reading's divergences are also in the signed
+  answer.
   - **Where the reading lives:** in the Frame text, one line per sentence right after the
     picture's line, `> Picture sha256:<first 12 hex of its hash>: <sentence>`
     (`office.reading_line`). The release digest covers it (it is in the text the bill of

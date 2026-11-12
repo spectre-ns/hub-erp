@@ -1205,9 +1205,13 @@ class ChangeOrderMixin:
         out = "<fieldset><legend>What the picture states</legend>"
         if reading.get("divergences"):
             out += "<p class='why' style='margin:0'>It differs from the prose: " + esc("; ".join(reading["divergences"])) + ".</p>"
-        if reading:
+        if reading and reading.get("agreed", True):
             out += opt("confirm", "Confirm the committee's reading" + (" (it states nothing)" if reading.get("states_nothing") else
                                                                        ": it becomes part of the SOP's text, after the picture"))
+        elif reading:  # the members read it differently: the person chooses whose reading is meant, by name
+            for r in reading.get("readings") or []:
+                said = "it states nothing" if r.get("states_nothing") else "“" + " ".join(r.get("sentences") or []) + "”"
+                out += opt(f"confirm:{esc(r.get('member') or '')}", f"Confirm {esc(r.get('member'))}'s reading: {esc(said)}")
         out += opt("correct", "Correct it: the reading below becomes part of the SOP's text, after the picture")
         out += opt("nothing", "The picture states nothing (a photo, a logo, a label)")
         return (out + f"<label class='f'><span>The reading, one sentence a line</span><textarea name='reading_text' rows='4'>{esc(text)}</textarea></label>"

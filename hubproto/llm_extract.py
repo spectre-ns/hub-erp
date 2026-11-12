@@ -1066,10 +1066,17 @@ class CommitteeExtractor:
             line = int(q.get("line") or 0)
             where = f"line {line}" if len(q.get("lines") or [line]) == 1 else "lines " + ", ".join(map(str, q["lines"]))
             confirmed = pr.reading_after(frame, line)
-            if confirmed:
+            if confirmed:  # confirmed (or corrected) on this change order: not read again, but compared with the SOP again
+                at = {n + k for n in (q.get("lines") or [line]) for k in range(1, len(confirmed) + 1)}
+                said = [r for r in out.rules if (r.get("source") or {}).get("frame") == frame.name and (r.get("source") or {}).get("line") in at]
+                divs = pr.divergences(frame, line, {"rules": said, "steps": []}, known)
                 q["confirmed_reading"] = confirmed
+                q["confirmed_divergences"] = divs
                 q["text"] = (f"The picture {q['quote']} ({where}) is not in the SOP's text in force. Its reading, as confirmed on this change "
-                             "order, follows it in the SOP's text: “" + " ".join(confirmed) + "”.")
+                             "order, follows it in the SOP's text: “" + " ".join(confirmed) + "”"
+                             + (". It differs from the prose: " + "; ".join(divs) if divs else "") + ".")
+                for d in divs:
+                    out.notes.append({"frame": frame.name, "line": line, "text": q["quote"], "severity": "warning", "note": f"divergence: {d}"})
                 continue
             ref = m.group(2) if m else ""
             why = ""

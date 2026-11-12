@@ -340,20 +340,38 @@ ANSWERS = {"confirm": "the committee's reading of the picture is confirmed", "co
            "nothing": "the picture states nothing"}
 
 
+def kind_of(how: str) -> str:
+    """The kind of a picture answer: "confirm" (the committee's reading; "confirm:<member>" one member's), "correct" or
+    "nothing"; '' when it is none of them."""
+    k = str(how or "").split(":", 1)[0]
+    return k if k in ANSWERS else ""
+
+
 def answer_lines(q: dict, how: str, text: str = "") -> list[str]:
     """The sentences a person's answer to a picture question puts after the picture: the committee's reading
-    (``confirm``), the person's own (``correct``: one sentence a line), or none (``nothing``). Raises ValueError with a
-    sentence when the answer cannot stand."""
-    if how not in ANSWERS:
+    (``confirm``, only when every member read it the same way), one member's reading chosen by name (``confirm:<member>``,
+    where they read it differently), the person's own (``correct``: one sentence a line), or none (``nothing``). Raises
+    ValueError with a sentence when the answer cannot stand."""
+    kind = kind_of(how)
+    if not kind:
         raise ValueError(f"a picture's question is answered with {', '.join(ANSWERS)}")
-    if how == "nothing":
+    if kind == "nothing":
         return []
-    if how == "confirm":
+    if kind == "confirm":
         reading = q.get("reading") or {}
         if not reading:
             raise ValueError("nobody has read this picture, so there is no reading to confirm: write the reading (correct it), "
                              "or say the picture states nothing")
-        return [] if reading.get("states_nothing") else list(reading.get("proposed") or [])
+        member = how.split(":", 1)[1] if ":" in how else ""
+        if not member:
+            if not reading.get("agreed", True):
+                raise ValueError("the committee's members read this picture differently, so there is no one reading to confirm: "
+                                 "choose whose reading is meant, write the reading (correct it), or say the picture states nothing")
+            return [] if reading.get("states_nothing") else list(reading.get("proposed") or [])
+        theirs = next((r for r in reading.get("readings") or [] if r.get("member") == member), None)
+        if theirs is None:
+            raise ValueError(f"{member} did not read this picture: choose the reading of one of {', '.join(reading.get('by') or []) or 'nobody'}")
+        return [] if theirs.get("states_nothing") else list(theirs.get("sentences") or [])
     notes: list[str] = []
     lines = clean_sentences(str(text or "").splitlines(), notes)
     if notes:
@@ -361,6 +379,23 @@ def answer_lines(q: dict, how: str, text: str = "") -> list[str]:
     if not lines:
         raise ValueError("write the reading of the picture, one sentence a line (or say the picture states nothing)")
     return lines
+
+
+def confirmers(co: dict) -> dict[tuple[str, str], str]:
+    """{(SOP, the first 12 hex of the picture's hash): who confirmed or corrected its reading} for every reading of the
+    change order that writes SOP text: that person wrote those lines (a contributor, and a maker of what is read from them)."""
+    out = {}
+    for frame, pics in ((co.get("fields") or {}).get("picture_readings") or {}).items():
+        for ref, entry in (pics or {}).items():
+            if (entry or {}).get("lines") and entry.get("by"):
+                out[(frame, short(ref))] = entry["by"]
+    return out
+
+
+def confirmer_of(co: dict, frame: str, text: str | None) -> str:
+    """Who wrote the reading line ``text`` of ``frame`` ('' when it is no reading line of this change order)."""
+    m = READING_LINE.fullmatch(str(text or "").strip())
+    return confirmers(co).get((frame, m.group(1)), "") if m else ""
 
 
 def confirmed_of(co: dict) -> dict[str, dict[str, list[str]]]:

@@ -186,60 +186,77 @@ class ImagesNotSupported(ModelUnavailable):
 
 # ---------------------------------------------------------------- pictures in a call
 IMAGE_TYPES = ("image/png", "image/jpeg", "image/gif", "image/webp")  # what both the Anthropic API and Ollama take
-MAX_IMAGE_BYTES = 5 * 1024 * 1024  # one picture, as the Anthropic API limits it; the hub sends nothing larger
+MAX_IMAGE_B64 = 5 * 1024 * 1024  # one picture as sent (base64), as the Anthropic API limits it; the hub sends nothing larger
+MAX_IMAGES_B64 = 20 * 1024 * 1024  # every picture of one call together, as sent: well inside the API's request limit
 MAX_IMAGES = 20  # pictures in one call
-# Ollama models that read pictures, by family, for an Ollama that does not report a model's capabilities (before 0.6.4)
-# and for a development hub where the stand-in answers in place of an Ollama model.
-VISION_FAMILIES = ("llava", "bakllava", "llama3.2-vision", "llama4", "qwen2.5vl", "qwen2.5-vl", "qwen3-vl", "gemma3", "minicpm-v",
-                   "moondream", "granite3.2-vision", "mistral-small3.1", "mistral-small3.2", "llava-llama3", "llava-phi3")
-_CAPS: dict[str, list[str] | None] = {}
+# Ollama models that read pictures, by family: only for a development hub where the stand-in answers in place of an
+# Ollama model (no Ollama to ask). A real Ollama is asked (``/api/show``); a family never stands in for its answer, as
+# a family may have text-only sizes. Families with text-only sizes (gemma3, llama4) are not listed.
+VISION_FAMILIES = ("llava", "bakllava", "llama3.2-vision", "qwen2.5vl", "qwen3-vl", "minicpm-v", "moondream", "granite3.2-vision",
+                   "llava-llama3", "llava-phi3")
+_CAPS: dict[str, list[str]] = {}  # what Ollama answered, by model; a lookup that failed is not kept (asked again next time)
 
 
 def _ollama_capabilities(name: str) -> list[str] | None:
-    """What Ollama says the model can do (``/api/show``: "completion", "vision", "tools", ...); None when it does not say."""
-    if name not in _CAPS:
-        caps = None
-        try:
-            req = urllib.request.Request(ollama_url() + "/api/show", data=json.dumps({"model": name}).encode("utf-8"), method="POST",
-                                         headers={"content-type": "application/json"})
-            with urllib.request.urlopen(req, timeout=4) as r:
-                got = json.load(r).get("capabilities")
-            caps = [str(c) for c in got] if isinstance(got, list) else None
-        except Exception:
-            caps = None
-        _CAPS[name] = caps
+    """What Ollama says the model can do (``/api/show``: "completion", "vision", "tools", ...); None when it does not say
+    (an Ollama before 0.6.4) or did not answer. Only an answer is cached: Ollama down at start-up is asked again later."""
+    if name in _CAPS:
+        return _CAPS[name]
+    try:
+        req = urllib.request.Request(ollama_url() + "/api/show", data=json.dumps({"model": name}).encode("utf-8"), method="POST",
+                                     headers={"content-type": "application/json"})
+        with urllib.request.urlopen(req, timeout=4) as r:
+            got = json.load(r).get("capabilities")
+    except Exception:
+        return None
+    if not isinstance(got, list):
+        return None
+    _CAPS[name] = [str(c) for c in got]
     return _CAPS[name]
 
 
-def supports_images(model: str) -> bool:
-    """Whether a profile's model reads pictures. It is a fact about the model, not a policy: every Claude model the hub
-    offers does; an Ollama model does when Ollama reports the "vision" capability for it (or, when Ollama does not say,
-    when it is of a family that does, ``VISION_FAMILIES``); the development stand-in takes pictures and names them."""
+def images_refused(model: str) -> str:
+    """Why a picture may not be sent to the profile's model ('' when it may). It is a fact about the model, not a policy:
+    every Claude model the hub offers reads pictures; an Ollama model does only when Ollama reports the "vision"
+    capability for it, and when Ollama does not say (it did not answer, or is too old to report capabilities) the call
+    is refused, never guessed; the development stand-in takes pictures and names them, in place of an Ollama model only
+    of a family that reads pictures (``VISION_FAMILIES``)."""
     model = model or DEFAULT_MODEL
-    if model == DEFAULT_MODEL:
-        return True
-    if model.startswith("claude"):
-        return True
+    if model == DEFAULT_MODEL or model.startswith("claude"):
+        return ""
     name = served_name(model)
     if backend_for(model) == "ollama":
         caps = _ollama_capabilities(name)
-        if caps is not None:
-            return "vision" in caps
+        if caps is None:
+            return (f"Ollama does not say whether {model} reads pictures (it did not answer, or it is a version that does not report "
+                    "a model's capabilities), so it is not asked to read one: try again when Ollama answers, or update Ollama")
+        return "" if "vision" in caps else image_refusal(model)
     base = name.split(":", 1)[0].lower().rsplit("/", 1)[-1]
-    return base in VISION_FAMILIES
+    return "" if base in VISION_FAMILIES else image_refusal(model)
+
+
+def supports_images(model: str) -> bool:
+    """Whether a picture may be sent to the profile's model now (``images_refused``)."""
+    return not images_refused(model)
 
 
 def image_refusal(model: str) -> str:
-    """The sentence a refused picture call says."""
+    """The sentence a picture call to a text-only model is refused with."""
     return (f"{model or DEFAULT_MODEL} reads text only, so it cannot be asked to read a picture: give this work to a cog whose model "
             "reads pictures (a Claude model, or an Ollama model with vision)")
 
 
+def _b64_len(n: int) -> int:
+    return 4 * ((n + 2) // 3)
+
+
 def prepare_images(model: str, images) -> list[dict]:
-    """The pictures of a call, checked: each {"data": bytes, "media_type": one of IMAGE_TYPES}, not empty and not larger
-    than MAX_IMAGE_BYTES, for a model that reads pictures. Returns them with their sha256; raises ImagesNotSupported for a
-    text-only model and ValueError (a sentence) for a picture that cannot be sent."""
+    """The pictures of a call, checked: each {"data": bytes, "media_type": one of IMAGE_TYPES}, not empty, at most
+    MAX_IMAGE_B64 as sent (base64) and MAX_IMAGES_B64 all together, for a model that reads pictures. Returns them with
+    their sha256; raises ImagesNotSupported for a model that may not be sent a picture and ValueError (a sentence) for a
+    picture that cannot be sent."""
     out = []
+    total = 0
     for i, img in enumerate(images or [], start=1):
         data = img.get("data") if isinstance(img, dict) else None
         kind = str((img or {}).get("media_type") or "").lower() if isinstance(img, dict) else ""
@@ -247,13 +264,19 @@ def prepare_images(model: str, images) -> list[dict]:
             raise ValueError(f"picture {i} of the call holds no bytes")
         if kind not in IMAGE_TYPES:
             raise ValueError(f"picture {i} is {kind or 'of no known type'}; a model is sent only {', '.join(IMAGE_TYPES)}")
-        if len(data) > MAX_IMAGE_BYTES:
-            raise ValueError(f"picture {i} is {len(data):,} bytes; a model is sent pictures of at most {MAX_IMAGE_BYTES:,} bytes")
+        sent = _b64_len(len(data))
+        if sent > MAX_IMAGE_B64:
+            raise ValueError(f"picture {i} is {len(data):,} bytes ({sent:,} as sent); a model is sent pictures of at most "
+                             f"{MAX_IMAGE_B64:,} bytes as sent (about {MAX_IMAGE_B64 * 3 // 4:,} bytes of picture)")
+        total += sent
         out.append({"data": bytes(data), "media_type": kind, "sha256": hashlib.sha256(data).hexdigest()})
     if len(out) > MAX_IMAGES:
         raise ValueError(f"a call carries at most {MAX_IMAGES} pictures, not {len(out)}")
-    if out and not supports_images(model):
-        raise ImagesNotSupported(image_refusal(model))
+    if total > MAX_IMAGES_B64:
+        raise ValueError(f"the call's pictures are {total:,} bytes as sent; one call carries at most {MAX_IMAGES_B64:,}")
+    why = images_refused(model) if out else ""
+    if why:
+        raise ImagesNotSupported(why)
     return out
 
 

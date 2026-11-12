@@ -362,13 +362,17 @@ From any status except done to Cancelled ("Cancel"): the quality manager.
 * **Pictures** (issue #31, `hubproto.picture_reading`): the committee's members read each picture put in or replaced
   (`CommitteeExtractor.read_pictures`, the picture's bytes from `sopdocs.picture_images`); the reading, its
   divergences from the prose and the `Process:` section, and each member's answer are on the picture's `unread-rule`
-  question. The chair answers with `answer_question(..., picture="confirm" | "correct" | "nothing", reading_text=)`;
-  the confirmed reading is the CO's `picture_readings` and, from the next compile, lines of the Frame text right after
-  the picture (`> Picture sha256:<12 hex>: <sentence>`), in force with the release and kept by an unchanged picture.
+  question. The chair answers with `answer_question(..., picture="confirm" | "confirm:<member>" | "correct" | "nothing",
+  reading_text=)` ("confirm" only when the members agreed), and only while the CO is editable; the confirmed reading is
+  the CO's `picture_readings` and, from the next compile, lines of the Frame text right after the picture
+  (`> Picture sha256:<12 hex>: <sentence>`), compared with the prose again, in force with the release and kept by an
+  unchanged picture. Whoever confirmed or corrected it wrote SOP text: a contributor (`contributors`) and a maker of
+  every item read from those lines (`_makers`).
 * **Pictures in a model call**: `gateway.complete(..., images=[{"data", "media_type"}])` for a model that reads them
-  (`model.supports_images`: Claude models; an Ollama model whose `/api/show` reports "vision", else by family,
-  `VISION_FAMILIES`); a text-only model raises `ImagesNotSupported` with a sentence. The call's record and
-  `prompt_digest` name each picture by its sha256. Fakes: `call(model, system, user, images=None)`.
+  (`model.supports_images`: Claude models; an Ollama model whose `/api/show` reports "vision", refused when Ollama does not
+  say; by family, `VISION_FAMILIES`, only where the stand-in answers); any other raises `ImagesNotSupported` with a
+  sentence. Limits are on the base64 size (5 MB a picture, 20 MB a call). The call's record and `prompt_digest` name
+  each picture by its sha256. Fakes: `call(model, system, user, images=None)`.
 
 ## Record types (`config/record-types.json`)
 

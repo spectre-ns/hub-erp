@@ -63,7 +63,7 @@ AUTOMATIONS = {
 # apply exactly what was approved and signed.
 MODEL_STEPS = {
     "compile-frame": {"Compile the Frame": "the compile-frame committee's senior cogs read the changed prose and each picture put in or replaced",
-                      "Draft prose for direct changes": "the qa-manager cog drafts the prose for a direct change",
+                      "Draft prose for direct changes": "the qa-manager cog drafts the prose for a direct change (its round trip is read as the compile reads, pictures included)",
                       "Suggest the panel": "the quality-assistant cog suggests the panel from the change-control SOP"},
     "release-change-order": {"Send related changes back": "cogs look for related changes by meaning"},
 }

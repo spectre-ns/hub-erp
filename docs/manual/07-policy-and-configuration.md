@@ -145,8 +145,10 @@ cog profiles on the **senior-cogs** group (the senior-organization and senior-qa
 * **A picture put in or replaced** (a line `![description](sha256:…)` of the SOP's text) is a blocking `unread-rule`
   question too. Each senior cog reads the picture itself, with a model that reads pictures (a Claude model; an Ollama
   model only with vision), and the question says what they read it to state and where that differs from the prose or
-  the `Process:` section. The chair answers: **Confirm the committee's reading**, **Correct it** (the reading, one
-  sentence a line), or **The picture states nothing**. A confirmed reading becomes part of the SOP's text at the next
+  the `Process:` section. The chair answers, while the change order is being revised: **Confirm the committee's
+  reading** (where the members read it differently, **Confirm *member*'s reading**), **Correct it** (the reading, one
+  sentence a line), or **The picture states nothing**. Whoever confirms or corrects a reading has written SOP text: they
+  are a contributor of the change order and never the only approver of what is read from it. A confirmed reading becomes part of the SOP's text at the next
   review round, one line per sentence right after the picture (`> Picture sha256:…: …`), and is released with it; an
   unchanged picture keeps its reading in later revisions and asks nothing. Where nobody could read the picture (hosted
   models off, a senior cog on a text-only model, a linked picture), the question says why, and the chair decides as for
