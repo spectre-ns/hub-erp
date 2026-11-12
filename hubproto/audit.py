@@ -405,6 +405,10 @@ def owned_processes(bundle: dict, member: str) -> set[str]:
         kind, _, who = str(r.get("assignee") or "").partition(":")
         if (kind == "role" and who in roles) or (kind in ("person", "cog") and who == name_) or (kind == "group" and who in groups):
             out.add(r["process"])
+    # A change order's items are decided by the policy owners in change control (``changecontrol._owners``), not by a
+    # runner step or a Routing sentence, so the loops above cannot see it: a policy owner owns the change-order process.
+    if "policy-owner" in roles and "change-order" in (bundle.get("processes") or {}):
+        out.add("change-order")
     return out
 
 
@@ -494,7 +498,14 @@ def track_view(hub, run_id: str) -> dict:
     if hit and hit[0] == head:
         return hit[1]
     track = Track(path.parent)
-    events = track.read()
+    events = []  # parse the very bytes that were hashed (as Track.read does), never a second read of the file
+    for line in raw.decode("utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue  # a torn last line from a crash: that entry never happened
     problems = list(track.verify(events))
     secret = hub.runner.secret()
     for ev in events:

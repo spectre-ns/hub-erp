@@ -434,8 +434,8 @@ def test_the_checks_read_each_track_once_until_it_changes(released, monkeypatch)
         hub.runner.submit("nonconformance", {"record": {"title": f"t{i}", "description": "a safety risk"}}, owner="alice")
     audit.audit_checks(hub)
     reads = []
-    real = track_module.Track.read
-    monkeypatch.setattr(track_module.Track, "read", lambda self: reads.append(self.path) or real(self))
+    real = track_module.Track.verify  # verified once per change; the view parses the bytes it hashed, not Track.read
+    monkeypatch.setattr(track_module.Track, "verify", lambda self, events=None: reads.append(self.path) or real(self, events))
     audit.audit_checks(hub)
     audit.audit_checks(hub, "nonconformance")
     assert reads == [], "an unchanged Track is not read or verified again"
@@ -543,6 +543,31 @@ def test_a_routing_sentence_makes_its_assignee_an_owner(released, process):
     with pytest.raises(RunError, match=f"bob owns {process}"):
         hub.runner.submit("internal-audit", {"record": {"title": "x", "processes": [process], "planned": "2026-12-01"}}, owner="bob")
     assert "calibration" not in audit.owned_processes(b, "bob"), "receiving calibration's overdue items is not owning it"
+
+
+def test_a_policy_owner_owns_the_change_order_process(released):
+    """it-sop: the policy owners decide a change order's items. That happens in change control, not at a runner step or
+    through a Routing sentence, so it is checked on its own: bob, a policy owner, audits no change orders."""
+    hub = released
+    b = bundle(hub)
+    assert "policy-owner" in authz.roles_of(b, "bob")
+    assert "change-order" in audit.owned_processes(b, "bob")
+    with pytest.raises(RunError, match="bob owns change-order"):
+        hub.runner.submit("internal-audit", {"record": {"title": "x", "processes": ["change-order"], "planned": "2026-12-01"}},
+                          owner="bob")
+    assert "change-order" not in audit.owned_processes(b, "auditor"), "the auditor cog holds no policy-owner role"
+
+
+def test_the_track_view_parses_the_bytes_it_hashed(released, monkeypatch):
+    """The cache key is a hash of one read of the file; the entries must come from that same read, never a second one
+    (a write landing between two reads would pair the old hash with new entries)."""
+    hub = released
+    run_id = hub.runner.submit("internal-audit", {"record": {"title": "x", "processes": ["capa"], "planned": "2026-12-01"}},
+                               owner="bob")
+    audit._TRACKS.clear()
+    monkeypatch.setattr(Track, "read", lambda self: (_ for _ in ()).throw(AssertionError("a second read of the Track")))
+    view = audit.track_view(hub, run_id)
+    assert view["events"] and not view["problems"]
 
 
 def test_record_the_findings_refuses_an_auditor_who_owns_the_process_or_cannot_read_the_evidence(released, monkeypatch):
