@@ -56,6 +56,9 @@ services:
   cad-worker:
     image: hub-erp-cad-worker:dev
     container_name: hub-dev-cad-worker
+  script-worker:
+    image: hub-erp-script-worker:dev
+    container_name: hub-dev-script-worker
   tick:
     image: hub-erp-proto:dev
     volumes:

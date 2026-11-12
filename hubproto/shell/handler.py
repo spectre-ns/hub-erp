@@ -262,7 +262,7 @@ class BaseHandler(BaseHTTPRequestHandler):
                  "/co-decide": self.post_co_decide, "/co-accept-warning": self.post_co_accept_warning, "/co-state-map": self.post_co_state_map,
                  "/co-dismiss-related": self.post_co_dismiss_related, "/co-direct-remove": self.post_co_direct_remove,
                  "/co-rt-uncarry": self.post_co_rt_uncarry, "/record-types-carry": self.post_record_types_carry,
-                 "/co-config-upload": self.post_co_config_upload, "/co-cfg-uncarry": self.post_co_cfg_uncarry,
+                 "/co-config-upload": self.post_co_config_upload, "/co-cfg-uncarry": self.post_co_cfg_uncarry, "/co-script-run": self.post_co_script_run,
                  "/co-intervene-review": self.post_co_intervene_review, "/co-report-unavailable": self.post_co_report_unavailable,
                  "/co-answer-all": self.post_co_answer_all, "/co-accept-all": self.post_co_accept_all, "/co-ask-sop": self.post_co_ask_sop, "/co-evidence": self.post_co_evidence, "/co-evidence-file": self.post_co_evidence_file, "/intervene": self.post_intervene, "/assign": self.post_assign, "/agent-confirm": self.post_agent_confirm, "/new-person": self.post_new_person, "/new-cog": self.post_new_cog, "/cog-model": self.post_cog_model, "/restart": self.post_restart, "/mark-applied": self.post_mark_applied, "/verify-edit": self.post_verify_edit, "/editor-debug": self.post_editor_debug,
                  "/upload": self.post_upload, "/checkout": self.post_checkout, "/checkin": self.post_checkin, "/link": self.post_link,

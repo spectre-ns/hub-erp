@@ -114,6 +114,13 @@ have none. A person proposes, never a cog.
 * **Same guards.** Widenings, the panel, reviews, the two-owner rule, segregation of duties, validation evidence and the
   signature are the change order's, exactly as for the same edit made on screen.
 
+## Scripts that write it (issue #34)
+
+A configuration script reads this document as `config` and leaves a document of the same format in `result` (the
+whole of it, or a part, with `schema`, `hub`, `release` and `versions`). Its output is proposed exactly as a file is
+(`configjson.loads`, the JSON Schema, then `propose`); the script, its output and the run are kept on the change order.
+See `hubproto/scripts.py` and [config-paths.md](config-paths.md).
+
 ## Links and retention under change control
 
 `config/links.json` and `config/retention.json` are treated as `config/record-types.json` is

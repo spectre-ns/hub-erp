@@ -20,7 +20,9 @@ image. Six parts carry everything, and each has a home in `hubproto/`:
 
 Change control (every configuration change goes through a change order) is `changecontrol.py` + `eco.py`, with
 `validation.py` for test evidence, `configdocs.py` for the link vocabulary and retention classes, and `configjson.py` for
-the configuration as one JSON document (export, and a document proposed on a change order); the web shell is
+the configuration as one JSON document (export, and a document proposed on a change order), and `scripts.py` for
+configuration scripts, run only in the script worker (`scriptworker.py`, `script_sandbox.py`; their output, never the
+script, is carried and released); the web shell is
 `hubproto/shell/` (stdlib `http.server`). The design is [docs/design/change-control.md](docs/design/change-control.md);
 the user manual is [docs/manual/](docs/manual/).
 

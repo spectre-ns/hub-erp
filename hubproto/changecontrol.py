@@ -2368,10 +2368,10 @@ def set_state_map(hub, co_ref, process: str, mapping: dict, by: str) -> dict:
 
 
 # ---------------------------------------------------------------- integrity: what was reviewed, sent and signed
-REVIEWED_KEYS = ("drafts", "items", "forms", "record_types", "workflows", "config")
+REVIEWED_KEYS = ("drafts", "items", "forms", "record_types", "workflows", "config", "scripts")
 CONTENT_WORDS = {"drafts": "the revisions it carries", "items": "its direct changes", "forms": "its form changes",
                  "record_types": "its record-type changes", "workflows": "its workflow changes", "state_map": "its state map",
-                 "config": "its link-vocabulary and retention changes",
+                 "config": "its link-vocabulary and retention changes", "scripts": "its configuration scripts and their output",
                  "proposal": "its compiled delta"}
 
 
@@ -2390,10 +2390,12 @@ def content_digest(hub, co_ref) -> dict:
             "record_types": _hash(f.get("record_type_changes") or []), "workflows": _hash(f.get("workflow_changes") or {}),
             "state_map": _hash(f.get("state_map") or {}),
             # Only when it carries some: the digest of a change order without them is what it was before they existed.
-            **({"config": _hash(f["config_changes"])} if f.get("config_changes") else {})}
+            **({"config": _hash(f["config_changes"])} if f.get("config_changes") else {}),
+            # The configuration scripts run on it (issue #34: script, output, run record), likewise only when there are some.
+            **({"scripts": _hash(f["config_scripts"])} if f.get("config_scripts") else {})}
 
 
-OPTIONAL_KEYS = ("config",)  # in a content digest only when the change order carries some: absent on either side is none
+OPTIONAL_KEYS = ("config", "scripts")  # in a content digest only when the change order carries some: absent on either side is none
 
 
 def _differs(was: dict, now: dict, keys) -> list[str]:
@@ -2616,7 +2618,7 @@ def send_reasons(hub, co_ref) -> list[str]:
             reasons.append(f"the revisions changed since round {last['n']}: request review again")
         if rec.get("items") is not None and rec["items"] != now["items"]:
             reasons.append(f"the direct changes changed since round {last['n']}: request review again")
-        for k in ("forms", "record_types", "workflows", "config"):  # data-model changes carried after the round are reviewed too
+        for k in ("forms", "record_types", "workflows", "config", "scripts"):  # data-model changes carried after the round are reviewed too
             if (k in rec or k in OPTIONAL_KEYS) and rec.get(k) != now.get(k):
                 reasons.append(f"{CONTENT_WORDS[k][4:]} changed since round {last['n']}: request review again")
         p = _proposal(hub, co)
