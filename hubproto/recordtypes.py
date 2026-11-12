@@ -790,15 +790,20 @@ def _mine(hub, co: dict) -> dict | None:
 
 
 def later_changes(hub, co: dict) -> list[str]:
-    """[the record types in force, in words] when this change order has not brought its record-type changes into force
-    and the version in force is no longer the one they were carried against (another change order released one since)."""
+    """[the record types in force, in words] when this change order's record-type changes, not yet in force, no longer
+    check against the record types in force because another change order released a version since they were carried
+    (both add the same field, say). Record-type changes are operations checked again at release, so a later version
+    alone stops nothing: only a real clash does."""
     from .closure import now_in_force
 
     changes = changes_of(co)
     if not changes or _mine(hub, co) is not None:
         return []
     now = in_force(hub)
-    return [now_in_force("the record types", now)] if any(c.get("base_version") != now["version"] for c in changes) else []
+    if all(c.get("base_version") == now["version"] for c in changes):
+        return []
+    _, errors, _ = check(hub, changes, now["types"], retention=_retention(hub, co))
+    return [now_in_force("the record types", now)] if errors else []
 
 
 def activate(hub, co: dict, digest: str) -> list[str]:
@@ -820,13 +825,13 @@ def activate(hub, co: dict, digest: str) -> list[str]:
                                          f"record types v{done['version']}", same_content=list(done.get("changes") or []) == summaries)
         return [f"record types v{done['version']} (already in force with {co['number']})"]
     closure.check_co_approved(co, "its record-type changes")
-    stale = later_changes(hub, co)
-    if stale:  # another change order released record types since these were carried: never undo it
-        raise ValueError(closure.later_change_refusal(co, stale))
     base = ensure(hub)
     types, errors, _ = check(hub, changes, base["types"], retention=_retention(hub, co))
     if errors:
-        raise ValueError(f"{co['number']}'s record-type changes cannot come into force: " + "; ".join(errors))
+        later = "; ".join(later_changes(hub, co))  # a clash with a change order released since: name it, and say what to do
+        raise ValueError(f"{co['number']}'s record-type changes cannot come into force: " + "; ".join(errors)
+                         + (f". {later[:1].upper() + later[1:]} changed after {co['number']} carried them: put the rest of the change on a new "
+                            "change order" if later else ""))
     now_sha = file_sha(hub)
     # The file is adopted (no longer drift) only when what it says is then wholly in force: a difference a change order
     # cannot carry keeps it reported (status --check), never hidden.

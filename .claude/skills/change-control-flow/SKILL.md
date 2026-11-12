@@ -104,7 +104,8 @@ applies what was signed.
   (`closure.check_in_force_as_signed`); a new step that writes configuration records one the same way (issue #53).
   It finds what its CO did in the history (`closure.released_with_co`), never only in what is in force, and refuses
   the rest when a later CO released a newer version than the one it was carried against (`later_changes`,
-  `closure.later_change_refusal`): a retry never undoes a later CO. The policy release is found from the release
+  `closure.later_change_refusal`): a retry never undoes a later CO. Record types are the exception: their changes
+  are operations re-checked at release and stack on a later CO's; only a clash with one refuses (and names it). The policy release is found from the release
   record too (`eco.frame_released`).
 - Anything that changes what a frozen CO carries sends it back to revising with its decisions void (`sync`,
   `changed_since_sent`, `_back_to_revising`). A test that edits after sending must expect that.

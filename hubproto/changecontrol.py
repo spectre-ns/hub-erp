@@ -359,9 +359,9 @@ def in_force_from(hub, co_ref) -> list[str]:
 
 
 def later_changes(hub, co_ref) -> list[str]:
-    """What the rest of this change order changes that another change order released since it was carried (its forms,
-    workflow layouts, link vocabulary and retention, record types), in words: its release cannot finish, as bringing
-    the rest in would undo that change."""
+    """What the rest of this change order changes that another change order released since it was carried, in words: its
+    forms, workflow layouts, link vocabulary and retention (any later version: bringing the rest in would undo it), and
+    its record types (only a later version they no longer check against). Its release cannot finish."""
     from . import configdocs, formlayout, recordtypes, workflows
 
     co = _co(hub, co_ref)
@@ -376,8 +376,8 @@ def in_force_refusal(hub, co: dict, parts: list[str]) -> str:
     head = f"{n} cannot go back to revising: part of it is already in force ({', '.join(parts)})"
     blocked = later_changes(hub, co)
     if blocked:
-        return (f"{head}. Its release cannot finish either: {'; '.join(blocked)} changed after {n} carried its changes, and bringing them "
-                "into force now would undo that. Put the rest of the change on a new change order")
+        return (f"{head}. Its release cannot finish either: {'; '.join(blocked)} changed after {n} carried its changes, and the rest "
+                "cannot come into force as signed over that. Put the rest of the change on a new change order")
     return f"{head}. Retry its release to bring the rest into force as signed, or put the rest of the change on a new change order"
 
 

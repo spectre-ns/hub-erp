@@ -762,7 +762,9 @@ released another version since. The rest is brought into force only against the 
 later change order released another one, the step stops ("CO-2026-0001's release cannot finish: the capa form (v2 now,
 released with CO-2026-0002) changed after CO-2026-0001 carried its changes, and bringing them into force now would undo
 that. Put the rest of the change on a new change order"), and the refusal to send it back says the same instead of
-"Retry its release".
+"Retry its release". Record-type changes are different: they are operations ("add a field") checked again against the
+record types in force, so they come in on top of a later change order's. Only a real clash stops them (both add the
+same field), and then the refusal names the later change order the same way.
 
 A step counts what is already in force with its change order as done only when it was made from what is signed: each
 records the digest of the changes it applied, and compares it with the digest the signature keeps. Anything else stops

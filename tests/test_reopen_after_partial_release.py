@@ -429,8 +429,54 @@ def test_a_retry_blocked_by_a_later_record_type_change_says_so_and_names_it(hub,
         cc.reopen(hub, co1["number"], "alice", "drop the field")
     automation.retry(hub, j1["id"], by="carol")
     j1 = release_job(hub, co1)
-    assert j1["status"] != "success" and f"the record types (v2 now, released with {co2['number']})" in j1["outcome"], j1["outcome"]
+    assert j1["status"] != "success" and "ncr already has a field batch" in j1["outcome"] and (
+        f"The record types (v2 now, released with {co2['number']}) changed after {co1['number']} carried them: put the rest of the "
+        "change on a new change order") in j1["outcome"], j1["outcome"]
     assert recordtypes.in_force(hub)["released_with"] == co2["number"]
+
+
+def test_record_type_changes_carried_before_another_release_come_in_on_top_of_it(hub):
+    """The re-check of #58, probe 1: record-type changes are operations checked again at release. CO-1 carries a field,
+    CO-2 adds another and is released first; CO-1's first release brings its field in beside CO-2's."""
+    co1 = new_co(hub, title="Batch field")
+    record_types(hub, co1)
+    co2 = new_co(hub, title="Gauge field")
+    record_types(hub, co2, field="gauge")
+    co2 = signed(hub, co2)
+    assert release_job(hub, co2)["status"] == "success"
+    co1 = signed(hub, co1)
+    j1 = release_job(hub, co1)
+    assert j1["status"] == "success", steps(j1)
+    assert {"batch", "gauge"} <= set(hub.kernel.types["ncr"]["fields"]) and recordtypes.in_force(hub)["released_with"] == co1["number"]
+
+
+def test_a_retry_completes_when_a_later_change_order_changed_another_record_type(hub, monkeypatch):
+    """The re-check of #58, probe 2: CO-1 stops before its record types; CO-2 changes the asset type; the retry
+    brings CO-1's ncr field in on top of it."""
+    real = recordtypes.RecordTypeStore.set_active
+    state = {"on": True}
+
+    def full(self, entry):
+        if state["on"]:
+            raise OSError(28, "No space left on device")
+        return real(self, entry)
+    monkeypatch.setattr(recordtypes.RecordTypeStore, "set_active", full)
+    co1 = new_co(hub, title="Batch on the form and the record")
+    forms(hub, co1)
+    record_types(hub, co1)
+    co1 = signed(hub, co1)
+    j1 = release_job(hub, co1)
+    assert j1["status"] == "some-errors", steps(j1)
+    state["on"] = False
+    co2 = new_co(hub, title="Asset tag")
+    recordtypes.carry(hub, co2["number"], [{"op": "add_field", "type": "asset", "field": "tag_code", "spec": "text"}], by="alice")
+    co2 = signed(hub, co2)
+    assert release_job(hub, co2)["status"] == "success"
+    assert "Retry its release" in cc.in_force_refusal(hub, hub.kernel.get(co1["locator"]), cc.in_force_from(hub, co1))
+    automation.retry(hub, j1["id"], by="carol")
+    j1 = release_job(hub, co1)
+    assert j1["status"] == "success", steps(j1)
+    assert "batch" in hub.kernel.types["ncr"]["fields"] and "tag_code" in hub.kernel.types["asset"]["fields"]
 
 
 def test_the_requester_is_told_once_while_nothing_changes(hub, stop):
