@@ -205,7 +205,8 @@ class NewMemberMixin:
         model Ollama serves, else nothing (no model, no cog)."""
         from collections import Counter
 
-        ch = [c for c in self._model_choices() if c["available"]]
+        # Never one of Ollama's cloud models by default: sending a cog's work off the machine is chosen, not defaulted.
+        ch = [c for c in self._model_choices() if c["available"] and not c.get("cloud")]
         served = {c["value"] for c in ch}
         used = Counter(p.get("model") for p in ((self.bundle or {}).get("cogs") or {}).values() if p.get("model") in served)
         if used:
@@ -225,15 +226,18 @@ class NewMemberMixin:
             p = self.hub.propose_cog_model(cog, model, by=self.user)
         except ValueError as e:
             raise ShellError(str(e)) from None
+        from ..model import OFF_MACHINE, resolve_model
+
+        away = f" {model} {OFF_MACHINE}: {cog}'s prompts would leave this machine." if resolve_model(model)["backend"] == "ollama-cloud" else ""
         if p.get("change_order"):
             log_line(f"cog model change on {p['change_order']} cog={cog} model={model} by={self.user}")
             return self._redirect(self._once_finish(href("/record/" + quote(p["change_order"]), self.user,
                                                          done=f"{cog} → {model} is written into the cog profiles on {p['change_order']}. "
-                                                              f"{cog} keeps {current} until that revision is approved and the change order is released.")))
+                                                              f"{cog} keeps {current} until that revision is approved and the change order is released." + away)))
         log_line(f"cog model proposed cog={cog} model={model} by={self.user} proposal={p['id']}")
         self._redirect(self._once_finish(href("/proposal/" + p["id"], self.user,
                                               done=f"Proposed {model} for {cog} as #{p.get('number')}. A cog's model is part of the policy: "
-                                                   f"{cog} keeps {current} until both policy owners approve this change and one of them releases it.")))
+                                                   f"{cog} keeps {current} until both policy owners approve this change and one of them releases it." + away)))
 
     def _multi(self, name: str) -> list[str]:
         vals = (getattr(self, "multi", None) or {}).get(name)

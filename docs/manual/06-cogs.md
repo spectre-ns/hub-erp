@@ -386,7 +386,9 @@ answered**, **Send *cog* a message** and **Training** (6.11).
 **How to propose a different model for a cog** (any member who is a person)
 
 1. On the cog's profile open **Change model**. The list shows the models this hub can reach; Claude models only when
-   hosted models are switched on (chapter 8.4).
+   hosted models are switched on (chapter 8.4). One of Ollama's cloud models (a tag such as `gemma4:cloud` or
+   `gemma4:31b-cloud`) is listed after the local ones as "Ollama cloud: runs on Ollama's servers, not this machine",
+   and cannot be chosen while hosted models are off; the profile's **Model** row says the same of a cog bundled with one.
 2. Choose one and propose it. The change is recorded as a direct change on your settings change order ("recorded on the
    change order as a direct change; its review round writes it into the SOP"), and the cog "keeps *model* until that
    revision is approved and the change order is released" (hubproto/app.py, `propose_cog_model`; checked by running the

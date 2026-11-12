@@ -548,7 +548,7 @@ class ViewsMixin:
             except KeyError:
                 about, desc = [], ""
                 body += "<div class='card crit'>This cog is a member of the organization but is not installed in this hub.</div>"
-            from ..model import available_models, resolve_model
+            from ..model import OFF_MACHINE, available_models, resolve_model
 
             res = resolve_model(prof.get("model") or "")
             if not res["available"]:
@@ -558,15 +558,25 @@ class ViewsMixin:
             current = prof.get("model") or ""
             info = {f"ollama/{m['name']}": m for m in avail["ollama"]}
             cur = info.get(current)
-            what = (f"{cur['params']} {cur['family']}, local via Ollama, {cur['size_gb']} GB" if cur else
-                    ("Anthropic" if res["backend"] == "anthropic" else res["note"]))
+            if res.get("backend") == "ollama-cloud" or (cur or {}).get("cloud"):  # hosted: say so wherever it is named
+                what = (f"Ollama cloud model: it {OFF_MACHINE}; its prompts and the records in them "
+                        + ("leave this machine" if res["available"] else "would leave this machine"))
+            elif cur:
+                what = f"{cur['params']} {cur['family']}, local via Ollama, {cur['size_gb']} GB"
+            else:
+                what = "Anthropic" if res["backend"] == "anthropic" else res["note"]
             served = (f"<b>{esc(current or 'none')}</b> <span class='chip {'ok' if res['available'] else 'crit'}'>{'answers' if res['available'] else 'not available'}</span> "
                       f"<span class='muted'>{esc(what)}</span>")
             can_change = self._is_member() and (self.bundle["members"].get(user) or {}).get("type") == "person"
             rows = []
             for c in sorted(avail["choices"], key=lambda c: c["value"] != current):  # its current model first, then largest first
                 mi = info.get(c["value"])
-                detail = f"{mi['params']} {mi['family']} · {mi['quant']} · {mi['size_gb']} GB · installed" if mi else ("Anthropic" if c["available"] else "needs an Anthropic key")
+                if mi and mi.get("cloud"):
+                    detail = f"Ollama cloud: {OFF_MACHINE}" + ("" if c["available"] else " · not available while hosted models are off")
+                elif mi:
+                    detail = f"{mi['params']} {mi['family']} · {mi['quant']} · {mi['size_gb']} GB · installed"
+                else:
+                    detail = "Anthropic" if c["available"] else "needs an Anthropic key"
                 name_ = mi["name"] if mi else c["value"]
                 is_cur = c["value"] == current
                 rows.append(f"<label class='mopt{' off' if not c['available'] else ''}{' cur' if is_cur else ''}'><input type='radio' name='model' value='{esc(c['value'])}'"

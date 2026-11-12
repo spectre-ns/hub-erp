@@ -79,7 +79,7 @@ hubproto shell                      # http://127.0.0.1:8080/
 | `HUBPROTO_COLLABORA_DISCOVERY` | `http://collabora:9980` in compose | where the hub reads the editor's discovery document |
 | `HUBPROTO_PUBLIC_URL` | `http://localhost:8080` in compose | the hub's own origin, for the editor's frame policy |
 | `HUBPROTO_OLLAMA_URL` | `http://host.docker.internal:11434` in compose; none outside it | where the local models answer. Without it no cog is available, and SOP prose is not read by a model |
-| `HUBPROTO_HOSTED_MODELS` | off | `on` (or 1, yes, true) lets the hub use hosted (Claude) models, with `ANTHROPIC_API_KEY`. Off, a cog whose profile names a `claude-*` model, the two senior cogs included, is not available, and the model lists offer only Ollama's models. Under the IT SOP only a system administrator switches it, as a recorded installation change (8.4) |
+| `HUBPROTO_HOSTED_MODELS` | off | `on` (or 1, yes, true) lets the hub use hosted models: Claude, with `ANTHROPIC_API_KEY`, and Ollama's cloud models (a tag ending in `:cloud` or `-cloud`, or one Ollama reports runs remotely), which run on Ollama's servers, not this machine. Off, a cog whose profile names a `claude-*` model, the two senior cogs included, or one of Ollama's cloud models is not available, and the model lists offer only the models Ollama runs on this machine. Under the IT SOP only a system administrator switches it, as a recorded installation change (8.4) |
 | `ANTHROPIC_API_KEY` | none (compose does not pass it) | used only when `HUBPROTO_HOSTED_MODELS=on` |
 | `HUBPROTO_EXTRACTOR` | `hybrid` when `HUBPROTO_OLLAMA_URL` is set, or hosted models are on with a key; else `convention` | how SOPs are read: `convention` (the sentence shapes only) or `hybrid` (those, then the compile-frame committee's senior cogs read the prose, each with its bundled model, chapter 7.4). The former `claude` value is read as unset; there is no global model override |
 | `HUBPROTO_EXTRACTOR_MODEL` | the organization cog's model, else the largest local model | used only when the release has no compile-frame committee (so not in the example company); a `claude-*` value only with hosted models on |
@@ -112,7 +112,17 @@ Each cog is bundled with the model its profile names. Nine of the eleven cogs us
 compile-frame committee, use `claude-opus-5-5`, a hosted model (chapter 6.12). Hosted models are off unless
 `HUBPROTO_HOSTED_MODELS=on` and an Anthropic key is passed, and the compose file passes neither (its comment says
 where to add them). A cog whose model the hub cannot reach is not available, and nothing stands in for it
-(hubproto/model.py, `backend_for`). The prompt each cog gets is sized to its model's context window as Ollama reports
+(hubproto/model.py, `backend_for`).
+
+**Ollama's cloud models are hosted models.** Ollama's library has cloud tags, such as `gemma4:cloud` and
+`gemma4:31b-cloud`: the local Ollama passes the call on to Ollama's servers, so the prompt and the records in it leave
+this machine. The hub treats such a model like Claude. With hosted models off, a cog bundled with one is not available
+("ollama/gemma4:31b-cloud runs on Ollama's servers, not this machine, and hosted models are switched off here ..."), the
+model lists show it as not available, and proposing it for a cog is refused. With hosted models on it can be used, and
+`hubproto models`, the cog's profile and the model pickers say it "runs on Ollama's servers, not this machine"; each call's
+record names its backend, `ollama-cloud`. The hub knows a cloud model by what Ollama reports for it (`/api/show` names a
+remote host), and otherwise by its tag: a name ending in `:cloud` or `-cloud` is never treated as local
+(hubproto/model.py, `ollama_cloud`). The prompt each cog gets is sized to its model's context window as Ollama reports
 it, capped at 65,536 tokens unless `HUBPROTO_MODEL_CTX_MAX` or `HUBPROTO_MODEL_CTX` says otherwise (hubproto/model.py,
 `num_ctx_for`).
 
@@ -132,7 +142,9 @@ drafted text still records the model that produced it (chapter 6.13).
 hubproto models`). It lists the models installed in Ollama with size and quantization, a line on Claude ("no
 Anthropic key: a cog bundled with a claude-* model is not available here" unless hosted models are on and a key is
 set; it says so also when the key is set and the switch is off), and for each cog its model and who serves it now, or
-"NOT AVAILABLE: *why*".
+"NOT AVAILABLE: *why*". One of Ollama's cloud models is listed as "cloud: runs on Ollama's servers, not this machine"
+(with "not available: hosted models are off" while they are), and a cog served by one as "(ollama-cloud: runs on
+Ollama's servers, not this machine)".
 
 The same is visible in the web pages: each cog's profile shows its model with "answers" or "not available"; the
 People page shows unavailable cogs; the messenger lists them as not available.

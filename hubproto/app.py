@@ -170,7 +170,7 @@ class Hub:
         member reads with the model its profile bundles it with: an Ollama model, or a Claude model only where hosted
         models are switched on (``model.backend_for``). The committee reads by consensus, so ``quorum`` is every member; a
         member that cannot read here is a ``member-unavailable`` question for a person (its chair), never skipped."""
-        from .model import backend_for, hosted_allowed, resolve_model
+        from .model import backend_for, cloud_refused, hosted_allowed, resolve_model
 
         meta = self.releases.current()
         if not meta:
@@ -188,6 +188,8 @@ class Hub:
                 why = "its profile names no model"
             elif m.startswith("claude") and not hosted_allowed():
                 why = f"{m} is a hosted model, and hosted models are switched off here (HUBPROTO_HOSTED_MODELS)"
+            elif cloud_refused(m):
+                why = cloud_refused(m)
             elif backend_for(m) == "stand-in":
                 why = f"{m} is not reachable here (only a development stand-in would answer)"
             else:
@@ -577,9 +579,13 @@ class Hub:
         """Change a cog's model as a policy proposal: the Model line of its profile, drafted and compiled."""
         import re as _re
 
+        from .model import cloud_refused
+
         model = (model or "").strip()
         if not model or "\n" in model:
             raise ValueError("name a model")
+        if cloud_refused(model):  # one of Ollama's cloud models, with hosted models off: never proposed as if it were local
+            raise ValueError(cloud_refused(model))
         if self.sop_source():
             # The Frame is derived from the SOPs: the Model line is changed in the cog-profiles policy document.
             rules = self.settings_rules()
@@ -620,6 +626,10 @@ class Hub:
                            persona: str = "") -> dict:
         import re as _re
 
+        from .model import cloud_refused
+
+        if kind == "cog" and cloud_refused(model):  # one of Ollama's cloud models, with hosted models off
+            raise ValueError(cloud_refused(model))
         about = " ".join((about or "").split())
         persona = (persona or "").strip().removeprefix("persona-")
         if self.sop_source():

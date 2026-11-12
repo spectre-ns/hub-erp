@@ -526,6 +526,8 @@ def test_ollama_that_does_not_say_is_refused_and_asked_again_later(monkeypatch):
         return Resp(answers[state["now"]])
 
     monkeypatch.setattr(model.urllib.request, "urlopen", urlopen)
+    # Where the model runs (this machine, not Ollama's servers) is known already: only its capabilities are asked here.
+    monkeypatch.setitem(model._SHOW, ("http://127.0.0.1:9", "llava:13b"), {"remote_host": "", "remote_model": ""})
     assert "Ollama does not say whether ollama/llava:13b reads pictures" in model.images_refused("ollama/llava:13b"), "never guessed yes"
     state["now"] = "old"
     assert model.images_refused("ollama/llava:13b"), "an Ollama that reports no capabilities: refused"
