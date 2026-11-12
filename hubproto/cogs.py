@@ -1649,7 +1649,8 @@ class ReviewerCog(Cog):
         if rec is None:
             return ""
         fields = {k: v for k, v in rec["fields"].items() if k not in ("risk", "conditions", "office_comments", "editors", "checked_out_by",
-                                                                       "checked_out_via", "wopi_lock", "proposal", "proposal_number")}
+                                                                       "checked_out_via", "wopi_lock", "proposal", "proposal_number",
+                                                                       "cites", "citation_flags")}  # hubproto.references: no new content
         docs = []
         if ctx.dms is not None:
             try:

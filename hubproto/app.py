@@ -369,7 +369,7 @@ class Hub:
         proposal = compile_proposal(store, scopes or default_scopes(store), self.registry.ids(), self.releases,
                                     extractor=extractor or self.extractor(), now=now,
                                     record_types=self.kernel.types, config_digests=self.kernel.config_digests,
-                                    resolve_document=self.resolve_document)
+                                    resolve_document=self.resolve_document, resolve_reference=self._reference_resolver(sop_drafts))
         proposal["overrides"] = {n: {"text": t, "draft": docs.get(n), "path": store.get(n).relpath} for n, t in texts.items()}
         from .runner import state_map_questions  # statuses this change removes while items are in them (change control 5.2)
 
@@ -446,6 +446,14 @@ class Hub:
             if o.get("draft") and self.kernel.get(o["draft"]):
                 self.kernel.set_fields(o["draft"], {"proposal": proposal["id"], "proposal_number": proposal["number"]}, by="hub")
         return proposal
+
+    def _reference_resolver(self, sop_drafts: dict | None = None):
+        """How a compile resolves a citation of a document in the prose: as it will be once the compile is released,
+        with the SOP drafts a change order carries in force and the SOPs it retires out (hubproto.references)."""
+        from . import references
+
+        drafts = dict(sop_drafts or {}) if self.sop_source() else {}
+        return lambda ref: references.resolve(self.kernel, ref["document"], ref.get("revision"), drafts=drafts, citing=ref.get("frame"))
 
     # --- Frames and cog settings as documents ----------------------------------
     FRAME_FOLDER = "Policy/Frames"
@@ -775,6 +783,10 @@ class Hub:
         from . import closure
 
         closure.after_release(self, base, by)  # the first release: the SOPs become documents (unless kept as files)
+        if not str(by).startswith("change-order:"):  # a change order's release links them once its revisions are published
+            from . import references
+
+            references.sync_links(self)  # the hub's links, made for the release, not by the person releasing
         return meta
 
     def _texts_for_release(self, proposal: dict, overrides: dict, rejected_text: set) -> dict[str, str]:

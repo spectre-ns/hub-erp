@@ -196,7 +196,9 @@ def collapse_moves(changes: list[dict]) -> tuple[list[dict], list[dict]]:
 
 def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], releases: ReleaseStore,
                      extractor=None, now: str | None = None, record_types: dict | None = None,
-                     config_digests: dict | None = None, resolve_document=None) -> dict:
+                     config_digests: dict | None = None, resolve_document=None, resolve_reference=None) -> dict:
+    """``resolve_reference`` resolves a citation of a document in the prose ({"document", "revision", ...}) to
+    ``hubproto.references.resolve``'s answer; without it the citations are read and recorded but not checked."""
     extractor = extractor or ConventionExtractor()
     frames = store.resolve(scopes)
     rules: list[dict] = []
@@ -266,6 +268,14 @@ def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], re
                           frame=r["source"].get("frame"), line=r["source"].get("line") or 0)
                  for r in rules if (r.get("source") or {}).get("read_by")]
     findings += doc_findings
+    # Citations of documents in the prose (issue #8): recorded with their line; one of a document not in force is a
+    # warning. A citation is no rule: it is part of the SOP's wording, reviewed with it, never an item of its own.
+    from .references import document_numbering, read_references, reference_guard
+
+    prefix, yearly = document_numbering(record_types)
+    references = [ref for frame in frames for ref in read_references(frame, prefix, yearly=yearly)]
+    if resolve_reference is not None:
+        findings += reference_guard(references, resolve_reference)
     findings += schema_guard(rules)
     findings += grounding_guard(rules, store.frames)
     findings += consistency_guard(rules, cog_ids, record_types)
@@ -303,6 +313,7 @@ def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], re
         "changes": changes,
         "questions": merge_questions(list(questions.values())),
         "moved": moved,  # rules that only moved in their file: no change to decide
+        "references": references,  # citations of documents in the prose, each with what it resolved to
         "base": base["digest"] if base else None,
         # Policy owners are those of the release in force; a proposal cannot appoint its own reviewers.
         "reviewers": sorted(_reviewers(old_rules) if old_rules else _reviewers(rules)),
@@ -310,6 +321,16 @@ def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], re
         "release": None,
     }
     return proposal
+
+
+def _released_references(proposal: dict, rejected_text: set, current: dict | None) -> list[dict]:
+    """The citations the release records: the proposal's, except for a Frame whose wording change was rejected, which
+    keeps the citations of the release before."""
+    from .references import recorded
+
+    refs = [r for r in proposal.get("references") or [] if r.get("frame") not in rejected_text]
+    refs += [r for r in (current or {}).get("references") or [] if r.get("frame") in rejected_text]
+    return recorded(refs)
 
 
 def text_changes(old_bom: list[dict], new_bom: list[dict], rules: list[dict]) -> list[dict]:
@@ -414,7 +435,8 @@ def finalize(proposal: dict, releases: ReleaseStore, *, by: str, effective_from:
     meta = releases.save(bundle, effective_from=effective_from or (now or utcnow()), released_by=by,
                          proposal_id=proposal["id"], bom=bom, rules=rules,
                          parent=proposal["base"], now=now, config=proposal.get("config", {}),
-                         clauses=proposal.get("clauses", {}), frame_texts=frame_texts)
+                         clauses=proposal.get("clauses", {}), frame_texts=frame_texts,
+                         references=_released_references(proposal, rejected_text, current))
     proposal["status"] = "released"
     proposal["release"] = meta["digest"]
     return meta

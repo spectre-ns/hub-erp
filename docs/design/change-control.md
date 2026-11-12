@@ -112,13 +112,38 @@ recorded on each revision). Segregation of duties: the CO approver is not the au
 revision and not the maker of a direct change on it.
 
 ### 3.7 Release (automation `release-change-order`)
-Existing steps (check, frame into force, publish revisions, forms, training, tell) plus:
+The steps, in the order the code runs them (`hubproto.automation.AUTOMATIONS`): check the change
+order is ready; approve the carried revisions; bring the Frame into force; move items by the state
+map; publish the revisions; apply the form layouts; apply the record-type changes; assign training;
+record divergences; link document references; send related changes back; compile every open change
+order; tell the people involved. A job runs each step by its name. A job saved before a step was
+added (its step names are the current ones, in order, with some missing) gets the missing steps,
+waiting, in their places; a step name the hub does not know (a job saved under names since
+changed) stops the job with "unknown step". The steps of change control:
+- **Move items by the state map** (5.2), once the new release is in force.
 - **Record divergences** in the release, and raise a change request for each new one, to the SOP's
   owner ("bring <sop> line n in line with what is in force").
-- **Apply state maps** (5.2).
-- **Recompile every open change order** against the new release (mechanical; unchanged prose is not
-  re-read by a model; human-made and accepted items are kept; items that no longer apply become
-  questions). Tell each requester.
+- **Link document references** (issue #8, `hubproto.references`): each SOP in force cites by link
+  what its prose in the release in force cites (`references` from its document, `referenced-by` on
+  the cited one; the hub's links, made by `hub`); a citation it no longer makes loses its link, a
+  superseded revision keeps none, and a link a person made is never taken off nor taken over when
+  the prose cites it too (`cites` is written before the links, so a crash part-way leaves no hub
+  link looking like a person's). Every citation in the release in force of a document that was in
+  force and is no longer (obsolete, or a revision superseded) and has no flag yet is flagged: one
+  flag per line (`citation_flags` on the document, a notice on its page) and one message per citing
+  document listing the lines not yet told, to its owner (else its maintainer, else the change
+  order's requester: the first that is a person). So whatever made it stale (this release, an
+  earlier one whose flag a hold held back, a document retired by hand) is caught at the first
+  release after. The step works from the release in force, not the one the job started under, so
+  retrying an old job after a later release changes nothing that release made. A citing document
+  on hold is left as it is and the step says so ("DOC-0034 is on hold: link not updated"); its
+  owner is still told (a message writes nothing on the document), and the flag follows at a later
+  release once the hold is lifted. The release goes on either way. It runs before the one model
+  step, so a model that cannot be reached does not hold it back.
+  - Not covered: a document made obsolete outside a release is flagged only at the next change
+    order's release; a flag is never cleared, it goes with the citing revision once a new one
+    supersedes it (a new revision still citing the document is flagged again); a hub whose Frame
+    files stay the source gets links only for Frames that have a mirror document.
 - **Find related changes and send them back**:
   - *Related by definition* (hub, no model): an open CO that touches the same SOP, process, rule
     slot, record type, form or role as the released CO. Cannot be dismissed.
@@ -130,6 +155,9 @@ Existing steps (check, frame into force, publish revisions, forms, training, tel
   - A related CR: a review task to its approver with the cog's reason; the CR is flagged and no CO
     may be approved implementing it until the task is done.
   - The requester may dismiss a *by-meaning* flag with a reason and an accepted warning.
+- **Compile every open change order** against the new release (mechanical; unchanged prose is not
+  re-read by a model; human-made and accepted items are kept; items that no longer apply become
+  questions). Tell each requester.
 
 ## 4. Compilation
 
@@ -153,6 +181,30 @@ Existing steps (check, frame into force, publish revisions, forms, training, tel
   (Claude Opus via the existing Claude extractor), with an API key; cogs keep their bundled models.
 - Tests never call a model: the readers take a `call=` fake, and the stand-in (HUBPROTO_ALLOW_STAND_IN)
   answers deterministically.
+- **Document references in the prose** (issue #8): the compile reads each citation of a document
+  (`DOC-0040`, `DOC-0040 rev B`, a link to `/document/DOC-0040`) with its line and records it in the
+  proposal and the release (not in the digest). A citation of a number names the document in its
+  revision in force (an SOP's lineage, or the records that supersede it), so a new revision leaves
+  it sound; one naming a revision names that revision. One of an unknown document, or of one not in
+  force once the compile is released (obsolete, superseded, withdrawn, retired by this change
+  order), is a guard **warning** at its frame and line, not an error: the citation configures
+  nothing, so it is no item of the delta and needs no decision of its own (the wording change is
+  reviewed with the SOP). On a change order it is a warning the approver accepts when the change
+  order makes it (an SOP it changes cites one, or it retires or supersedes a cited document); a
+  stale citation in an SOP it does not touch was flagged to that SOP's owner at the release that
+  made it stale. What counts as a citation: a number of the `document` record type's numbering
+  (`DOC-0042-A2` is no citation of DOC-0042), with its revision (`rev A`, `rev a`, `revision A`);
+  a link to a document's page that is relative or on this hub's own host and port (from
+  `HUBPROTO_PUBLIC_URL` and `HUBPROTO_WOPI_BASE`, the scheme's default port filled in; a value
+  with no http(s) scheme is left out and said on stderr), a Markdown link with its text being one
+  citation; not a number in another site's URL (with or without a scheme, parentheses in it
+  included), in code (inline, indented, or fenced, in a list too) or in a `## Cog:` section (to the
+  next heading of its level or higher). A link to a document's page on another host is no citation
+  but a warning, as is a number with a revision it is not (`DOC-0055 rev A` when DOC-0055 is
+  revision B); a citation of the SOP's own lineage (a revision history) is no warning, no flag and
+  no link. Neither `cites` nor `citation_flags` is new content for a reviewing cog.
+  - Not covered: a compile warning says the state of the document cited ("DOC-0040 is obsolete"),
+    so it tells the author that the document exists and its state even when they may not read it.
 
 ## 5. Work in flight
 
