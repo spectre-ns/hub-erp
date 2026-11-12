@@ -364,7 +364,8 @@ From any status except done to Cancelled ("Cancel"): the quality manager.
   (`CommitteeExtractor.read_pictures`, the picture's bytes from `sopdocs.picture_images`); the reading, its
   divergences from the prose and the `Process:` section, and each member's answer are on the picture's `unread-rule`
   question. The chair answers with `answer_question(..., picture="confirm" | "confirm:<member>" | "correct" | "nothing",
-  reading_text=)` ("confirm" only when the members agreed), and only while the CO is editable; the confirmed reading is
+  reading_text=)` ("confirm" only when the members agreed); any answer to a picture's question only while the CO is
+  editable, and an answer that writes lines records no acceptance of the question's warning; the confirmed reading is
   the CO's `picture_readings` and, from the next compile, lines of the Frame text right after the picture
   (`> Picture sha256:<12 hex>: <sentence>`), compared with the prose again, in force with the release and kept by an
   unchanged picture. Whoever confirmed or corrected it wrote SOP text: a contributor (`contributors`) and a maker of

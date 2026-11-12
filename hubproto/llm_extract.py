@@ -1069,7 +1069,9 @@ class CommitteeExtractor:
             if confirmed:  # confirmed (or corrected) on this change order: not read again, but compared with the SOP again
                 at = {n + k for n in (q.get("lines") or [line]) for k in range(1, len(confirmed) + 1)}
                 said = [r for r in out.rules if (r.get("source") or {}).get("frame") == frame.name and (r.get("source") or {}).get("line") in at]
-                divs = pr.divergences(frame, line, {"rules": said, "steps": []}, known)
+                names = list(self.context.get("roles") or []) + list(self.context.get("cogs") or [])
+                steps = pr.steps_said(frame, line, confirmed, known, names)  # its words against the Process: section too
+                divs = pr.divergences(frame, line, {"rules": said, **steps}, known)
                 q["confirmed_reading"] = confirmed
                 q["confirmed_divergences"] = divs
                 q["text"] = (f"The picture {q['quote']} ({where}) is not in the SOP's text in force. Its reading, as confirmed on this change "
@@ -1115,13 +1117,15 @@ class CommitteeExtractor:
                 q["text"] = unread_picture_text(q["quote"], where, "; ".join(f"the {n} cog could not read it: {w}" for n, w in failed.items())
                                                 + "; the committee reads by consensus")
                 continue
-            divs = list(dict.fromkeys(d for r in readings for d in pr.divergences(frame, line, r, known)))
+            own = {r["member"]: pr.divergences(frame, line, r, known) for r in readings}
+            divs = list(dict.fromkeys(d for r in readings for d in own[r["member"]]))
             same = pr.agreed(readings)
             first = readings[0]
             procs = {r["name"]: r for r in known if r.get("kind") == "process"}
             q["reading"] = {"by": [r["member"] for r in readings], "agreed": same, "states_nothing": first["states_nothing"],
                             "proposed": [] if first["states_nothing"] else list(first["sentences"]), "divergences": divs,
-                            "readings": [{**r, "rules": [{"rule": x, "said": _sentence(x, procs)} for x in r["rules"]]} for r in readings]}
+                            "readings": [{**r, "rules": [{"rule": x, "said": _sentence(x, procs)} for x in r["rules"]],
+                                          "divergences": own[r["member"]]} for r in readings]}
             q["text"] = pr.describe(q, [r["member"] for r in readings], readings, divs, same)
             for d in divs:
                 out.notes.append({"frame": frame.name, "line": line, "text": q["quote"], "severity": "warning", "note": f"divergence: {d}"})

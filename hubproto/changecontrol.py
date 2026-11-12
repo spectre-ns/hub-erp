@@ -609,7 +609,7 @@ def contributors(hub, co_ref) -> list[str]:
     out += [(m or {}).get("by") for per in (co["fields"].get("state_map_meta") or {}).values() for m in (per or {}).values()]
     from .picture_reading import confirmers
 
-    out += list(confirmers(co).values())  # who confirmed or corrected a picture's reading wrote those lines of the SOP
+    out += [w for who in confirmers(co).values() for w in who]  # who confirmed or corrected a picture's reading wrote SOP lines
     return sorted({w for w in out if w and w not in MACHINES})
 
 
@@ -939,7 +939,7 @@ def _makers(c: dict, authors: dict[str, list[str]], co: dict | None = None) -> l
     """Who made a delta item: whoever wrote it in the prose (the revision's authors) or made it directly, who accepted it
     (a suggestion), who overrode its value, who set a state-map entry, who confirmed or corrected the picture's reading
     it was read from (and, for a wording change, every reading of that SOP). None of them decides it."""
-    from .picture_reading import confirmer_of, confirmers
+    from .picture_reading import confirmers, writers_of
 
     o = c.get("origin") or {}
     # A suggestion's maker is who accepted it onto the change order (the reviewer who suggested it reviewed, not authored).
@@ -949,9 +949,9 @@ def _makers(c: dict, authors: dict[str, list[str]], co: dict | None = None) -> l
     if o.get("kind") == "prose" or c.get("op") == "text":
         out += authors.get(frame) or []
     if co is not None:
-        out.append(confirmer_of(co, frame, o.get("quote") or ((c.get("rule") or {}).get("source") or {}).get("text")))
-        if c.get("op") == "text":
-            out += [w for (f, _short), w in confirmers(co).items() if f == frame]
+        out += writers_of(co, frame, o.get("quote") or ((c.get("rule") or {}).get("source") or {}).get("text"))
+        if c.get("op") == "text":  # the SOP's wording change holds the readings' lines: their writers made it too
+            out += [w for (f, _short), who in confirmers(co).items() if f == frame for w in who]
     return sorted({w for w in out if w and w not in MACHINES})
 
 
@@ -2127,6 +2127,9 @@ def answer_question(hub, co_ref, qid: str, answer: str, by: str, line: int | Non
     concerned: list[str] = []
     if category and (q is None or q.get("code") != "unread-rule"):
         raise ValueError("only an unread-rule question (prose that reads like a rule and configures nothing) is answered as a procedure")
+    if q is not None and q.get("picture") and stage_of(co) not in EDITABLE:  # any answer: the text signed is the text compiled
+        raise ValueError(f"{co['number']} is {stage_of(co)}: a picture's answer decides the SOP's text, so answer it while the "
+                         "change order is being revised (send it back to revising first)")
     reading: list[str] | None = None
     if picture is not None:
         if q is None or not q.get("picture"):
@@ -2135,8 +2138,8 @@ def answer_question(hub, co_ref, qid: str, answer: str, by: str, line: int | Non
         upd.update({"picture_answer": picture, "confirmed_reading": reading})
         if reading:
             upd["answer"] = meaning = f"{meaning} The picture's reading: “{' '.join(reading)}”"
-            divs = (q.get("reading") or {}).get("divergences") or []
-            if picture_reading.kind_of(picture) == "confirm" and divs:  # the approvers see where it differs, with the answer
+            divs = picture_reading.divergences_of(q, picture)
+            if divs:  # the approvers see where it differs, with the answer
                 upd["answer"] = meaning = f"{meaning} It differs from the prose: {'; '.join(divs)}."
     if committee_q:
         # The compile committee could not read (a member was unavailable) or did not agree: a person intervenes.
@@ -2157,11 +2160,15 @@ def answer_question(hub, co_ref, qid: str, answer: str, by: str, line: int | Non
         if reading is not None:  # the change order holds the reading a person confirmed; the next compile puts it in the text
             ref = picture_reading.PICTURE_LINE.fullmatch(str(q.get("quote") or "")).group(2)
             kept = {f: dict(v or {}) for f, v in (co["fields"].get("picture_readings") or {}).items()}
+            wrote = picture_reading.writers(kept.get(q.get("frame") or "", {}).get(ref)) + ([by] if reading else [])
             kept.setdefault(q.get("frame") or "", {})[ref] = {
                 "lines": reading, "answer": picture_reading.kind_of(picture), "chosen": picture, "by": by, "at": now, "question": qid,
+                "writers": list(dict.fromkeys(wrote)),
                 "read_by": list((q.get("reading") or {}).get("by") or []), "proposed": list((q.get("reading") or {}).get("proposed") or [])}
             co = _set(hub, co, by=by, picture_readings=kept)
-        if committee_q:  # the intervention is an accepted warning on the change order (and on each item it concerns)
+        if committee_q and not reading:  # the intervention is an accepted warning on the change order (and on each item it concerns)
+            # An answer that writes SOP lines made its author a contributor: what is raised against those lines (the reading's
+            # divergences) stays a warning for an approver who contributed nothing to accept.
             for item, key in [(None, f"co|question|{qid}")] + [(cid, f"{cid}|question|{qid}") for cid in concerned]:
                 p.setdefault("acceptances", {})[key] = {"by": by, "meaning": meaning, "at": now}
                 _record(hub, co, "warning_accepted", {**_signed(hub, co, by=by, verdict="accept", meaning=meaning, step=key,

@@ -308,7 +308,11 @@ def test_no_picture_answer_is_given_on_a_change_order_awaiting_approval(hub, tmp
     for how in ("confirm", "correct", "nothing"):  # whatever the answer: the text signed is the text compiled
         with pytest.raises(ValueError, match="so answer it while the change order is being revised"):
             cc.answer_question(hub, co["number"], q["id"], "", "carol", picture=how, reading_text="The controller approves.")
+    for plain_answer in ({}, {"category": "procedure"}, {"record_divergence": True}):  # nor a plain answer to a picture's question
+        with pytest.raises(ValueError, match="so answer it while the change order is being revised"):
+            cc.answer_question(hub, co["number"], q["id"], "it states no rule", "carol", **plain_answer)
     assert not hub.kernel.get(co["locator"])["fields"].get("picture_readings")
+    assert next(x for x in cc.questions(hub, co["number"]) if x["id"] == q["id"])["status"] == "open"
 
 
 # ---------------------------------------------------------------- upgrading
@@ -439,6 +443,12 @@ def test_a_confirmed_readings_divergences_stay_in_what_the_approvers_accept(hub,
     review(hub, co)
     [w] = [w for w in cc.co_warnings(hub, co["number"]) if w.get("ref") == q["id"]]
     assert "It differs from the prose" in w["text"] and "done by policy-owner" in w["text"], w
+    assert not w.get("accepted"), "bob wrote the reading: his answer is no acceptance of what is raised against it"
+    with pytest.raises(ValueError, match="segregation of duties"):
+        cc.accept_warning(hub, co["number"], w["ref"], "bob", "fine")
+    cc.accept_warning(hub, co["number"], w["ref"], "carol", "the flow is drawn loosely; the Process section holds")
+    [w] = [w for w in cc.co_warnings(hub, co["number"]) if w.get("ref") == q["id"]]
+    assert (w.get("accepted") or {}).get("by") == "carol", "an approver who contributed nothing accepts it"
 
 
 def test_confirm_is_refused_when_the_members_read_the_picture_differently(hub, tmp_path, monkeypatch):
@@ -510,3 +520,74 @@ def test_a_picture_is_measured_as_it_is_sent():
     part = b"\x89PNG\r\n\x1a\n" + b"x" * (model.MAX_IMAGE_B64 * 3 // 4 - 100)
     with pytest.raises(ValueError, match="one call carries at most"):
         gw.complete(model="ollama/llava:13b", system=SYSTEM, user=USER, images=[{"data": part, "media_type": "image/png"}] * 5)
+
+
+# ---------------------------------------------------------------- re-review of PR #41
+def test_a_corrected_reading_is_compared_with_the_process_section_too(hub, tmp_path, monkeypatch):
+    seniors_read(hub, monkeypatch, tmp_path, Seniors())
+    co = new_co(hub, title="Add the journal-reversal flow")
+    picture_revision(hub, co, PNG)
+    [q] = picture_questions(review(hub, co))
+    cc.answer_question(hub, co["number"], q["id"], "", "bob", picture="correct",
+                       reading_text="The payables-reviewer approves the journal reversal.\nThe controller posts the reversal before it is approved.")
+    [q2] = picture_questions(review(hub, co))
+    divs = q2["confirmed_divergences"]
+    assert any("“Approve the reversal” done by payables-reviewer" in d and "done by controller" in d for d in divs), divs
+    assert any("“Post the reversal” done by controller" in d and "done by system" in d for d in divs), divs
+    assert "It differs from the prose" in q2["text"]
+
+
+def test_everyone_whose_answer_wrote_a_reading_stays_a_contributor(hub, tmp_path, monkeypatch):
+    seniors_read(hub, monkeypatch, tmp_path, Seniors())
+    co = new_co(hub, title="Add the journal-reversal flow")
+    picture_revision(hub, co, PNG)
+    [q] = picture_questions(review(hub, co))
+    wrote = "Approvals in journal-reversal go to the payables-reviewer."
+    cc.answer_question(hub, co["number"], q["id"], "", "carol", picture="correct", reading_text=wrote)
+    cc.answer_question(hub, co["number"], q["id"], "", "bob", picture="correct", reading_text=wrote)
+    assert {"bob", "carol"} <= set(cc.contributors(hub, co["number"])), "carol's words are kept: she stays a contributor"
+    review(hub, co)
+    [text] = [c for c in cc.delta(hub, co["number"]) if c["op"] == "text"]
+    assert {"bob", "carol"} <= set(text["makers"]), "the wording change holds their lines: they made it too"
+
+
+def test_a_policy_owner_who_wrote_a_reading_does_not_answer_for_the_committee(hub, tmp_path, monkeypatch):
+    """With no person as the committee's chair or a system administrator, a policy owner answers for the committee, but
+    never one who contributed: carol, who corrected one picture's reading, does not answer the other picture's question."""
+    seniors_read(hub, monkeypatch, tmp_path, Seniors())
+    monkeypatch.setattr(cc, "_human_intervener", lambda hub_, chair: False)
+    monkeypatch.setattr(hub, "extractor", lambda calls=False: CommitteeExtractor(
+        list(SENIORS), 2, cache_dir=tmp_path / "cache", context=context_for(hub), call=Seniors(), calls=calls,
+        baseline=lambda: {**baseline_for(hub), "chair": "it-admin"}, chair="it-admin", pictures=lambda name, r: sopdocs.picture_images(hub, name, r)))
+    co = new_co(hub, title="Add two flows")
+    d = picture_revision(hub, co, PNG)
+    content, _ = hub.dms.content(d["locator"])
+    other = "Approvals in purchase-to-pay go to the payables reviewer."
+    hub.dms.add_version(d["locator"], word_picture(content, other, PNG2, media="image2.png", rid="rId10"), by="alice",
+                        filename="finance-policy.docx", mime=DOCX)
+    qa, qb = sorted(picture_questions(review(hub, co)), key=lambda q: ref(PNG) not in q["quote"])
+    cc.answer_question(hub, co["number"], qa["id"], "", "carol", picture="correct", reading_text=SAID)
+    with pytest.raises(ValueError, match="segregation of duties: carol contributed"):
+        cc.answer_question(hub, co["number"], qb["id"], "", "carol", picture="nothing")
+    cc.answer_question(hub, co["number"], qb["id"], "", "bob", picture="nothing")
+
+
+def test_the_page_offers_each_members_reading_when_they_disagree(shell, tmp_path, monkeypatch):
+    from hubproto.shell.change_order_ui import anchor
+    from test_change_order_pages import co_page, ok, refused
+
+    hub = shell["hub"]
+    other = {"states_nothing": False, "sentences": ["Approvals in journal-reversal go to the policy owner."], "steps": [], "rules": []}
+    seniors_read(hub, monkeypatch, tmp_path, Seniors(per_member={"senior-b": other}))
+    co = new_co(hub, title="Add the journal-reversal flow")
+    picture_revision(hub, co, PNG)
+    [q] = picture_questions(review(hub, co))
+    html = plain(co_page(shell, co, "carol"))
+    assert "Confirm senior-a's reading" in html and "Confirm senior-b's reading" in html
+    assert "Confirm the committee's reading" not in html, "no one reading to confirm"
+    fid = "answer-" + anchor(q["id"])
+    page = refused(post(shell, "/co-answer", {"as": "carol", "co": co["locator"], "form": fid, "qid": q["id"], "answer": "it states no rule"}))
+    assert "Choose what the picture states" in plain(page), "a picture's answer says what it states"
+    ok(post(shell, "/co-answer", {"as": "carol", "co": co["locator"], "form": fid, "qid": q["id"], "picture": "confirm:senior-b"}))
+    entry = hub.kernel.get(co["locator"])["fields"]["picture_readings"]["finance-policy"][ref(PNG)]
+    assert entry["lines"] == other["sentences"] and entry["by"] == "carol"

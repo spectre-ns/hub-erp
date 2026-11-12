@@ -1200,9 +1200,9 @@ class ChangeOrderMixin:
         text = self._co_cv("/co-answer", fid, "reading_text") or "\n".join(reading.get("proposed") or [])
 
         def opt(value: str, words: str) -> str:
-            return (f"<label class='check'><input type='radio' name='picture' value='{value}'{' checked' if chosen == value else ''}> "
+            return (f"<label class='check'><input type='radio' name='picture' value='{value}' required{' checked' if chosen == value else ''}> "
                     f"{words}</label>")
-        out = "<fieldset><legend>What the picture states</legend>"
+        out = "<fieldset><legend>What the picture states <b aria-hidden='true'>*</b></legend>"
         if reading.get("divergences"):
             out += "<p class='why' style='margin:0'>It differs from the prose: " + esc("; ".join(reading["divergences"])) + ".</p>"
         if reading and reading.get("agreed", True):
@@ -2104,6 +2104,9 @@ class ChangeOrderMixin:
                 raise ShellError("The line is a number (the line of the SOP that answers it).", field="line") from None
         answer = self._f("answer")
         picture = self._f("picture") or None
+        asked = next((q for q in cc.questions(self.hub, co["locator"]) if q.get("id") == self._f("qid")), None)
+        if asked is not None and asked.get("picture") and not picture:  # a picture's answer says what it states, every time
+            raise ShellError("Choose what the picture states: confirm a reading, correct it, or say it states nothing.", field="picture")
         if not answer and not picture:
             raise ShellError("Say what the answer is (and, best, which line of the prose says it).", field="answer")
         try:

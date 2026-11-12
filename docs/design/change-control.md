@@ -231,12 +231,16 @@ changed) stops the job with "unknown step". The steps of change control:
   The committee's chair (or a system administrator) answers it (`changecontrol.answer_question(picture=...)`):
   confirm the reading (only when the members read it the same way; otherwise one member's reading,
   chosen by name), correct it, or say the picture states nothing (a divergence may also be
-  recorded). A picture's answer is given only while the change order is editable. Whoever
-  confirms or corrects a reading writes SOP text: they are a contributor of the change order and
-  a maker of every item read from its lines, so they never approve those items alone. At the next
-  compile the reading in the text is compared with the prose again, and its divergences are
-  warnings and words of the question; a confirmed reading's divergences are also in the signed
-  answer.
+  recorded). Any answer to a picture's question, a plain one included, is given only while the
+  change order is editable, and the page asks for one of those choices every time. Whoever
+  confirms or corrects a reading writes SOP text: they are a contributor of the change order (and
+  stay one when a later answer replaces their words) and a maker of every item read from its
+  lines and of the SOP's wording change, so they never approve those items alone, and their
+  answer is not recorded as accepting the question's warning: an approver who contributed nothing
+  accepts it. At the next compile the reading in the text is compared with the prose again (the
+  rules read from its lines) and with the `Process:` section (the steps its sentences name, by
+  their words, and the role each names), and its divergences are warnings and words of the
+  question; a confirmed reading's divergences (the chosen member's) are also in the signed answer.
   - **Where the reading lives:** in the Frame text, one line per sentence right after the
     picture's line, `> Picture sha256:<first 12 hex of its hash>: <sentence>`
     (`office.reading_line`). The release digest covers it (it is in the text the bill of

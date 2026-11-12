@@ -231,6 +231,46 @@ def _overlap(a: str, b: str) -> float:
     return len(x & y) / len(x | y) if x and y else 0.0
 
 
+def _stem(word: str) -> str:
+    for end in ("ing", "ed", "es", "s", "e"):
+        if len(word) > len(end) + 2 and word.endswith(end):
+            return word[: -len(end)]
+    return word
+
+
+def _stems(text: str) -> set[str]:
+    return {_stem(w) for w in _norm(text).split()} - _SMALL
+
+
+def steps_said(frame, line: int, sentences: list[str], rules: list[dict], names: list[str]) -> dict:
+    """The steps a reading's sentences (a corrected or confirmed reading, as words) say, against the SOP's processes:
+    {"process", "steps": [{"title", "role"}]}. A sentence says a step of a process when it holds every word of the step's
+    title (word endings and small words aside); the role is the role or cog of ``names`` the sentence names ('' when it names none, or more than
+    one). The process is the one most of whose steps the reading says (the Process: section the picture is in, on a tie)."""
+    from .llm_extract import _section_at
+
+    mine = [r for r in rules if r.get("kind") == "process" and (r.get("source") or {}).get("frame") == frame.name]
+    head = _section_at(frame, line).lstrip("#").strip()
+    here = head.split(":", 1)[1].strip() if head.lower().startswith("process:") else ""
+    spoken = [(_stems(s), " " + _norm(s) + " ") for s in sentences]
+    best: tuple = (0, False, "", [])
+    for proc in mine:
+        said = []
+        for title in [s.get("title") or s.get("name") or "" for s in (proc.get("steps") or proc.get("statuses") or [])]:
+            want = _stems(title)
+            at = next((i for i, (words, _t) in enumerate(spoken) if want and want <= words), None)
+            if at is None:
+                continue
+            named = [n for n in names if f" {_norm(n.replace('-', ' '))} " in spoken[at][1]]
+            named = [n for n in named if not any(n != m and f" {_norm(n)} " in f" {_norm(m)} " for m in named)]  # "reviewer" in "payables-reviewer"
+            said.append((at, {"title": title, "role": named[0] if len(named) == 1 else ""}))
+        said.sort(key=lambda x: x[0])
+        key = (len(said), proc["name"] == here, proc["name"], [s for _i, s in said])
+        if key[:2] > best[:2]:
+            best = key
+    return {"process": best[2], "steps": best[3]} if best[0] else {"process": "", "steps": []}
+
+
 def _process_for(frame, line: int, reading: dict, rules: list[dict]):
     """The process a picture's steps are compared with: the one it names, else the Process: section it is in, else the
     SOP's only process; None when there is none to compare with."""
@@ -381,21 +421,51 @@ def answer_lines(q: dict, how: str, text: str = "") -> list[str]:
     return lines
 
 
-def confirmers(co: dict) -> dict[tuple[str, str], str]:
-    """{(SOP, the first 12 hex of the picture's hash): who confirmed or corrected its reading} for every reading of the
-    change order that writes SOP text: that person wrote those lines (a contributor, and a maker of what is read from them)."""
-    out = {}
-    for frame, pics in ((co.get("fields") or {}).get("picture_readings") or {}).items():
-        for ref, entry in (pics or {}).items():
-            if (entry or {}).get("lines") and entry.get("by"):
-                out[(frame, short(ref))] = entry["by"]
+def writers(entry: dict | None) -> list[str]:
+    """Everyone whose answer wrote lines of a picture's reading on the change order (``picture_readings`` entry), the
+    latest last: a past writer stays one when a later answer keeps, changes or takes out the words."""
+    entry = entry or {}
+    out = list(entry.get("writers") or [])
+    if entry.get("lines") and entry.get("by") and entry["by"] not in out:
+        out.append(entry["by"])
     return out
 
 
-def confirmer_of(co: dict, frame: str, text: str | None) -> str:
-    """Who wrote the reading line ``text`` of ``frame`` ('' when it is no reading line of this change order)."""
+def confirmers(co: dict) -> dict[tuple[str, str], list[str]]:
+    """{(SOP, the first 12 hex of the picture's hash): everyone who confirmed or corrected its reading} for every reading
+    of the change order that wrote SOP text: they wrote those lines (contributors, and makers of what is read from them)."""
+    out = {}
+    for frame, pics in ((co.get("fields") or {}).get("picture_readings") or {}).items():
+        for ref, entry in (pics or {}).items():
+            who = writers(entry)
+            if who:
+                out[(frame, short(ref))] = who
+    return out
+
+
+def writers_of(co: dict, frame: str, text: str | None) -> list[str]:
+    """Who wrote the reading line ``text`` of ``frame``, the latest last ([] when it is no reading line of this change order)."""
     m = READING_LINE.fullmatch(str(text or "").strip())
-    return confirmers(co).get((frame, m.group(1)), "") if m else ""
+    return confirmers(co).get((frame, m.group(1)), []) if m else []
+
+
+def confirmer_of(co: dict, frame: str, text: str | None) -> str:
+    """Who last wrote the reading line ``text`` of ``frame`` ('' when it is no reading line of this change order)."""
+    who = writers_of(co, frame, text)
+    return who[-1] if who else ""
+
+
+def divergences_of(q: dict, how: str) -> list[str]:
+    """The divergences of the reading a "confirm" answer chose: the committee's (every member's, when they agreed), or the
+    named member's; none for "correct" (its words are compared at the next compile) or "nothing"."""
+    reading = q.get("reading") or {}
+    if kind_of(how) != "confirm":
+        return []
+    member = how.split(":", 1)[1] if ":" in how else ""
+    if not member:
+        return list(reading.get("divergences") or [])
+    theirs = next((r for r in reading.get("readings") or [] if r.get("member") == member), {})
+    return list(theirs.get("divergences") or [])
 
 
 def confirmed_of(co: dict) -> dict[str, dict[str, list[str]]]:
