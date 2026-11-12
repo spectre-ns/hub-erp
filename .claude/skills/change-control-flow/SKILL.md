@@ -106,7 +106,9 @@ applies what was signed.
 - A configuration script (issue #34) is never run by the release: the release applies what its output carried. Keep
   every release step free of `hubproto.scripts`; `config_scripts` is part of `content_digest` (key `scripts`, one of
   `OPTIONAL_KEYS`), so a run recorded after a round or after sending is caught. Only a person submits one
-  (`scripts.refuse_cog`); tests: `tests/test_config_scripts.py`.
+  (`scripts.refuse_cog`); a run whose protection its parent did not confirm (`scripts.protected`) counts for nothing;
+  without a worker only `HUBPROTO_SCRIPT_FALLBACK=1` runs one beside the hub. Tests: `tests/test_config_scripts.py`
+  (the review of PR #55's escapes are its `test_finding_*`).
 - Tests for this loop: `tests/test_change_control.py`, `test_change_control_integrity.py`,
   `test_change_control_documents.py`, `test_change_order_pages.py`, `test_widening.py`, `test_automation.py`,
   `test_committees.py`, `test_committee_pages.py`, `test_validation.py`, `test_eco.py`.

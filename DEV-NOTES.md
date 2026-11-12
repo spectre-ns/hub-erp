@@ -36,10 +36,10 @@ for pytest-xdist, a development-only dependency; without `-n auto` the suite run
 | `hubproto/recordtypes.py` | record types under change control: the record types in force (`state/record-types`), changes carried on change orders (`carry`, `carried_reasons`, `delta_items`, `activate`), the file's drift | core |
 | `hubproto/configdocs.py` | the link vocabulary and the retention classes under change control, as record types are: what is in force (`state/config/links`, `state/config/retention`), changes carried on change orders (`config_changes`: `carry`, `carried_reasons`, `delta_items`, `activate`), the files' drift | core |
 | `hubproto/configjson.py` | the configuration in force as one JSON document (`export`, `dumps`; format in docs/design/config-json.md) and a document proposed on a change order (`plan`, `propose`: through Settings' direct changes, `recordtypes.carry`, `formlayout.carry`, `configdocs.carry`; all or nothing) | core |
-| `hubproto/scripts.py` | configuration scripts on a change order (issue #34): `propose` (a person only; allow-list check, run in the script worker or, on a hub not deployed, a local subprocess labelled weaker isolation; output parsed, held to the schema and carried by `configjson.propose`; each run kept in the CO's `config_scripts`), `where_it_runs`, `run`, the worker client (`unix://` or `http://`) | core |
+| `hubproto/scripts.py` | configuration scripts on a change order (issue #34): `propose` (a person only; allow-list check, run in the script worker or, only with `HUBPROTO_SCRIPT_FALLBACK=1`, a local subprocess labelled weaker isolation; a run whose protection its parent did not confirm counts for nothing; output parsed, held to the schema and carried by `configjson.propose`; each run kept in the CO's `config_scripts`), `where_it_runs`, `run`, the worker client (`unix://` or `http://`) | core |
 | `hubproto/scriptcheck.py` | the `ast` allow-list check of a script, in the hub, before anything is sent (imports, eval/exec/open, computed getattr, dunder and frame attributes); each refusal names its line | core |
-| `hubproto/scriptworker.py` | the script worker (its own image, docker/script-worker): /invoke envelope seam on a Unix socket; `run_local`: one fresh `python -I -S -B` subprocess per run, empty temp folder, PATH only, timeout, output cap | core |
-| `hubproto/script_sandbox.py` | the run's own process (never imported by the hub): hard rlimits, a seccomp filter (no execve, fork, socket, ...), an audit-hook tripwire, restricted builtins, then the script | core |
+| `hubproto/scriptworker.py` | the script worker (its own image, docker/script-worker): /invoke envelope seam on a Unix socket; `run_local`: runs one at a time, each a fresh `python -I -S -B` subprocess in a fresh private folder, PATH only; checks the run's protection itself (`verify`) before sending the script; answer in a frame on a control descriptor; timeout, output cap | core |
+| `hubproto/script_sandbox.py` | the run's own process (never imported by the hub): rlimits, not dumpable, Landlock, a seccomp filter (no execve, fork, socket, prctl, ...), a handshake, then an audit-hook tripwire, restricted builtins and modules as namespaces of their allowed names, then the script | core |
 | `hubproto/schemacheck.py` | a document held to `docs/design/config-json.schema.json` (the keywords it uses), standard library only | core |
 | `hubproto/cli_dev.py`, `hubproto/dev_demo.py`, `hubproto/__main__.py` | `python -m hubproto`; CLI verbs `dev serve`, `dev list`, `dev stop`, `dev clean` (`register(sub)`): development hubs on localhost, the registry, ports; the demo data a served hub gets | dev tooling |
 | `hubproto/cli_recordtypes.py` | CLI verbs `record-types status`, `show`, `carry` (`register(sub)`) | cli agent |
@@ -103,9 +103,9 @@ what in your final report and work around it meanwhile.
   docs/design/config-json.md (and its JSON Schema, config-json.schema.json).
 * `config propose SCRIPT.py --as PERSON [--co CO]` (or `--script FILE`) runs a configuration script (issue #34): the
   allow-list check (exit 1 with the lines refused), one run in the script worker (`HUBPROTO_SCRIPT_WORKER_URL`,
-  `unix:///run/script-worker/worker.sock` in compose) or, with no worker on a hub that is not deployed, a local
-  subprocess with the same limits, filter and tripwire, labelled weaker isolation; a deployed hub (`HUBPROTO_DEPLOYED=1`,
-  set by the hub's Dockerfile) refuses that. The script reads `config` (the export) and leaves `result` (the whole
+  `unix:///run/script-worker/worker.sock` in compose) or, only with `HUBPROTO_SCRIPT_FALLBACK=1` (dev hubs, tests), a
+  local subprocess with the same kernel restrictions, labelled weaker isolation; every other hub refuses a script
+  without a worker. The script reads `config` (the export) and leaves `result` (the whole
   document or a part, with `schema`, `hub`, `release` and `versions`); its output is carried as `config propose
   FILE.json` carries a document, and the run (script, sha256, snapshot digest, output, run record) is kept on the
   change order's `config_scripts`, part of its content digest. The release applies what was carried; it never runs a
@@ -519,21 +519,31 @@ authority's approval. The worker answers with synthetic exports when
 
 ## Configuration scripts and the script worker (issue #34)
 
-A script is a generator of a proposed change: its output, never the script, goes on the change order. Layers, outside
-in:
+A script is a generator of a proposed change: its output, never the script, goes on the change order. The boundary is
+the kernel, in the run's own process, and the container around it; the `ast` check and the tripwire are defense in
+depth (the security review of PR #55 got past both, and its escapes are regression tests in
+`tests/test_config_scripts.py`). Layers, outside in:
 
 | Layer | Where | What it stops |
 |---|---|---|
-| `ast` allow-list | `scriptcheck.check`, in the hub (and again in the worker) | imports off the list, eval/exec/compile/`__import__`/open, computed getattr, dunder and frame attributes, `string.Formatter`; a sentence per line, before anything runs |
+| `ast` allow-list | `scriptcheck.check`, in the hub (and again in the worker) | imports off the list; any name of an allowed module that is not on its list (`ALLOWED_NAMES`: no `typing.sys`, `statistics.sys`, `collections._sys`, `typing.operator`, `typing.get_type_hints`, `ForwardRef`, `string.Formatter`); a module used as a value; eval/exec/compile/`__import__`/open; getattr/setattr/delattr at all; dunder names, attributes and text; frame attributes; `match` class patterns; annotations written as text. A sentence per line, before anything runs |
 | the container | `docker-compose.yml` `script-worker` | `network_mode: none` (it reaches nothing, the hub included; the hub reaches it over a Unix socket on a tmpfs volume mounted read-only in the hub), read-only root, `cap_drop: ALL`, no-new-privileges, uid 10001, pids/memory/CPU limits, no hub state, secrets or Docker socket |
-| the container's seccomp profile | `docker/script-worker/seccomp.json` | an allow-list: socket only for AF_UNIX; no connect, ptrace, mount, unshare, setns, bpf, execveat, module loading |
-| the run's own seccomp filter | `script_sandbox.install_kernel_filter` (ctypes, before the script) | execve, execveat, fork, vfork, clone, socket, connect, kill, ptrace, mount, unshare, setns, bpf, ... return EPERM: the "no execve after start" a container profile cannot say |
-| rlimits, timeout, output cap | `script_sandbox.main`, `scriptworker.run_local` | CPU seconds, address space, file size, open files, no processes; wall-clock timeout; at most `output_bytes` back; excerpts cut at `excerpt_chars` |
-| audit-hook tripwire | `script_sandbox.main` (`sys.addaudithook`) | os.system, subprocess, exec/spawn/fork, socket, ctypes, open for writing outside the temp folder (or reading outside it and the standard library), imports off the list, frame introspection: the run ends and the change order records why |
+| the container's seccomp profile | `docker/script-worker/seccomp.json` | an allow-list: socket only for AF_UNIX; no connect, ptrace, mount, unshare, setns, bpf, execveat, module loading; landlock_* allowed so each run can restrict itself |
+| one run at a time | `scriptworker._one_at_a_time`, `MAX_CONNECTIONS` | runs are serialized (one runs, `MAX_QUEUED` wait, more are refused as busy); connections past the bound get a busy answer without a thread. No run shares the machine with another |
+| the run's own kernel restrictions (fail closed) | `script_sandbox.protect`, before the script is sent | rlimits (CPU, address space, file size, open files, no processes); `PR_SET_DUMPABLE` 0 (its `/proc` entries are closed to every other process); **Landlock** at the kernel's highest ABI: read only the standard library, the interpreter and the sandbox file, read and write only its own fresh 0700 folder, nothing else (no `/proc`, no hub state, no other run's folder, not the socket; `dir_fd` and symlinks alike), no TCP, and from ABI 6 no signals or abstract sockets outside; **seccomp**: execve, execveat, fork, vfork, clone, socket, connect, kill, ptrace, prctl, mount, unshare, setns, bpf, ... return EPERM. Any layer missing: the run is refused |
+| the parent's check | `scriptworker.verify` | before it sends the script, the parent (the worker, or the hub for the fallback) reads `/proc/<child>/status` itself: `Seccomp: 2`, more filters than its own, `NoNewPrivs: 1`, and `/proc/<child>/environ` owned by root (not dumpable); Landlock as the handshake said, written before the script existed. The protection on the change order is what the parent saw |
+| the answer channel | `_Collector`, `_conclude` | the answer is one length-prefixed frame on a control descriptor after the script returns; the exit reason comes from how the process ended first. Everything the run wrote (its answer, its prints, anything else) is the script's own output, shown as such |
+| audit-hook tripwire | `script_sandbox._make_hook` (`sys.addaudithook`) | os.system, subprocess, exec/spawn/fork, socket, ctypes, opens outside the folder, imports off the list, frame introspection: the run ends and the change order records why. Its state is in a closure no frame of the script reaches |
 
-The worker is long-running with a fresh subprocess and temp folder per run: a fresh container per run needs a launcher
-holding the Docker socket (issue #35, decision 1), and the hub never holds it. Tests drive `run_local` and the /invoke
-server on a socket in `tmp_path`; they need no Docker. `scriptworker.run_local(check=False)` (tests only, never over
-/invoke) skips the allow-list to show the tripwire and limits hold behind it. Not covered: the audit hook is not a
-sandbox (PEP 578); the local subprocess has no container around it (labelled); the kernel filter needs Linux on x86_64
-or aarch64 (elsewhere the run says "unavailable").
+**Where it runs.** With `HUBPROTO_SCRIPT_WORKER_URL`, in the worker. Without it, only a hub told it may
+(`HUBPROTO_SCRIPT_FALLBACK=1`: `hubproto dev serve` and `tests/conftest.py` set it; never with `HUBPROTO_DEPLOYED=1`)
+runs the same subprocess beside itself, labelled weaker isolation; every other hub refuses. The worker is long-running
+with a fresh subprocess and folder per run; a fresh container per run needs a launcher holding the Docker socket (issue
+#35, decision 1, and finding 6 of the review: the maintainer's decision on #34). The worker exits when its socket is
+removed or replaced (`watch_socket`), so the restart policy brings a fresh one.
+
+Tests drive `run_local` and the /invoke server on a socket in `tmp_path`; they need no Docker. Test-only parameters,
+never offered over /invoke: `check=False` (no allow-list), `tripwire=False` (no audit hook), `_skip`/`_claim` (a kernel
+layer left out, and said to be there). Not covered: the kernel restrictions need Linux with Landlock and seccomp on
+x86_64 or aarch64 (elsewhere scripts are refused); Landlock (to ABI 7) does not restrict `stat` of a path, so a run can
+learn whether a path exists, not read it; the fallback has no container around it.

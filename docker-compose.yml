@@ -18,8 +18,9 @@ services:
     environment:
       HUBPROTO_ROOT: /hub
       HUBPROTO_CAD_WORKER_URL: http://cad-worker:9000
-      # Configuration scripts (issue #34) run only in the script-worker service below, reached over its Unix socket. The
-      # image sets HUBPROTO_DEPLOYED=1, so without this the hub refuses to run a script rather than run one beside itself.
+      # Configuration scripts (issue #34) run only in the script-worker service below, reached over its Unix socket.
+      # Without it the hub refuses to run a script rather than run one beside itself (only a development hub with
+      # HUBPROTO_SCRIPT_FALLBACK=1 does that, and the image's HUBPROTO_DEPLOYED=1 refuses even that).
       HUBPROTO_SCRIPT_WORKER_URL: unix:///run/script-worker/worker.sock
       # Largest request body the shell accepts (bytes); larger uploads get 413.
       HUBPROTO_MAX_UPLOAD: "26214400"
@@ -145,10 +146,14 @@ services:
   #     Docker socket, no other volume;
   #   - every capability dropped, no-new-privileges, an unprivileged user (10001);
   #   - a seccomp allow-list (docker/script-worker/seccomp.json: socket only for AF_UNIX; no connect, ptrace, mount,
-  #     unshare, setns or bpf), and inside each run a stricter filter of its own (no execve, fork or socket at all);
-  #   - pids, memory and CPU limits for the container, and per run hard rlimits, a timeout and an output cap.
-  # It is long-running, with a fresh subprocess and temporary folder per run: a fresh container per run would need a
-  # launcher holding the Docker socket (issue #35, decision 1), and the hub must never hold it.
+  #     unshare, setns or bpf);
+  #   - pids, memory and CPU limits for the container; runs one at a time, a bounded queue, a bound on connections.
+  # Inside, each run locks itself down before the script is sent, and the worker checks it: rlimits, not dumpable,
+  # Landlock (read only the standard library, read and write only its own fresh folder: no /proc, not this socket) and
+  # its own seccomp filter (no execve, fork, socket, kill, prctl). A run that cannot is refused.
+  # It is long-running, with a fresh subprocess and private folder per run: a fresh container per run would need a
+  # launcher holding the Docker socket (issue #35, decision 1), and the hub must never hold it. If its socket is
+  # removed or replaced the worker exits, and the restart policy starts a fresh one.
   script-worker:
     build:
       context: .

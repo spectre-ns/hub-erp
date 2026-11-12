@@ -39,8 +39,7 @@ class ScriptsMixin:
         head = (f"<h4 id='{esc(r.get('id'))}'>{esc(r.get('id'))}: {esc(r.get('name'))} {chips}</h4>"
                 f"<p>Submitted by {self._co_who(r.get('by'))} <span class='why'>{esc(when(r.get('at')))}</span>; "
                 f"ran {esc(str(r.get('seconds')))} s: {esc(r.get('detail'))}.</p>"
-                f"<p class='why'>{esc(r.get('isolation_note'))}"
-                + (f" Kernel filter: {esc(r.get('kernel_filter'))}." if r.get("kernel_filter") else "") + "</p>")
+                f"<p class='why'>{esc(r.get('isolation_note'))} {esc(scripts.protection_words(r.get('protection') or {}))}</p>")
         facts = [("Script sha256", r.get("script_sha256")), ("Snapshot it read (sha256)", r.get("snapshot_sha256")),
                  ("Taken from release", r.get("snapshot_release")), ("Output sha256", r.get("output_sha256") or "no output")]
         body = "<dl class='facts'>" + "".join(f"<dt>{esc(k)}</dt><dd><code>{esc(str(v or '-'))}</code></dd>" for k, v in facts) + "</dl>"
@@ -68,7 +67,9 @@ class ScriptsMixin:
             body += details(f"{icon('file-text')}Its output (the configuration it proposes)",
                             f"<pre class='cell' aria-label='The output'>{esc(shown[:OUTPUT_SHOWN])}</pre>"
                             + ("<p class='why'>Shown in part; the whole output is on the change order (its sha256 above).</p>" if cut else ""))
-        for k, label in (("stdout", "What it printed"), ("stderr", "Its error output")):
+        for k, label in (("stdout", "What it printed (the script's own output, not checked)"),
+                         ("stderr", "Its error output (the script's own output, not checked)"),
+                         ("raw_output", "What else it wrote (outside its answer: not checked)")):
             if r.get(k):
                 dropped = int(r.get(f"{k}_dropped") or 0)
                 body += details(label, f"<pre class='cell'>{esc(r[k])}</pre>"

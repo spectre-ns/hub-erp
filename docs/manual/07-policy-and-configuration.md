@@ -918,19 +918,23 @@ Submit it with `hubproto config propose tune.py --as carol [--co CO-...]`, or **
 under **What it carries** on a change order you are preparing. What happens:
 
 1. The hub checks the script first and refuses, naming the line, an import other than json, math, re, datetime,
-   decimal, collections, itertools, functools, statistics, string and typing; `eval`, `exec`, `compile`, `__import__`,
-   `open`, `globals`, `locals`, `vars`; `getattr`, `setattr` or `delattr` with a computed name; and any `__dunder__`
-   name or attribute ("Line 2: import os is not allowed: ...").
+   decimal, collections, itertools, functools, statistics, string and typing, or a name of those modules that is not on
+   its list (`typing.sys`, for example); `eval`, `exec`, `compile`, `__import__`, `open`, `getattr`, `setattr`,
+   `delattr`, `globals`, `locals`, `vars`; any `__dunder__` name, attribute or text; a class pattern in `match`; and an
+   annotation written as text ("Line 2: import os is not allowed: ...").
 2. It runs once, in the **script worker**: a container of its own with no network, a read-only file system, no
-   privileges and nothing of the hub's in it, under limits of time, memory, processor and output. A script that tries
-   to start a program, open a connection or a file, or reach Python's internals is stopped, and the change order says
-   what it tried. A development hub without the worker runs it in a local subprocess with the same limits, and the
-   change order says **weaker isolation**; a deployed hub refuses to.
+   privileges and nothing of the hub's in it, one run at a time, under limits of time, memory, processor and output.
+   Before the script is sent, the run's process is locked down by the kernel (it may read only Python's standard
+   library and read and write only its own fresh folder; it cannot start a program, open a connection or reach another
+   process), and the worker checks that itself; a run it cannot lock down is refused. A script that tries more is
+   stopped, and the change order says what it tried. A development hub without the worker
+   (`HUBPROTO_SCRIPT_FALLBACK=1`, set by `hubproto dev serve`) runs it in a local subprocess with the same locks, and the
+   change order says **weaker isolation**; every other hub without a worker refuses to run scripts.
 3. Its output is read as data, exactly as an uploaded configuration file: checked against the format and carried, or
    refused with every reason and nothing carried.
 
 The change order keeps every run: the script and its sha256, the digest of the configuration it read, its output, what
-it printed, where it ran and why it stopped. Reviewers and approvers see all of it under **Configuration scripts**, with
+it printed (shown as the script's own output), where it ran, the protection its parent checked, and why it stopped. Reviewers and approvers see all of it under **Configuration scripts**, with
 the changes it carried decided item by item like any other. The release applies the output that was signed and never
 runs the script again. Only a person submits a script; no cog may write or run one. A run recorded after a review round
 needs another round, like any change to what the change order carries.

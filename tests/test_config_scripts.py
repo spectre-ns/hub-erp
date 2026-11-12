@@ -22,6 +22,10 @@ import re
 import subprocess
 import sys
 
+import threading
+import time
+from pathlib import Path
+
 import pytest
 
 from conftest import ROOT
@@ -40,6 +44,7 @@ result["policy"] = {{"thresholds": config["policy"]["thresholds"]}}
 LINK = '''result = {k: config[k] for k in ("schema", "hub", "release", "versions")}
 result["links"] = dict(config["links"], inspires="inspired-by")
 '''
+ATTACKS = Path("/nonexistent")  # the reviewer's scripts are inlined below; nothing here reads outside the checkout
 SNAP = json.dumps({"schema": "hub-erp/config/1", "n": 1})
 
 
@@ -62,17 +67,33 @@ def new_co(hub, who="alice", title="Tune by script"):
     ("\n\ncompile('1', 'x', 'eval')", "Line 3: compile is not allowed"),
     ("__import__('os')", "Line 1: __import__ is not allowed"),
     ("open('/etc/passwd')", "Line 1: open is not allowed"),
-    ("n = 'x'\ngetattr(config, n)", "Line 2: getattr is given a computed name"),
-    ("setattr(config, 'a' + 'b', 1)", "Line 1: setattr is given a computed name"),
-    ("delattr(config, name)", "Line 1: delattr is given a computed name"),
-    ("getattr(config, '__class__')", "Line 1: getattr names __class__, a special attribute"),
-    ("g = getattr", "Line 1: getattr is used other than called with a literal name"),
+    ("n = 'x'\ngetattr(config, n)", "Line 2: getattr is not allowed: it reaches an attribute by a name"),
+    ("setattr(config, 'a' + 'b', 1)", "Line 1: setattr is not allowed"),
+    ("delattr(config, name)", "Line 1: delattr is not allowed"),
+    ("g = getattr", "Line 1: getattr is not allowed"),
+    # The review of PR #55 (finding 4): each of these passed the check before.
+    ("x = config\ngetattr(x, 'tb_frame')", "Line 2: getattr is not allowed"),
+    ("import typing\nsys = typing.sys", "Line 2: typing.sys is not allowed: a script uses only the names of typing on its list"),
+    ("import statistics\nstatistics.sys.modules", "Line 2: statistics.sys is not allowed"),
+    ("import collections\ncollections._sys.modules", "Line 2: collections._sys is not allowed"),
+    ("import collections.abc\ncollections.abc.sys", "Line 2: collections.abc.sys is not allowed"),
+    ("from typing import sys", "Line 1: typing.sys is not allowed"),
+    ("import typing as t\nt.operator.attrgetter('x')(())", "Line 2: typing.operator is not allowed"),
+    ("import typing\nm = typing\nm.sys", "Line 2: typing is a module: use it only as typing.name"),
+    ("import typing\ndef f(x: 'int'): pass\ntyping.get_type_hints(f)", "Line 2: an annotation written as text is not allowed"),
+    ("import typing\ntyping.get_type_hints", "Line 2: typing.get_type_hints is not allowed"),
+    ("import typing\ntyping.ForwardRef('x')", "Line 2: typing.ForwardRef is not allowed"),
+    ("x: 'list' = []", "Line 1: an annotation written as text is not allowed"),
+    ("match ():\n    case object(__class__=t):\n        pass", "Line 2: a class pattern in match is not allowed"),
+    ("match config:\n    case dict(schema=s):\n        pass", "Line 2: a class pattern in match is not allowed"),
+    ("f = lambda: 0\nx = '{0.__globals__}'.format(f)", "Line 2: the text '{0.__globals__}' names a special attribute"),
+    ("from typing import *", "Line 1: from typing import * is not allowed"),
     ("globals()", "Line 1: globals is not allowed"),
     ("locals()", "Line 1: locals is not allowed"),
     ("vars(config)", "Line 1: vars is not allowed"),
     ("().__class__.__base__.__subclasses__()", "Line 1: .__base__ is a special attribute"),
     ("x = __builtins__", "Line 1: __builtins__ is a special name"),
-    ("import string\nstring.Formatter().get_field('0.__class__', [()], {})", "Line 2: .Formatter is not allowed"),
+    ("import string\nstring.Formatter().get_field('0', [()], {})", "Line 2: string.Formatter is not allowed"),
     ("def f():\n    yield 1\nf().gi_frame.f_globals", "Line 3: .gi_frame is not allowed"),
     ("x = (", "Line 1: the script is not Python the hub can read"),
 ])
@@ -86,7 +107,8 @@ def test_a_plain_script_passes_the_check():
     ok = ("import json, math, re, datetime, decimal, collections, itertools, functools, statistics, string, typing\n"
           "from collections import defaultdict, namedtuple\nimport collections.abc\n"
           "class Row:\n    def __init__(self, v):\n        self.v = v\n"
-          "x = getattr(config, 'get')('policy')\nresult = config\n")
+          "x = config.get('policy')\ny = collections.abc.Mapping\nmatch x:\n    case {'roles': r}:\n        pass\n"
+          "def f(n: int) -> typing.Optional[int]:\n    return n\nresult = config\n")
     assert scriptcheck.check(ok) == []
 
 
@@ -132,8 +154,10 @@ def test_the_tripwire_allows_the_runs_own_temporary_folder():
 
 
 def test_a_script_cannot_import_what_is_off_the_list_even_past_the_check():
-    rec = scriptworker.run_local("import os\nresult = {}", SNAP, check=False)
+    rec = scriptworker.run_local("import os\nresult = {'x': os.name}", SNAP, check=False)
     assert rec["exit"] == "error" and "os is not a module a script may import" in rec["detail"], rec
+    rec = scriptworker.run_local("import typing\nresult = {'x': str(typing.sys)}", SNAP, check=False, tripwire=False)
+    assert rec["exit"] == "error" and "has no attribute 'sys'" in rec["detail"], "an allowed module is its names only, at run time too"
 
 
 @pytest.mark.skipif(sys.platform != "linux" or os.uname().machine not in ("x86_64", "aarch64"), reason="seccomp: Linux x86_64 or aarch64")
@@ -142,7 +166,7 @@ def test_the_kernel_filter_refuses_execve_fork_and_sockets_in_the_runs_process()
     probe = ("import importlib.util, os, socket, sys\n"
              f"spec = importlib.util.spec_from_file_location('sb', {str(sandbox)!r})\n"
              "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
-             "print(m.install_kernel_filter())\n"
+             "m.not_dumpable(); print(m.install_kernel_filter())\n"
              "for name, fn in [('execve', lambda: os.execv(sys.executable, [sys.executable, '-c', 'print(1)'])), ('fork', os.fork),\n"
              "                 ('socket', socket.socket), ('kill', lambda: os.kill(os.getppid(), 0))]:\n"
              "    try:\n        fn(); print(name, 'allowed')\n"
@@ -151,7 +175,7 @@ def test_the_kernel_filter_refuses_execve_fork_and_sockets_in_the_runs_process()
     assert out[0] == "installed", out
     assert out[1:5] == ["execve refused 1", "fork refused 1", "socket refused 1", "kill refused 1"], out
     rec = scriptworker.run_local("result = {}", SNAP)
-    assert rec["kernel_filter"] == "installed"
+    assert scripts.protected({**rec["protection"], "checked_by": "the hub"}), rec["protection"]
 
 
 # ------------------------------------------------------------------ the limits
@@ -459,3 +483,278 @@ def test_the_change_order_page_runs_a_script_and_shows_it_with_its_output(shell)
     status, url, body = post(shell, "/co-script-run", {**fields, "as": "qa-manager", "once": "s3"})
     assert status in (400, 403) and "cog" in plain(body), plain(body)[:300]
     assert len(hub.kernel.get(co["locator"])["fields"]["config_scripts"]) == 2
+
+
+# ------------------------------------------------------------------ the security review of PR #55, finding by finding
+# Each test below is built from one of the reviewer's attack scripts. ESCAPE reaches the os module without the allow-list
+# (a match class pattern, finding 4) and the tests run it with the check and the tripwire both switched off, so what
+# holds is the kernel: Landlock, seccomp, not dumpable, the limits.
+ESCAPE = """match ():
+    case object(__class__=t):
+        pass
+match t:
+    case object(__base__=o):
+        pass
+match o:
+    case object(__subclasses__=subs):
+        pass
+match [c for c in subs() if "wrap_close" in str(c)][0]:
+    case object(__init__=init):
+        pass
+match init:
+    case object(__globals__=g):
+        pass
+class OS:
+    pass
+os = OS()
+for k, v in g.items():
+    os.__dict__[k] = v
+sys = g["sys"]
+out = {}
+def attempt(name, fn):
+    try:
+        out[name] = "WORKED " + str(fn())[:300]
+    except Exception as e:
+        out[name] = "refused " + type(e).__name__
+"""
+
+
+def escaped(body: str, **kw) -> dict:
+    rec = scriptworker.run_local(ESCAPE + body + "\nresult = out\n", SNAP, {"seconds": 10, **kw.pop("limits", {})}, check=False,
+                                 tripwire=False, **kw)
+    assert rec["exit"] == "ok", (rec["exit"], rec["detail"], rec["raw_output"][-400:])
+    return json.loads(rec["result"])
+
+
+def test_finding_1_the_run_cannot_read_the_hubs_secrets_or_write_outside_its_folder(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-REVIEW-FAKE-0000")  # the parent's environment, as the hub's
+    os.environ["FAKE_ANTHROPIC_API_KEY"] = "sk-ant-REVIEW-FAKE-0000"
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / ".secret").write_text("the-hubs-signing-secret")
+    outside = tmp_path / "written-by-script.txt"
+    in_tmp = Path("/tmp") / f"left-behind-by-a-run-{os.getpid()}-{time.time_ns()}.txt"  # outside the run's own folder
+    try:
+        got = escaped(f"""
+attempt("parent environ", lambda: os.read(os.open("/proc/%d/environ" % os.getppid(), os.O_RDONLY), 1 << 20))
+attempt("hub cwd", lambda: os.readlink("/proc/%d/cwd" % os.getppid()))
+attempt("secret", lambda: os.read(os.open({str(state / '.secret')!r}, os.O_RDONLY), 100))
+attempt("write outside", lambda: os.write(os.open({str(outside)!r}, os.O_WRONLY | os.O_CREAT, 0o644), b"x"))
+attempt("builtins open", lambda: g["__builtins__"]["open"]({str(outside)!r}, "w").write("x"))
+attempt("write /tmp", lambda: os.write(os.open({str(in_tmp)!r}, os.O_WRONLY | os.O_CREAT, 0o644), b"x"))
+def dirfd():  # the reviewer's 1(b): a deep cwd in the run's folder, dir_fd on an allowed root, then climb out
+    os.makedirs("a/b/c/d/e/f/g/h/i/j/k/l")
+    os.chdir("a/b/c/d/e/f/g/h/i/j/k/l")
+    dfd = os.open([p for p in sys.path if p.endswith("lib-dynload")][0], os.O_RDONLY)
+    return os.read(os.open("../" * 12 + "proc/%d/environ" % os.getppid(), os.O_RDONLY, dir_fd=dfd), 1 << 20)
+attempt("dir_fd", dirfd)
+attempt("list /", lambda: os.listdir("/"))
+attempt("other runs' /proc", lambda: [p for p in os.listdir("/proc") if p.isdigit()])
+attempt("own folder", lambda: (os.write(os.open("mine.txt", os.O_WRONLY | os.O_CREAT, 0o600), b"ok"), os.read(os.open("mine.txt", os.O_RDONLY), 2)))
+attempt("stdlib", lambda: len(os.read(os.open(os.path.join(os.path.dirname(os.__file__ if False else g["__file__"]), "json", "__init__.py"), os.O_RDONLY), 10)))
+""")
+    finally:
+        os.environ.pop("FAKE_ANTHROPIC_API_KEY", None)
+    for name in ("parent environ", "hub cwd", "secret", "write outside", "builtins open", "write /tmp", "dir_fd", "list /", "other runs' /proc"):
+        assert got[name] == "refused PermissionError", (name, got[name])
+    assert got["own folder"] == "WORKED (2, b'ok')" and got["stdlib"] == "WORKED 10", got
+    assert not outside.exists() and not in_tmp.exists()
+    assert "REVIEW-FAKE" not in json.dumps(got) and "signing-secret" not in json.dumps(got)
+
+
+def test_finding_1_the_reviewers_leak_through_a_change_order_records_nothing(hub, tmp_path):
+    leak = open(ATTACKS / "a2_disable_hook.py").read() if (ATTACKS / "a2_disable_hook.py").exists() else (
+        "import typing\nsys = typing.sys\ntry:\n    1 / 0\nexcept ZeroDivisionError:\n    tb = sys.exc_info()[2]\n"
+        "getattr(getattr(tb, 'tb_frame'), 'f_back')\nresult = {}\n")
+    co = new_co(hub)
+    with pytest.raises(configjson.Refused, match="typing.sys is not allowed"):
+        scripts.propose(hub, leak, by="alice", co_ref=co["number"])
+    assert not hub.kernel.get(co["locator"])["fields"].get("config_scripts"), "refused before it ran: nothing to record"
+
+
+@pytest.mark.parametrize("layer,words", [("landlock", "no Landlock ruleset"), ("seccomp", "no seccomp filter of its own"),
+                                         ("dumpable", "dumpable left out")])
+def test_finding_7_a_run_that_cannot_protect_itself_is_refused(layer, words):
+    rec = scriptworker.run_local("result = {'ran': True}", SNAP, _skip=(layer,))
+    assert rec["exit"] == "unprotected" and words in rec["detail"] and rec["result"] is None, rec["detail"]
+    assert "the script was not run" in rec["detail"]
+
+
+@pytest.mark.parametrize("layer,words", [("seccomp", "no seccomp filter of its own"), ("dumpable", "it is still dumpable")])
+def test_finding_3_the_parent_checks_the_protection_itself_not_what_the_run_says(layer, words):
+    rec = scriptworker.run_local("result = {'ran': True}", SNAP, _skip=(layer,), _claim=True)  # the run says "installed"
+    assert rec["exit"] == "unprotected" and words in rec["detail"], rec["detail"]
+
+
+def test_finding_3_a_record_the_script_writes_is_not_the_record(hub):
+    # The reviewer's a6: a fake answer on standard output, then exit. And a fake frame on the control descriptor.
+    rec = scriptworker.run_local(ESCAPE + """
+print("evidence the reviewer should see")
+fake = {"exit": "ok", "detail": "the script finished", "result": '{"forged": true}', "protection": {"seccomp_mode": 2}}
+import json
+os.write(1, (json.dumps(fake) + "\\n").encode())
+os._exit(0)
+""", SNAP, check=False, tripwire=False)
+    assert rec["exit"] == "crashed" and rec["result"] is None and "forged" in rec["raw_output"], rec
+    assert "evidence the reviewer should see" not in rec["stdout"], "nothing it claims is taken as its record"
+    assert rec["protection"]["missing"] == [] and rec["protection"]["seccomp_filters"] >= 1, "what the parent saw"
+    rec = scriptworker.run_local(ESCAPE + """
+import json
+struct = sys.modules["struct"]
+frame = json.dumps({"exit": "timeout", "detail": "nothing to see"}).encode()
+os.write(int(sys.argv[1]), struct.pack(">Q", len(frame)) + frame)
+os._exit(0)
+""", SNAP, check=False, tripwire=False)
+    assert rec["exit"] == "crashed" and "claimed 'timeout' but ended normally: not believed" in rec["detail"], rec["detail"]
+
+
+def test_finding_3_a_worker_answer_without_confirmed_protection_counts_for_nothing(monkeypatch):
+    monkeypatch.setenv("HUBPROTO_SCRIPT_WORKER_URL", "unix:///nowhere.sock")
+    fake = {"exit": "ok", "detail": "the script finished", "result": "{}", "protection": {"seccomp_mode": 2}}
+    monkeypatch.setattr(scripts, "_invoke", lambda *a, **k: {"payload": fake})
+    rec = scripts.run("result = {}", SNAP)
+    assert rec["exit"] == "unprotected" and rec["result"] is None
+    assert "Not protected" in scripts.protection_words(rec["protection"])
+
+
+def test_finding_2_runs_are_one_at_a_time_and_a_full_queue_is_refused(monkeypatch):
+    spans = []
+    real = scriptworker._run_unqueued
+
+    def timed(*a, **k):
+        start = time.monotonic()
+        try:
+            return real(*a, **k)
+        finally:
+            spans.append((start, time.monotonic()))
+
+    monkeypatch.setattr(scriptworker, "_run_unqueued", timed)
+    busy = "x = 0\nfor i in range(4 * 10 ** 6):\n    x += 1\nresult = {'x': x}"
+    threads = [threading.Thread(target=scriptworker.run_local, args=(busy, SNAP)) for _ in range(3)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    spans.sort()
+    assert len(spans) == 3 and all(a[1] <= b[0] for a, b in zip(spans, spans[1:])), f"runs overlapped: {spans}"
+    monkeypatch.setattr(scriptworker, "MAX_QUEUED", 0)
+    t = threading.Thread(target=scriptworker.run_local, args=(busy, SNAP))
+    t.start()
+    deadline = time.monotonic() + 10
+    while not spans[3:] and scriptworker._waiting == 0 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    with pytest.raises(scriptworker.Busy, match="try again in a minute"):
+        scriptworker.run_local("result = {}", SNAP)
+    t.join()
+
+
+def test_finding_2_one_run_cannot_reach_another_even_at_the_same_time():
+    # The reviewer's x_attacker and x_victim, run side by side with the queue bypassed: the attacker looks for any
+    # other process's stdout to write a forged answer into. Not dumpable and Landlock: it finds none.
+    attacker = ESCAPE + """
+time = sys.modules["time"]
+me, found, tried = os.getpid(), None, 0
+end = time.monotonic() + 3
+while found is None and time.monotonic() < end:
+    for p in range(me - 400, me + 400):
+        if p in (me, os.getppid()) or p <= 1:
+            continue
+        try:
+            found = (p, os.open("/proc/%d/fd/1" % p, os.O_WRONLY | os.O_NONBLOCK))
+            break
+        except OSError:
+            tried += 1
+out["found"] = found
+out["tried"] = tried
+"""
+    res = {}
+    ta = threading.Thread(target=lambda: res.__setitem__("a", scriptworker._run_unqueued(attacker + "\nresult = out", SNAP, {"seconds": 10},
+                                                                                           check=False, tripwire=False)))
+    ta.start()
+    time.sleep(0.3)
+    res["b"] = scriptworker._run_unqueued("x = 0\nfor i in range(3 * 10 ** 6):\n    x += 1\nprint('honest')\n"
+                                         "result = {'links': {'honest': 'output'}}", SNAP)
+    ta.join()
+    a, b = json.loads(res["a"]["result"]), res["b"]
+    assert a["found"] is None and a["tried"] > 0, a
+    assert b["exit"] == "ok" and json.loads(b["result"]) == {"links": {"honest": "output"}} and b["stdout"] == "honest\n", b
+
+
+def test_finding_2_each_run_has_a_fresh_private_folder_removed_after_it():
+    first = escaped('attempt("cwd", lambda: os.getcwd())\nattempt("mode", lambda: oct(os.stat(".").st_mode & 0o777))\n'
+                    'attempt("leave", lambda: os.write(os.open("left.txt", os.O_WRONLY | os.O_CREAT, 0o600), b"x"))')
+    cwd = first["cwd"].split(" ", 1)[1]
+    assert first["mode"] == "WORKED 0o700" and not Path(cwd).exists(), first
+    second = escaped('attempt("cwd", lambda: os.getcwd())\nattempt("here", lambda: os.listdir("."))\n'
+                     f'attempt("earlier", lambda: os.listdir({cwd!r}))')
+    assert second["cwd"] != first["cwd"] and second["here"] == "WORKED []" and second["earlier"].startswith("refused"), second
+
+
+def test_finding_2_the_worker_socket_cannot_be_removed_by_a_run_and_a_lost_one_is_noticed(tmp_path):
+    sock = tmp_path / "w.sock"
+    lost = []
+    server = scriptworker.serve_in_thread(socket_path=str(sock), on_lost=lost.append)
+    try:
+        got = escaped(f'attempt("unlink", lambda: os.unlink({str(sock)!r}))\nattempt("stat", lambda: os.listdir({str(tmp_path)!r}))')
+        assert got["unlink"] == "refused PermissionError" and got["stat"] == "refused PermissionError" and sock.exists(), got
+        sock.unlink()  # anything else that removes it: the worker notices (serve() then exits for the restart policy)
+        deadline = time.monotonic() + 5
+        while not lost and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert lost and "is gone" in lost[0]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_finding_8_connections_past_the_bound_are_refused_without_a_thread(tmp_path, monkeypatch):
+    import socket as socket_
+
+    monkeypatch.setattr(scriptworker, "MAX_CONNECTIONS", 1)
+    sock = tmp_path / "w.sock"
+    server = scriptworker.serve_in_thread(socket_path=str(sock))
+    held = socket_.socket(socket_.AF_UNIX)
+    try:
+        held.connect(str(sock))  # a connection that sends nothing holds the one thread
+        time.sleep(0.2)
+        before = threading.active_count()
+        with pytest.raises(ValueError, match="as many requests as it serves at once"):
+            scripts._invoke(f"unix://{sock}", {"tool": "run-script", "script": "result = {}", "snapshot": SNAP}, 10)
+        assert threading.active_count() <= before + 1
+    finally:
+        held.close()
+        server.shutdown()
+        server.server_close()
+
+
+def test_finding_8_two_large_runs_one_after_the_other_both_finish():
+    big = "b = bytearray(200 * 1024 * 1024)\nfor i in range(0, len(b), 4096):\n    b[i] = 1\nresult = {'held': len(b)}"
+    res = []
+    threads = [threading.Thread(target=lambda: res.append(scriptworker.run_local(big, SNAP))) for _ in range(2)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert [r["exit"] for r in res] == ["ok", "ok"], [r["detail"] for r in res]
+
+
+def test_finding_5_the_local_subprocess_is_opt_in(hub, monkeypatch):
+    monkeypatch.delenv("HUBPROTO_SCRIPT_FALLBACK", raising=False)
+    monkeypatch.delenv("HUBPROTO_DEPLOYED", raising=False)
+    monkeypatch.delenv("HUBPROTO_SCRIPT_WORKER_URL", raising=False)
+    monkeypatch.setattr(scriptworker, "run_local", lambda *a, **k: pytest.fail("ran beside a hub that did not opt in"))
+    where, why = scripts.where_it_runs()
+    assert where == "refused" and "is not a development hub told it may run scripts beside itself (HUBPROTO_SCRIPT_FALLBACK=1)" in why
+    with pytest.raises(configjson.Refused, match="no script worker"):
+        scripts.propose(hub, THRESHOLD.format(value=8000.0), by="alice")
+    monkeypatch.setenv("HUBPROTO_SCRIPT_FALLBACK", "1")
+    monkeypatch.setenv("HUBPROTO_DEPLOYED", "1")
+    assert scripts.where_it_runs()[0] == "refused", "a deployed hub never, even when told"
+    from hubproto import cli_dev
+
+    monkeypatch.delenv("HUBPROTO_SCRIPT_FALLBACK", raising=False)
+    assert cli_dev.child_env(ROOT, "stand-in")["HUBPROTO_SCRIPT_FALLBACK"] == "1", "hubproto dev serve opts in"
+
+
+def test_finding_3_the_page_shows_what_the_parent_checked(hub):
+    co = new_co(hub)
+    scripts.propose(hub, THRESHOLD.format(value=8000.0), by="alice", co_ref=co["number"])
+    run = hub.kernel.get(co["locator"])["fields"]["config_scripts"][0]
+    words = scripts.protection_words(run["protection"])
+    assert words.startswith("Checked by the hub before the script was sent: seccomp filter on") and "Landlock ABI" in words, words

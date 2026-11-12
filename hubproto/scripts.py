@@ -6,9 +6,11 @@ script is a **generator of a proposed change**; what goes on the change order is
 
 1. ``scriptcheck.check``: the allow-list check, in the hub, before anything is sent (no model, nothing run);
 2. the run: in the script worker (``HUBPROTO_SCRIPT_WORKER_URL``, the ``script-worker`` container of
-   ``docker-compose.yml``: no network, read-only, every capability dropped, seccomp), or, on a hub that is not deployed
-   and has no worker, in a local subprocess with the same limits and hooks, labelled **weaker isolation**. A deployed
-   hub (``HUBPROTO_DEPLOYED=1``, set by the hub's image) refuses the local subprocess;
+   ``docker-compose.yml``: no network, read-only, every capability dropped, seccomp; one run at a time), or, only on a
+   hub told it may (``HUBPROTO_SCRIPT_FALLBACK=1``: ``hubproto dev serve`` and the tests), in a local subprocess with the
+   same kernel restrictions, labelled **weaker isolation**. Every other hub refuses a script without a worker. Either
+   way the run's parent checks the run's protection (seccomp, no_new_privs, not dumpable, Landlock, limits) before it
+   sends the script, and a run it could not confirm counts for nothing (fail closed);
 3. the output: parsed (``configjson.loads``: the limits and checks of any uploaded document), held to the format's JSON
    Schema (``schemacheck``) and carried by ``configjson.propose``: the same checks, guards, widenings, reviews and
    signatures as the same document uploaded, or the same edit made on screen.
@@ -37,9 +39,11 @@ from .release import utcnow
 FIELD = "config_scripts"
 ISOLATION = {
     "container": "Run in the script worker: its own container, with no network, a read-only file system, every capability "
-                 "dropped, a seccomp profile and no hub state or secrets.",
-    "local": "Run in a local subprocess beside the hub, not in the script worker: weaker isolation. The same limits, kernel "
-             "filter and tripwire held, but no container was around it. A deployed hub refuses this.",
+                 "dropped, a seccomp profile and no hub state or secrets; one run at a time.",
+    "local": "Run in a local subprocess beside the hub, not in the script worker: weaker isolation. The run's own kernel "
+             "restrictions held (Landlock: it could read only the standard library and write only its own folder; seccomp; "
+             "limits), but no container was around it. Only a hub told it may (HUBPROTO_SCRIPT_FALLBACK=1, a development "
+             "hub) does this.",
 }
 STATUS = {"carried": "carried on the change order", "nothing": "its output says what is in force: nothing carried",
           "refused": "its output was refused: nothing carried", "failed": "it did not finish: nothing carried"}
@@ -51,21 +55,35 @@ def worker_url() -> str:
     return os.environ.get("HUBPROTO_SCRIPT_WORKER_URL", "").strip()
 
 
+def _on(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def deployed() -> bool:
-    """A deployed hub: set by the hub's image (Dockerfile ``HUBPROTO_DEPLOYED=1``); a dev hub and the tests leave it unset."""
-    return os.environ.get("HUBPROTO_DEPLOYED", "").strip().lower() in ("1", "true", "yes", "on")
+    """A deployed hub: set by the hub's image (Dockerfile ``HUBPROTO_DEPLOYED=1``)."""
+    return _on("HUBPROTO_DEPLOYED")
+
+
+def fallback_allowed() -> bool:
+    """The local subprocess is opt-in: only ``HUBPROTO_SCRIPT_FALLBACK=1`` (``hubproto dev serve`` and the tests set it),
+    and never on a deployed hub. Every other hub, however it is run, refuses a script without a worker."""
+    return _on("HUBPROTO_SCRIPT_FALLBACK") and not deployed()
 
 
 def where_it_runs() -> tuple[str, str]:
     """("container" | "local" | "refused", the sentence)."""
     if worker_url():
         return "container", ISOLATION["container"]
+    if fallback_allowed():
+        return "local", ISOLATION["local"]
     if deployed():
-        return "refused", ("This hub is deployed and has no script worker (HUBPROTO_SCRIPT_WORKER_URL is not set): here a "
-                           "script runs only in the script-worker container, never in a subprocess beside the hub. Start the "
-                           "script-worker service (docker compose up -d script-worker) and set the hub's "
-                           "HUBPROTO_SCRIPT_WORKER_URL, as docker-compose.yml does.")
-    return "local", ISOLATION["local"]
+        why = "This hub is deployed and has no script worker (HUBPROTO_SCRIPT_WORKER_URL is not set)"
+    else:
+        why = ("This hub has no script worker (HUBPROTO_SCRIPT_WORKER_URL is not set) and is not a development hub told it may "
+               "run scripts beside itself (HUBPROTO_SCRIPT_FALLBACK=1)")
+    return "refused", (f"{why}: here a script runs only in the script-worker container, never in a subprocess beside the "
+                       "hub. Start the script-worker service (docker compose up -d script-worker) and set the hub's "
+                       "HUBPROTO_SCRIPT_WORKER_URL, as docker-compose.yml does.")
 
 
 class _UnixConnection(http.client.HTTPConnection):
@@ -107,6 +125,8 @@ def _invoke(url: str, request: dict, timeout: float) -> dict:
         raise ValueError("the script worker's answer is not an envelope")
     if env.get("error"):
         err = env["error"] if isinstance(env["error"], dict) else {}
+        if err.get("code") == "busy":
+            raise ValueError(f"the script was not run: {str(err.get('detail'))[:300]}")
         raise ValueError(f"the script worker could not run it: {str(err.get('detail') or err)[:300]}")
     if not isinstance(env.get("payload"), dict):
         raise ValueError("the script worker's answer has no run record")
@@ -133,12 +153,42 @@ def _clean_record(rec: dict) -> dict:
         "stdout": _text(rec.get("stdout")), "stderr": _text(rec.get("stderr")),
         "stdout_dropped": _count(rec.get("stdout_dropped")), "stderr_dropped": _count(rec.get("stderr_dropped")),
         "tripped": {k: _text(tripped.get(k), 400) for k in ("event", "args", "why")} if tripped else None,
-        "kernel_filter": _text(rec.get("kernel_filter"), 200), "worker_version": _text(rec.get("worker_version"), 40),
+        "protection": _protection(rec.get("protection")), "raw_output": _text(rec.get("raw_output")),
+        "worker_version": _text(rec.get("worker_version"), 40),
         "python": _text(rec.get("python"), 40),
         "limits": {k: lim[k] for k in scriptworker.LIMITS if isinstance(lim.get(k), (int, float)) and not isinstance(lim.get(k), bool)},
         "seconds": float(rec["seconds"]) if isinstance(rec.get("seconds"), (int, float)) and not isinstance(rec.get("seconds"), bool) else 0.0,
         "refusals": [_text(x, 400) for x in rec.get("refusals") or [] if isinstance(x, str)][:50],
     }
+
+
+def _protection(p) -> dict:
+    """What the run's parent (the worker, or the hub for the local subprocess) checked of the run's process before it
+    sent the script: plain values only."""
+    p = p if isinstance(p, dict) else {}
+    out = {k: p[k] for k in ("seccomp_mode", "seccomp_filters", "landlock_abi") if isinstance(p.get(k), int) and not isinstance(p.get(k), bool)}
+    out.update({k: p[k] for k in ("no_new_privs", "dumpable", "rlimits") if isinstance(p.get(k), bool)})
+    out["checked_by"] = _text(p.get("checked_by"), 40)
+    out["missing"] = [_text(x, 300) for x in p.get("missing") or [] if isinstance(x, str)][:10]
+    return out
+
+
+def protected(p: dict) -> bool:
+    """The run's process was protected, as its parent checked: seccomp filter, no_new_privs, not dumpable, Landlock,
+    limits."""
+    return (p.get("seccomp_mode") == 2 and (p.get("seccomp_filters") or 0) >= 1 and p.get("no_new_privs") is True
+            and p.get("dumpable") is False and (p.get("landlock_abi") or 0) >= 1 and p.get("rlimits") is True and not p.get("missing"))
+
+
+def protection_words(p: dict) -> str:
+    """The protection as a sentence for the change order (what the parent saw, not what the run said)."""
+    if not p or not (p.get("seccomp_mode") or p.get("missing")):
+        return "The run's protection was not checked (it was refused before it started)."
+    if not protected(p):
+        return f"Not protected, so the script was not run: {'; '.join(p.get('missing') or ['not confirmed'])}."
+    return (f"Checked by {p.get('checked_by') or 'its parent'} before the script was sent: seccomp filter on "
+            f"({p.get('seccomp_filters')} filter{'s' if p.get('seccomp_filters') != 1 else ''}), no new privileges, not dumpable, "
+            f"limits set; Landlock ABI {p.get('landlock_abi')} (reported by the run before it held the script).")
 
 
 def run(script: str, snapshot: str, limits: dict | None = None) -> dict:
@@ -153,7 +203,15 @@ def run(script: str, snapshot: str, limits: dict | None = None) -> dict:
                       timeout=float(lim["seconds"]) + TIMEOUT_MARGIN)
         rec = _clean_record(env["payload"])
     else:
-        rec = _clean_record(scriptworker.run_local(script, snapshot, limits))
+        try:
+            raw = scriptworker.run_local(script, snapshot, limits)
+        except scriptworker.Busy as e:
+            raise ValueError(f"the script was not run: {e}") from None
+        raw["protection"] = {**(raw.get("protection") or {}), "checked_by": "the hub"}
+        rec = _clean_record(raw)
+    if rec["exit"] not in ("refused", "unprotected") and not protected(rec["protection"]):
+        # Fail closed: whatever it says, a run whose protection its parent did not confirm counts for nothing.
+        rec.update(exit="unprotected", result=None, detail="the run's protection was not confirmed by its parent, so its output is not used")
     return {**rec, "isolation": where}
 
 
@@ -223,8 +281,8 @@ def propose(hub, script: str, *, by: str, co_ref=None, reason: str = "", name: s
         "script_sha256": scriptworker.sha256(script), "snapshot_sha256": scriptworker.sha256(snapshot),
         "snapshot_release": (snapshot_doc.get("release") or {}).get("digest"), "snapshot_versions": snapshot_doc.get("versions"),
         "isolation": rec["isolation"], "isolation_note": ISOLATION[rec["isolation"]],
-        **{k: rec[k] for k in ("exit", "detail", "tripped", "stdout", "stderr", "stdout_dropped", "stderr_dropped", "kernel_filter",
-                               "worker_version", "python", "limits", "seconds")},
+        **{k: rec[k] for k in ("exit", "detail", "tripped", "stdout", "stderr", "stdout_dropped", "stderr_dropped", "raw_output",
+                               "protection", "worker_version", "python", "limits", "seconds")},
         "output": rec["result"], "output_sha256": scriptworker.sha256(rec["result"]) if rec["result"] is not None else None,
         "status": "", "summary": [], "refusals": [], "carried": {},
     }

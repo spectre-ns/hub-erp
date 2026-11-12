@@ -241,6 +241,8 @@ def child_env(worktree: Path, models: str) -> dict:
     env["PYTHONPATH"] = os.pathsep.join([str(worktree)] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
     env["PYTHONUNBUFFERED"] = "1"
     env.pop("HUBPROTO_ROOT", None)  # every step gets --root
+    # A dev hub runs configuration scripts in a local subprocess when it has no script worker (issue #34): opt-in.
+    env.setdefault("HUBPROTO_SCRIPT_FALLBACK", "1")
     if models == "ollama":
         env.pop("HUBPROTO_ALLOW_STAND_IN", None)
         env.setdefault("HUBPROTO_OLLAMA_URL", "http://localhost:11434")

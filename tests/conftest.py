@@ -10,6 +10,8 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # Tests run without models: the deterministic stand-in answers for every cog (never in a real hub).
 os.environ.setdefault("HUBPROTO_ALLOW_STAND_IN", "1")
+# Configuration scripts may run in a local subprocess (no script worker in tests; issue #34): opt-in, never a real hub.
+os.environ.setdefault("HUBPROTO_SCRIPT_FALLBACK", "1")
 
 
 @pytest.fixture

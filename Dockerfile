@@ -7,7 +7,7 @@
 FROM python:3.14-slim
 
 # HUBPROTO_DEPLOYED: a hub run from this image is deployed: it runs a configuration script only in the script worker
-# (HUBPROTO_SCRIPT_WORKER_URL), never in a local subprocess (issue #34). Unset it only for a development hub.
+# (HUBPROTO_SCRIPT_WORKER_URL), never in a local subprocess, even with HUBPROTO_SCRIPT_FALLBACK=1 (issue #34).
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 HUBPROTO_ROOT=/hub HUBPROTO_DEPLOYED=1
 WORKDIR /hub
 
