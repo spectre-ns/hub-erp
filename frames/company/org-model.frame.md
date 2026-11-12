@@ -3,7 +3,7 @@ type: frame [0.2]
 name: org-model
 description: Roles, members (people and cogs) and folders of Example Instruments Ltd.
 visibility: internal
-version: "1.7.0"
+version: "1.8.0"
 scope: company
 maintainer: operations
 ---
@@ -22,7 +22,9 @@ everyone holding a role (they follow role changes). A group may carry
 permissions as a role does, be named in a Roles and responsibilities table,
 and carry a committee, which decides by consensus. Senior cogs are bundled
 with a hosted model and sit on the compile-frame committee; junior cogs work
-on the local model day to day.
+on the local model day to day. The auditor cog is senior too, on a hosted
+model, but sits on no committee: it audits what the others read and run, so it
+reads no SOP into rules and owns no process but the audit.
 
 ## Roles
 - finance-clerk
@@ -56,6 +58,7 @@ on the local model day to day.
 - management (cog): management-reviewer
 - senior-organization (cog): policy-reader
 - senior-qa-manager (cog): policy-reader
+- auditor (cog): internal-auditor
 
 ## Groups
 - senior-cogs: senior-organization and senior-qa-manager

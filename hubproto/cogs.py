@@ -1845,8 +1845,9 @@ class CogRegistry:
                     NCRClassifier, CAPAOpener, NCROpener, CAPADrafter, EffectivenessScheduler, AuditChecklistDrafter,
                     DocumentClassifier, APReviewer, DocReviewer, QualityAssistant, QAManager, ITAdmin, Management, Swarm, FrameStager):
             self.register(cls())
-        from . import cad, inventory_cogs, procurement  # CAD/ECAD, procurement and inventory cogs live in their own modules
+        from . import audit, cad, inventory_cogs, procurement  # CAD/ECAD, procurement, inventory and audit cogs live in their own modules
 
+        audit.register(self)
         cad.register(self)
         procurement.register(self)
         inventory_cogs.register(self)
