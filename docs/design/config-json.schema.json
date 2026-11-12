@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/spectre-ns/hub-erp/docs/design/config-json.schema.json",
+  "title": "hub-erp configuration document (hub-erp/config/1)",
+  "description": "Everything in force on a hub, as `hubproto config export` and GET /api/config write it, and as `hubproto config propose` and a change order's upload read it (hubproto.configjson). Written with sorted keys and a stable order of every list, so one configuration is always the same bytes. On propose, a part or policy section left out is left as it is; one that is given says the whole of it. See docs/design/config-json.md.",
+  "type": "object",
+  "required": ["schema", "release"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": "hub-erp/config/1", "description": "The format and its version. A later, incompatible format gets another number."},
+    "release": {
+      "type": "object",
+      "description": "The policy release the document was taken from. Propose refuses a document taken from another release than the one in force (it would undo what was released since).",
+      "required": ["digest"],
+      "properties": {
+        "digest": {"type": "string", "description": "The release digest (sha256)."},
+        "version": {"type": ["integer", "null"], "description": "Its version number: 1 is the first release to take effect. Read only."},
+        "effective_from": {"type": ["string", "null"], "description": "When it took effect (ISO 8601). Read only."}
+      }
+    },
+    "versions": {
+      "type": "object",
+      "description": "The versions in force of what a change order may change without a new policy release. When given, propose refuses a document whose versions are not those in force.",
+      "properties": {
+        "record_types": {"type": "integer"},
+        "links": {"type": "integer"},
+        "retention": {"type": "integer"},
+        "forms": {"type": "object", "additionalProperties": {"type": "integer"}, "description": "Record type -> the version of its released layout (types still on the hub's base layout are not listed)."}
+      }
+    },
+    "policy": {
+      "type": "object",
+      "description": "The rules of the policy release, one section per kind of rule. Each entry is the rule as the hub keeps it (hubproto.rules.KINDS), without its kind and its source: the section says the kind, and the source is the SOP sentence, which the change order's review round writes for a changed rule. A rule stated in several SOPs is one entry. Entries are sorted by their canonical JSON.",
+      "additionalProperties": false,
+      "properties": {
+        "roles": {"$ref": "#/$defs/rules", "description": "kind role: {name}"},
+        "members": {"$ref": "#/$defs/rules", "description": "kind member: {principal, principal_type: person|cog, roles: [role]}"},
+        "groups": {"$ref": "#/$defs/rules", "description": "kind group: {name, members: [member], roles: [role]}"},
+        "committees": {"$ref": "#/$defs/rules", "description": "kind committee: {name, group, chair, purpose, members?, quorum?}"},
+        "folders": {"$ref": "#/$defs/rules", "description": "kind folder: {path}"},
+        "permissions": {"$ref": "#/$defs/rules", "description": "kind permission: {subject: role:x|group:x|cog:x, action, object, resource: folder:<path>, effect: allow|deny|propose, confirmer?}"},
+        "thresholds": {"$ref": "#/$defs/rules", "description": "kind threshold: {name, value, unit: USD|EUR|GBP|percent|days}"},
+        "routing": {"$ref": "#/$defs/rules", "description": "kind routing: {process, step, condition: object|null, assignee, mode: assign|notify}"},
+        "due_dates": {"$ref": "#/$defs/rules", "description": "kind sla: {process, step, days}"},
+        "approval_criteria": {"$ref": "#/$defs/rules", "description": "kind approval_criteria: {approver: cog:x, process, max_amount, currency, conditions: [condition], countersign?, adversarial_reviews?, also_currencies?, max_per_day?, max_amount_per_month?}"},
+        "segregation_of_duties": {"$ref": "#/$defs/rules", "description": "kind sod: {object, roles: [a, b], only?, rule?}"},
+        "duties": {"$ref": "#/$defs/rules", "description": "kind duty: {cog, task, every: day|week|month}"},
+        "processes": {"$ref": "#/$defs/rules", "description": "kind process: a whole workflow (numbered steps, or statuses and transitions), as the workflow editor carries it"},
+        "cogs": {"$ref": "#/$defs/rules", "description": "kind cog (a cog profile): {name, model, about?, persona?, prompt_from?, references?}"},
+        "personas": {"$ref": "#/$defs/rules", "description": "kind persona: {name, stance, behaviour, tone?, lenses?, passes?, escalates?}"},
+        "validation_classes": {"$ref": "#/$defs/rules", "description": "kind validation_class: {risk: high|medium|low, kinds: [kind]}"},
+        "validation_needs": {"$ref": "#/$defs/rules", "description": "kind validation_need: {risk, evidence: test-record|test-note|review}"},
+        "responsibilities": {"$ref": "#/$defs/rules", "description": "kind responsibility, READ ONLY: each SOP's Roles and responsibilities rows {frame, who, text}. Propose refuses a change: revise the SOP on a change order."},
+        "scopes": {"$ref": "#/$defs/rules", "description": "kind scope, READ ONLY: the scoping documents {name, level, compiles, layers_on}. Propose refuses a change."}
+      }
+    },
+    "record_types": {
+      "type": "object",
+      "description": "Record type -> its definition, as config/record-types.json writes one (prefix, digits, yearly, object, fields, required_by_state, defaults, retention, sensitivity, gapless, system_fields, decision_fields, ...). Without the custom x_ fields of form layouts (they belong to the forms part). On propose only non-destructive changes are carried (hubproto.recordtypes); a type or field left out, a renamed or retyped field and a removed enum option are refused.",
+      "additionalProperties": {"type": "object"}
+    },
+    "forms": {
+      "type": "object",
+      "description": "Record type -> its form layout in force (hubproto.formlayout): {type, sections: [{id, title, fields: [{field, label?, help?, placeholder?, widget?, visible_when?, required_when?, readonly_when?}]}], start: [{field, widget?, spec?, input?}], custom_fields: {x_name: {type, label?, retired?}}, hidden?}. A layout that differs from the one in force is carried as the forms editor carries a draft; a type left out keeps its layout.",
+      "additionalProperties": {"type": "object"}
+    },
+    "links": {
+      "type": "object",
+      "description": "The link vocabulary: relation -> the label its inverse shows on the other record (lowercase names: letters, digits, hyphens). A relation left out is removed, which is refused while a link uses it or the hub's own steps link with it.",
+      "additionalProperties": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,40}$"}
+    },
+    "retention": {
+      "type": "object",
+      "description": "The retention classes: class -> how long a record is kept and what its Track must hold. A class left out is removed, which is refused for standard, a class a record type is kept under, or one records are labelled with.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["years", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "years": {"type": "integer", "minimum": 0, "maximum": 100},
+          "evidence": {"type": "array", "uniqueItems": true, "items": {"enum": ["release_digest", "manifest_digest", "decisions", "grants", "cog_versions", "inputs_digest", "guard_findings", "documents"]}}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "A rule without kind and source; a `kind` given must be the section's.",
+        "properties": {"kind": {"type": "string"}}
+      }
+    }
+  }
+}

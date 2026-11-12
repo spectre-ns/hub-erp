@@ -41,13 +41,14 @@ WORDS = {
     "routing": {"routing"}, "due dates": {"sla"}, "processes": {"process"}, "thresholds": {"threshold"}, "limits": {"threshold"},
     "required fields": {"required_field"}, "duties": {"duty"}, "folders": {"folder"}, "scopes": {"scope"},
     "responsibilities": {"responsibility"}, "roles and responsibilities": {"responsibility"}, "form layouts": {"form"},
-    "forms": {"form"}, "wording": {"text"},
+    "forms": {"form"}, "wording": {"text"}, "link vocabulary": {"links"}, "links": {"links"}, "retention classes": {"retention"},
+    "retention": {"retention"},
 }
 DEFAULT_CLASSES = {
     "widening": "high", "permission": "high", "approval_criteria": "high", "sod": "high", "member": "high", "role": "high",
     "group": "high", "committee": "high", "cog": "high", "persona": "high", "record_type": "high", "gate": "high", "workflow": "high",
     "routing": "medium", "sla": "medium", "process": "medium", "threshold": "medium", "required_field": "medium", "duty": "medium",
-    "folder": "medium", "scope": "medium", "responsibility": "medium", "form": "low", "text": "low",
+    "folder": "medium", "scope": "medium", "responsibility": "medium", "form": "low", "text": "low", "links": "medium", "retention": "high",
 }
 DEFAULT_NEEDS = {"high": "test-record", "medium": "test-note", "low": "review"}
 EVIDENCE_TYPE = "test-evidence"
@@ -67,7 +68,8 @@ _WORD_OF = {"widening": "widenings", "permission": "permissions", "approval_crit
             "member": "members", "role": "roles", "group": "groups", "committee": "committees", "cog": "cog profiles", "persona": "personas",
             "record_type": "record types", "gate": "workflow gates", "workflow": "workflows", "routing": "routing", "sla": "due dates",
             "process": "processes", "threshold": "thresholds", "required_field": "required fields", "duty": "duties", "folder": "folders",
-            "scope": "scopes", "responsibility": "responsibilities", "form": "form layouts", "text": "wording"}
+            "scope": "scopes", "responsibility": "responsibilities", "form": "form layouts", "text": "wording", "links": "link vocabulary",
+            "retention": "retention classes"}
 
 
 def kind_words(kinds: list[str]) -> str:
@@ -98,7 +100,7 @@ def basis(hub) -> str:
 def _kinds(item: dict) -> set[str]:
     """The kinds an item is about: its rule's kind, a widening, a workflow gate (a process whose checkpoints change),
     or the change order's form, record-type and workflow changes."""
-    if item.get("kind") in ("form", "record_type", "workflow", "gate"):
+    if item.get("kind") in ("form", "record_type", "workflow", "gate", "links", "retention"):
         return {item["kind"]}
     rule = item.get("rule") or {}
     kind = rule.get("kind") or ("text" if item.get("op") == "text" else "")
@@ -133,6 +135,8 @@ def items_of(hub, co: dict) -> list[dict]:
     out += [{"id": f"form:{n}", "kind": "form", "reason": f"form layout {n}"} for n in sorted(f.get("form_changes") or {})]
     out += [{"id": f"record-type:{i}", "kind": "record_type", "reason": f"record type change {(c or {}).get('type') or i}"}
             for i, c in enumerate(f.get("record_type_changes") or [])]
+    out += [{"id": f"config:{(c or {}).get('id') or i}", "kind": "links" if (c or {}).get("doc") == "links" else "retention",
+             "reason": (c or {}).get("summary") or f"configuration change {i}"} for i, c in enumerate(f.get("config_changes") or [])]
     wc = f.get("workflow_changes") or {}
     out += [{"id": f"workflow:{n}", "kind": "workflow", "reason": f"workflow {n}"} for n in (sorted(wc) if isinstance(wc, dict) else range(len(wc)))]
     return out

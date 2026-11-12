@@ -339,8 +339,9 @@ def _filed_by(hub, type_: str) -> list[str]:
     return sorted(p for p, w in (b.get("workflows") or {}).items() if w.get("record_type") == type_)
 
 
-def _check_definition(hub, types: dict, name: str, td) -> list[str]:
+def _check_definition(hub, types: dict, name: str, td, retention: dict | None = None) -> list[str]:
     errors = []
+    retention = hub.kernel.retention if retention is None else retention
     if not isinstance(td, dict):
         return [f"{name}: the definition is a mapping of prefix, digits, fields, ..."]
     for k in td:
@@ -375,8 +376,8 @@ def _check_definition(hub, types: dict, name: str, td) -> list[str]:
         for f in td.get(k) or []:
             if f not in fields:
                 errors.append(f"{name}: {k.replace('_', ' ')} names {f}, which is not a field")
-    if td.get("retention", "standard") not in hub.kernel.retention:
-        errors.append(f"{name}: no retention class {td.get('retention')!r} (classes: {', '.join(sorted(hub.kernel.retention))})")
+    if td.get("retention", "standard") not in retention:
+        errors.append(f"{name}: no retention class {td.get('retention')!r} (classes: {', '.join(sorted(retention))})")
     if td.get("sensitivity", "internal") not in SENSITIVITY:
         errors.append(f"{name}: sensitivity is one of {', '.join(SENSITIVITY)}")
     obj = td.get("object", name)
@@ -387,8 +388,10 @@ def _check_definition(hub, types: dict, name: str, td) -> list[str]:
     return errors
 
 
-def check_one(hub, types: dict, c: dict) -> tuple[list[str], list[str]]:
-    """(errors, warnings) for one change against ``types`` (the record types it would apply to)."""
+def check_one(hub, types: dict, c: dict, retention: dict | None = None) -> tuple[list[str], list[str]]:
+    """(errors, warnings) for one change against ``types`` (the record types it would apply to). ``retention``: the
+    retention classes to check against (in force by default; with those a change order carries, for its changes)."""
+    retention = hub.kernel.retention if retention is None else retention
     op = c.get("op")
     if op in DESTRUCTIVE:
         return [f"{op.replace('_', ' ')} refused: {DESTRUCTIVE[op]}"], []
@@ -405,7 +408,7 @@ def check_one(hub, types: dict, c: dict) -> tuple[list[str], list[str]]:
             return [f"{t!r}: a record type's name is lower-case letters, digits and -"], []
         if t in types:
             return [f"there is already a record type {t}" + (" (archived)" if types[t].get("archived") else "")], []
-        return _check_definition(hub, types, t, c["definition"]), []
+        return _check_definition(hub, types, t, c["definition"], retention), []
     td = types.get(t)
     if not isinstance(td, dict):
         return [f"there is no record type {t}"], []
@@ -459,13 +462,13 @@ def check_one(hub, types: dict, c: dict) -> tuple[list[str], list[str]]:
             if short:
                 warnings.append(f"{short} {t} record(s) in {st} lack {', '.join(want)}: they stay there; the rule applies to the next ones")
     elif op == "set_retention":
-        if c["value"] not in hub.kernel.retention:
-            errors.append(f"no retention class {c['value']!r} (classes: {', '.join(sorted(hub.kernel.retention))})")
+        if c["value"] not in retention:
+            errors.append(f"no retention class {c['value']!r} (classes: {', '.join(sorted(retention))})")
         elif td.get("retention", "standard") == c["value"]:
             errors.append(f"{t} is already kept as {c['value']}")
         else:
-            old = (hub.kernel.retention.get(td.get("retention", "standard")) or {}).get("years", 0)
-            new = (hub.kernel.retention.get(c["value"]) or {}).get("years", 0)
+            old = (retention.get(td.get("retention", "standard")) or {}).get("years", 0)
+            new = (retention.get(c["value"]) or {}).get("years", 0)
             if new < old:
                 warnings.append(f"{t} records are kept {new} year(s) instead of {old}")
     elif op == "set_sensitivity":
@@ -551,13 +554,13 @@ def apply_one(types: dict, c: dict) -> dict:
     return out
 
 
-def check(hub, changes: list[dict], types: dict | None = None) -> tuple[dict, list[str], list[str]]:
+def check(hub, changes: list[dict], types: dict | None = None, retention: dict | None = None) -> tuple[dict, list[str], list[str]]:
     """(types after the changes, errors, warnings), the changes applied in order on ``types`` (the record types in force
     by default). A change with errors is not applied, so the next ones are checked against what would be in force."""
     types = copy.deepcopy(in_force(hub)["types"] if types is None else types)
     errors, warnings = [], []
     for c in changes:
-        e, w = check_one(hub, types, c)
+        e, w = check_one(hub, types, c, retention)
         label = c.get("id") or c.get("op")
         errors += [f"{label}: {x}" for x in e]
         warnings += [f"{label}: {x}" for x in w]
@@ -605,6 +608,14 @@ def changes_of(co: dict) -> list[dict]:
     return list(co["fields"].get("record_type_changes") or [])
 
 
+def _retention(hub, co: dict | None) -> dict:
+    """The retention classes a change order's record-type changes are checked against: those in force, with the ones it
+    carries (hubproto.configdocs), so it may add a class and keep a record type under it."""
+    from . import configdocs
+
+    return configdocs.retention_with(hub, co)
+
+
 def _may_carry(hub, co: dict, by: str) -> str:
     from . import authz
 
@@ -647,7 +658,7 @@ def carry(hub, co_ref: str, changes: list[dict], *, by: str, reason: str = "", o
             item["from_file"] = from_file
         item["summary"] = describe(item)
         new.append(item)
-    _, errors, _ = check(hub, existing + new, base["types"])
+    _, errors, _ = check(hub, existing + new, base["types"], retention=_retention(hub, co))
     mine = [e for e in errors if any(e.startswith(f"{c['id']}:") for c in new)]
     if mine:
         raise ValueError("refused, nothing carried: " + "; ".join(mine))
@@ -674,19 +685,24 @@ def from_file_changes(hub, base: dict | None = None) -> tuple[list[dict], list[s
     """The changes that would bring what the file adds into force (non-destructive ones), and what the file says that
     no change order can make (removals, renames, retypes): ([change], [skipped, in words])."""
     base = in_force(hub)["types"] if base is None else base
-    new = file_types(hub)
+    return changes_between(base, file_types(hub))
+
+
+def changes_between(base: dict, new: dict, where: str = "the file") -> tuple[list[dict], list[str]]:
+    """The non-destructive changes that bring what ``new`` (record type -> definition) adds to ``base`` into force, and
+    what ``new`` says that no change order can make (removals, renames, retypes), in words naming ``where`` it says so."""
     out, skipped = [], []
     for t in sorted(set(new) - set(base)):
         out.append({"op": "add_type", "type": t, "definition": new[t]})
     for t in sorted(set(base) - set(new)):
-        skipped.append(f"the file has no record type {t}: a record type is archived, never dropped")
+        skipped.append(f"{where} has no record type {t}: a record type is archived, never dropped")
     for t in sorted(set(base) & set(new)):
         a, b = base[t], new[t]
         fa, fb = a.get("fields") or {}, b.get("fields") or {}
         for f in sorted(set(fb) - set(fa)):
             out.append({"op": "add_field", "type": t, "field": f, "spec": fb[f]})
         for f in sorted(set(fa) - set(fb)):
-            skipped.append(f"the file has no field {t}.{f}: a field is not removed this way")
+            skipped.append(f"{where} has no field {t}.{f}: a field is not removed this way")
         for f in sorted(set(fa) & set(fb)):
             if fa[f] == fb[f]:
                 continue
@@ -695,7 +711,7 @@ def from_file_changes(hub, base: dict | None = None) -> tuple[list[dict], list[s
                 if set(old) <= set(now):
                     out.append({"op": "add_enum_values", "type": t, "field": f, "values": [v for v in now if v not in old]})
                     continue
-            skipped.append(f"{t}.{f} is {fb[f]} in the file (in force: {fa[f]}): {DESTRUCTIVE['retype_field']}")
+            skipped.append(f"{t}.{f} is {fb[f]} in {where} (in force: {fa[f]}): {DESTRUCTIVE['retype_field']}")
         ra, rb = a.get("required_by_state") or {}, b.get("required_by_state") or {}
         for st in sorted(rb):
             if st not in ra:
@@ -716,12 +732,12 @@ def from_file_changes(hub, base: dict | None = None) -> tuple[list[dict], list[s
             if [x for x in now if x not in old]:
                 out.append({"op": op, "type": t, "fields": [x for x in now if x not in old]})
             if [x for x in old if x not in now]:
-                skipped.append(f"{t}: the file no longer lists {', '.join(x for x in old if x not in now)} among its "
+                skipped.append(f"{t}: {where} no longer lists {', '.join(x for x in old if x not in now)} among its "
                                f"{key.replace('_', ' ')}: a change order does not open a field to people this way")
             handled.add(key)
         others = sorted(k for k in (set(a) | set(b)) - handled if a.get(k) != b.get(k))
         for k in others:
-            skipped.append(f"{t} {k.replace('_', ' ')} differs in the file: not a change a change order makes")
+            skipped.append(f"{t} {k.replace('_', ' ')} differs in {where}: not a change a change order makes")
     return out, skipped
 
 
@@ -740,7 +756,7 @@ def carried_reasons(hub, co: dict) -> list[str]:
     changes = changes_of(co)
     if not changes:
         return []
-    _, errors, _ = check(hub, changes)
+    _, errors, _ = check(hub, changes, retention=_retention(hub, co))
     return [f"record types: {e}" for e in errors]
 
 
@@ -751,9 +767,10 @@ def delta_items(hub, co: dict) -> list[dict]:
         return []
     base = in_force(hub)
     types = copy.deepcopy(base["types"])
+    ret = _retention(hub, co)
     out = []
     for c in changes:
-        errors, warnings = check_one(hub, types, c)
+        errors, warnings = check_one(hub, types, c, ret)
         if not errors:
             types = apply_one(types, c)
         out.append({"id": f"record-type:{c['id']}", "op": c["op"], "kind": "record-type", "record_type": c.get("type"),
@@ -780,7 +797,7 @@ def activate(hub, co: dict, digest: str) -> list[str]:
         return [f"record types v{done[-1]['version']} (already in force with {co['number']})"]
     closure.check_co_approved(co, "its record-type changes")
     base = ensure(hub)
-    types, errors, _ = check(hub, changes, base["types"])
+    types, errors, _ = check(hub, changes, base["types"], retention=_retention(hub, co))
     if errors:
         raise ValueError(f"{co['number']}'s record-type changes cannot come into force: " + "; ".join(errors))
     now_sha = file_sha(hub)

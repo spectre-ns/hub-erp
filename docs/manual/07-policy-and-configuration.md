@@ -203,12 +203,13 @@ sentence "Configuration changes only through a change order: open one under Qual
 | Editing a Frame in the hub (`/frame-draft`) | "The ncr-sop Frame is compiled from DOC-0013: revise that document on a change order." |
 | A Frame's page | "This Frame is compiled from DOC-*n*. It is not edited here: change the document through a change order, and the Frame follows when the change order is released." |
 | Settings, the workflow editor, the forms editor, the record types page, a cog's **Change model**, **Add someone** | the change is recorded on a change order as a direct change (7.7, 7.12 to 7.14; chapter 6.10) |
-| `hubproto record-types carry CO-...` | carries a record-type change on that change order; there is no other way (7.14) |
+| `hubproto record-types carry CO-...` | carries a record-type change on that change order (7.14) |
+| `hubproto config propose FILE.json`, a change order's **Propose a configuration file (JSON)** | carries what an edited export changes on a change order, by the paths above; refused with every reason and nothing carried when any part cannot be (7.14) |
 
 An edit to a `.frame.md` file on disk is not policy: `hubproto status --check` reports it ("they are not used: the
 Frame is compiled from the SOP documents") and exits 1. So does a `config/record-types.json` that differs from the
-record types in force. `links.json` and `retention.json` are still read from the configuration directory and are "not
-under change control yet" (docs/design/config-paths.md).
+record types in force, and a `links.json` or `retention.json` that differs from the link vocabulary or retention classes in
+force ("it is not used"; docs/design/config-paths.md).
 
 **The first release converts the SOPs.** However the first release is made (the container's first start, `hubproto
 bootstrap-release`, or `hubproto dev serve`), the hub converts the SOPs to documents at once (hubproto/closure.py,
@@ -585,6 +586,7 @@ The approval starts the **release-change-order** automation (hubproto/automation
 | Move items by the state map | items in removed statuses are moved (below) |
 | Publish the revisions | each revision becomes **Effective**, the one it replaces **Obsolete** |
 | Apply the form layouts | and the workflow layouts (7.12, 7.13) |
+| Apply the link and retention changes | 7.14 |
 | Apply the record-type changes | 7.14 |
 | Assign training | acknowledgement tasks for people; republishes the required-training matrix when it changes (7.15) |
 | Record divergences | raises a change request for each new one (below) |
@@ -869,6 +871,24 @@ line: `hubproto record-types status`, `show TYPE`, `carry CO-... --as P (--chang
 A record-type change is high risk (7.16) and covered by the change order's approval, not decided item by item. A change
 order cannot carry a new record type together with a process that files it: the compile checks the process against
 the record types in force (ran the code; chapter 10.9).
+
+**The link vocabulary and the retention classes** are kept the same way (`state/config/links`, `state/config/retention`;
+hubproto/configdocs.py): `config/links.json` and `config/retention.json` are not used after the conversion. A change
+order carries a new relation or class, a new inverse label, a class kept for more or fewer years ("records of the
+standard class are kept 1 year(s) less" is a warning shown with it), or a removal; removing a relation a link uses or
+the hub's own steps use, `standard`, or a class a record type is kept under is refused. The release step **Apply the
+link and retention changes** brings them into force, before the record types, so one change order may add a class and
+keep a record type under it. Links are medium risk, retention classes high (7.16).
+
+**The configuration as JSON.** `hubproto config export --out config.json` (or **the configuration in force** link on a
+change order's page, `GET /api/config?as=<you>`, for anyone who may read Policy) writes everything in force as one
+JSON document: the rules, members, roles, groups, folders, cog profiles and personas, the record types, the form
+layouts, the link vocabulary and the retention classes. Edit it and propose it: `hubproto config propose config.json
+--as carol [--co CO-...]`, or **Propose a configuration file (JSON)** under **What it carries** on a change order you
+are preparing. What it changes is carried exactly as the same edit made in Settings, the forms editor or the record
+types page would be (rules become direct changes whose prose the review round writes into the SOP), with the same
+review, widenings and signature. A file exported before another release came into force is refused ("export again"),
+and so is anything that cannot be carried, with nothing carried. The format: docs/design/config-json.md.
 
 ## 7.15 Roles and responsibilities, and required training
 

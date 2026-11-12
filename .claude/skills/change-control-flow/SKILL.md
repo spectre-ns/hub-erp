@@ -18,7 +18,7 @@ first three.
 
 | Stage | What happens | Where |
 |---|---|---|
-| preparing | carry SOP revisions, new or retired SOPs; direct changes from Settings and the editors; form, record-type and workflow changes | `eco.add_sop`, `eco.add_new_sop`, `eco.retire_sop`; `changecontrol.add_direct_change`, `rules_to_change_order` (Settings); pages in `shell/change_order_ui.py` |
+| preparing | carry SOP revisions, new or retired SOPs; direct changes from Settings and the editors; form, record-type, workflow, link and retention changes; or a whole JSON document (`configjson.propose`) | `eco.add_sop`, `eco.add_new_sop`, `eco.retire_sop`; `changecontrol.add_direct_change`, `rules_to_change_order` (Settings); `configdocs.carry`; pages in `shell/change_order_ui.py` |
 | in-review | a **review round**: `request_review` starts the `compile-frame` automation job | `changecontrol.request_review`, `automation.start` |
 | revising | answer questions, accept or reject suggestions, request review again | `answer_question`, `accept_suggestion`, `reject_suggestion` |
 | awaiting-approval | `send_for_approval` (requester or a document controller) once `send_reasons` is empty: the CO is frozen and sealed, and the change-order process waits at the quality manager's Gate; approvers decide each delta item | `send_for_approval`, `decide_item`, `accept_warning` |
@@ -78,7 +78,7 @@ no panel).
 Steps (`automation.STEPS["release-change-order"]`): `r_check` (approved, signed by a person, `eco.check_approval`,
 `eco.release_problems` before anything is in force), `r_revisions` (`approve_revisions`), `r_frame` (`apply_delta`,
 `eco.activate_frame`, `record_release`), `r_state_maps` (`runner.apply_state_map`), `r_publish`
-(`eco.publish_revisions`), `r_forms` (`formlayout.activate`), `r_record_types` (`recordtypes.activate`), `r_training`
+(`eco.publish_revisions`), `r_forms` (`formlayout.activate`), `r_config_docs` (`configdocs.activate`: links and retention), `r_record_types` (`recordtypes.activate`), `r_training`
 (`eco.assign_revision_training`, `training.publish_matrix`), `r_divergences` (`raise_divergence_requests`),
 `r_related` (`find_related`), `r_restage` (every other open CO compiled again), `r_tell`.
 

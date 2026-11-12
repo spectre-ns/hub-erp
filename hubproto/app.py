@@ -88,6 +88,11 @@ class Hub:
         # Once the SOPs are documents the record types in force are the hub's (state/record-types), not the file.
         _recordtypes.install(self)
         self.kernel.types_hook = lambda: _recordtypes.refresh(self)
+        from . import configdocs as _configdocs
+
+        # The link vocabulary and the retention classes likewise (state/config/links, state/config/retention).
+        _configdocs.install(self)
+        self.kernel.config_hook = lambda: _configdocs.refresh(self)
         _formlayout.apply_custom_fields(self)  # released custom fields are fields of their record types
         self.runner.on_completed = [lambda state, rec: _automation.on_run_completed(self, state, rec)]
         self.runner.frames_store = lambda: self.released_frames()  # cogs read the SOPs as released, not the files on disk
