@@ -88,7 +88,13 @@ def _parse_scalar(raw: str):
                    else "nested too deeply" if isinstance(e, RecursionError) else str(e))
             raise FrameError(f"cannot parse frontmatter value {raw!r}: {why}") from None
     if (raw[0] == raw[-1]) and raw[0] in "\"'" and len(raw) >= 2:
-        return raw[1:-1]
+        try:  # read as YAML does, and as a quoted string inside a flow value: JSON escapes in "", '' is a quote in ''
+            value, end = _flow(raw, 0)
+        except (ValueError, IndexError):
+            value, end = None, -1
+        if end == len(raw):
+            return value
+        return raw[1:-1]  # as before, for what YAML itself would refuse: an escape JSON lacks, a stray quote inside
     return raw
 
 
