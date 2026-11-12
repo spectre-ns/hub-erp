@@ -120,9 +120,12 @@ this machine. The hub treats such a model like Claude. With hosted models off, a
 ("ollama/gemma4:31b-cloud runs on Ollama's servers, not this machine, and hosted models are switched off here ..."), the
 model lists show it as not available, and proposing it for a cog is refused. With hosted models on it can be used, and
 `hubproto models`, the cog's profile and the model pickers say it "runs on Ollama's servers, not this machine"; each call's
-record names its backend, `ollama-cloud`. The hub knows a cloud model by what Ollama reports for it (`/api/show` names a
-remote host), and otherwise by its tag: a name ending in `:cloud` or `-cloud` is never treated as local
-(hubproto/model.py, `ollama_cloud`). The prompt each cog gets is sized to its model's context window as Ollama reports
+record names its backend, `ollama-cloud`; a proposal that gives a cog one tells every policy owner that the cog's prompts
+and the records in them would leave this machine. The hub knows a cloud model by what Ollama reports for it (`/api/show`
+names a remote host), and otherwise by its tag: a name ending in `:cloud` or `-cloud` is never treated as local
+(hubproto/model.py, `ollama_cloud`). Before each call it asks Ollama again, so a model name re-pointed at a cloud model
+is not sent as local; when Ollama does not say where a model runs, nothing is sent ("Ollama did not say whether ... runs
+on this machine or on Ollama's servers, so nothing was sent to it"; `where_now`). The prompt each cog gets is sized to its model's context window as Ollama reports
 it, capped at 65,536 tokens unless `HUBPROTO_MODEL_CTX_MAX` or `HUBPROTO_MODEL_CTX` says otherwise (hubproto/model.py,
 `num_ctx_for`).
 

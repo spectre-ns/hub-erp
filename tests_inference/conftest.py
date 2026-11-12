@@ -205,7 +205,8 @@ def no_stand_in_no_hosted(monkeypatch):
     """Whatever ran before (another suite in the same session), this test has no stand-in and no hosted model."""
     for name in ("HUBPROTO_ALLOW_STAND_IN", "HUBPROTO_HOSTED_MODELS", "ANTHROPIC_API_KEY", "HUBPROTO_MODEL_FAKE"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(model_mod, "_CAPS", {})  # Ollama is asked again what each model can do
+    monkeypatch.setattr(model_mod, "_SHOW", {})  # Ollama is asked again what each model can do and where it runs
+    monkeypatch.setattr(model_mod, "_SHOW_MISSED", {})
     assert not model_mod.stand_in_allowed() and not model_mod.hosted_allowed()
 
 

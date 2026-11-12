@@ -103,7 +103,7 @@ def propose_policy_change(tools, a: dict) -> dict:
 
 # ---------------------------------------------------------------- propose_cog_model
 def propose_cog_model(tools, a: dict) -> dict:
-    from .model import OFF_MACHINE, resolve_model
+    from .model import off_machine, resolve_model
 
     hub = tools.hub
     cog = str(a.get("cog") or tools.cog).strip()
@@ -127,7 +127,8 @@ def propose_cog_model(tools, a: dict) -> dict:
     away = res.get("backend") == "ollama-cloud"
     out.update({"ok": True, "cog": cog, "model": model, "served_by": res["served"], "leaves_machine": bool(res.get("leaves_machine"))})
     if away:
-        out["where"] = f"{model} {OFF_MACHINE}: {cog}'s prompts and the records in them would leave this machine"
+        out["where"] = off_machine(model, cog)
+    # The hub tells the policy owners when the model leaves the machine (Hub.propose_cog_model); this notice says so too.
     _notify_owners(tools, proposal, f"{tools.cog} proposes {model} for {cog}: proposal #{proposal.get('number')}",
                    (f"Reason: {reason}\n" if reason else "") + f"{cog} uses {profile.get('model') or 'no model'} now."
                    + (f"\n{out['where']}." if away else ""))

@@ -30,14 +30,17 @@ MODELS = {
     "gemma4:cloud": {"size": 384, "details": {"family": "gemma4"}, **REMOTE, "remote_model": "gemma4"},
     "gemma4:31b-cloud": {"size": 384, "details": {"parameter_size": "31B", "family": "gemma4"}, **REMOTE, "remote_model": "gemma4:31b"},
     "team-reader:latest": {"size": 384, "details": {"family": "gemma4"}},  # /api/tags says nothing of where it runs
+    "team-local:latest": {"size": 1_000_000_000, "details": {"family": "qwen3"}},  # local, until a test re-points the name
 }
 SHOW_REMOTE = {"gemma4:cloud", "gemma4:31b-cloud", "team-reader", "team-reader:latest"}
 
 
 @pytest.fixture
 def ollama(monkeypatch):
-    """A fake Ollama at HUBPROTO_OLLAMA_URL; ``chats`` holds every /api/chat body it was sent."""
-    seen = {"chats": [], "shows": []}
+    """A fake Ollama at HUBPROTO_OLLAMA_URL; ``chats`` holds every /api/chat body it was sent, ``shows`` every model
+    /api/show was asked about. A test changes what it says: ``remote`` (the models /api/show names a remote host for),
+    ``tags_remote`` (those /api/tags does) and ``show_fail`` (those /api/show answers 500 for)."""
+    seen = {"chats": [], "shows": [], "remote": set(SHOW_REMOTE), "tags_remote": set(), "show_fail": set()}
 
     class Fake(BaseHTTPRequestHandler):
         def _send(self, status, body):
@@ -46,7 +49,8 @@ def ollama(monkeypatch):
 
         def do_GET(self):
             if self.path == "/api/tags":
-                return self._send(200, {"models": [{"name": n, "model": n, **m} for n, m in MODELS.items()]})
+                return self._send(200, {"models": [{"name": n, "model": n, **m, **(REMOTE if n in seen["tags_remote"] else {})}
+                                                   for n, m in MODELS.items()]})
             self._send(404, {"error": "not found"})
 
         def do_POST(self):
@@ -54,9 +58,11 @@ def ollama(monkeypatch):
             if self.path == "/api/show":
                 name = body.get("model") or ""
                 seen["shows"].append(name)
+                if name in seen["show_fail"]:
+                    return self._send(500, {"error": "busy"})
                 if name not in MODELS and f"{name}:latest" not in MODELS:
                     return self._send(404, {"error": f"model '{name}' not found"})
-                where = {**REMOTE, "remote_model": name} if name in SHOW_REMOTE else {}
+                where = {**REMOTE, "remote_model": name} if name in seen["remote"] else {}
                 return self._send(200, {"capabilities": ["completion", "tools"], "model_info": {"x.context_length": 32768}, **where})
             if self.path == "/api/chat":
                 seen["chats"].append(body)
@@ -71,7 +77,9 @@ def ollama(monkeypatch):
     monkeypatch.setenv("HUBPROTO_OLLAMA_URL", f"http://127.0.0.1:{srv.server_address[1]}")
     for var in ("HUBPROTO_MODEL_FAKE", "HUBPROTO_HOSTED_MODELS", "ANTHROPIC_API_KEY", "HUBPROTO_EXTRACTOR_MODEL"):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr(model, "_TAGS", {"at": 0.0, "models": None, "error": ""})  # this Ollama's list, not another test's
+    monkeypatch.setattr(model, "_TAGS", {"at": 0.0, "models": None, "error": ""})  # this Ollama's answers, not another test's
+    monkeypatch.setattr(model, "_SHOW", {})
+    monkeypatch.setattr(model, "_SHOW_MISSED", {})
     try:
         yield seen
     finally:
@@ -93,6 +101,16 @@ def test_a_cloud_tag_is_refused_without_hosted_models(ollama, name):
     with pytest.raises(ModelUnavailable, match=REFUSED):
         ModelGateway().complete_with_tools(model=name, system="s", user="u", tools=[], call_tool=lambda n, a: {})
     assert ollama["chats"] == [], "nothing was sent to Ollama for the cloud model"
+
+
+@pytest.mark.parametrize("name", ["Ollama/Gemma4:Cloud", "ollama/gemma4:31b-cloud ", "ollama/gemma4:31b-cloud\t", "ollama/gemma4:31b-cloud\u00a0",
+                                  " ollama/gemma4:cloud", "hf.co/someone/repo:cloud", "registry.ollama.ai/library/gemma4:31b-cloud"])
+def test_a_cloud_tag_in_any_spelling_is_refused(ollama, name):
+    """The review's probe (PR #57): case, stray whitespace and a registry path do not hide a cloud tag."""
+    assert model.backend_for(name) == "none"
+    with pytest.raises(ModelUnavailable, match=REFUSED):
+        ask(name)
+    assert ollama["chats"] == []
 
 
 def test_a_cloud_tag_fails_closed_without_an_ollama_to_ask(monkeypatch):
@@ -140,7 +158,7 @@ def test_local_tags_are_unchanged(ollama, monkeypatch, hosted, name):
     assert [c["model"] for c in ollama["chats"]] == [model.served_name(name)]
     choices = model.available_models(refresh=True)["choices"]
     local = [c["value"] for c in choices if c["label"].endswith(", local)")]
-    assert local == ["ollama/qwen3:14b", "ollama/gemma4:12b-it-qat"], "only the models on this machine are labelled local, largest first"
+    assert local == ["ollama/qwen3:14b", "ollama/gemma4:12b-it-qat", "ollama/team-local:latest"], "only the models on this machine are labelled local, largest first"
     assert all(c["available"] for c in choices if c["value"] in local)
 
 
@@ -229,3 +247,116 @@ def test_proposing_a_cloud_model_for_a_cog_says_it_leaves_the_machine(released, 
     monkeypatch.setenv("HUBPROTO_HOSTED_MODELS", "on")
     out = tools.execute("propose_cog_model", {"cog": "ap-reviewer", "model": "ollama/gemma4:31b-cloud", "reason": "bigger"})
     assert out["ok"] and out["leaves_machine"] is True and out["where"].startswith(f"ollama/gemma4:31b-cloud {OFF}"), out
+
+
+# ---------------------------------------------------------------- where a model runs is asked again before each call
+def test_a_name_re_pointed_at_a_cloud_model_is_never_sent_as_local(ollama, monkeypatch):
+    """``ollama cp gemma4:cloud team-local`` after the hub has called team-local as a local model: the next call asks Ollama
+    again before it is sent, and is refused while hosted models are off."""
+    out = ask("ollama/team-local")
+    assert out["backend"] == "ollama" and not out["leaves_machine"] and len(ollama["chats"]) == 1
+    ollama["remote"].add("team-local")  # Ollama's /api/show now names a remote host for the name
+    with pytest.raises(ModelUnavailable, match=f"ollama/team-local {REFUSED}"):
+        ask("ollama/team-local")
+    assert len(ollama["chats"]) == 1, "nothing was sent once the name pointed at a cloud model"
+    monkeypatch.setenv("HUBPROTO_HOSTED_MODELS", "on")
+    out = ask("ollama/team-local")
+    assert out["backend"] == "ollama-cloud" and out["leaves_machine"] is True, "with hosted models on, the call's record says it left"
+    ollama["remote"].discard("team-local")
+    monkeypatch.delenv("HUBPROTO_HOSTED_MODELS")
+    with pytest.raises(ModelUnavailable, match=REFUSED):
+        ask("ollama/team-local")  # an answer that it runs remotely is kept a while: the safe direction
+    clock = [model._clock() + model.SHOW_TTL]
+    monkeypatch.setattr(model, "_clock", lambda: clock[0])
+    assert ask("ollama/team-local")["backend"] == "ollama", "pointed back at a local model, it is local again once the record is old"
+
+
+def test_the_listing_flag_counts_for_where_a_model_runs(ollama):
+    """A fresh /api/tags that says a name runs remotely makes it hosted for the gateway too, not only for the picker."""
+    assert model.backend_for("ollama/team-local") == "ollama"
+    ollama["tags_remote"].add("team-local:latest")
+    assert [m["cloud"] for m in model.ollama_models(refresh=True)[0] if m["name"] == "team-local:latest"] == [True]
+    assert model.backend_for("ollama/team-local") == "none" and REFUSED in model.resolve_model("ollama/team-local")["note"]
+    with pytest.raises(ModelUnavailable, match=REFUSED):
+        ask("ollama/team-local")
+    assert ollama["chats"] == []
+
+
+def test_when_ollama_does_not_say_where_a_model_runs_nothing_is_sent(ollama, monkeypatch):
+    ollama["show_fail"].add("team-reader")  # a cloud model under a custom name; /api/show answers 500, /api/chat works
+    out = ask("ollama/team-reader")
+    assert out["stand_in"] and "Ollama did not say whether ollama/team-reader runs on this machine" in out["text"], out["text"]
+    monkeypatch.delenv("HUBPROTO_ALLOW_STAND_IN")
+    with pytest.raises(ModelUnavailable, match="Ollama did not say whether ollama/team-reader runs on this machine or on Ollama's servers"):
+        ask("ollama/team-reader")
+    with pytest.raises(ModelUnavailable, match="Ollama did not say whether"):
+        ModelGateway().complete_with_tools(model="ollama/team-reader", system="s", user="u", tools=[], call_tool=lambda n, a: {})
+    assert ollama["chats"] == [], "failing closed: nothing reached /api/chat"
+    ollama["show_fail"].clear()
+    ollama["remote"].discard("team-reader")
+    assert ask("ollama/team-reader")["backend"] == "ollama", "when Ollama answers again, a local model is sent as before"
+
+
+def test_ollamas_record_of_a_model_is_kept_a_while_and_a_failed_lookup_is_retried(ollama, monkeypatch):
+    clock = [5000.0]
+    monkeypatch.setattr(model, "_clock", lambda: clock[0])
+    shows = ollama["shows"]
+    assert model.backend_for("ollama/qwen3:14b") == "ollama" and shows == ["qwen3:14b"]
+    model.backend_for("ollama/qwen3:14b")
+    model.supports_images("ollama/qwen3:14b")
+    assert shows == ["qwen3:14b"], "one record gives where it runs and what it can do, kept SHOW_TTL seconds"
+    clock[0] += model.SHOW_TTL
+    model.backend_for("ollama/qwen3:14b")
+    assert shows == ["qwen3:14b"] * 2, "then asked again"
+    ask("ollama/qwen3:14b")
+    assert shows == ["qwen3:14b"] * 3, "a call about to be sent always asks"
+    ollama["show_fail"].add("team-local")
+    model.backend_for("ollama/team-local")
+    model.backend_for("ollama/team-local")
+    assert shows.count("team-local") == 1, "a failed lookup is not asked again at once"
+    clock[0] += model.SHOW_RETRY
+    model.backend_for("ollama/team-local")
+    assert shows.count("team-local") == 2, "it is asked again after SHOW_RETRY seconds"
+
+
+# ---------------------------------------------------------------- a person's proposal tells the policy owners
+def notices(hub, who="bob"):
+    return [m for m in hub.inbox.for_principal(who) if m.get("kind") == "policy-proposal" and "leaves this machine" in m.get("subject", "")]
+
+
+def test_a_cloud_model_picked_on_the_cog_page_tells_the_owners_it_leaves_the_machine(released, ollama, monkeypatch):
+    from hubproto.shell import serve_in_thread
+    from test_shell_views import post
+
+    monkeypatch.setenv("HUBPROTO_HOSTED_MODELS", "on")
+    server = serve_in_thread(released, "127.0.0.1", 0)
+    try:
+        status, url, body = post({"base": f"http://127.0.0.1:{server.server_address[1]}"}, "/cog-model",
+                                 {"as": "carol", "cog": "quality-assistant", "model": "ollama/gemma4:31b-cloud"})
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert status == 200 and "/proposal/" in url, body[:400]
+    want = f"ollama/gemma4:31b-cloud {OFF}: quality-assistant's prompts and the records in them would leave this machine"
+    for owner in ("bob", "carol"):
+        [n] = notices(released, owner)
+        assert n["subject"].startswith("carol proposes ollama/gemma4:31b-cloud for quality-assistant") and want in n["body"], n
+    draft = released.kernel.require(n["record"])
+    assert want in released.dms.versions(draft["locator"])[-1]["note"], "the draft's note says it too"
+    released.propose_new_cog(name="cloud-helper", roles=["staff"], model="ollama/gemma4:cloud", about="Helps.", persona="", by="carol")
+    assert any("a new cog, cloud-helper" in n["subject"] and "cloud-helper's prompts" in n["body"] for n in notices(released)), notices(released)
+    monkeypatch.delenv("HUBPROTO_HOSTED_MODELS")
+    released.propose_cog_model("ap-reviewer", "ollama/qwen3:14b", by="carol")
+    assert len(notices(released)) == 2, "a local model tells nobody it leaves the machine"
+
+
+def test_on_a_change_order_the_reason_says_the_cloud_model_leaves_the_machine(released, ollama, monkeypatch):
+    from hubproto import sopdocs
+
+    sopdocs.convert(released, by="carol")
+    monkeypatch.setenv("HUBPROTO_HOSTED_MODELS", "on")
+    out = released.propose_cog_model("quality-assistant", "ollama/gemma4:31b-cloud", by="alice")
+    co = released.kernel.get(out["locator"])
+    assert f"ollama/gemma4:31b-cloud {OFF}" in co["fields"]["description"], co["fields"]
+    [n] = notices(released)
+    assert n["record"] == out["locator"] and out["change_order"] in n["subject"] and "would leave this machine" in n["body"]
