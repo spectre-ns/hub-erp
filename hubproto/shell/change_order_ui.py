@@ -558,12 +558,13 @@ class ChangeOrderMixin:
         if stage == "preparing":
             if not mine:
                 return f"<p>{esc(who)} is preparing it: carrying the revisions and changes it makes.</p>"
-            carries = eco.carried(self.hub, co) or cc_api("items")(co) or f.get("form_changes") or f.get("record_type_changes") or f.get("workflow_changes")
+            carries = (eco.carried(self.hub, co) or cc_api("items")(co) or f.get("form_changes") or f.get("record_type_changes") or f.get("workflow_changes")
+                       or f.get("config_changes"))
             if not carries:
                 return ("<p><b>Next:</b> carry what it changes: start a revision of an SOP or policy below, make a direct change in "
                         f"<a href='{href('/settings', self.user)}'>Settings</a>, the <a href='{href('/forms', self.user)}'>forms editor</a>, "
-                        f"the <a href='{href('/workflows', self.user)}'>workflow editor</a> or on the <a href='{href('/record-types', self.user)}'>record types</a> page. "
-                        "Then request review.</p>")
+                        f"the <a href='{href('/workflows', self.user)}'>workflow editor</a> or on the <a href='{href('/record-types', self.user)}'>record types</a> page, "
+                        "or carry a configuration file (JSON) below. Then request review.</p>")
             first = "when the revisions say what you mean, request review" if eco.carried(self.hub, co) else "request review"
             return (f"<p><b>Next:</b> {first}. Round 1 compiles the delta from the prose, drafts "
                     "the prose for direct changes, suggests the panel and asks it.</p><div class='actions'>" + self._co_request_form(ctx, False) + "</div>")
@@ -610,6 +611,7 @@ class ChangeOrderMixin:
         out += self._co_direct_html(ctx)
         out += self._forms_co_section(co, ctx["mine"], prep)
         out += self._co_rt_html(ctx)
+        out += self._co_config_html(ctx)  # link vocabulary, retention classes, and a configuration file to carry (issue #33)
         wfc = f.get("workflow_changes") or {}
         if wfc:
             out += (f"<h3>{icon('workflow')}Workflows</h3><p>{len(wfc)} workflow change(s): {esc(', '.join(sorted(wfc)))}; drawn under "
@@ -1564,6 +1566,12 @@ class ChangeOrderMixin:
         for it in recordtypes.delta_items(self.hub, co):
             lis.append(f"<li>Record type: {esc(it.get('reason'))} <span class='why'>(approved with the change order"
                        + ("; " + esc("; ".join(it.get("errors") or [])) if it.get("errors") else "") + ")</span></li>")
+        from .. import configdocs
+
+        for it in configdocs.delta_items(self.hub, co):
+            warn = "; ".join(w["text"] for w in it.get("warnings") or [])
+            lis.append(f"<li>{esc(it.get('reason')[:1].upper() + it.get('reason')[1:])} <span class='why'>(approved with the change order"
+                       + ("; " + esc(warn) if warn else "") + ("; " + esc("; ".join(it.get("errors") or [])) if it.get("errors") else "") + ")</span></li>")
         if not lis:
             return ""
         return "<h3>Shown, not decided item by item</h3><ul>" + "".join(lis) + "</ul>"

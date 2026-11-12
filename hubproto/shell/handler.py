@@ -191,7 +191,7 @@ class BaseHandler(BaseHTTPRequestHandler):
                 self._refresh_frames()
                 self.meta = self.hub.releases.current()
                 self.bundle = self.hub.releases.bundle(self.meta["digest"]) if self.meta else None
-                if method == "GET" and not self.user and self.route not in ("/download",):
+                if method == "GET" and not self.user and self.route not in ("/download", "/api/config"):
                     return self.page_whoami()
                 if method == "POST" and self._viewing_cog():
                     raise ShellError(f"You are watching {self.user}, a cog: it decides, files and answers on its own within the policy, "
@@ -230,7 +230,7 @@ class BaseHandler(BaseHTTPRequestHandler):
                      "/start": self.page_start, "/people": self.page_people, "/suppliers": self.page_suppliers, "/settings": self.page_settings, "/templates": self.page_templates,
                      "/change-orders": self.page_change_orders, "/automation": self.page_automation,
                      "/automation-status": self.page_automation_status, "/scopes": self.page_scopes, "/forms": self.page_forms,
-                     "/workflows": self.page_workflows, "/record-types": self.page_record_types,
+                     "/workflows": self.page_workflows, "/record-types": self.page_record_types, "/api/config": self.page_api_config,
                      "/download-marked": self.page_download_marked}
             if r in fixed:
                 return fixed[r]
@@ -262,6 +262,7 @@ class BaseHandler(BaseHTTPRequestHandler):
                  "/co-decide": self.post_co_decide, "/co-accept-warning": self.post_co_accept_warning, "/co-state-map": self.post_co_state_map,
                  "/co-dismiss-related": self.post_co_dismiss_related, "/co-direct-remove": self.post_co_direct_remove,
                  "/co-rt-uncarry": self.post_co_rt_uncarry, "/record-types-carry": self.post_record_types_carry,
+                 "/co-config-upload": self.post_co_config_upload, "/co-cfg-uncarry": self.post_co_cfg_uncarry,
                  "/co-intervene-review": self.post_co_intervene_review, "/co-report-unavailable": self.post_co_report_unavailable,
                  "/co-answer-all": self.post_co_answer_all, "/co-accept-all": self.post_co_accept_all, "/co-ask-sop": self.post_co_ask_sop, "/co-evidence": self.post_co_evidence, "/co-evidence-file": self.post_co_evidence_file, "/intervene": self.post_intervene, "/assign": self.post_assign, "/agent-confirm": self.post_agent_confirm, "/new-person": self.post_new_person, "/new-cog": self.post_new_cog, "/cog-model": self.post_cog_model, "/restart": self.post_restart, "/mark-applied": self.post_mark_applied, "/verify-edit": self.post_verify_edit, "/editor-debug": self.post_editor_debug,
                  "/upload": self.post_upload, "/checkout": self.post_checkout, "/checkin": self.post_checkin, "/link": self.post_link,

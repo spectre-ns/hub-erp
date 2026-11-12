@@ -34,8 +34,11 @@ for pytest-xdist, a development-only dependency; without `-n auto` the suite run
 | `hubproto/references.py` | document references in SOP prose (issue #8): citations read at compile with their line (`read_references`), resolved (`resolve`: a number names the document in its revision in force, "DOC-n rev X" that revision), a warning for one not in force (`reference_guard`); at release `references` links (`sync_links`) and flags to the owners of SOPs citing a document no longer in force, once (`flag_citations`) | core |
 | `hubproto/closure.py` | no configuration change without a change order once the SOPs are documents: the guards `Hub.compile`, `review`, `release` and `frame_draft` call; the sentence (`CO_ROUTE`) | core |
 | `hubproto/recordtypes.py` | record types under change control: the record types in force (`state/record-types`), changes carried on change orders (`carry`, `carried_reasons`, `delta_items`, `activate`), the file's drift | core |
+| `hubproto/configdocs.py` | the link vocabulary and the retention classes under change control, as record types are: what is in force (`state/config/links`, `state/config/retention`), changes carried on change orders (`config_changes`: `carry`, `carried_reasons`, `delta_items`, `activate`), the files' drift | core |
+| `hubproto/configjson.py` | the configuration in force as one JSON document (`export`, `dumps`; format in docs/design/config-json.md) and a document proposed on a change order (`plan`, `propose`: through Settings' direct changes, `recordtypes.carry`, `formlayout.carry`, `configdocs.carry`; all or nothing) | core |
 | `hubproto/cli_dev.py`, `hubproto/dev_demo.py`, `hubproto/__main__.py` | `python -m hubproto`; CLI verbs `dev serve`, `dev list`, `dev stop`, `dev clean` (`register(sub)`): development hubs on localhost, the registry, ports; the demo data a served hub gets | dev tooling |
 | `hubproto/cli_recordtypes.py` | CLI verbs `record-types status`, `show`, `carry` (`register(sub)`) | cli agent |
+| `hubproto/cli_config.py` | CLI verbs `config export`, `config propose` (`register(sub)`) | cli agent |
 | `hubproto/cli.py` | command line: policy, run, message and operations verbs; `main` returns the exit code; shared helpers (`fail`, `clean`, `require_member`, `resolve_*`) | cli agent |
 | `hubproto/shell/` | the workspace shell package (handler, pages, inbox, forms, actions, policy, css, text; stdlib http.server) | shell agent |
 | `hubproto/cli_records.py` | CLI verbs for runs waiting on people, records and documents (`register(sub)`) | cli agent |
@@ -85,8 +88,14 @@ what in your final report and work around it meanwhile.
   the Frames' drift from the restored release (`frames_drift`). The Frames are copied after the kernel snapshot with no
   lock, so only a backup of a stopped hub is consistent across all parts. `status --check` exits 1 when no release is in force or the Frames
   on disk differ from the release's bill of materials (the entrypoint prints that on later starts); once the SOPs are
-  documents, also when `config/record-types.json` differs from the record types in force or another config file from
-  what the release recorded.
+  documents, also when `config/record-types.json` differs from the record types in force, or `config/links.json` or
+  `config/retention.json` from the link vocabulary or retention classes in force (none of them is used then).
+* `config export [--out FILE]` writes everything in force as one JSON document (sorted keys, stable order; `GET
+  /api/config` gives the same bytes to a member who may read `Policy`). `config propose FILE.json --as PERSON [--co CO]`
+  puts what an edited export changes on a change order (the person's settings change order by default): exit 0 carried
+  or nothing to carry, 1 refused (every reason printed, nothing carried; not JSON, a repeated key, a number that is not
+  finite, a look-alike name, a document from another hub or with stale or missing versions included), 2 no such file. The format is
+  docs/design/config-json.md (and its JSON Schema, config-json.schema.json).
 * Once the SOPs are documents a configuration change outside a change order is refused by the hub
   (`closure.ChangeOrderRequired`, a `CompileError`): the verbs exit 1 with a sentence ending "Configuration changes only
   through a change order: open one under Quality > Change orders." (`compile`, `review`, `release`,

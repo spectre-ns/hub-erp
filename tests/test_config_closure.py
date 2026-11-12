@@ -530,13 +530,15 @@ def test_record_types_in_force_that_cannot_be_read_stop_the_hub_rather_than_fall
     assert "restore it from a backup" in str(e.value)
 
 
-def test_status_reports_other_configuration_files_that_differ_from_the_release(closed, config_dir):
+def test_status_reports_other_configuration_files_that_differ_from_what_is_in_force(closed, config_dir):
     path = config_dir / "links.json"
     data = json.loads(path.read_text())
     data["inspires"] = "is inspired by"
     path.write_text(json.dumps(data))
     rc, out = run_cli(closed.root, "status", "--check")
-    assert rc == 1 and "config/links.json differs from what the release in force, v1 (" in out and "recorded: it is used as it is" in out
+    assert rc == 1 and "config/links.json differs from the link vocabulary in force (v1); it is not used" in out
+    assert "in the file, not in force: inspires: inverse is inspired by" in out
+    assert "inspires" not in Hub(closed.root).kernel.link_vocab, "the file is reported, not used (issue #33)"
 
 
 def test_form_layouts_come_into_force_only_for_an_approved_change_order(closed):

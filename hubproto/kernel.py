@@ -10,7 +10,9 @@ present) on every command so a mis-built Cog cannot slip past them.
 
 Record type definitions, the link vocabulary and the retention classes are
 versioned configuration documents under ``config/``; their digests go into
-the release bill of materials.
+the release bill of materials. Once the SOPs are documents the hub keeps what
+is in force under change control instead (hubproto.recordtypes,
+hubproto.configdocs) and installs it here.
 """
 
 from __future__ import annotations
@@ -90,8 +92,11 @@ class Kernel:
         # (hubproto.recordtypes); then the hub installs those and ``types_hook`` picks up a newer version.
         self.types_hook = None
         self.types = _load(cfg / "record-types.json")
-        self.link_vocab: dict[str, str] = _load(cfg / "links.json")
-        self.retention: dict[str, dict] = _load(cfg / "retention.json")
+        # The link vocabulary and the retention classes: the files, until the hub keeps them in force under change
+        # control (hubproto.configdocs); then ``config_hook`` installs those and picks up a newer version.
+        self.config_hook = None
+        self.link_vocab = _load(cfg / "links.json")
+        self.retention = _load(cfg / "retention.json")
         self.config_digests = {p.name: sha256_of(_load(p)) for p in sorted(cfg.glob("*.json"))}
         self._cache: dict[str, dict] | None = None
         self._cache_version: tuple | None = None
@@ -105,6 +110,26 @@ class Kernel:
     @types.setter
     def types(self, value: dict[str, dict]) -> None:
         self._types = value
+
+    @property
+    def link_vocab(self) -> dict[str, str]:
+        if self.config_hook is not None:
+            self.config_hook()
+        return self._link_vocab
+
+    @link_vocab.setter
+    def link_vocab(self, value: dict[str, str]) -> None:
+        self._link_vocab = value
+
+    @property
+    def retention(self) -> dict[str, dict]:
+        if self.config_hook is not None:
+            self.config_hook()
+        return self._retention
+
+    @retention.setter
+    def retention(self, value: dict[str, dict]) -> None:
+        self._retention = value
 
     def _data_version(self) -> tuple:
         """Changes whenever any connection (this or another process) commits to the file."""

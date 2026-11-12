@@ -60,7 +60,8 @@ The loop
     accept_suggestion(hub, co, sid, by) / reject_suggestion(hub, co, sid, by, reason="")
     answer_question(hub, co, qid, answer, by, line=None)
     add_direct_change(hub, co, rule_or_change, by) / remove_direct_change(hub, co, item_id, by)
-    rules_to_change_order(hub, user, new_rules, reason="")   Settings: direct changes on the person's settings CO
+    rules_to_change_order(hub, user, new_rules, reason="", co_ref=None)   Settings: direct changes on the person's settings CO
+    settings_change_order(hub, user) / rule_changes(base, new_rules)       that CO; the direct changes a new rule set makes
     set_state_map(hub, co, process, mapping, by)
     send_for_approval(hub, co, by)
     decide_item(hub, co, item_id, verdict, by, meaning, accept_warnings=(), override=None)
@@ -548,25 +549,37 @@ def remove_direct_change(hub, co_ref, item_id: str, by: str) -> list[dict]:
     return rest
 
 
-def rules_to_change_order(hub, user: str, new_rules: list[dict], reason: str = "") -> dict:
-    """Settings as direct changes (change control v2): the difference between the rules in force and ``new_rules`` is
-    recorded on the person's open settings change order (one is started when they have none). Settings no longer
-    writes sentences into the SOPs: the review round drafts the prose (the qa-manager cog). Returns {"change_order",
-    "locator", "report"}; each report line says what was recorded."""
-    from .guards import drift_guard
-
-    base = hub.settings_rules()
-    changes = drift_guard(base, new_rules)
-    if not changes:
-        raise ValueError("that changes nothing")
+def settings_change_order(hub, user: str, reason: str = "", *, create: bool = True) -> dict | None:
+    """The person's open settings change order, where Settings records their changes; one is started when they have none
+    (``create``), else None."""
     co = next((r for r in hub.kernel.query(type_="change-order") if r["state"] in eco.OPEN_STATES and r["fields"].get("requested_by") == user
                and r["fields"].get("from_settings") and stage_of(r) in EDITABLE), None)
-    if co is None:
+    if co is None and create:
         co = hub.kernel.create("change-order", "Quality/Changes", {"title": f"Policy changes by {user}", "description": reason or "Changes to the policy.",
                                                                    "requested_by": user, "from_settings": True, "stage": "preparing"}, by=user)
+    return co
+
+
+def rule_changes(base: list[dict], new_rules: list[dict]) -> list[dict]:
+    """The direct changes that make ``base`` (the rules in force) say what ``new_rules`` says, as Settings records them:
+    a change for each rule whose slot holds another rule now, an add or a remove for the rest."""
+    from .guards import drift_guard
+
+    return [{"op": "change" if c.get("changes_from") else c["op"], "rule": c["rule"], **({"was": c["changes_from"]} if c.get("changes_from") else {})}
+            for c in drift_guard(base, new_rules) if not (c["op"] == "remove" and c.get("changed_to"))]
+
+
+def rules_to_change_order(hub, user: str, new_rules: list[dict], reason: str = "", co_ref=None) -> dict:
+    """Settings as direct changes (change control v2): the difference between the rules in force and ``new_rules`` is
+    recorded on the person's open settings change order (one is started when they have none), or on ``co_ref``. Settings
+    no longer writes sentences into the SOPs: the review round drafts the prose (the qa-manager cog). Returns
+    {"change_order", "locator", "report"}; each report line says what was recorded."""
+    base = hub.settings_rules()
+    wanted = rule_changes(base, new_rules)
+    if not wanted:
+        raise ValueError("that changes nothing")
+    co = _co(hub, co_ref) if co_ref is not None else settings_change_order(hub, user, reason)
     before = {it["id"] for it in _items(co)}
-    wanted = [{"op": "change" if c.get("changes_from") else c["op"], "rule": c["rule"], **({"was": c["changes_from"]} if c.get("changes_from") else {})}
-              for c in changes if not (c["op"] == "remove" and c.get("changed_to"))]
     items = add_direct_change(hub, co, wanted, by=user)
     report = []
     for it in items:
@@ -592,7 +605,7 @@ def _version_authors(hub, draft: dict) -> list[str]:
 def contributors(hub, co_ref) -> list[str]:
     """Everyone who wrote a revision the change order carries (or opened it for its author: ``started_by``), retires a
     document on it, confirmed or corrected a picture's reading that puts words into an SOP (``picture_readings``), or made
-    a direct, suggested (who accepted it), form or record-type change on it. None of them may sign its approval (the change-control SOP's segregation sentence)."""
+    a direct, suggested (who accepted it), form, record-type, link-vocabulary or retention change on it. None of them may sign its approval (the change-control SOP's segregation sentence)."""
     co = _co(hub, co_ref)
     out = []
     for c in eco.carried(hub, co):
@@ -601,7 +614,7 @@ def contributors(hub, co_ref) -> list[str]:
     for it in _items(co):
         o = it.get("origin") or {}
         out += [o.get("accepted_by")] if o.get("kind") == "suggested" else [o.get("by")]
-    for kind in ("form_changes", "record_type_changes", "workflow_changes"):
+    for kind in ("form_changes", "record_type_changes", "workflow_changes", "config_changes"):
         carried = co["fields"].get(kind) or {}
         out += [(v or {}).get("by") for v in (carried.values() if isinstance(carried, dict) else carried)]
     p = _proposal(hub, co)
@@ -1107,7 +1120,8 @@ def _roles_named(rule: dict) -> set[str]:
 
 
 def touches(hub, co_ref, p: dict | None = None) -> dict[str, set]:
-    """What the change order changes: {"sop", "process", "slot", "record_type", "form", "role", "kind"} (sets)."""
+    """What the change order changes: {"sop", "process", "slot", "record_type", "form", "role", "kind"} (sets). A link-vocabulary
+    or retention change is a kind ("links", "retention")."""
     co = _co(hub, co_ref)
     f = co["fields"]
     p = p if p is not None else _proposal(hub, co)
@@ -1135,6 +1149,7 @@ def touches(hub, co_ref, p: dict | None = None) -> dict[str, set]:
     out["process"] |= set(f.get("workflow_changes") or {})  # a workflow carried from the editor (hubproto.workflows)
     rtc = f.get("record_type_changes") or []
     out["record_type"] = {x.get("type") for x in (rtc if isinstance(rtc, list) else [{"type": k} for k in rtc])}
+    out["kind"] |= {x.get("doc") for x in f.get("config_changes") or [] if isinstance(x, dict)}
     for k in out:
         out[k].discard(None)
         out[k].discard("")
@@ -1346,7 +1361,7 @@ def request_review(hub, co_ref, by: str, panel=None, drop_reason: str = "") -> d
         raise ValueError(f"{co['number']} is {st.replace('-', ' ')}: review rounds are over")
     f = co["fields"]
     if not (eco.carried(hub, co) or eco.retirements(co) or _items(co) or f.get("form_changes") or f.get("record_type_changes")
-            or f.get("workflow_changes")):
+            or f.get("workflow_changes") or f.get("config_changes")):
         raise ValueError(f"{co['number']} changes nothing yet: carry an SOP or policy revision, make a direct change or carry a form first")
     last = current_round(co)
     if last and last.get("status") == "compiling":
@@ -1553,7 +1568,7 @@ def round_check(hub, co_ref, n: int) -> str:
     w = int(co["fields"].get("staged_widenings") or 0)
     # What this round reviews: the revisions and the direct changes as they are now (send_reasons compares with it).
     content = content_digest(hub, co)
-    seen = {k: content[k] for k in REVIEWED_KEYS}
+    seen = {k: content[k] for k in REVIEWED_KEYS if k in content}
 
     def put(r):
         r["reviewed_from"] = seen
@@ -2353,9 +2368,10 @@ def set_state_map(hub, co_ref, process: str, mapping: dict, by: str) -> dict:
 
 
 # ---------------------------------------------------------------- integrity: what was reviewed, sent and signed
-REVIEWED_KEYS = ("drafts", "items", "forms", "record_types", "workflows")
+REVIEWED_KEYS = ("drafts", "items", "forms", "record_types", "workflows", "config")
 CONTENT_WORDS = {"drafts": "the revisions it carries", "items": "its direct changes", "forms": "its form changes",
                  "record_types": "its record-type changes", "workflows": "its workflow changes", "state_map": "its state map",
+                 "config": "its link-vocabulary and retention changes",
                  "proposal": "its compiled delta"}
 
 
@@ -2365,17 +2381,23 @@ def _hash(obj) -> str:
 
 def content_digest(hub, co_ref) -> dict:
     """What a change order carries, by hash: {"drafts": {SOP: content sha}, "items", "forms", "record_types",
-    "workflows", "state_map"}. A review round records it (``reviewed_from``), sending for approval freezes it
-    (``frozen``), the signature and the release check against it."""
+    "workflows", "state_map", "config" (its link-vocabulary and retention changes, when it carries some)}. A review
+    round records it (``reviewed_from``), sending for approval freezes it (``frozen``), the signature and the release
+    check against it."""
     co = _co(hub, co_ref)
     f = co["fields"]
     return {"drafts": _shas(hub, eco.drafts_of(hub, co)), "items": _sig(_items(co)), "forms": _hash(f.get("form_changes") or {}),
             "record_types": _hash(f.get("record_type_changes") or []), "workflows": _hash(f.get("workflow_changes") or {}),
-            "state_map": _hash(f.get("state_map") or {})}
+            "state_map": _hash(f.get("state_map") or {}),
+            # Only when it carries some: the digest of a change order without them is what it was before they existed.
+            **({"config": _hash(f["config_changes"])} if f.get("config_changes") else {})}
+
+
+OPTIONAL_KEYS = ("config",)  # in a content digest only when the change order carries some: absent on either side is none
 
 
 def _differs(was: dict, now: dict, keys) -> list[str]:
-    return [CONTENT_WORDS[k] for k in keys if k in (was or {}) and (was or {}).get(k) != now.get(k)]
+    return [CONTENT_WORDS[k] for k in keys if (k in (was or {}) or k in OPTIONAL_KEYS) and (was or {}).get(k) != now.get(k)]
 
 
 def changed_since_sent(hub, co_ref) -> list[str]:
@@ -2573,7 +2595,8 @@ def send_reasons(hub, co_ref) -> list[str]:
     f = co["fields"]
     carried = eco.carried(hub, co)
     items = _items(co)
-    if not (carried or eco.retirements(co) or items or f.get("form_changes") or f.get("record_type_changes") or f.get("workflow_changes")):
+    if not (carried or eco.retirements(co) or items or f.get("form_changes") or f.get("record_type_changes") or f.get("workflow_changes")
+            or f.get("config_changes")):
         return ["it changes nothing yet: carry an SOP or policy revision, make a direct change or carry a form"]
     reasons = []
     if not str(f.get("description") or "").strip():
@@ -2593,8 +2616,8 @@ def send_reasons(hub, co_ref) -> list[str]:
             reasons.append(f"the revisions changed since round {last['n']}: request review again")
         if rec.get("items") is not None and rec["items"] != now["items"]:
             reasons.append(f"the direct changes changed since round {last['n']}: request review again")
-        for k in ("forms", "record_types", "workflows"):  # data-model changes carried after the round are reviewed too
-            if k in rec and rec[k] != now[k]:
+        for k in ("forms", "record_types", "workflows", "config"):  # data-model changes carried after the round are reviewed too
+            if (k in rec or k in OPTIONAL_KEYS) and rec.get(k) != now.get(k):
                 reasons.append(f"{CONTENT_WORDS[k][4:]} changed since round {last['n']}: request review again")
         p = _proposal(hub, co)
         if (carried or eco.retirements(co) or items) and (p is None or p.get("status") != "open"):
@@ -2619,6 +2642,9 @@ def send_reasons(hub, co_ref) -> list[str]:
         recordtypes = None
     if recordtypes is not None:
         reasons += recordtypes.carried_reasons(hub, co)
+    from . import configdocs  # the link vocabulary and retention classes (issue #33)
+
+    reasons += configdocs.carried_reasons(hub, co)
     from . import workflows  # workstream 8: workflow layouts and graph snapshots carried from the editor
 
     reasons += workflows.carried_reasons(hub, co)

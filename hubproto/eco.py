@@ -297,7 +297,7 @@ class carried_record_types:
         except ImportError:
             return self
         k = self.hub.kernel
-        types, _, _ = recordtypes.check(self.hub, changes, k.types)
+        types, _, _ = recordtypes.check(self.hub, changes, k.types, retention=recordtypes._retention(self.hub, self.co))
         self.saved = (k.types_hook, k._types)
         k.types_hook, k._types = None, types
         return self
@@ -484,6 +484,9 @@ def release_problems(hub, co_ref: str) -> list[str]:
         cur = c["in_force"]
         if d["fields"].get("revises") and (cur is None or cur["number"] != d["fields"]["revises"]):
             out.append(f"{d['number']} revises {d['fields']['revises']}, which is no longer the {c['name']} in force")
+    from . import configdocs  # the link vocabulary and retention classes it changes still check against what is in force
+
+    out += configdocs.release_problems(hub, co)
     return out
 
 

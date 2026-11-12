@@ -20,7 +20,8 @@ Two automations come with the hub (change control v2, docs/design/change-control
   the panel (the quality-assistant cog) and queues the panel's reviews. When another release comes into force it
   compiles every open change order again (no round: no prose drafted, no panel).
 * ``release-change-order``: brings an approved change order into force: the revisions it carries are approved with
-  it, the decided delta comes into force with the revisions, forms and record types; training is assigned;
+  it, the decided delta comes into force with the revisions, forms, link vocabulary, retention classes and record
+  types; training is assigned;
   divergences are recorded (a change request for each new one); related change orders and change requests are sent
   back; the SOPs' citations of documents become links, and an SOP still citing a document the release retired or
   superseded is flagged to its owner (hubproto.references); every other open change order is compiled again.
@@ -52,7 +53,7 @@ AUTOMATIONS = {
         "title": "Release the change order",
         "trigger": "a change order is approved",
         "steps": ["Check the change order is ready", "Approve the carried revisions", "Bring the Frame into force", "Move items by the state map", "Publish the revisions",
-                  "Apply the form layouts", "Apply the record-type changes", "Assign training", "Record divergences",
+                  "Apply the form layouts", "Apply the link and retention changes", "Apply the record-type changes", "Assign training", "Record divergences",
                   "Link document references", "Send related changes back", "Compile every open change order", "Tell the people involved"],
     },
 }
@@ -465,6 +466,16 @@ def r_forms(hub, job, memo):
     return ("in force: " + ", ".join(done)) if done else "no form change", {}
 
 
+def r_config_docs(hub, job, memo):
+    from . import configdocs
+
+    try:
+        done = configdocs.activate(hub, hub.kernel.get(job["subject"]), memo["release"])
+    except ValueError as e:
+        raise StepError(str(e)) from None
+    return ("in force: " + ", ".join(done)) if done else "no link-vocabulary or retention change", {}
+
+
 def r_record_types(hub, job, memo):
     from . import recordtypes
 
@@ -559,7 +570,7 @@ def r_tell(hub, job, memo):
 
 
 STEPS = {"compile-frame": [c_collect, c_compile, c_draft, c_guards, c_stage, c_panel, c_queue, c_tell],
-         "release-change-order": [r_check, r_revisions, r_frame, r_state_maps, r_publish, r_forms, r_record_types, r_training, r_divergences, r_references,
+         "release-change-order": [r_check, r_revisions, r_frame, r_state_maps, r_publish, r_forms, r_config_docs, r_record_types, r_training, r_divergences, r_references,
                                   r_related, r_restage, r_tell]}
 # A step's name is how a saved job finds its function: one name for each function, in the same order.
 assert all(len(AUTOMATIONS[a]["steps"]) == len(STEPS[a]) for a in AUTOMATIONS) and set(AUTOMATIONS) == set(STEPS), \
