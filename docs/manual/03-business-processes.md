@@ -106,8 +106,9 @@ the item to the **first route that someone can take** (hubproto/runner.py, `_hum
 * A route **to a role** gives the item to every *person* holding the role who may approve this kind of item in its
   folder and is not excluded by segregation of duties. Cogs holding the role are not included.
 * A route **to a named field** ("go to the requester", "go to the assignee", "go to the owner", "go to the chair",
-  "go to the auditor") gives the item to the member named in that field of the record. Only a task's assignee may be a
-  cog.
+  "go to the auditor") gives the item to the member named in that field of the record. Only a task's assignee, or an
+  audit's auditor, may be a cog: the step is then the cog's own work, not an approval (chapter 6.7), and an auditor cog
+  must hold the step's role (internal auditor) and its permission, as a person auditor does.
 * A route with a condition (an amount band, a risk tier, a document type) is only tried when the condition holds.
   Amount bands compare only amounts in the currency the sentence names (USD in all the Frames today).
 
@@ -576,27 +577,30 @@ quality manager answered goes to the management representative (3.8).
 ## 3.11 Internal audits
 
 An auditor plans an audit against the processes as written in the policy release, records the findings, and the
-quality manager accepts them (audit-sop; wi-run-an-audit).
+quality manager accepts or rejects each one (audit-sop; wi-run-an-audit). The **auditor cog** runs one every month
+(chapter 6.14).
 
-**Who starts it:** internal auditors (bob). Form fields: **Title\***, **Clauses in scope**, **Processes**
-(comma-separated process names such as `document-control`; empty means every process), **Planned date**. You are the
-auditor unless you name another under **Advanced**.
+**Who starts it:** internal auditors (bob, and the auditor cog). Form fields: **Title\***, **Clauses in scope**,
+**Processes** (comma-separated process names such as `document-control`; empty means every process), **Planned
+date**. You are the auditor unless you name another under **Advanced**.
 
 | # | Step | Who | What happens |
 |---|---|---|---|
 | 1 | Plan the audit | internal auditor (automatic step: audit-checklist-drafter) | one checklist question per step of each process in scope, from the release in force: "Is '*step*' performed by a *role* as the SOP states, with records?" |
 | 2 | File the audit | automatic | AUD-*year*-*n* in Quality/Audits |
-| 3 | Record the findings | the auditor | must give **Findings** (a list; an empty list is a valid finding set when nothing was found) |
+| 3 | Record the findings | the auditor | must give **Findings** (a list; an empty list is a valid finding set when nothing was found). A finding with an id (the auditor cog's) has a clause, what was expected, what was found, the evidence and a grade; the step is refused if any evidence it cites does not exist |
 | 4 | Notify the auditor | automatic | tells the person who planned the audit |
-| 5 | Accept the findings | quality manager | must give the **Summary** |
-| 6 | Render the record | automatic | the audit report as evidence; closes as **Closed** |
+| 5 | Accept the findings | quality manager | on the audit's page, **Findings**: accept or reject each finding (a rejection needs a reason), give the **Summary**, and **Sign the verdicts** (one signature) |
+| 6 | Raise the actions | automatic (audit-action-raiser) | for each *accepted* finding whose action is ncr or capa, opens a nonconformance (source audit) or a CAPA, owned by the quality manager who accepted it and linked to the audit; a rejected finding raises nothing |
+| 7 | Render the record | automatic | the audit report as evidence; closes as **Closed** |
 
-**Due date and escalation:** findings within 30 days; overdue items go to the management representative.
-"Accept the findings" has no due date.
+**Due date and escalation:** findings within 30 days (none when the auditor is a cog); overdue items go to the
+management representative. "Accept the findings" has no due date.
 **On reject:** Rejected.
 
-Raising nonconformances for findings is done by hand: "Raise a nonconformance for each major finding and link it to
-the audit" (wi-run-an-audit). The SOP's "Auditors do not audit processes they own" is not checked by the hub.
+The SOP's "Auditors do not audit processes they own" is checked: an auditor owns a process when one of its roles has a
+step in it; the auditor cog's programme never offers one, its `plan_audit` refuses one, and the exact checks report
+any audit whose auditor owns a process it audits.
 
 ## 3.12 Calibration
 
