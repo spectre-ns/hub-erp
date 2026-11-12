@@ -168,6 +168,55 @@ changed) stops the job with "unknown step". The steps of change control:
   rule, it is recorded as a divergence, or the author rewrites it), so prose still never ships
   unread. Checks on what was read (a process graph that does not close, a persona value outside
   its list) remain errors.
+- **Pictures** (issue #7): a picture in an SOP document is a line of the Frame text of its own,
+  `![<its description>](sha256:<hash>)`, after the paragraph, heading or table it is in
+  (`hubproto.office.PictureReader`). The hash is the picture's bytes. For a picture of several
+  images (an SVG and its PNG, an mc:Choice and an mc:Fallback that differ), with a crop,
+  rotation or flip, or naming a part in a way that could mean more than one part, it is the
+  hash of all of that together. An added, removed or replaced picture is therefore a changed
+  line of the diff; an editor renaming its media parts changes nothing. No reader reads pictures
+  yet and none is sent to a model, so a picture line that is not in the text in force is a
+  blocking `unread-rule` question for a person, whatever the section, keyed on the SOP and the
+  picture (an answer stays with it when lines above it move); an unchanged picture asks nothing.
+  - **The reader fails closed:** whatever it cannot place or recognise still changes a line when
+    its bytes change. The body is parsed once, with the namespaces as the document scopes them.
+    Under a drawing (w:drawing, w:pict, w:object, mc:AlternateContent with Choice and Fallback
+    together; in ODF the outermost draw: element) every relationship attribute and every
+    `o:relid` counts, whatever the relationship's type, and so do every `xlink:href` of a draw:
+    element and every `office:binary-data`. A relationship is external only when its TargetMode
+    is exactly `External`; an Id defined twice names both targets; a target is looked up as
+    written, percent-decoded, with `\` as `/`, without a `#` or `?` suffix, normalised, then
+    without regard to case, and every part it could mean is hashed (in ODF, where part names are
+    case-sensitive, the exact name is read first and a part differing only in case is hashed with
+    it). An internal relationship is never read as a link.
+  - **The last line, `![pictures in the file that no line above places](sha256:…)`:** the hash
+    of every part of the file that holds bytes (everything but its XML, its relationships, the
+    first-page thumbnail and ODF's layout cache) that no picture line covers. A reviewer reads it
+    as: the file holds pictures, or other embedded content, the hub could not place in the text,
+    such as a logo in a header or footer, a bitmap fill in a style, a picture in a comment, an
+    embedded object's data, or a picture in markup the reader does not know. When it changes,
+    one of them changed: open the document and look. An SOP without such parts has no such line.
+  - **Words are never a picture:** each physical line of words written like a picture line (in a
+    paragraph, a heading, a table cell, an ODF section, a text file; a line break inside a
+    paragraph starts a new line) reads with a backslash in front.
+  - **Writing:** a revision the hub writes keeps its pictures (`sopdocs.to_docx` takes them from
+    the document the text was read from). It refuses a picture line it has no picture for, and one
+    it would write differently: anchored, in a table, beside words, with a copy for old readers,
+    several images, a part it does not hold, a link that is not http(s), or any ODF picture. The
+    hub's other writer, `edits.apply_ops`, keeps the document's own XML and parts.
+  - **Upgrading:** an SOP in force released when the hub read text only keeps the text of the
+    release in force for every compile and every change order that does not carry it
+    (`sopdocs.in_force_text`), so a new reading never changes an SOP nobody revised. The change
+    order that carries it reads its draft in full: its pictures are new lines there, each a
+    question, and they come into force with that release.
+  - **Not covered yet:** what a picture's position, size or wrapping is (only its bytes, crop,
+    rotation, flip and description are in its line); VML and ODF graphic-style crops and
+    rotations; what a `link:` address serves (its line is its address); a header's or a style's
+    picture has no place of its own (only the last line); and reference and persona Frames and
+    the `scopes` Frame, which ask no `unread-rule` questions at all, so none for pictures either.
+    Showing the picture beside its line on the change-order pages, a notice listing SOPs in force
+    whose document holds pictures their release text lacks, and a cog that reads pictures are later
+    work.
 - **Prose, by the compile-frame committee** (organization + qa-manager cogs, quorum as today):
   reading is **diff-based**. For a frame whose text differs from the version in force, the reader is
   given the unified diff with line numbers and the rules currently in force for that frame (and the

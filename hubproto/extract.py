@@ -15,6 +15,7 @@ import re
 from dataclasses import dataclass, field
 
 from .frames import Frame
+from .office import is_picture_line
 from .rules import CONDITION_VOCABULARY, NUMBER_WORDS
 
 RULE_SECTIONS = (
@@ -653,6 +654,8 @@ class ConventionExtractor:
         for n, raw in enumerate(frame.lines, start=frame.body_start):
             line = raw.strip()
             if not line:
+                continue
+            if is_picture_line(line):  # a picture: no reader reads one yet (a changed one is a question, llm_extract.picture_questions)
                 continue
             m = _SCOPE_HEAD.match(line) or _PERSONA_HEAD.match(line) or _COMMITTEE_HEAD.match(line)
             if m:
