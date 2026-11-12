@@ -588,7 +588,7 @@ date**. You are the auditor unless you name another under **Advanced**.
 |---|---|---|---|
 | 1 | Plan the audit | internal auditor (automatic step: audit-checklist-drafter) | one checklist question per step of each process in scope, from the release in force: "Is '*step*' performed by a *role* as the SOP states, with records?" |
 | 2 | File the audit | automatic | AUD-*year*-*n* in Quality/Audits |
-| 3 | Record the findings | the auditor | must give **Findings** (a list; an empty list is a valid finding set when nothing was found). A finding with an id (the auditor cog's) has a clause, what was expected, what was found, the evidence and a grade; the step is refused if any evidence it cites does not exist |
+| 3 | Record the findings | the auditor | must give **Findings**: each numbered (F-1, F-2 ...) with a clause, what was expected, what was found, the evidence and a grade. The step is refused if a finding has no number or that shape, or cites evidence that does not exist or the auditor may not read. Verdicts are not given here |
 | 4 | Notify the auditor | automatic | tells the person who planned the audit |
 | 5 | Accept the findings | quality manager | on the audit's page, **Findings**: accept or reject each finding (a rejection needs a reason), give the **Summary**, and **Sign the verdicts** (one signature) |
 | 6 | Raise the actions | automatic (audit-action-raiser) | for each *accepted* finding whose action is ncr or capa, opens a nonconformance (source audit) or a CAPA, owned by the quality manager who accepted it and linked to the audit; a rejected finding raises nothing |
@@ -598,9 +598,13 @@ date**. You are the auditor unless you name another under **Advanced**.
 management representative. "Accept the findings" has no due date.
 **On reject:** Rejected.
 
-The SOP's "Auditors do not audit processes they own" is checked: an auditor owns a process when one of its roles has a
-step in it; the auditor cog's programme never offers one, its `plan_audit` refuses one, and the exact checks report
-any audit whose auditor owns a process it audits.
+The SOP's "Auditors do not audit processes they own" is enforced: an auditor owns a process when one of its roles
+decides a step in it (starting one, as staff file a nonconformance, is not owning it). An audit is refused when it is
+filed, whoever files it and however (the form, a cog's tools, the library), if its auditor owns a process it names, or
+if it names none (it would audit every process); "Record the findings" refuses it too. An audit is also filed without
+findings, verdicts or actions: each is given at its own step. At "Accept the findings" the findings stand as recorded,
+and the verdicts are recorded as the quality manager's, whoever the form names. The exact checks report any audit that
+got past these anyway.
 
 ## 3.12 Calibration
 

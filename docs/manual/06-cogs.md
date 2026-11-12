@@ -479,7 +479,7 @@ comments nowhere, files no nonconformance and signs nothing within criteria.
 
 **Each month** (`hubproto agent-duties`), it takes the audit SOP's duty: "Every month the auditor cog audits the next
 process in the programme." The programme is every process in the release, the one audited longest ago first, never one
-it owns (internal-audit is its own). It plans the audit (`plan_audit`); the audit then waits for it at "Record the
+it owns (internal-audit is its own: its role decides a step in it). It plans the audit (`plan_audit`); the audit then waits for it at "Record the
 findings", which it works as assigned work:
 
 1. **Exact checks** (`audit_checks`, no model): items waiting past their due date; approvals by whoever prepared the
@@ -498,6 +498,7 @@ findings", which it works as assigned work:
 5. **Completing the step** (`submit_findings`): the findings go onto the audit with the step's completion.
 
 An audit run has a larger, bounded budget: 30 actions and 40 model rounds by default (`HUBPROTO_AUDIT_ACTIONS`,
-`HUBPROTO_AUDIT_ROUNDS`, never more than 80 and 100). Without its hosted model the duty stays due and nothing stands in.
+`HUBPROTO_AUDIT_ROUNDS`, or a caller's `--actions`; never more than 80 and 100). The checks are computed once per run and paged
+from there, and each Track is read and verified once until it changes; they show only what the auditor's role reads. Without its hosted model the duty stays due and nothing stands in.
 The quality manager then accepts or rejects each finding (3.11); only an accepted finding with an action becomes a
 nonconformance or a CAPA. It is an internal audit against the organization's own SOPs, not a certification.

@@ -585,12 +585,15 @@ What you may do: {mode}. Budget: at most {actions} actions and {rounds} steps.
 def run_budget(bundle: dict, cog: str, max_actions: int | None = None, max_rounds: int | None = None) -> dict:
     """How much one run may do: what the caller asks, else HUBPROTO_AGENT_ACTIONS / HUBPROTO_AGENT_ROUNDS (5 actions, 10
     model rounds). A cog in the internal auditor's seat is auditing: its runs get the audit budget (``audit.audit_budget``:
-    larger, bounded by a ceiling the environment cannot lift), since an audit records a finding per action."""
+    larger, bounded by a ceiling neither the environment nor the caller can lift), since an audit records a finding per action."""
     from .audit import audit_budget, is_audit_run
 
     if is_audit_run(bundle, cog):
+        from .audit import AUDIT_CEILING
+
         b = audit_budget()
-        return {"actions": int(max_actions or b["actions"]), "rounds": int(max_rounds or b["rounds"]), "max_tokens": b["max_tokens"]}
+        return {"actions": max(1, min(int(max_actions or b["actions"]), AUDIT_CEILING["actions"])),
+                "rounds": max(1, min(int(max_rounds or b["rounds"]), AUDIT_CEILING["rounds"])), "max_tokens": b["max_tokens"]}
     return {"actions": int(max_actions or os.environ.get("HUBPROTO_AGENT_ACTIONS") or 5),
             "rounds": int(max_rounds or os.environ.get("HUBPROTO_AGENT_ROUNDS") or 10), "max_tokens": 900}
 
@@ -781,12 +784,14 @@ def mark_duty(hub, cog: str, duty: str, today: str | None = None) -> None:
 def run_duties(hub, cog: str | None = None, today: str | None = None) -> list[dict]:
     """Take up every duty not yet done today; each is an agent run triggered by the duty, on behalf of the cog itself."""
     out = []
+    from .model import cog_availability
+
     for name, duty in due_duties(hub, cog, today):
-        try:
-            res = Agent(hub, name).run(duty, by=name, trigger="duty")
-        except ValueError as e:  # not available (its model cannot be reached) or runs are off: it stays due, nothing stands in
-            out.append({"cog": name, "duty": duty, "run": None, "status": "unavailable", "summary": str(e), "actions": 0})
+        ok, why = cog_availability(hub.current_bundle() or {}, name)
+        if not ok:  # its model cannot be reached: the duty stays due, and nothing stands in for it
+            out.append({"cog": name, "duty": duty, "run": None, "status": "unavailable", "summary": why, "actions": 0})
             continue
+        res = Agent(hub, name).run(duty, by=name, trigger="duty")
         mark_duty(hub, name, duty, today)
         out.append({"cog": name, "duty": duty, **{k: res[k] for k in ("run", "status", "summary", "actions")}})
     return out

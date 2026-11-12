@@ -334,19 +334,23 @@ def test_complaint_is_answered_and_opens_an_ncr(seeded):
 
 
 def test_internal_audit_records_findings_and_the_quality_manager_accepts_them(seeded):
-    run_id = seeded.runner.submit("internal-audit", {"record": {"title": "Audit of document control", "planned": "2026-12-01",
-                                                                "processes": ["document-control"]}}, owner="bob")
+    run_id = seeded.runner.submit("internal-audit", {"record": {"title": "Audit of nonconformances", "planned": "2026-12-01",
+                                                                "processes": ["nonconformance"]}}, owner="bob")  # bob decides no step of it
     state = run_state(seeded, run_id)
     assert state["status"] == "waiting" and state["pending"]["assignees"] == ["bob"]
     audit = seeded.kernel.get(state["record"])
     assert audit["fields"]["auditor"] == "bob"
-    assert [c["process"] for c in audit["fields"]["checklist"]] == ["document-control"] * 5
-    findings = [{"clause": "7.5.3", "statement": "Two obsolete copies on the shop floor", "severity": "minor"}]
+    steps = seeded.current_bundle()["processes"]["nonconformance"]["steps"]
+    assert [c["process"] for c in audit["fields"]["checklist"]] == ["nonconformance"] * len(steps)
+    findings = [{"id": "F-1", "clause": "7.5.3", "criterion": "Obsolete documents are withdrawn.", "found": "Two obsolete copies on the shop floor",
+                 "evidence": [audit["number"]], "grade": "minor"}]
     state = seeded.runner.decide(run_id, "bob", "approve", fields={"findings": findings}, meaning="ok", payload_digest=seen(seeded.runner, run_id))
     assert state["status"] == "waiting" and state["pending"]["checkpoint"] == "accept-the-findings"
     assert state["pending"]["assignees"] == ["carol"]
     assert seeded.kernel.get(audit["locator"])["state"] == "awaiting-accept-the-findings"
-    state = seeded.runner.decide(run_id, "carol", "approve", fields={"summary": "One minor finding; NCR raised."}, meaning="ok", payload_digest=seen(seeded.runner, run_id))
+    state = seeded.runner.decide(run_id, "carol", "approve", fields={"summary": "One minor finding; NCR raised.",
+                                                                     "finding_decisions": [{"finding": "F-1", "verdict": "accept"}]},
+                                 meaning="ok", payload_digest=seen(seeded.runner, run_id))
     assert state["status"] == "completed" and seeded.kernel.get(audit["locator"])["state"] == "closed"
 
 

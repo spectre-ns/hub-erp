@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from . import audit
 from .agent import register
+from .runner import RunError
 
 AUDIT_TOOLS = {"audit_programme", "audit_checks", "sample_records", "plan_audit", "record_finding", "submit_findings", "draft_audit_report"}
 FINDING_PROPS = {
@@ -82,7 +83,16 @@ def audit_programme(t, a: dict) -> dict:
     rows = audit.programme(t.hub, t.cog)
     nxt = next((r for r in rows if not r["owned"]), None)
     return {"next": nxt["process"] if nxt else None, "programme": rows[:40],
-            "note": "audit the first process that is not yours (owned: one of your roles has a step in it)"}
+            "note": "audit the first process that is not yours (owned: one of your roles decides a step in it)"}
+
+
+def _checks(t, process: str | None) -> dict:
+    """The checks for this run, computed once per process and paged from (the tool's own cache, for this run only:
+    the records may change, the run sees them as they were when it first looked)."""
+    cache = t.__dict__.setdefault("audit_checks_cache", {})
+    if process not in cache:
+        cache[process] = audit.audit_checks(t.hub, process, reader=t.may_read)
+    return cache[process]
 
 
 @_auditor_only
@@ -90,7 +100,7 @@ def audit_checks(t, a: dict) -> dict:
     process = str(a.get("process") or "") or None
     if process and process not in (t.bundle.get("processes") or {}):
         return {"error": f"there is no process {process!r} in the policy release"}
-    res = audit.audit_checks(t.hub, process)
+    res = _checks(t, process)
     only = str(a.get("check") or "")
     if only and only not in res["checks"]:
         return {"error": f"there is no check {only!r}; the checks are {', '.join(res['checks'])}"}
@@ -116,7 +126,7 @@ def sample_records(t, a: dict) -> dict:
 def plan_audit(t, a: dict) -> dict:
     try:
         return {"ok": True, **audit.plan_audit(t.hub, t.cog, str(a.get("process") or ""), title=str(a.get("title") or ""))}
-    except ValueError as e:
+    except (ValueError, RunError) as e:
         return {"error": str(e)}
 
 
@@ -147,7 +157,8 @@ def draft_audit_report(t, a: dict) -> dict:
     rec = _audit_of(t, a.get("number"))
     findings = rec["fields"].get("findings") or audit.number_findings(_held(t).get(rec["locator"]) or [], t.cog)
     try:
-        doc = audit.draft_report(t.hub, rec["locator"], t.cog, findings)
+        procs = rec["fields"].get("processes") or []
+        doc = audit.draft_report(t.hub, rec["locator"], t.cog, findings, checks=_checks(t, procs[0] if len(procs) == 1 else None))
     except Exception as e:
         return {"error": f"{type(e).__name__}: {e}"}
     return {"ok": True, "document": doc["number"], "state": doc["state"],

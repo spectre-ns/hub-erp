@@ -25,12 +25,12 @@ For: internal auditors and the quality manager.
 3. Perform the audit with the checklist on the record page: for each step,
    ask for the record that shows the step was done by the role the SOP
    names, and look at the run's Track.
-4. Decide **approve** with the `findings` field set: one entry per finding
-   with the clause, what was expected, what was found, the evidence (record
-   numbers and Track entries) and the grade (major, minor, observation,
-   opportunity), and ncr or capa where action is needed. An audit cannot
-   move on without findings (an empty list is a valid finding set when
-   nothing was found), and a finding whose evidence does not exist is refused.
+4. Decide **approve** with the `findings` field set: one entry per finding,
+   numbered F-1, F-2 ..., with the clause, what was expected, what was found,
+   the evidence (record numbers and Track entries) and the grade (major,
+   minor, observation, opportunity), and ncr or capa where action is needed.
+   A finding with no number, or whose evidence does not exist, is refused.
+   You never audit a process one of your roles decides a step in.
 5. The quality manager receives "Accept the findings": on the audit's page
    they accept or reject each finding (a rejection says why), set the
    `summary` and sign once. Each accepted finding that needs action is raised

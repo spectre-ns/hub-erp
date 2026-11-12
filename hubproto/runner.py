@@ -55,9 +55,13 @@ def pending_title(step: dict) -> str:
 
 
 PRE_DECISION_HOOKS: dict = {}  # record type -> fn(kernel, record, verdict); raise KernelGuardError to block
-# record type -> fn(kernel, the record as the decision would leave it, verdict): checked before the decision's fields are
-# set, so fields a guard refuses never reach the record (raise KernelGuardError to refuse them)
+# record type -> fn(kernel, record, verdict, *, by, fields, bundle) -> the fields to set: checked before a decision's fields
+# are set, so fields a guard refuses never reach the record (raise KernelGuardError to refuse them), whoever decides and
+# by whatever path (a person's form, a cog's step, the library)
 DECISION_FIELD_GUARDS: dict = {}
+# record type -> fn(kernel, bundle, fields, owner): checked when a process files an item of that type (a new one, or an
+# existing item it is started on), before anything is written; raise KernelGuardError to refuse it
+START_GUARDS: dict = {}
 POST_DECISION_HOOKS: dict = {}  # record type -> fn(kernel, record, verdict); runs after the decision took effect
 
 
@@ -401,6 +405,7 @@ class Runner:
             why = self._may_submit_existing(bundle, rec, wf, owner_name)
             if why:
                 raise RunError(why)
+            self._start_guard(wf["record_type"], bundle, {**rec["fields"], **(inputs.get("record") or {})}, owner_name)
             home = self.folder_for(manifest, rec["fields"])
             if home != manifest["folder"] and not parent_run:
                 d = authz.check(bundle, owner, "create", manifest["object"], home)
@@ -435,6 +440,7 @@ class Runner:
                 d = authz.check(bundle, owner, "create", manifest["object"], home)
                 if not d["allowed"]:
                     raise RunError(f"{owner} may not file a {fields.get('doc_type')} in {home}: {d['why']}")
+            self._start_guard(wf["record_type"], bundle, fields, owner_name)
             try:
                 rec = self.kernel.create(wf["record_type"], home, fields, by=opener or owner_name, run_id=run_id,
                                          release=release["digest"], state="open")
@@ -458,6 +464,14 @@ class Runner:
         self._save(state)
         self.advance(run_id)
         return run_id
+
+    def _start_guard(self, record_type: str, bundle: dict, fields: dict, owner: str) -> None:
+        guard = START_GUARDS.get(record_type)
+        if guard is not None:
+            try:
+                guard(self.kernel, bundle, fields, owner)
+            except KernelGuardError as e:
+                raise RunError(str(e)) from None
 
     @staticmethod
     def folder_for(manifest: dict, fields: dict) -> str:
@@ -2039,20 +2053,31 @@ class Runner:
             rec = self.kernel.get(state["record"]) if state.get("record") else None
             by = (rec or {}).get("created_by")
             to = by if (bundle["members"].get(by) or {}).get("type") == "person" else None
-        if to is None:
-            # A cog filed it (an audit the auditor cog planned): a person in the step's own seat takes it.
+        people = [to] if to else []
+        if not people and pending.get("route") == "field:auditor":
+            # A cog filed it (an audit the auditor cog planned): it goes to the people in the step's own seat who may
+            # take it, as a route to that role would give it (the permission, segregation of duties).
             role = (pending.get("gate") or {}).get("role") or next((s.get("role") for s in state["manifest"]["steps"] if s["id"] == pending.get("step")), "")
-            to = next((p for p in principals_for(bundle, f"role:{role}") if (bundle["members"].get(p) or {}).get("type") == "person"), None) if role else None
-        if to is None:
+            excluded = self.excluded(bundle, state, f"role:{role}")
+            obj, folder = state["manifest"]["object"], state["manifest"]["folder"]
+            people = [p for p in principals_for(bundle, f"role:{role}") if (bundle["members"].get(p) or {}).get("type") == "person"
+                      and p not in excluded and authz.check(bundle, p, "approve", obj, folder)["allowed"]] if role and role not in FIELD_ROLES else []
+            if not people:
+                raise RunError(f"there is no person to hand it back to: a cog filed it, and no person in the {(role or 'step').replace('-', ' ')} "
+                               "role may take it")
+        if not people:
             raise RunError("there is no person to hand it back to")
+        to = people[0]
+        route = f"person:{to}" if len(people) == 1 else f"role:{role}"
         track = Track(self._dir(state["id"]))
-        track.append({"type": "gate.handed_back", "run_id": state["id"], "step": pending["step"], "by": cog_name, "to": to, "reason": reason})
-        state["pending"] = {**{k: v for k, v in pending.items() if k != "stepped_in_from"}, "assignees": [to], "assignee_type": "person",
-                            "route": f"person:{to}", "handed_back_by": cog_name}
+        track.append({"type": "gate.handed_back", "run_id": state["id"], "step": pending["step"], "by": cog_name, "to": to, "assignees": people,
+                      "reason": reason})
+        state["pending"] = {**{k: v for k, v in pending.items() if k != "stepped_in_from"}, "assignees": people, "assignee_type": "person",
+                            "route": route, "handed_back_by": cog_name}
         self._save(state)
         if state.get("record"):
-            self.kernel.assign(state["record"], [to], by=cog_name, run_id=state["id"], release=state["release"])
-        self._notify([to], kind="handed-back", subject=f"{cog_name} handed back {pending.get('title', 'the item')}: {state.get('record') or state['process']}",
+            self.kernel.assign(state["record"], people, by=cog_name, run_id=state["id"], release=state["release"])
+        self._notify(people, kind="handed-back", subject=f"{cog_name} handed back {pending.get('title', 'the item')}: {state.get('record') or state['process']}",
                      body=reason, run_id=state["id"])
         return self.load(run_id)
 
@@ -2501,7 +2526,7 @@ class Runner:
         guard = DECISION_FIELD_GUARDS.get(rec["type"]) if rec is not None else None
         if guard is not None:
             try:
-                guard(self.kernel, {**rec, "fields": {**rec["fields"], **(fields or {})}}, verdict)
+                fields = guard(self.kernel, rec, verdict, by=by, fields=fields or {}, bundle=bundle) or None
             except KernelGuardError as e:
                 raise RunError(str(e)) from None
         if fields and rec is not None:

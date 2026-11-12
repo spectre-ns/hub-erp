@@ -98,13 +98,13 @@ class Track:
                 continue  # a torn last line from a crash: that entry never happened
         return out
 
-    def verify(self) -> list[str]:
+    def verify(self, events: list[dict] | None = None) -> list[str]:
         """Problems with the chain: an edited, deleted or reordered entry shows here. Entries written before the chain
-        existed are reported once as unchained, not as tampering."""
+        existed are reported once as unchained, not as tampering. ``events``: the entries already read from this Track."""
         problems: list[str] = []
         prev = None
         unchained = 0
-        for ev in self.read():
+        for ev in self.read() if events is None else events:
             if "entry_digest" not in ev:
                 unchained += 1
                 prev = ev.get("record_digest") or ""

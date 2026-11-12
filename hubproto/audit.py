@@ -18,7 +18,7 @@ What is deterministic here (no model in any of it):
 - ``validate_finding``: the cog's findings are data. Each is parsed into a fixed shape (clause, criterion, found,
   evidence, grade, action) and every evidence reference must resolve to something that exists (a record, a Track
   entry, a kernel event, a release); a finding that cites nothing real is refused, and refused again at the Gate
-  (``runner.DECISION_FIELD_GUARDS["audit"]``, before the fields are set) whatever path it came by.
+  (``decision_guard``, before the fields are set; ``start_guard`` when an audit is filed) whatever path it came by.
 - ``programme``: the processes in the release in force, the one audited longest ago first, never one the auditor
   owns (the audit SOP: "Auditors do not audit processes they own").
 
@@ -124,34 +124,32 @@ def uncovered_clauses(criteria: dict, claimed: dict[str, list[str]]) -> dict[str
 class Evidence:
     """Resolves evidence references against a hub's state: a record ("NCR-2026-0001" or its locator), a Track entry
     ("track:<run id>#<seq>"), a kernel event ("event:<seq>") or a release ("release:<digest, 8 or more characters>").
-    Built from the kernel alone (its state directory), so the Gate's guard can use it too."""
+    Built from the kernel alone (its state directory), so the Gate's guard can use it too. A record, a Track entry and
+    a kernel event carry the folder of the record they are about (``folder``), so a reader can be held to it."""
 
     TRACK = re.compile(r"^track:(?P<run>[0-9a-zA-Z_-]{4,64})#(?P<seq>\d{1,7})$")
     EVENT = re.compile(r"^event:(?P<seq>\d{1,9})$")
     RELEASE = re.compile(r"^release:(?P<digest>[0-9a-f]{8,64})$")
+    NUMBER = re.compile(r"^[A-Za-z]{2,12}-[0-9A-Za-z-]{1,24}$")
 
     def __init__(self, kernel):
         self.kernel = kernel
         self.state = Path(kernel.path).parent
-        self._numbers: dict[str, str] | None = None
 
-    def _record(self, ref: str) -> dict | None:
-        if ref.startswith("rec:"):
-            return self.kernel.get(ref)
-        if self._numbers is None:
-            self._numbers = {r["number"].upper(): r["locator"] for r in self.kernel.query(include_archived=True)}
-        loc = self._numbers.get(ref.upper())
-        return self.kernel.get(loc) if loc else None
+    def _folder_of(self, locator) -> str | None:
+        rec = self.kernel.get(str(locator)) if locator else None
+        return rec["folder"] if rec else None
 
     def resolve(self, ref) -> dict | None:
-        """{"kind", "ref", ...what it is} or None when it does not exist."""
+        """{"kind", "ref", "folder"?, ...what it is} or None when it does not exist."""
         ref = str(ref or "").strip()
         if not ref or len(ref) > 120:
             return None
         m = self.TRACK.match(ref)
         if m:
-            path = self.state / "runs" / m["run"] / "track.jsonl"
-            if not path.exists() or ".." in m["run"]:
+            run_dir = self.state / "runs" / m["run"]
+            path = run_dir / "track.jsonl"
+            if not path.exists():
                 return None
             seq = int(m["seq"])
             for line in path.read_text(encoding="utf-8").splitlines():
@@ -160,13 +158,18 @@ class Evidence:
                 except ValueError:
                     continue
                 if ev.get("seq") == seq:
+                    try:
+                        record = json.loads((run_dir / "state.json").read_text(encoding="utf-8")).get("record")
+                    except (OSError, ValueError):
+                        record = None
                     return {"kind": "track", "ref": ref, "type": ev.get("type"), "run": m["run"], "seq": seq, "by": ev.get("by"),
-                            "step": ev.get("step"), "at": ev.get("at")}
+                            "step": ev.get("step"), "at": ev.get("at"), "folder": self._folder_of(record)}
             return None
         m = self.EVENT.match(ref)
         if m:
             row = self.kernel.db.execute("SELECT seq, type, aggregate, by, at FROM events WHERE seq = ?", (int(m["seq"]),)).fetchone()
-            return {"kind": "event", "ref": ref, "type": row[1], "record": row[2], "by": row[3], "at": row[4]} if row else None
+            return {"kind": "event", "ref": ref, "type": row[1], "record": row[2], "by": row[3], "at": row[4],
+                    "folder": self._folder_of(row[2])} if row else None
         m = self.RELEASE.match(ref)
         if m:
             index = self.state / "releases" / "index.json"
@@ -176,7 +179,9 @@ class Evidence:
                 metas = []
             hit = [x for x in metas if isinstance(x, dict) and str(x.get("digest", "")).startswith(m["digest"])]
             return {"kind": "release", "ref": ref, "digest": hit[0]["digest"]} if len(hit) == 1 else None
-        rec = self._record(ref)
+        if not (ref.startswith("rec:") or self.NUMBER.match(ref)):
+            return None
+        rec = self.kernel.get(ref if ref.startswith("rec:") else ref.upper())
         if rec is None:
             return None
         return {"kind": "record", "ref": rec["number"], "locator": rec["locator"], "type": rec["type"], "folder": rec["folder"],
@@ -186,11 +191,26 @@ class Evidence:
         return [str(r) for r in refs if self.resolve(r) is None]
 
 
+def reader_for(bundle: dict, member: str):
+    """fn(folder) -> bool: what this member may read, under the release in force."""
+    cache: dict[str, bool] = {}
+
+    def may_read(folder: str) -> bool:
+        if folder not in cache:
+            cache[folder] = authz.check(bundle, member, "read", "*", folder)["allowed"]
+        return cache[folder]
+    return may_read
+
+
 # ---------------------------------------------------------------- findings: the cog's output is data
+FINDING_ID = re.compile(r"^F-\d{1,3}$")
+
+
 def validate_finding(raw, *, kernel, criteria: dict, reader=None) -> dict:
     """A finding in its fixed shape, or ValueError with a sentence saying what is wrong. Nothing in it is executed:
     text is kept as text, the clause must be one of the criteria, the grade and the action are from closed lists,
-    and every evidence reference must exist (and be readable by ``reader``, a fn(folder) -> bool, when given)."""
+    and every evidence reference must exist and, when ``reader`` (fn(folder) -> bool) is given, be about something
+    it may read: a record, a Track entry or a kernel event is held to its record's folder."""
     if not isinstance(raw, dict):
         raise ValueError("a finding is an object with clause, criterion, found, evidence and grade")
     unknown = sorted(set(raw) - {"clause", "criterion", "found", "evidence", "grade", "action", "process", "source", "title"})
@@ -226,7 +246,7 @@ def validate_finding(raw, *, kernel, criteria: dict, reader=None) -> dict:
         hit = resolver.resolve(r)
         if hit is None:
             missing.append(r)
-        elif reader is not None and hit["kind"] == "record" and not reader(hit["folder"]):
+        elif reader is not None and hit.get("folder") and not reader(hit["folder"]):
             missing.append(r)
         else:
             refs.append(hit["ref"] if hit["kind"] == "record" else r)
@@ -242,51 +262,128 @@ def validate_finding(raw, *, kernel, criteria: dict, reader=None) -> dict:
     return out
 
 
-def findings_problems(kernel, findings, criteria: dict | None = None) -> list[str]:
-    """Why these findings may not stand on an audit: a structured finding (one with an id) whose shape is wrong or
-    whose evidence does not exist. A finding a person wrote in their own words (no id) is theirs to stand by."""
+def check_findings(kernel, findings, *, by: str | None, reader=None, criteria: dict | None = None) -> list[dict]:
+    """Every finding on an audit in its fixed shape, with an id (F-1, F-2 ...) and its recorder: ValueError otherwise.
+    ``by`` is who records them now (their ``by`` is set to it); None checks findings already on the record as they are."""
     criteria = criteria or load_clauses(kernel.config_dir)
-    out = []
-    for f in findings or []:
-        if not isinstance(f, dict) or not f.get("id"):
-            continue
+    if not isinstance(findings, list):
+        raise ValueError("findings are a list, one entry per finding")
+    out, seen = [], set()
+    for i, f in enumerate(findings, 1):
+        fid = str((f or {}).get("id") or "") if isinstance(f, dict) else ""
+        if not FINDING_ID.match(fid):
+            raise ValueError(f"finding {i} has no id: every finding on an audit is numbered (F-1, F-2 ...) and has the fixed shape "
+                             "(clause, criterion, found, evidence, grade, action)")
+        if fid in seen:
+            raise ValueError(f"two findings are numbered {fid}")
+        seen.add(fid)
+        if by is not None and f.get("by") not in (None, "", by):
+            raise ValueError(f"{fid} says it was recorded by {f['by']}; the findings are recorded by {by}, who records them now")
         try:
-            validate_finding({k: v for k, v in f.items() if k not in ("id", "by")}, kernel=kernel, criteria=criteria)
+            clean = validate_finding({k: v for k, v in f.items() if k not in ("id", "by")}, kernel=kernel, criteria=criteria, reader=reader)
         except ValueError as e:
-            out.append(f"{f['id']}: {e}")
+            raise ValueError(f"{fid}: {e}") from None
+        out.append({"id": fid, **clean, "by": by if by is not None else f.get("by")})
     return out
 
 
-def _pre_decision(kernel, rec: dict, verdict: str) -> None:
-    """The Gate's guard on an audit: findings recorded with an id are checked against their evidence when the auditor
-    completes the step, and every one of them has the quality manager's verdict before the findings are accepted."""
-    if verdict != "approve":
-        return
+def check_independence(bundle: dict, auditor: str, processes) -> None:
+    """The audit SOP: "Auditors do not audit processes they own." KernelGuardError naming the processes otherwise. An
+    audit naming no process audits every one."""
+    procs = list(processes or []) or sorted((bundle.get("processes") or {}))
+    mine = sorted(set(procs) & owned_processes(bundle, auditor))
+    if mine:
+        raise KernelGuardError("audit-independence", f"{auditor} owns {', '.join(mine)} (one of their roles decides a step in it) and does not "
+                                                     f"audit {'it' if len(mine) == 1 else 'them'} (audit-sop: Auditors do not audit processes "
+                                                     "they own); name the processes to audit, and another auditor for these")
+
+
+NOT_AT_START = ("findings", "finding_decisions", "actions_raised")
+
+
+def start_guard(kernel, bundle: dict, fields: dict, owner: str) -> None:
+    """An audit as it is filed, whoever files it and by whatever path: no findings, verdicts or actions yet (they are
+    recorded at their own steps), and an auditor who owns none of the processes it audits."""
+    given = [k for k in NOT_AT_START if fields.get(k) not in (None, "", [], {})]
+    if given:
+        raise KernelGuardError("audit-start", f"an audit starts without {', '.join(given)}: the auditor records the findings at Record the "
+                                              "findings, and the quality manager gives the verdicts at Accept the findings")
+    check_independence(bundle, authz.principal_name(str(fields.get("auditor") or owner)), fields.get("processes"))
+
+
+def decision_guard(kernel, rec: dict, verdict: str, *, by: str, fields: dict, bundle: dict) -> dict:
+    """The Gate's guard on an audit, before the decision's fields are set; returns the fields to set. At "Record the
+    findings": the auditor owns none of the processes, every finding has an id and the fixed shape and cites evidence
+    that exists and the auditor may read, and no verdict is given. At "Accept the findings": the findings stand as
+    recorded, a person who is not the auditor gives a verdict on each (a rejection with its reason) and is recorded as
+    the one who gave it. Verdicts are given nowhere else."""
+    fields = dict(fields or {})
     f = rec.get("fields") or {}
-    if rec.get("state") == f"awaiting-{RECORD_STEP}":
-        problems = findings_problems(kernel, f.get("findings"))
-        if problems:
-            raise KernelGuardError("audit-evidence", "findings that cite evidence which does not exist cannot be recorded: " + "; ".join(problems))
-    if rec.get("state") == f"awaiting-{ACCEPT_STEP}":
-        decided = {d.get("finding") for d in f.get("finding_decisions") or [] if isinstance(d, dict) and d.get("verdict") in VERDICTS}
-        open_ = [x["id"] for x in f.get("findings") or [] if isinstance(x, dict) and x.get("id") and x["id"] not in decided]
-        if open_:
-            raise KernelGuardError("audit-findings", f"accept or reject each finding first, under Findings on the audit's page: {', '.join(open_)} "
-                                                     f"{'has' if len(open_) == 1 else 'have'} no verdict")
+    state = rec.get("state") or ""
+    at_record, at_accept = state == f"awaiting-{RECORD_STEP}", state == f"awaiting-{ACCEPT_STEP}"
+    if "finding_decisions" in fields and not at_accept:
+        raise KernelGuardError("audit-verdicts", "the verdicts on the findings are the quality manager's, given at Accept the findings")
+    if "findings" in fields and not at_record and fields["findings"] != f.get("findings"):
+        raise KernelGuardError("audit-findings", "the findings stand as the auditor recorded them at Record the findings; reject the step "
+                                                 "to send the audit back instead")
+    criteria = load_clauses(kernel.config_dir)
+    try:
+        if at_record:
+            check_independence(bundle, authz.principal_name(str(f.get("auditor") or by)), f.get("processes"))
+            if f.get("finding_decisions"):
+                raise ValueError("the audit carries verdicts before its findings are recorded; a new audit is needed")
+            if verdict == "approve":
+                if "findings" in fields:
+                    fields["findings"] = check_findings(kernel, fields["findings"], by=by, reader=reader_for(bundle, by), criteria=criteria)
+                else:
+                    check_findings(kernel, f.get("findings") or [], by=None, criteria=criteria)
+        elif at_accept and verdict == "approve":
+            if (bundle.get("members", {}).get(by) or {}).get("type") != "person":
+                raise ValueError("a person accepts or rejects the findings of an audit")
+            if by == authz.principal_name(str(f.get("auditor") or "")):
+                raise ValueError(f"{by} is the auditor of {rec.get('number')} and does not decide their own findings")
+            check_findings(kernel, f.get("findings") or [], by=None, criteria=criteria)
+            ids = [x["id"] for x in f.get("findings") or []]
+            given = fields.get("finding_decisions") or []
+            if not isinstance(given, list):
+                raise ValueError("the verdicts are a list, one per finding")
+            out, seen = [], set()
+            for d in given:
+                if not isinstance(d, dict) or d.get("finding") not in ids:
+                    raise ValueError(f"{(d or {}).get('finding') if isinstance(d, dict) else d!r} is not a finding of {rec.get('number')}")
+                if d["finding"] in seen:
+                    raise ValueError(f"{d['finding']} has two verdicts")
+                seen.add(d["finding"])
+                v = str(d.get("verdict") or "").lower()
+                if v not in VERDICTS:
+                    raise ValueError(f"the verdict on {d['finding']} is accept or reject")
+                reason = " ".join(str(d.get("reason") or "").split())[:600]
+                if v == "reject" and not reason:
+                    raise ValueError(f"say why {d['finding']} is rejected")
+                out.append({"finding": d["finding"], "verdict": v, "reason": reason, "by": by})
+            open_ = [i for i in ids if i not in seen]
+            if open_:
+                raise ValueError(f"accept or reject each finding first, under Findings on the audit's page: {', '.join(open_)} "
+                                 f"{'has' if len(open_) == 1 else 'have'} no verdict")
+            fields["finding_decisions"] = out
+    except ValueError as e:
+        raise KernelGuardError("audit", str(e)) from None
+    return fields
 
 
 # ---------------------------------------------------------------- who owns what; the programme
 def owned_processes(bundle: dict, member: str) -> set[str]:
-    """The processes a member owns: those in which one of its roles has a step or decides a transition. An auditor
-    audits none of them."""
+    """The processes a member owns: those in which one of its roles decides a step (a checkpoint, a person's Gate).
+    Starting a process (filing a nonconformance, as staff do) is not owning it. An auditor audits none of them."""
     roles = authz.roles_of(bundle, member)
     out = set()
     for name, proc in (bundle.get("processes") or {}).items():
-        if any(s.get("role") in roles for s in proc.get("steps") or []):
+        if any(s.get("kind") == "checkpoint" and s.get("role") in roles for s in proc.get("steps") or []):
             out.add(name)
     for name, wf in (bundle.get("workflows") or {}).items():
         for t in wf.get("transitions") or []:
-            if ((t.get("gate") or {}).get("role")) in roles:
+            g = t.get("gate") or {}
+            if t.get("type") != "initial" and g.get("kind") == "person" and g.get("role") in roles:
                 out.add(name)
     return out
 
@@ -353,52 +450,117 @@ def _routed(track: list[dict], upto: int) -> set[str]:
     return out
 
 
-def audit_checks(hub, process: str | None = None, today: str | None = None) -> dict:
+# What the checks read of each run's Track, kept while the Track is unchanged (its size and time are its head: it is
+# only ever appended to), so a check over a large hub, or a cog paging through one, reads and verifies each Track once.
+_TRACKS: dict[str, tuple[tuple, dict]] = {}
+_KERNEL_CHAIN: dict[str, tuple[tuple, list[str]]] = {}
+CACHE_LIMIT = 50000
+
+
+def track_view(hub, run_id: str) -> dict:
+    """{"events", "problems"} of one run's Track: its entries, and what is wrong with its chain or its signatures."""
+    from .track import Track, verify_signature
+
+    path = hub.runner._dir(run_id) / "track.jsonl"
+    try:
+        st = path.stat()
+        head = (st.st_size, st.st_mtime_ns)
+    except OSError:
+        return {"events": [], "problems": []}
+    hit = _TRACKS.get(str(path))
+    if hit and hit[0] == head:
+        return hit[1]
+    track = Track(path.parent)
+    events = track.read()
+    problems = list(track.verify(events))
+    secret = hub.runner.secret()
+    for ev in events:
+        if ev["type"] in ("gate.decided", "gate.signed", "gate.vote") and verify_signature(secret, ev) == "forged":
+            problems.append(f"the signature by {ev.get('by')} at {ev.get('step')} does not verify")
+    view = {"events": events, "problems": problems}
+    if len(_TRACKS) > CACHE_LIMIT:
+        _TRACKS.clear()
+    _TRACKS[str(path)] = (head, view)
+    return view
+
+
+def kernel_chain(kernel) -> list[str]:
+    row = kernel.db.execute("SELECT COUNT(*), MAX(seq) FROM events").fetchone()
+    key = (tuple(row), str(kernel.path))
+    hit = _KERNEL_CHAIN.get(str(kernel.path))
+    if hit and hit[0] == key:
+        return hit[1]
+    problems = kernel.verify_chain()
+    _KERNEL_CHAIN[str(kernel.path)] = (key, problems)
+    return problems
+
+
+def audit_checks(hub, process: str | None = None, today: str | None = None, reader=None) -> dict:
     """Every exact check, for one process (its runs and records) or the whole hub; the clause and chain checks are
     always hub-wide. {"process", "today", "release", "checks": {name: {"clause", "criterion", "findings": [{"found",
-    "evidence"}]}}}. Read-only: it changes nothing."""
+    "evidence"}]}}}. Read-only: it changes nothing. ``reader`` (fn(folder) -> bool): only what it may read is looked
+    at, so the checks show an auditor no more than the auditor's role reads."""
     today = today or date.today().isoformat()
+    may = reader or (lambda folder: True)
     bundle = hub.current_bundle() or {}
     meta = hub.releases.current() or {}
     wf = (bundle.get("workflows") or {}).get(process or "") or {}
     rtype = wf.get("record_type") or ((bundle.get("processes") or {}).get(process or "") or {}).get("record_type")
-    runs = [s for s in hub.runner.list() if not process or s.get("process") == process]
     out: dict[str, list[dict]] = {k: [] for k in CHECKS}
+    runs = []
+    for s in hub.runner.list():
+        if process and s.get("process") != process:
+            continue
+        rec = hub.kernel.get(s["record"]) if s.get("record") else None
+        if rec is not None and not may(rec["folder"]):
+            continue
+        runs.append((s, rec))
 
     # Overdue: an item waiting past the due date of its step.
     seen = set()
-    for s in runs:
+    for s, rec in runs:
         p = s.get("pending") or {}
         if s.get("status") == "waiting" and p.get("due") and p["due"] < today:
-            rec = hub.kernel.get(s["record"]) if s.get("record") else None
-            ev = [rec["number"]] if rec else []
+            events = track_view(hub, s["id"])["events"]
+            seq = next((ev.get("seq") for ev in reversed(events) if ev.get("type") == "gate.pending"), None) or (events[-1]["seq"] if events else 1)
             seen.add((rec or {}).get("locator"))
             out["overdue"].append({"found": f"{(rec or {}).get('number') or s['id']} has waited at {p.get('title') or p.get('step')} since its due date "
-                                            f"{p['due']} (for {', '.join(p.get('assignees') or []) or 'nobody'})", "evidence": ev + [f"track:{s['id']}#{_last_pending(hub, s)}"]})
+                                            f"{p['due']} (for {', '.join(p.get('assignees') or []) or 'nobody'})",
+                                   "evidence": ([rec["number"]] if rec else []) + [f"track:{s['id']}#{seq}"]})
     for rec in hub.kernel.query(overdue_at=today):
-        if rec["locator"] in seen or (rtype and rec["type"] != rtype) or (process and not rtype):
+        if rec["locator"] in seen or (rtype and rec["type"] != rtype) or (process and not rtype) or not may(rec["folder"]):
             continue
         out["overdue"].append({"found": f"{rec['number']} is {rec['state']} past its due date {rec['due']}", "evidence": [rec["number"]]})
 
     # Decisions: by whoever prepared the item; by someone it was not routed to.
     members = bundle.get("members") or {}
-    for s in runs:
-        try:
-            track = hub.runner.track(s["id"])
-        except Exception:
-            continue
-        rec = hub.kernel.get(s["record"]) if s.get("record") else None
+    for s, rec in runs:
+        track = track_view(hub, s["id"])["events"]
         f = (rec or {}).get("fields") or {}
         preparers = {authz.principal_name(s.get("owner") or "")}
         if rec and not s.get("parent_run") and rec.get("created_by") not in ("hub", "system", "seed"):
             preparers.add(rec.get("created_by"))
+        co_blocked = None
+        if hub.runner.is_change_order(s) and rec is not None:
+            # A change order: a contributor signs alongside an independent approver (the change-control SOP); only who
+            # may not sign it (changecontrol.may_not_sign) signing it is a finding.
+            try:
+                from . import changecontrol
+
+                co_blocked = set(changecontrol.may_not_sign(hub, rec["locator"]))
+            except Exception:
+                co_blocked = None
         for i, ev in enumerate(track):
             if ev.get("type") != "gate.decided" or not ev.get("by") or str(ev["by"]).startswith("committee:"):
                 continue
             who = ev["by"]
             ref = f"track:{s['id']}#{ev.get('seq')}"
             named = str(ev.get("route") or "").startswith(("field:", "person:"))
-            if ev.get("verdict") == "approve" and not named and (who in preparers or (who == f.get("author") and who in members)):
+            if co_blocked is not None:
+                selfish = ev.get("verdict") == "approve" and who in co_blocked
+            else:
+                selfish = ev.get("verdict") == "approve" and not named and (who in preparers or (who == f.get("author") and who in members))
+            if selfish:
                 out["self-approval"].append({"found": f"{who} approved {ev.get('step')} on {(rec or {}).get('number') or s['id']}, which they prepared",
                                              "evidence": [x for x in [(rec or {}).get("number"), ref] if x]})
             routed = _routed(track, i)
@@ -414,7 +576,7 @@ def audit_checks(hub, process: str | None = None, today: str | None = None) -> d
 
         for frame in sorted({r.get("frame") for r in bundle.get("responsibilities") or [] if r.get("frame")}):
             doc = training.document_in_force(hub, frame)
-            if doc is None:
+            if doc is None or not may(doc["folder"]):
                 continue
             roles = set(training.roles_to_train(bundle, doc))
             people = {p for p, m in members.items() if m.get("type") == "person" and roles & set(m.get("roles") or [])}
@@ -427,17 +589,17 @@ def audit_checks(hub, process: str | None = None, today: str | None = None) -> d
 
     # The chains.
     if not process:
-        for p in hub.kernel.verify_chain():
+        for p in kernel_chain(hub.kernel):
             if "not chained" not in p:
                 m = re.match(r"event (\d+)", p)
                 out["chain"].append({"found": f"kernel: {p}", "evidence": [f"event:{m[1]}"] if m else []})
-    for s in runs:
-        for p in hub.runner.verify_signatures(s["id"]):
+    for s, rec in runs:
+        for p in track_view(hub, s["id"])["problems"]:
             if "not chained" in p:
                 continue
             m = re.match(r"entry (\d+)", p)
-            out["chain"].append({"found": f"run {s['id']} ({s['process']}): {p}", "evidence": [f"track:{s['id']}#{m[1]}"] if m else
-                                 ([hub.kernel.get(s["record"])["number"]] if s.get("record") and hub.kernel.get(s["record"]) else [])})
+            out["chain"].append({"found": f"run {s['id']} ({s['process']}): {p}",
+                                 "evidence": [f"track:{s['id']}#{m[1]}"] if m else ([rec["number"]] if rec else [])})
 
     # Clauses no Frame cites.
     criteria = load_clauses(hub.kernel.config_dir)
@@ -452,12 +614,13 @@ def audit_checks(hub, process: str | None = None, today: str | None = None) -> d
                                    "standard": std, "clauses": nums,
                                    "evidence": [f"release:{meta['digest'][:16]}"] if meta.get("digest") else []})
 
-    # Independence: an audit of a process its auditor owns.
+    # Independence: an audit of a process its auditor owns (the guards refuse one; this finds any that got through).
     for a in hub.kernel.query(type_="audit"):
         who = a["fields"].get("auditor")
-        if not who or who not in members:
+        if not who or who not in members or not may(a["folder"]):
             continue
-        mine = sorted(set(a["fields"].get("processes") or []) & owned_processes(bundle, who))
+        procs = a["fields"].get("processes") or sorted(bundle.get("processes") or {})
+        mine = sorted(set(procs) & owned_processes(bundle, who))
         if mine and (not process or process in mine or process == PROCESS):
             out["independence"].append({"found": f"{a['number']} audits {', '.join(mine)}, which its auditor {who} owns", "evidence": [a["number"]]})
 
@@ -467,12 +630,6 @@ def audit_checks(hub, process: str | None = None, today: str | None = None) -> d
         cl = _process_frame_clause(bundle, hub, process, clause) if name == "overdue" else fallback[name]
         checks[name] = {"clause": cl, "criterion": criterion, "count": len(out[name]), "findings": out[name]}
     return {"process": process, "today": today, "release": meta.get("digest", "")[:16], "checks": checks}
-
-
-def _last_pending(hub, state: dict) -> int:
-    track = hub.runner.track(state["id"])
-    seq = next((ev.get("seq") for ev in reversed(track) if ev.get("type") == "gate.pending"), None)
-    return int(seq or (track[-1].get("seq") if track else 1))
 
 
 # ---------------------------------------------------------------- sampling the records of a process
@@ -510,8 +667,10 @@ def plan_audit(hub, auditor: str, process: str, *, planned: str | None = None, t
     bundle = hub.current_bundle() or {}
     if process not in (bundle.get("processes") or {}):
         raise ValueError(f"there is no process {process!r} in the policy release")
-    if process in owned_processes(bundle, auditor):
-        raise ValueError(f"{auditor} owns {process} (one of its roles has a step in it) and does not audit it; take another from the programme")
+    try:
+        check_independence(bundle, auditor, [process])
+    except KernelGuardError as e:
+        raise ValueError(f"{e.detail}; take another from the programme") from None
     frame = (((bundle.get("processes") or {}).get(process) or {}).get("source") or {}).get("frame")
     run_id = hub.runner.submit(PROCESS, {"record": {"title": title or f"Internal audit of {process}", "processes": [process],
                                                     "scope_clauses": frame_clauses(hub, frame) if frame else [],
@@ -522,12 +681,16 @@ def plan_audit(hub, auditor: str, process: str, *, planned: str | None = None, t
             "waiting_for": (state.get("pending") or {}).get("assignees"), "state": (rec or {}).get("state")}
 
 
-def waiting_audit(hub, number: str, who: str, step: str) -> tuple[dict, dict]:
-    """The audit and its run, waiting at ``step`` for ``who``; ValueError otherwise."""
-    rec = hub.kernel.get(number) if str(number).startswith("rec:") else next((r for r in hub.kernel.query(type_="audit")
-                                                                              if r["number"].upper() == str(number).upper()), None)
+def audit_record(hub, number: str) -> dict:
+    rec = hub.kernel.get(str(number) if str(number).startswith("rec:") else str(number).strip().upper())
     if rec is None or rec["type"] != "audit":
         raise ValueError(f"there is no audit {number!r}")
+    return rec
+
+
+def waiting_audit(hub, number: str, who: str, step: str) -> tuple[dict, dict]:
+    """The audit and its run, waiting at ``step`` for ``who``; ValueError otherwise."""
+    rec = audit_record(hub, number)
     run = hub.runner.run_for_record(rec["locator"])
     pending = (run or {}).get("pending") or {}
     at = pending.get("checkpoint") or pending.get("transition") or pending.get("step")
@@ -547,7 +710,9 @@ def submit_findings(hub, number: str, cog: str, findings: list[dict], summary: s
     if not findings:
         raise ValueError("record at least one finding (record_finding) before completing the step; a process that conforms is an observation")
     criteria = load_clauses(hub.kernel.config_dir)
-    clean = [validate_finding({k: v for k, v in f.items() if k not in ("id", "by")}, kernel=hub.kernel, criteria=criteria) for f in findings]
+    reader = reader_for(hub.current_bundle() or {}, cog)
+    clean = [validate_finding({k: v for k, v in f.items() if k not in ("id", "by")}, kernel=hub.kernel, criteria=criteria, reader=reader)
+             for f in findings]
     return hub.runner.cog_complete(run["id"], cog, summary or f"{len(clean)} finding(s) recorded",
                                    fields={"findings": number_findings(clean, cog)})
 
@@ -608,20 +773,18 @@ def report_markdown(hub, rec: dict, findings: list[dict], checks: dict | None = 
     return "\n".join(lines) + "\n"
 
 
-def draft_report(hub, number: str, by: str, findings: list[dict]) -> dict:
+def draft_report(hub, number: str, by: str, findings: list[dict], checks: dict | None = None) -> dict:
     """The audit report as a controlled draft document attached to the audit, authored by the auditor; a person sends
     it through document control. Its content is the findings as recorded: nothing in it is executed."""
-    rec = hub.kernel.get(number) if str(number).startswith("rec:") else next((r for r in hub.kernel.query(type_="audit")
-                                                                              if r["number"].upper() == str(number).upper()), None)
-    if rec is None:
-        raise ValueError(f"there is no audit {number!r}")
+    rec = audit_record(hub, number)
     if rec["fields"].get("auditor") != by:
         raise ValueError(f"{by} is not the auditor of {rec['number']}")
     allowed = authz.check(hub.current_bundle() or {}, by, "create", "document", rec["folder"])
     if not allowed["allowed"]:
         raise ValueError(allowed["why"])
     procs = rec["fields"].get("processes") or []
-    checks = audit_checks(hub, procs[0] if len(procs) == 1 else None)
+    if checks is None:
+        checks = audit_checks(hub, procs[0] if len(procs) == 1 else None, reader=reader_for(hub.current_bundle() or {}, by))
     md = report_markdown(hub, rec, findings, checks)
     title = f"Audit report {rec['number']}"
     existing = next((d for d in hub.dms.documents_of(rec["locator"]) if d["fields"].get("doc_type") == "audit-report"
@@ -681,4 +844,5 @@ def register(registry) -> None:
 
     registry.register(AuditActionRaiser())
     registry.register(Auditor())
-    _runner.DECISION_FIELD_GUARDS["audit"] = _pre_decision
+    _runner.DECISION_FIELD_GUARDS["audit"] = decision_guard
+    _runner.START_GUARDS["audit"] = start_guard

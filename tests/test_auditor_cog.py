@@ -136,13 +136,79 @@ def test_the_exact_checks_find_what_the_records_and_the_track_show(released, tod
     assert "9.2" not in clauses["iso9001"]["clauses"] and "7.5.3" not in clauses["iso9001"]["clauses"], "7.5 is cited, and covers 7.5.3"
 
 
-def test_an_auditor_auditing_their_own_process_is_a_finding(released):
+def test_an_auditor_never_audits_a_process_they_own_whoever_files_it(released, hosted):
+    """The audit SOP: "Auditors do not audit processes they own." Refused when the audit is filed, for a person and for
+    the cog through the generic start_process tool; the independence check finds any audit that got in some other way."""
+    from hubproto.agent import AgentTools
+
     hub = released
-    run_id = hub.runner.submit("internal-audit", {"record": {"title": "Reviews", "processes": ["management-review"], "planned": "2026-12-01"}},
-                               owner="bob")
-    audit_no = hub.kernel.get(hub.runner.load(run_id)["record"])["number"]
+    with pytest.raises(RunError, match="bob owns management-review"):
+        hub.runner.submit("internal-audit", {"record": {"title": "Reviews", "processes": ["management-review"], "planned": "2026-12-01"}}, owner="bob")
+    with pytest.raises(RunError, match="bob owns .*internal-audit"):
+        hub.runner.submit("internal-audit", {"record": {"title": "Everything", "planned": "2026-12-01"}}, owner="bob")
+    t = AgentTools(hub, "auditor", "x2", "derived", 5, AgentStore(hub.root / "state" / "agents"))
+    res = t.execute("start_process", {"process": "internal-audit", "fields": {"title": "Own", "processes": ["internal-audit"], "planned": "2026-12-01"}})
+    assert "auditor owns internal-audit" in res["error"]
+    assert not hub.kernel.query(type_="audit")
+    # One filed behind the guards' back (straight into the kernel) is still found.
+    forged = hub.kernel.create("audit", "Quality/Audits", {"title": "x", "processes": ["management-review"], "auditor": "bob"}, by="bob")
     found = audit.audit_checks(hub)["checks"]["independence"]["findings"]
-    assert [f["evidence"] for f in found] == [[audit_no]] and "its auditor bob owns" in found[0]["found"]
+    assert [f["evidence"] for f in found] == [[forged["number"]]] and "its auditor bob owns" in found[0]["found"]
+
+
+def test_an_audit_is_filed_without_findings_verdicts_or_actions_by_any_path(released, hosted):
+    """The reviewer's probe: the cog filing an audit through start_process with findings (one with no id, citing a record
+    that does not exist) and the quality manager's verdicts already written in."""
+    from hubproto.agent import AgentTools
+
+    hub = released
+    ncr = hub.kernel.create("ncr", "Quality/Nonconformances", {"title": "x", "description": "y"}, by="carol")
+    planted = {"findings": [{"id": "F-1", "clause": "8.7", "criterion": "c", "found": "f", "evidence": [ncr["number"]], "grade": "minor",
+                             "action": "capa"}, {"clause": "8.7", "criterion": "c", "found": "f", "evidence": ["NCR-2099-0042"], "grade": "major"}],
+               "finding_decisions": [{"finding": "F-1", "verdict": "accept", "by": "carol"}]}
+    t = AgentTools(hub, "auditor", "x3", "derived", 5, AgentStore(hub.root / "state" / "agents"))
+    for key in planted:
+        res = t.execute("start_process", {"process": "internal-audit", "fields": {"title": "Planted", "processes": ["nonconformance"],
+                                                                                  "planned": "2026-12-01", key: planted[key]}})
+        assert "an audit starts without " + key in res["error"], res
+    with pytest.raises(RunError, match="an audit starts without findings, finding_decisions"):
+        hub.runner.submit("internal-audit", {"record": {"title": "x", "processes": ["nonconformance"], **planted}}, owner="bob")
+    assert not hub.kernel.query(type_="audit")
+
+
+def test_the_findings_are_the_auditors_and_the_verdicts_the_quality_managers(released):
+    """The reviewer's probes at the two Gates: the auditor writing verdicts, findings with no id, the quality manager
+    rewriting the findings, a rejection with no reason, a verdict signed in someone else's name."""
+    hub = released
+    ncr = hub.kernel.create("ncr", "Quality/Nonconformances", {"title": "x", "description": "y"}, by="carol")
+    run_id = hub.runner.submit("internal-audit", {"record": {"title": "NCR audit", "processes": ["nonconformance"], "planned": "2026-12-01"}},
+                               owner="bob")
+    good = [{"id": "F-1", "clause": "8.7", "criterion": "c", "found": "f", "evidence": [ncr["number"]], "grade": "minor", "action": "capa"}]
+
+    def decide(who, **fields):
+        return hub.runner.decide(run_id, who, "approve", fields=fields, meaning="m", payload_digest=seen(hub.runner, run_id))
+    with pytest.raises(RunError, match="the verdicts on the findings are the quality manager's"):
+        decide("bob", findings=good, finding_decisions=[{"finding": "F-1", "verdict": "accept", "by": "carol"}])
+    with pytest.raises(RunError, match="finding 1 has no id"):
+        decide("bob", findings=[{"clause": "8.7", "statement": "In my own words", "severity": "minor"}])
+    with pytest.raises(RunError, match="F-1 says it was recorded by carol"):
+        decide("bob", findings=[{**good[0], "by": "carol"}])
+    assert not hub.kernel.get(hub.runner.load(run_id)["record"])["fields"].get("findings"), "nothing refused reached the record"
+    decide("bob", findings=good)
+    rec = hub.kernel.get(hub.runner.load(run_id)["record"])
+    assert rec["fields"]["findings"][0]["by"] == "bob" and rec["state"] == "awaiting-accept-the-findings"
+    assert "finding_decisions" in hub.runner.allowed_decision_fields(hub.runner.load(run_id)), "the quality manager can still give hers"
+    with pytest.raises(RunError, match="the findings stand as the auditor recorded them"):
+        decide("carol", findings=[{**good[0], "evidence": ["NCR-2099-0001"]}], finding_decisions=[{"finding": "F-1", "verdict": "accept"}], summary="s")
+    with pytest.raises(RunError, match="F-1 has no verdict"):
+        decide("carol", summary="s")
+    with pytest.raises(RunError, match="say why F-1 is rejected"):
+        decide("carol", finding_decisions=[{"finding": "F-1", "verdict": "reject"}], summary="s")
+    state = decide("carol", finding_decisions=[{"finding": "F-1", "verdict": "accept", "by": "bob"}], summary="s")
+    rec = hub.kernel.get(rec["locator"])
+    assert state["status"] == "completed" and rec["fields"]["finding_decisions"] == [{"finding": "F-1", "verdict": "accept", "reason": "", "by": "carol"}], \
+        "the verdict is recorded as the decider's, whatever the payload said"
+    assert rec["fields"]["findings"] == hub.kernel.get(rec["locator"])["fields"]["findings"] and rec["fields"]["actions_raised"][0]["process"] == "capa"
 
 
 def test_training_not_assigned_when_a_document_took_effect_is_a_finding(released):
@@ -192,9 +258,7 @@ def test_the_gate_refuses_findings_citing_evidence_that_does_not_exist_whatever_
     fake = [{"id": "F-1", "clause": "8.7", "criterion": "c", "found": "f", "evidence": ["NCR-2099-0001"], "grade": "minor", "action": "ncr"}]
     with pytest.raises(RunError, match="NCR-2099-0001 does not exist"):
         hub.runner.decide(run_id, "bob", "approve", fields={"findings": fake}, meaning="recorded", payload_digest=seen(hub.runner, run_id))
-    plain = [{"clause": "8.7", "statement": "In my own words", "severity": "minor"}]
-    state = hub.runner.decide(run_id, "bob", "approve", fields={"findings": plain}, meaning="recorded", payload_digest=seen(hub.runner, run_id))
-    assert state["pending"]["checkpoint"] == "accept-the-findings", "a person's own findings (no id) are theirs to stand by"
+    assert not hub.kernel.get(hub.runner.load(run_id)["record"])["fields"].get("findings"), "refused before the fields are set"
 
 
 # ---------------------------------------------------------------- the whole audit, the cog signing nothing
@@ -346,3 +410,95 @@ def test_an_audit_the_cog_does_not_finish_goes_to_a_person_in_the_auditors_seat(
     state = hub.runner.load(out["run"])
     assert state["status"] == "waiting" and state["pending"]["assignees"] == ["bob"] and state["pending"]["handed_back_by"] == "auditor"
     assert any(e["type"] == "gate.handed_back" and e["to"] == "bob" and "ran out of time" in e["reason"] for e in hub.runner.track(out["run"]))
+
+
+# ---------------------------------------------------------------- review findings 5 to 11
+def test_a_contributor_co_signing_with_an_independent_approver_is_no_self_approval(tmp_path, monkeypatch):
+    """it-sop: "Whoever made a direct configuration change on a change-order is not its only approver." carol signs her
+    own change order alongside bob, who is independent: permitted, so not a finding."""
+    from test_workflow_graph_change_orders import test_a_contributor_signs_a_change_order_only_alongside_an_independent_approver as signed
+    from hubproto.app import Hub
+
+    signed(tmp_path, monkeypatch)
+    hub = Hub(tmp_path)
+    co = hub.kernel.query(type_="change-order")[0]
+    found = [f for f in audit.audit_checks(hub)["checks"]["self-approval"]["findings"] if co["number"] in f["evidence"]]
+    assert found == [], found
+
+
+def test_the_checks_read_each_track_once_until_it_changes(released, monkeypatch):
+    from hubproto import track as track_module
+
+    hub = released
+    for i in range(3):
+        hub.runner.submit("nonconformance", {"record": {"title": f"t{i}", "description": "a safety risk"}}, owner="alice")
+    audit.audit_checks(hub)
+    reads = []
+    real = track_module.Track.read
+    monkeypatch.setattr(track_module.Track, "read", lambda self: reads.append(self.path) or real(self))
+    audit.audit_checks(hub)
+    audit.audit_checks(hub, "nonconformance")
+    assert reads == [], "an unchanged Track is not read or verified again"
+    run_id = hub.runner.list()[-1]["id"]
+    track_module.Track(hub.runner.root / run_id).append({"type": "note", "run_id": run_id})
+    reads.clear()
+    audit.audit_checks(hub)
+    assert [p.parent.name for p in reads] == [run_id], "a Track that changed is read again"
+
+
+def test_the_checks_and_the_findings_keep_to_what_the_auditor_may_read(released, today, hosted):
+    from hubproto.agent import AgentTools
+
+    hub = released
+    run_id = hub.runner.submit("nonconformance", {"record": {"title": "Burr", "description": "a safety risk"}}, owner="alice")
+    later = (today + timedelta(days=30)).isoformat()
+    assert audit.audit_checks(hub, today=later)["checks"]["overdue"]["count"] == 1
+    no_quality = lambda folder: not folder.startswith("Quality")
+    assert audit.audit_checks(hub, today=later, reader=no_quality)["checks"]["overdue"]["count"] == 0
+    ncr = hub.kernel.get(hub.runner.load(run_id)["record"])
+    crit = audit.load_clauses(hub.kernel.config_dir)
+    seq = hub.runner.track(run_id)[-1]["seq"]
+    with pytest.raises(ValueError, match="may not be read"):
+        audit.validate_finding({"clause": "8.7", "criterion": "c", "found": "f", "evidence": [f"track:{run_id}#{seq}"], "grade": "minor"},
+                               kernel=hub.kernel, criteria=crit, reader=no_quality)
+    # The record_finding tool holds the cog to its own reading: here it may not read Quality.
+    hub.queue.mode = "service"  # its step waits in its queue instead of being worked at once
+    out = audit.plan_audit(hub, "auditor", "nonconformance")
+    t = AgentTools(hub, "auditor", "x4", "derived", 5, AgentStore(hub.root / "state" / "agents"))
+    t.may_read = lambda folder: folder in ("Quality/Audits",)
+    res = t.execute("record_finding", {"number": out["audit"], "clause": "8.7", "criterion": "c", "found": "f", "evidence": [ncr["number"]],
+                                       "grade": "minor"})
+    assert "may not be read" in res.get("error", ""), res
+    assert "an internal auditor's" not in str(t.execute("audit_checks", {"process": "nonconformance"}))
+    assert t.execute("audit_checks", {"process": "nonconformance", "check": "overdue"})["checks"]["overdue"]["count"] == 0
+
+
+def test_a_caller_cannot_lift_the_audit_budget_past_its_ceiling(released):
+    b = bundle(released)
+    assert run_budget(b, "auditor", max_actions=500, max_rounds=900) == {**run_budget(b, "auditor"), "actions": 80, "rounds": 100}
+
+
+def test_a_hand_back_goes_only_to_people_who_may_take_the_step(released):
+    hub = released
+    run_id = hub.runner.submit("task", {"record": {"title": "Tidy", "assignee": "qa-manager"}}, owner="quality-assistant")
+    state = hub.runner.load(run_id)
+    assert state["status"] == "waiting" and state["pending"]["assignees"] == ["qa-manager"], "its own run could not hand it back either"
+    with pytest.raises(RunError, match="there is no person to hand it back to"):
+        hub.runner.hand_back(run_id, "qa-manager", "not mine")
+    assert "alice" not in (hub.runner.load(run_id).get("pending") or {}).get("assignees", []), "never an arbitrary person holding staff"
+
+
+def test_a_duty_failing_for_another_reason_is_not_reported_as_unavailable(released, monkeypatch):
+    def boom(**kw):
+        raise ValueError("boom")
+    monkeypatch.setattr(released.model, "complete_with_tools", boom)
+    with pytest.raises(ValueError, match="boom"):
+        run_duties(released, cog="management", today="2026-11-07")
+
+
+def test_only_the_auditor_is_offered_the_audit_tools(released, hosted):
+    from hubproto.agent_audit import AUDIT_TOOLS
+
+    mine = {s["name"] for s in Agent(released, "auditor").prepare("look", by="carol")["specs"]}
+    theirs = {s["name"] for s in Agent(released, "quality-assistant").prepare("look", by="carol")["specs"]}
+    assert AUDIT_TOOLS <= mine and not (AUDIT_TOOLS & theirs)
