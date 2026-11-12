@@ -38,7 +38,8 @@ for pytest-xdist, a development-only dependency; without `-n auto` the suite run
 | `hubproto/cli.py` | command line: policy, run, message and operations verbs; `main` returns the exit code; shared helpers (`fail`, `clean`, `require_member`, `resolve_*`) | cli agent |
 | `hubproto/shell/` | the workspace shell package (handler, pages, inbox, forms, actions, policy, css, text; stdlib http.server) | shell agent |
 | `hubproto/cli_records.py` | CLI verbs for runs waiting on people, records and documents (`register(sub)`) | cli agent |
-| `docker/entrypoint.sh`, `README.md`, `tests/test_cli.py` | container first start and later-start drift warning; operator docs; the CLI suite | cli agent |
+| `docker/entrypoint.sh`, `README.md`, `tests/test_cli.py` | container first start (filling the empty frames volume from the image's Frames), later-start drift warning; operator docs; the CLI suite | cli agent |
+| `docker-compose.yml`, `docker-compose.frames-dir.yml`, `Dockerfile` | the services; the hub's Frames in the `hub-frames` volume, never the checkout (issue #5); the development override that mounts the checkout's `frames/` and `profiles/` | cli agent |
 | `hubproto/profile.py` | seed profiles: install, conformance checklist (`register(sub)`) | profile agent |
 | `profiles/iso9001/**` | the ISO 9001 seed profile | profile agent |
 | `frames/**` | the example company's Frames | core (profile agent may add `frames/iso9001/` via the seed command) |
@@ -76,8 +77,12 @@ what in your final report and work around it meanwhile.
 * `release_diff` compares the sentences two releases' `rules.json` cite, by Frame: added, removed, and changed
   (a removed and an added sentence on the same file line, or close by `difflib`).
 * `backup <dir>` copies `kernel.db` with `sqlite3.Connection.backup` plus `runs/`, `releases/`, `proposals/`,
-  `blobs/`, `inbox/` and `proposal-numbers.json`, with a `backup.json` manifest; `restore <dir>` refuses a partial
-  set and an existing state without `--force`. `status --check` exits 1 when no release is in force or the Frames
+  `blobs/`, `inbox/`, `proposal-numbers.json` and the hub's `frames/` (less what a restore set aside), with a
+  `backup.json` manifest; `restore <dir>` refuses a partial set and an existing state without `--force`, and puts the
+  backup's Frames in place of the hub's (those set aside in `frames/.before-restore-<time>/`; an older backup without
+  Frames, or one whose `frames/` holds no Frame files, leaves them alone, with a warning for the second), then prints
+  the Frames' drift from the restored release (`frames_drift`). The Frames are copied after the kernel snapshot with no
+  lock, so only a backup of a stopped hub is consistent across all parts. `status --check` exits 1 when no release is in force or the Frames
   on disk differ from the release's bill of materials (the entrypoint prints that on later starts); once the SOPs are
   documents, also when `config/record-types.json` differs from the record types in force or another config file from
   what the release recorded.

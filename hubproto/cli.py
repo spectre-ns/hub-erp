@@ -1335,6 +1335,16 @@ def cmd_backup(args) -> int:
     if (state / ".secret").exists():  # signatures and editor tokens verify against it
         shutil.copyfile(state / ".secret", dest / ".secret")
         parts[".secret"] = 1
+    frames = Path(args.root) / "frames"
+    # The hub's Frames (in Docker its frames volume): every release writes the released texts there. They are copied
+    # after the kernel snapshot, with no lock: a release during the backup can leave Frames newer than the state, which
+    # a restore then reports as drift. Stop the hub for a backup consistent across all parts.
+    if frames.is_dir():
+        shutil.copytree(frames, dest / "frames", symlinks=False, ignore=_not_set_aside(frames))
+        parts["frames"] = sum(1 for _ in (dest / "frames").rglob("*") if _.is_file())
+        if not _frame_files(dest / "frames"):
+            print(f"WARNING: {frames} holds no Frame files; a restore of this backup leaves the Frames where it restores "
+                  "as they are")
     cur = hub.releases.current()
     manifest = {"created_at": utcnow(), "root": str(Path(args.root).resolve()), "kernel": "kernel.db", "parts": parts,
                 "release": cur["digest"] if cur else None}
@@ -1345,6 +1355,26 @@ def cmd_backup(args) -> int:
     print(f"backup written to {dest}: kernel.db, " + ", ".join(f"{k} ({v} files)" for k, v in parts.items()))
     print("restore with: hubproto --root <new root> restore " + str(dest))
     return 0
+
+
+def _not_set_aside(frames: Path):
+    """For ``shutil.copytree``: leave out the Frames an earlier restore set aside (frames/.before-restore-<time>/)."""
+    top = frames.resolve()
+    return lambda d, names: [n for n in names if Path(d).resolve() == top and n.startswith(".before-restore-")]
+
+
+def _set_aside_frames(frames: Path, stamp: str) -> Path:
+    """Move the Frames being replaced into frames/.before-restore-<time>/ (in the container frames/ is a volume's
+    mount point, so it is never renamed); the Frame store and status skip dot-directories."""
+    aside, n = frames / f".before-restore-{stamp}", 1
+    while aside.exists():  # two restores in the same second
+        n += 1
+        aside = frames / f".before-restore-{stamp}-{n}"
+    aside.mkdir()
+    for child in list(frames.iterdir()):
+        if not child.name.startswith(".before-restore-"):
+            child.rename(aside / child.name)
+    return aside
 
 
 def _set_aside(state: Path, src: Path, stamp: str) -> Path:
@@ -1388,10 +1418,11 @@ def cmd_restore(args) -> int:
         fail(f"{src / 'backup.json'} does not parse: {e}", 2)
     root = Path(args.root)
     state = root / "state"
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     if state.exists() and any(state.iterdir()):
         if not args.force:
             fail(f"{state} already holds a hub; stop the shell and pass --force to replace it (the old state is kept beside it)", 2)
-        moved = _set_aside(state, src, datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'))
+        moved = _set_aside(state, src, stamp)
         print(f"previous state moved to {moved}")
     state.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(src / "kernel.db", state / "kernel.db")
@@ -1404,14 +1435,48 @@ def cmd_restore(args) -> int:
     for name in ("proposal-numbers.json", "frame-files-kept.json"):
         if (src / name).exists():
             shutil.copyfile(src / name, state / name)
+    frames = root / "frames"
+    with_frames = (src / "frames").is_dir()  # the Frames as the hub had them when it was backed up (older backups hold none)
+    if with_frames and not _frame_files(src / "frames"):
+        # Putting them in place would set the hub's Frames aside and leave none: every Frame of the release missing.
+        print(f"WARNING: {src / 'frames'} holds no Frame files (the hub had none when it was backed up), so the Frames in "
+              f"{frames} are left as they are, not replaced by an empty folder")
+        with_frames = False
+    elif with_frames:
+        if frames.is_dir() and any(frames.iterdir()):
+            print(f"previous Frames moved to {_set_aside_frames(frames, stamp)}")
+        frames.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(src / "frames", frames, symlinks=False, dirs_exist_ok=True)
+    elif frames.is_dir():
+        print(f"this backup holds no Frames (it was made before backups copied them): {frames} is left as it is")
     hub = Hub(root, frames_dir=root / "frames") if (root / "frames").exists() else None
     cur = hub.releases.current() if hub else None
     print(f"restored {src} (taken {manifest.get('created_at', '?')}) into {state}")
     if hub:
         print(f"release in force: {version_of(hub, cur['digest']) if cur else 'none'}; runs: {len(hub.runner.list())}; records: {len(hub.kernel.query())}")
+        drift = frames_drift(hub, cur) if cur else {}
+        if any(drift.values()):  # what `status --check` will report
+            print(f"Frames on disk differ from the release in force ({version_of(hub, cur['digest'])}):")
+            for kind in ("changed", "missing", "new"):
+                for path in drift[kind]:
+                    print(f"  {kind}: {path}")
+            if with_frames:
+                print("if the backup was taken while the hub ran, its Frames and its state may be from different moments "
+                      "(stop the hub for a consistent backup); `hubproto status` says how to bring them into line")
+            else:
+                print("this backup holds no Frames, so the Frames here may not be the ones the restored release was made "
+                      "from: put the hub's Frames from that time in place, or see `hubproto status`")
+        elif cur:
+            print("Frames on disk match the release in force")
     else:
         print("no frames/ directory beside the restored state yet; copy the Frames in before compiling")
     return 0
+
+
+def _frame_files(frames: Path) -> list[Path]:
+    """The Frame files the Frame store reads (dot-directories such as .retired and .replaced left out)."""
+    return [p for p in frames.rglob("*.frame.md")
+            if not any(part.startswith(".") for part in p.relative_to(frames).parts)]
 
 
 # ------------------------------------------------------------------ parser
@@ -1604,10 +1669,10 @@ def build_parser() -> argparse.ArgumentParser:
                                                                "stay the source and changes are released without change orders (recorded, "
                                                                "shown by status; for work on the Frames themselves)")
     s.set_defaults(fn=cmd_bootstrap_release)
-    s = sub.add_parser("backup", help="copy the hub's state (kernel via the SQLite backup API, runs, releases, proposals, blobs, inbox) into a directory")
+    s = sub.add_parser("backup", help="copy the hub's state (kernel via the SQLite backup API, runs, releases, proposals, blobs, inbox) and its Frames into a directory; stop the hub first for a copy consistent across all parts")
     s.add_argument("dir", help="a new or empty directory to write the backup into")
     s.set_defaults(fn=cmd_backup)
-    s = sub.add_parser("restore", help="restore a complete backup into --root/state; refuses a partial set")
+    s = sub.add_parser("restore", help="restore a complete backup into --root/state, and the Frames it holds into --root/frames; refuses a partial set")
     s.add_argument("dir", help="the directory a backup was written into")
     s.add_argument("--force", action="store_true", help="replace an existing state (it is moved beside the new one); stop the shell first")
     s.set_defaults(fn=cmd_restore)

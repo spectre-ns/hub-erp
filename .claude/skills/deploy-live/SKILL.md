@@ -10,9 +10,16 @@ Everything else in this skill touches the live hub, so the same holds for a back
 person on the live hub (approve, sign, release as bob or carol) as part of a deployment.
 
 The live hub is the Compose service `hub` (container `hub-erp`, `http://localhost:8080`), built from the clone that
-holds `docker-compose.yml` and `.env`. Its state is the `hub-state` volume (`/hub/state`); `./frames` and
-`./profiles` are bind-mounted from that clone, and a release writes the released SOP texts into `./frames`. The
-first start bootstraps; later starts run `hubproto init` and `hubproto status --check` (`docker/entrypoint.sh`).
+holds `docker-compose.yml` and `.env`. Its state is the `hub-state` volume (`/hub/state`) and its Frames the
+`hub-frames` volume (`/hub/frames`): a release writes the released SOP texts into the volume, never into the clone,
+and nothing is mounted from the clone (issue #5). The image's Frames only fill a new hub's volume; a change to the
+repository's Frames reaches a running hub through a change order, not through a deployment. The first start
+bootstraps; later starts run `hubproto init` and `hubproto status --check` (`docker/entrypoint.sh`).
+
+A hub set up before issue #5 still bind-mounts the clone's `./frames`, and its live policy is the uncommitted changes
+under `frames/` there. Deploying the commit that brings the volume to such a hub is not this recipe: it is the move in
+`docs/rollout/frames-volume.md`, which copies the Frames into the volume first, with its own checks and rollback.
+The pre-checks below tell the two apart.
 An earlier rollout with its rehearsal and a tried recipe: `docs/rollout/cc2.md`.
 
 ## Deploy
@@ -24,7 +31,10 @@ later steps where they appear as `<old commit>` and `<backup name>`.
 Run from the clone the live hub is built from, on the branch that tracks `origin/main`:
 
 ```bash
+docker inspect -f '{{range .Mounts}}{{if eq .Destination "/hub/frames"}}{{.Type}} {{.Name}}{{end}}{{end}}' hub-erp
+                                     # "volume <project>_hub-frames"; "bind" means: stop, docs/rollout/frames-volume.md
 git status --short                   # must be empty: see "Pitfalls" for changes under frames/
+git rev-parse --abbrev-ref '@{upstream}'   # must print origin/main, or `git pull` in step 4 fails: ask the user
 git fetch origin
 git rev-parse HEAD                   # the old commit: what runs now; write it down for a rollback
 git log --oneline HEAD..origin/main  # what the deployment brings; tell the user
@@ -55,7 +65,10 @@ git log --oneline HEAD..origin/main  # what the deployment brings; tell the user
    ls <backups dir>/<backup name>/backup.json     # the copy is there
    ```
 
-4. **Update and rebuild**, right after one another (the bind-mounted `./frames` changes with the checkout):
+   The backup holds the state and the hub's Frames (`frames (N files)` in its output). `<backups dir>/<backup name>`
+   must not exist before the `cp`, or the copy lands inside it.
+
+4. **Update and rebuild**, right after one another:
 
    ```bash
    git pull --ff-only
@@ -94,7 +107,9 @@ Code first, state only if needed:
    docker compose build hub && docker compose up -d hub
    ```
 
-   Then the checks above, and `docker compose exec hub hubproto status` to see the release in force. Tell the user;
+   Then the checks above, and `docker compose exec hub hubproto status` to see the release in force. Rolling back
+   to a commit from before the frames volume (issue #5) is the rollback in `docs/rollout/frames-volume.md`, not this:
+   the older compose file reads the clone's `./frames`, so the volume's Frames must be copied back there first. Tell the user;
    `main` still has the change, so a fix or a revert goes through a PR. The clone is now detached: switch it back to
    its `main` branch before the next deployment.
 2. **Restore the backup** only when the new code changed the state in a way the old code cannot use (a check above
@@ -113,15 +128,20 @@ Code first, state only if needed:
    ```
 
    `restore --force` refuses a partial backup and sets the replaced state aside inside the volume
-   (`/hub/state/.before-restore-<time>`), because `/hub/state` is a mount point. The `.bootstrapped` marker is not
+   (`/hub/state/.before-restore-<time>`), because `/hub/state` is a mount point. It also puts the backup's Frames into
+   the frames volume (the replaced ones in `/hub/frames/.before-restore-<time>/`) and says whether they match the
+   restored release; a backup of a running hub can show drift there (stop the hub for a consistent backup). The `.bootstrapped` marker is not
    in a backup (issue #14); without the `touch` the next start takes the first-start path (harmless, but it tries to
    seed again). Drop the `touch` once #14 is fixed. Then run the checks.
 
 ## Pitfalls
 
-- **Changes under `frames/` in the deploy clone** are usually the live hub's own releases (it writes released texts
-  into the bind mount). Never `git checkout`, `git stash` or `git clean` them away; show the user and let them decide
-  (commit them to `main` through a PR, as `docs/rollout/cc2.md` did).
+- **Changes under `frames/` in the deploy clone**: on a hub with the frames volume, nothing writes there, so they
+  are someone's edits; show the user. On a hub not yet moved (the pre-check printed `bind`), they are the live hub's
+  own releases: never `git checkout`, `git stash` or `git clean` them away outside the move in
+  `docs/rollout/frames-volume.md`, which copies them into the volume first.
+- `docker compose down -v` deletes the hub's Frames with its state. Never use `docker-compose.frames-dir.yml` on the
+  live hub: it is a separate development hub (`hub-dev`).
 - `docker compose up -d` without `build` reuses the old image: always build first.
 - Rebuild only the `hub` image. `collabora`, `cad-worker` and `ollama-relay` are not part of a code deployment;
   do not recreate them unless the change is about them.
