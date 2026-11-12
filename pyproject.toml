@@ -1,7 +1,12 @@
 [project]
 name = "hubproto"
 version = "0.1.0"
-description = "Prototype: Frames compile to a policy release; Ops run with Guards, Gates and Tracks; Cogs are team members."
+description = "Open-source ERP and quality management system where SOPs are compiled into the configuration and AI agents (cogs) work under the same rules as people."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["erp", "qms", "quality-management", "iso-9001", "iso-13485", "sop", "change-control", "document-control",
+            "ai-agents", "llm", "governance", "audit-trail", "electronic-signatures", "workflow"]
 requires-python = ">=3.12"
 dependencies = []
 
@@ -15,7 +20,7 @@ dev = ["pytest>=8", "pytest-xdist>=3.5"]  # development only (requirements-dev.t
 hubproto = "hubproto.cli:main"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

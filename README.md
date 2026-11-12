@@ -1,13 +1,73 @@
-# hubproto: a governed ERP on Frames, Cogs, Ops, Guards, Gates and Tracks
+# hub-erp: an open-source ERP and quality management system where your SOPs are the configuration, and AI agents work under the same rules as people
 
-A from-scratch prototype of the Intelligence Hub ERP plan. Prose policy
-documents (Frames) compile into an immutable **policy release**; every record
-type's workflow is derived from its SOP; business processes run as Ops under
-that release with **Guards**, **Gates** and **Tracks**; **Cogs** are team members
-that get routed work and messages, file records, and approve within fixed
-criteria. One record system and one document management system (DMS) span
-every module. Standard-library Python, SQLite and files, packaged in a
-single Docker image.
+**hub-erp** is an open-source, self-hosted ERP and quality management system (QMS) built around one idea: the
+procedures you already write — SOPs, policies, work instructions — should *be* the system's configuration, not a
+description of it. Change a sentence in a policy, put the change through review and approval, and the system's
+permissions, routing, approval limits and workflows change with it. AI agents ("cogs") take on routine work beside
+your people, as accountable team members: they hold roles, follow the same procedures, act only within criteria the
+policy sets, and leave the same signed record a person would.
+
+It is a working prototype, built to explore how far that idea goes in a real business system: purchasing, inventory,
+document control, change control, nonconformances and CAPA, complaints, internal audits, management review, design
+control, calibration and training.
+
+## What it attempts
+
+- **SOPs as the single source of truth.** Policies are written in plain prose. The hub compiles them into the rules
+  it enforces — every rule cites the sentence it came from — and a released policy version is immutable and
+  content-addressed. An edit made in Settings or one of the editors becomes a change on a change order, and a cog
+  writes it back into the SOP's prose for review, so the configuration never drifts away from the procedures. A
+  picture put into an SOP is a question for a person, and a citation of another document is checked, linked, and
+  flagged to the SOP's owner when the cited document is retired or superseded.
+- **AI agents as governed team members.** Cogs are members of the organization with roles, like anyone else, and no
+  outsized permissions. Senior cogs (hosted models) read policy changes and propose the configuration they imply;
+  junior cogs (local models) review changes, answer questions and take routine approvals — each within criteria a
+  guard checks without any model, so the impact of a wrong judgement stays small. A cog never signs a change to the
+  system.
+- **Change control for the system itself.** Every configuration change goes through a change order: the cogs compile
+  the diff and raise questions, a review panel weighs in, people decide each item (a widening of anyone's authority
+  needs two policy owners, and whoever made a change never decides it alone), the change order is signed, and a
+  deterministic release — no AI in any step that changes the system — puts exactly what was signed into force.
+- **Evidence by default.** Every step of every process lands on an append-only, chained, signed Track; decisions are
+  electronic signatures that record who decided, what they saw and what they meant. The design aims at what quality
+  standards such as ISO 9001 and ISO 13485 expect of records and signatures.
+- **People where judgement matters.** Routine, well-bounded work flows to cogs; anything outside their criteria goes to
+  a person, with the reason shown: each item's run page explains, rule by rule, who its approval went to and why.
+
+## Who it is for
+
+- Organizations in quality-driven and regulated industries — manufacturing, engineering, medical devices — that want
+  agents to take on routine work without giving up control or traceability.
+- Developers and researchers exploring how to govern LLM agents inside business systems: policy-as-prose, guardrails
+  that are not models, human approval of configuration, and audit trails that hold up.
+
+hub-erp is a prototype: it has not been validated for production or regulated use, and adopting it for that would
+mean validating it as your own quality system requires.
+
+## Make it yours
+
+hub-erp is released under the [MIT license](LICENSE). Every organization's processes are different, so the intent is
+that you take this code as a starting point and shape it — the SOPs, the record types, the workflows and the code
+itself — around the way your business actually works. The MIT license lets you do that and keep your changes to
+yourself: you are free to modify it for your own processes without publishing those modifications. If you build
+something you would like to share, contributions are warmly welcome, but never required. (Do keep the license notice
+in copies of the code.)
+
+## How it works: six parts
+
+| Part | What it is |
+|---|---|
+| **Frames** | SOPs, policies and work instructions in prose, compiled into an immutable **policy release** |
+| **Cogs** | AI team members with roles: senior cogs compile policy changes, junior cogs review and do routine work |
+| **Ops** | Business processes, run as workflows under the release in force; the hub's own automations are Ops too |
+| **Guards** | Deterministic checks with no model: grammar and grounding, consistency, widenings, document references, permissions, criteria |
+| **Gates** | Where a person, a cog within its criteria, or a committee decides; each decision is an electronic signature |
+| **Tracks** | The append-only, chained, signed record of every run |
+
+One record system and one document management system (DMS) span every module. Standard-library Python, SQLite and
+files, packaged in a single Docker image. Developer notes: [DEV-NOTES.md](DEV-NOTES.md); for coding agents:
+[AGENTS.md](AGENTS.md); the design of change control: [docs/design/change-control.md](docs/design/change-control.md);
+the user manual: [docs/manual/](docs/manual/).
 
 ## Run it
 
@@ -417,7 +477,7 @@ run counts.
 | A release is deterministic and content-addressed | `release.py`: SHA-256 of the rendered bundle without citations; a no-op edit yields the same digest |
 | Changes are gated by people; widenings need two | `compile.py`: per-change decisions; widenings need two policy owners |
 | Every record type has a workflow derived from its SOP | `release.render_workflow`: states, human and automatic transitions, SLAs, rejection returns from the process section |
-| Runs pin the release they started on | `runner.py`: a run pins the digest at submission and finishes on it after a cutover |
+| Items follow the release in force from their next move | `runner.py`: a run keeps its state when a new release comes into force and follows that release from its next move; state maps move items out of statuses a release removes |
 | One record system for all modules | `kernel.py`: types, numbering, states, typed links, labels, holds, history; `config/record-types.json` |
 | A DMS with classes, versions, check-out and attachments | `dms.py`: blob store, versions, controlled/evidence/external/working/template classes, snapshots with signature pages, email and upload intake |
 | Cogs are team members | The org model lists `ap-reviewer`, `doc-reviewer` and `quality-assistant` as members with roles; they receive routed approvals, DMs and email, file records, and approve only within `## Approval criteria` |
@@ -449,3 +509,8 @@ docker/, Dockerfile, docker-compose.yml, docker-compose.frames-dir.yml (developm
 * Everything runs in one process with files and SQLite. The production shape
   (Collab Hub run API, Harbor digests, OpenFGA, Postgres, Keycloak, Collabora,
   Tika, Gotenberg) keeps the same seams.
+
+## License
+
+MIT — see [LICENSE](LICENSE). Copyright (c) 2026 The hub-erp authors. You may use, modify and distribute hub-erp,
+including in private, modified form for your own business processes; keep the license notice in copies of the code.
