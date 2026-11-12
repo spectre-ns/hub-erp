@@ -1,5 +1,5 @@
 {
-  "_comment": "hub-erp script worker (issue #34): an allow-list of the calls a pure-Python computation and the worker's Unix-socket server need. Everything else fails with EPERM. socket() is allowed only for AF_UNIX (the hub reaches the worker over a Unix socket; network_mode is none). There is no connect, ptrace, mount, umount2, unshare, setns, bpf, execveat, socketpair, chroot, pivot_root, module loading or kexec. execve, fork and clone stay allowed here because the container needs them to start the worker and each run's python: a profile applies to the whole container, so it cannot say 'no execve after start'. Each run's process closes that gap itself: hubproto/script_sandbox.py installs its own, stricter seccomp filter (no execve, execveat, fork, vfork, clone, socket, connect, kill, prctl, ...) and a Landlock ruleset (read only the standard library, read and write only its own folder) before the script's first line. The landlock_* calls are allowed here for that.",
+  "_comment": "hub-erp script worker (issue #34): an allow-list of the calls a pure-Python computation and the worker's Unix-socket server need. Everything else fails with EPERM. socket() is allowed only for AF_UNIX (the hub reaches the worker over a Unix socket; network_mode is none). connect is allowed so that the worker and its healthcheck can ask the worker's own socket whether it answers: with socket limited to AF_UNIX and no network, it reaches only Unix sockets in the container. There is no ptrace, mount, umount2, unshare, setns, bpf, execveat, socketpair, chroot, pivot_root, module loading or kexec. execve, fork and clone stay allowed here because the container needs them to start the worker and each run's python: a profile applies to the whole container, so it cannot say 'no execve after start'. Each run's process closes that gap itself: hubproto/script_sandbox.py installs its own, stricter seccomp filter (no execve, execveat, fork, vfork, clone, socket, connect, kill, prctl, ...) and a Landlock ruleset (read only the standard library, read and write only its own folder) before the script's first line. The landlock_* calls are allowed here for that.",
   "defaultAction": "SCMP_ACT_ERRNO",
   "defaultErrnoRet": 1,
   "archMap": [
@@ -32,6 +32,7 @@
         "clone3",
         "close",
         "close_range",
+        "connect",
         "creat",
         "dup",
         "dup2",

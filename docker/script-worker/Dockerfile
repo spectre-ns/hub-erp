@@ -16,9 +16,9 @@ RUN printf '"""script worker package"""\n' > /worker/hubproto/__init__.py \
     && rm -rf /usr/local/lib/python3*/site-packages/pip* /usr/local/bin/pip* /usr/local/lib/python3*/ensurepip \
     && rm -f /bin/sh /bin/dash /bin/bash /usr/bin/sh /usr/bin/dash /usr/bin/bash
 USER 10001:10001
-# Healthy only while the hub could use the socket: there, a socket, the worker's, mode 0666, its directory searchable.
-# (A connect would be the plainest check, but the container's seccomp profile has no connect; the worker also exits by
-# itself when the socket goes wrong, so the restart policy brings a fresh one.)
-HEALTHCHECK --interval=30s --timeout=3s CMD ["python", "-E", "-s", "-c", "import os, sys; sys.path.insert(0, '/worker'); from hubproto.scriptworker import socket_problem; why = socket_problem(os.environ['HUBPROTO_SCRIPT_SOCKET']); print(why or 'ok'); sys.exit(1 if why else 0)"]
+# Healthy only while the worker answers a health request on its own socket within 3 s (the container profile allows
+# connect, for Unix sockets only: there is no network) and the socket is one the hub could use. The worker also exits
+# by itself when it stops answering, its limits change or its socket goes wrong, so the restart policy brings a fresh one.
+HEALTHCHECK --interval=30s --timeout=5s CMD ["python", "-E", "-s", "-c", "import os, sys; sys.path.insert(0, '/worker'); from hubproto.scriptworker import answers, socket_problem; p = os.environ['HUBPROTO_SCRIPT_SOCKET']; why = socket_problem(p) or answers(p, 3.0); print(why or 'ok'); sys.exit(1 if why else 0)"]
 # -E -s: no PYTHON* variables, no user site (-I would also drop /worker from sys.path, which -m needs).
 CMD ["python", "-E", "-s", "-m", "hubproto.scriptworker"]

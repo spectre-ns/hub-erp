@@ -98,6 +98,8 @@ def new_co(hub, who="alice", title="Tune by script"):
     ("match ():\n    case object(__class__=t):\n        pass", "Line 2: a class pattern in match is not allowed"),
     ("match config:\n    case dict(schema=s):\n        pass", "Line 2: a class pattern in match is not allowed"),
     ("f = lambda: 0\nx = '{0.__globals__}'.format(f)", "Line 2: the text '{0.__globals__}' holds two underscores together"),
+    ("x = '{0.gi_frame}'.format(config)", "Line 1: .format is not allowed: it reads attributes by names written in the text"),
+    ("x = '{a}'.format_map(config)", "Line 1: .format_map is not allowed"),
     ("from json import *", "Line 1: from json import * is not allowed"),
     ("globals()", "Line 1: globals is not allowed"),
     ("locals()", "Line 1: locals is not allowed"),
@@ -157,11 +159,11 @@ def test_the_tripwire_stops_what_gets_past_the_check(tmp_path, source, event):
     assert "signing secret" not in json.dumps(rec), "the secret was not read"
 
 
-def test_the_tripwire_allows_the_runs_own_temporary_folder():
-    src = (SUBCLASSES + "['__builtins__']['open']('scratch.txt', 'w').write('kept')\n"
-           "result = {'read': " + SUBCLASSES + "['__builtins__']['open']('scratch.txt').read()}")
+def test_the_run_writes_no_file_even_in_its_own_folder():
+    # The tripwire allows its own folder; the kernel's allow-list opens files only to read (a computation needs no file).
+    src = SUBCLASSES + "['__builtins__']['open']('scratch.txt', 'w').write('kept')\nresult = {}"
     rec = scriptworker.run_local(src, SNAP, check=False)
-    assert rec["exit"] == "ok" and json.loads(rec["result"]) == {"read": "kept"}, rec
+    assert rec["exit"] == "error" and "PermissionError" in rec["detail"], rec["detail"]
 
 
 def test_a_script_cannot_import_what_is_off_the_list_even_past_the_check():
@@ -443,8 +445,8 @@ def test_the_hub_image_is_deployed_and_compose_hardens_the_worker():
     prof = json.loads((ROOT / "docker" / "script-worker" / "seccomp.json").read_text())
     assert prof["defaultAction"] == "SCMP_ACT_ERRNO"
     allowed = {n for s in prof["syscalls"] if s["action"] == "SCMP_ACT_ALLOW" and not s.get("args") for n in s["names"]}
-    for name in ("connect", "socket", "socketpair", "ptrace", "mount", "umount2", "unshare", "setns", "bpf", "execveat", "kexec_load",
-                 "init_module", "pivot_root", "chroot"):
+    for name in ("socket", "socketpair", "ptrace", "mount", "umount2", "unshare", "setns", "bpf", "execveat", "kexec_load",
+                 "init_module", "pivot_root", "chroot", "setpriority", "syslog", "sched_setaffinity", "ioprio_set"):
         assert name not in allowed, name
     [sock] = [s for s in prof["syscalls"] if s["names"] == ["socket"]]
     assert sock["args"] == [{"index": 0, "value": 1, "op": "SCMP_CMP_EQ"}], "socket only for AF_UNIX"
@@ -561,14 +563,16 @@ def dirfd():  # the reviewer's 1(b): a deep cwd in the run's folder, dir_fd on a
 attempt("dir_fd", dirfd)
 attempt("list /", lambda: os.listdir("/"))
 attempt("other runs' /proc", lambda: [p for p in os.listdir("/proc") if p.isdigit()])
-attempt("own folder", lambda: (os.write(os.open("mine.txt", os.O_WRONLY | os.O_CREAT, 0o600), b"ok"), os.read(os.open("mine.txt", os.O_RDONLY), 2)))
+attempt("own folder", lambda: os.write(os.open("mine.txt", os.O_WRONLY | os.O_CREAT, 0o600), b"ok"))
+attempt("own folder listed", lambda: os.listdir("."))
 attempt("stdlib", lambda: len(os.read(os.open(os.path.join(os.path.dirname(os.__file__ if False else g["__file__"]), "json", "__init__.py"), os.O_RDONLY), 10)))
 """)
     finally:
         os.environ.pop("FAKE_ANTHROPIC_API_KEY", None)
     for name in ("parent environ", "hub cwd", "secret", "write outside", "builtins open", "write /tmp", "dir_fd", "list /", "other runs' /proc"):
         assert got[name] == "refused PermissionError", (name, got[name])
-    assert got["own folder"] == "WORKED (2, b'ok')" and got["stdlib"] == "WORKED 10", got
+    assert got["own folder"] == "refused PermissionError", "open only to read, even in its own folder"
+    assert got["own folder listed"] == "WORKED []" and got["stdlib"] == "WORKED 10", got
     assert not outside.exists() and not in_tmp.exists()
     assert "REVIEW-FAKE" not in json.dumps(got) and "signing-secret" not in json.dumps(got)
 
@@ -829,9 +833,7 @@ def test_n2_mode_owner_time_xattr_truncate_and_inotify_are_refused_by_the_kernel
     got = escaped(f"""
 std = [p for p in sys.path if p.endswith("lib-dynload")][0]
 fd = os.open(std, os.O_RDONLY)
-os.makedirs("/".join(["d"] * 20))
-os.chdir("/".join(["d"] * 20))
-up = "../" * (std.count("/") + 1)
+up = "../" * std.count("/")
 attempt("chmod secret 0644 via dir_fd", lambda: os.chmod(up + {str(secret).lstrip('/')!r}, 0o644, dir_fd=fd))
 attempt("chmod secret", lambda: os.chmod({str(secret)!r}, 0o644))
 attempt("chown", lambda: os.chown({str(secret)!r}, os.getuid(), os.getgid()))
@@ -839,9 +841,9 @@ attempt("utime", lambda: os.utime({str(secret)!r}, (0, 0)))
 attempt("setxattr", lambda: os.setxattr({str(secret)!r}, "user.planted", b"1"))
 attempt("removexattr", lambda: os.removexattr({str(secret)!r}, "user.planted"))
 attempt("truncate", lambda: os.truncate({str(secret)!r}, 0))
-attempt("own file", lambda: os.write(os.open("/".join([".."] * 20) + "/mine", os.O_WRONLY | os.O_CREAT, 0o600), b"ok"))
-attempt("fchmod own", lambda: os.fchmod(os.open("/".join([".."] * 20) + "/mine", os.O_RDONLY), 0o644))
-attempt("ftruncate own", lambda: os.ftruncate(os.open("/".join([".."] * 20) + "/mine", os.O_WRONLY), 0))
+attempt("own file", lambda: os.write(os.open("mine", os.O_WRONLY | os.O_CREAT, 0o600), b"ok"))
+attempt("fchmod stdlib fd", lambda: os.fchmod(os.open(std, os.O_RDONLY), 0o755))
+attempt("ftruncate", lambda: os.ftruncate(1, 0))
 def notify(name):
     ctypes = sys.modules["importlib"].import_module("ctypes")
     libc = ctypes.CDLL(None, use_errno=True)
@@ -850,10 +852,10 @@ def notify(name):
 attempt("inotify_init1", lambda: notify("inotify_init1"))
 attempt("fanotify_init", lambda: notify("fanotify_init"))
 """)
-    for name in ("chmod secret 0644 via dir_fd", "chmod secret", "chown", "utime", "setxattr", "removexattr", "truncate", "fchmod own"):
+    for name in ("chmod secret 0644 via dir_fd", "chmod secret", "chown", "utime", "setxattr", "removexattr", "truncate",
+                 "fchmod stdlib fd", "own file", "ftruncate"):
         assert got[name] == "refused PermissionError", (name, got[name])
     assert got["inotify_init1"] == "WORKED (-1, 1)" and got["fanotify_init"] == "WORKED (-1, 1)", got
-    assert got["own file"] == "WORKED 2" and got["ftruncate own"] == "WORKED None", got
     assert oct(secret.stat().st_mode & 0o777) == "0o600" and secret.read_text() == "the hub's signing secret"
 
 
@@ -861,8 +863,6 @@ def test_n2_the_tripwire_honours_dir_fd():
     rec = scriptworker.run_local(ESCAPE + """
 std = [p for p in sys.path if p.endswith("lib-dynload")][0]
 fd = os.open(std, os.O_RDONLY)
-os.makedirs("a/b")
-os.chdir("a/b")
 os.chmod("x", 0o644, dir_fd=fd)
 """, SNAP, check=False)
     assert rec["exit"] == "tripwire" and rec["tripped"]["event"] == "os.chmod" and "relative to a descriptor" in rec["detail"], rec["detail"]
@@ -900,7 +900,7 @@ def test_n2_a_run_cannot_make_the_socket_unusable_and_the_worker_notices_if_anyt
 
 def test_n2_the_healthcheck_asks_whether_the_hub_could_use_the_socket():
     image = (ROOT / "docker" / "script-worker" / "Dockerfile").read_text()
-    assert "socket_problem(os.environ['HUBPROTO_SCRIPT_SOCKET'])" in image
+    assert "why = socket_problem(p) or answers(p, 3.0)" in image, "the healthcheck asks the worker itself, over its socket"
 
 
 @pytest.mark.parametrize("cap,ok", [(1, False), (2, False), (3, True)])
@@ -976,3 +976,262 @@ def test_a_run_waits_for_the_one_before_it_only_so_long(monkeypatch):
     with pytest.raises(scriptworker.Busy, match="busy for 0.3 seconds"):
         scriptworker.run_local("result = {}", SNAP)
     t.join()
+
+
+
+# ------------------------------------------------------------------ the third review of PR #55 (R1 to R3)
+# REPRESENTATIVE uses every allowed module the way a configuration script would, with memory growth, recursion,
+# exceptions, codecs and much printing. It is what the run's seccomp allow-list was measured against: traced with
+# strace -f in the worker image, the run made only brk, mmap, munmap, read, write and exit_group after the filter.
+REPRESENTATIVE = r'''
+import json, math, re, datetime, decimal, collections, itertools, functools, statistics, string
+import collections.abc
+data = json.loads(json.dumps(config))
+roles = collections.Counter(r for m in data.get("members", []) for r in m.get("roles", []))
+od = collections.OrderedDict(sorted(roles.items())); dd = collections.defaultdict(list); dq = collections.deque(range(10), maxlen=5)
+cm = collections.ChainMap({"a": 1}, {"b": 2}); ud = collections.UserDict(a=1)
+isinstance(od, collections.abc.Mapping)
+pat = re.compile(r"(\w+)-(\d+)"); found = pat.findall("ab-1 cd-22 ef-333"); subbed = re.sub(r"\d", "#", "a1b2c3")
+now = datetime.datetime.now(); utc = datetime.datetime.now(datetime.UTC); parsed = datetime.datetime.strptime("2026-11-12 10:00", "%Y-%m-%d %H:%M")
+iso = datetime.date.fromisoformat("2026-11-12").isoformat(); delta = (parsed - datetime.datetime(2026, 1, 1)).days
+with decimal.localcontext() as ctx:
+    ctx.prec = 30
+    d = (decimal.Decimal("10000") * decimal.Decimal("1.0375")).quantize(decimal.Decimal("0.01"), rounding=decimal.ROUND_HALF_UP)
+grouped = {k: len(list(v)) for k, v in itertools.groupby(sorted("mississippi"))}
+combos = len(list(itertools.combinations(range(12), 4))); prod = list(itertools.product("ab", repeat=3))
+batches = list(itertools.batched(range(10), 3)); acc = list(itertools.accumulate(range(10)))
+@functools.lru_cache(maxsize=None)
+def fib(n):
+    return n if n < 2 else fib(n - 1) + fib(n - 2)
+@functools.total_ordering
+class Ver:
+    def __init__(self, v):
+        self.v = v
+    def __eq__(self, o):
+        return self.v == o.v
+    def __lt__(self, o):
+        return self.v < o.v
+    def __repr__(self):
+        return "Ver(%r)" % self.v
+vers = sorted([Ver(3), Ver(1), Ver(2)])
+red = functools.reduce(lambda a, b: a * b, range(1, 20)); part = functools.partial(int, base=2)("1011")
+xs = [math.sin(i) * 100 for i in range(1000)]
+st = (statistics.mean(xs), statistics.median(xs), statistics.stdev(xs), statistics.quantiles(xs, n=4),
+      statistics.correlation(xs, list(range(1000))), statistics.linear_regression(list(range(1000)), xs).slope,
+      statistics.NormalDist(0, 1).samples(5, seed=1), statistics.NormalDist.from_samples(xs[:50]).mean)
+tmpl = string.Template("$who approves under $limit").substitute(who="bob", limit=8000); cap = string.capwords("hello world")
+big = list(range(2 * 10 ** 6)); bigd = {i: str(i) for i in range(2 * 10 ** 5)}; del big, bigd
+def deep(n):
+    return 0 if n == 0 else 1 + deep(n - 1)
+depth = deep(800)
+def gen():
+    yield from range(5)
+g = list(gen())
+try:
+    {}["missing"]
+except KeyError as e:
+    caught = str(e)
+enc = ["é".encode(c) for c in ("utf-8", "latin-1", "utf-16", "cp1252", "ascii" if False else "utf-32")]
+dec = b"caf\xe9".decode("latin-1") + b"\xff\xfe".decode("utf-16")
+for i in range(20000):
+    print("line", i)
+result = {"roles": dict(od), "found": found, "subbed": subbed, "now": now.isoformat()[:4], "parsed": str(parsed), "iso": iso,
+          "delta": delta, "d": str(d), "grouped": grouped, "combos": combos, "batches": [list(b) for b in batches], "fib": fib(80),
+          "vers": repr(vers), "red": red, "part": part, "st": [str(x)[:12] for x in st], "tmpl": tmpl, "cap": cap, "depth": depth,
+          "caught": caught, "enc": [len(x) for x in enc], "dec": dec, "x": config}
+'''
+
+
+def test_r1_a_representative_script_runs_under_the_allow_list():
+    rec = scriptworker.run_local(REPRESENTATIVE, json.dumps({"schema": "hub-erp/config/1", "members": [{"principal": "a", "roles": ["x"]}]}),
+                                 {"seconds": 60})
+    assert rec["exit"] == "ok", (rec["detail"], rec["stderr"][-400:], rec["raw_output"][-400:])
+    got = json.loads(rec["result"])
+    assert got["fib"] == 23416728348467685 and got["d"] == "10375.00" and got["depth"] == 800 and got["dec"] == "café"
+    assert rec["stdout_dropped"] > 0, "it printed past the cap"
+
+
+def _bpf(prog, nr, args=(0,) * 6, arch=0xC000003E):
+    """A classic-BPF interpreter for the run's filter: what the kernel would decide."""
+    import struct
+
+    data = struct.pack("<iIQ6Q", nr, arch, 0, *[x & 0xFFFFFFFFFFFFFFFF for x in args])
+    a, pc = 0, 0
+    while True:
+        code, jt, jf, k = prog[pc]
+        if code == 0x20:
+            a, pc = struct.unpack_from("<I", data, k)[0], pc + 1
+        elif code in (0x15, 0x35, 0x45):
+            hit = a == k if code == 0x15 else (a >= k if code == 0x35 else bool(a & k))
+            pc += 1 + (jt if hit else jf)
+        elif code == 0x06:
+            return {0x7FFF0000: "allow", 0x80000000: "kill"}.get(k, "deny" if k == 0x00050001 else hex(k))
+        else:
+            raise AssertionError(f"unexpected BPF instruction {code:#x}")
+
+
+@pytest.mark.parametrize("machine,arch,numbers", [
+    ("x86_64", 0xC000003E, {"prlimit64": 302, "setrlimit": 160, "setpriority": 141, "sched_setaffinity": 203, "sched_setscheduler": 144,
+                            "sched_setparam": 142, "sched_setattr": 314, "ioprio_set": 251, "syslog": 103, "kill": 62, "ptrace": 101,
+                            "execve": 59, "socket": 41, "connect": 42, "chmod": 90, "mkdir": 83, "unlink": 87, "prctl": 157,
+                            "seccomp": 317, "process_vm_readv": 310, "move_pages": 279, "memfd_create": 319, "splice": 275}),
+    ("aarch64", 0xC00000B7, {"prlimit64": 261, "setrlimit": 164, "setpriority": 140, "sched_setaffinity": 122, "ioprio_set": 30,
+                             "syslog": 116, "kill": 129, "execve": 221, "socket": 198, "prctl": 167}),
+])
+def test_r1_the_filter_is_an_allow_list_that_denies_by_default(machine, arch, numbers):
+    from hubproto import script_sandbox as sb
+
+    prog = sb.filter_program(machine)
+    for name, nr in numbers.items():
+        assert _bpf(prog, nr, arch=arch) == "deny", name
+    assert _bpf(prog, 999, arch=arch) == "deny", "a call it does not know: denied"
+    col = 0 if machine == "x86_64" else 1
+    for name, nums in sb.ALLOWED_CALLS.items():
+        if nums[col] is not None:
+            assert _bpf(prog, nums[col], arch=arch) == "allow", name
+    fcntl, ioctl, openat = sb.FCNTL["fcntl"][col], sb.IOCTL["ioctl"][col], sb.OPEN_READ_ONLY["openat"][0][col]
+    for cmd, want in ((1, "allow"), (2, "allow"), (3, "allow"), (1030, "allow"), (8, "deny"), (15, "deny"), (10, "deny"),
+                      (1024, "deny"), (1026, "deny"), (0, "deny"), ((1 << 32) | 1, "deny")):
+        assert _bpf(prog, fcntl, (3, cmd, 0, 0, 0, 0), arch) == want, ("fcntl", cmd)
+    assert _bpf(prog, fcntl, (3, 4, 0o4000, 0, 0, 0), arch) == "allow", "F_SETFL O_NONBLOCK"
+    assert _bpf(prog, fcntl, (3, 4, 0o20000, 0, 0, 0), arch) == "deny", "F_SETFL O_ASYNC"
+    for req, want in ((0x5401, "allow"), (0x5451, "allow"), (0x5450, "allow"), (0x8901, "deny"), (0x8902, "deny"), (0x5452, "deny"),
+                      (0x541B, "deny")):
+        assert _bpf(prog, ioctl, (3, req, 0, 0, 0, 0), arch) == want, ("ioctl", hex(req))
+    assert _bpf(prog, openat, (-100, 0, 0, 0, 0, 0), arch) == "allow", "openat to read"
+    for flag in (0o1, 0o2, 0o100, 0o1000, 0o2000):
+        assert _bpf(prog, openat, (-100, 0, flag, 0, 0, 0), arch) == "deny", ("openat", oct(flag))
+    assert _bpf(prog, 0, arch=0x40000003) == "kill", "another architecture"
+    if machine == "x86_64":
+        assert _bpf(prog, 0x40000000 | 41, arch=arch) == "kill", "the x32 ABI"
+
+
+def _same_user_pids() -> list[int]:
+    out = []
+    for p in os.listdir("/proc"):
+        if p.isdigit():
+            try:
+                if os.stat(f"/proc/{p}").st_uid == os.getuid():
+                    out.append(int(p))
+            except OSError:
+                pass
+    return out[:200]
+
+
+@pytest.mark.parametrize("cap", [0, 5, 3])
+def test_r1_a_run_cannot_act_on_any_other_process_of_its_user(cap):
+    # The reviewer's s1/s2/s3/c4/c5, with the check and the tripwire off, at the kernel's own Landlock ABI and capped at
+    # 5 and 3 (no signal scoping). Each call asks for what is already so (the same limits, priority, CPUs; a signal
+    # that is ignored), so that even a filter that let it through would harm nothing here: it must still be EPERM.
+    import resource
+
+    me = os.getpid()
+    nofile, cpu = resource.getrlimit(resource.RLIMIT_NOFILE), resource.getrlimit(resource.RLIMIT_CPU)
+    prio, cpus = os.getpriority(os.PRIO_PROCESS, me), sorted(os.sched_getaffinity(me))
+    got = escaped(f"""
+resource = sys.modules["resource"]
+fcntl = sys.modules.get("fcntl") or sys.modules["importlib"].import_module("fcntl")
+pp = os.getppid()
+attempt("prlimit parent NOFILE", lambda: resource.prlimit(pp, resource.RLIMIT_NOFILE, {nofile!r}))
+attempt("prlimit parent CPU", lambda: resource.prlimit(pp, resource.RLIMIT_CPU, {cpu!r}))
+attempt("prlimit pid 1", lambda: resource.prlimit(1, resource.RLIMIT_NOFILE))
+others = {_same_user_pids()!r}
+res = []
+for p in others:
+    try:
+        resource.prlimit(p, resource.RLIMIT_NOFILE)
+        res.append(p)
+    except OSError:
+        pass
+out["prlimit any same-user pid"] = "WORKED " + str(res) if res else "refused PermissionError"
+attempt("setpriority parent", lambda: os.setpriority(os.PRIO_PROCESS, pp, {prio}))
+attempt("sched_setaffinity parent", lambda: os.sched_setaffinity(pp, {set(cpus)!r}))
+attempt("setrlimit own", lambda: resource.setrlimit(resource.RLIMIT_CORE, (0, 0)))
+r, w = os.pipe() if False else (0, 1)
+attempt("F_SETOWN parent", lambda: fcntl.fcntl(0, fcntl.F_SETOWN, pp))
+attempt("F_SETSIG", lambda: fcntl.fcntl(0, 10, 28))
+attempt("O_ASYNC", lambda: fcntl.fcntl(0, fcntl.F_SETFL, fcntl.fcntl(0, fcntl.F_GETFL) | os.O_ASYNC))
+attempt("F_SETLEASE stdlib", lambda: fcntl.fcntl(os.open(os.path.join([p for p in sys.path if p.endswith("lib-dynload")][0], ".."), os.O_RDONLY), 1024, 0))
+ctypes = sys.modules["importlib"].import_module("ctypes")
+libc = ctypes.CDLL(None, use_errno=True)
+libc.syscall.restype = ctypes.c_long
+def sc(*a):
+    return (libc.syscall(*[ctypes.c_long(x) for x in a]), ctypes.get_errno())
+attempt("ioprio_get parent", lambda: sc(252, 1, pp))
+attempt("syslog read", lambda: (libc.syscall(ctypes.c_long(103), ctypes.c_long(3), ctypes.create_string_buffer(256), ctypes.c_long(256)), ctypes.get_errno()))
+attempt("ioctl FIOSETOWN", lambda: (libc.ioctl(0, 0x8901, ctypes.byref(ctypes.c_int(pp))), ctypes.get_errno()))
+attempt("ioctl FIOASYNC", lambda: (libc.ioctl(0, 0x5452, ctypes.byref(ctypes.c_int(1))), ctypes.get_errno()))
+attempt("fcntl F_GETFD (allowed)", lambda: fcntl.fcntl(0, fcntl.F_GETFD))
+""", _abi_cap=cap)
+    for name in ("prlimit parent NOFILE", "prlimit parent CPU", "prlimit pid 1", "prlimit any same-user pid", "setpriority parent",
+                 "sched_setaffinity parent", "F_SETOWN parent", "F_SETSIG", "O_ASYNC", "F_SETLEASE stdlib"):
+        assert got[name] == "refused PermissionError", (name, got[name])
+    assert got["setrlimit own"] == "refused ValueError", "EPERM, which the resource module reports as ValueError"
+    for name in ("ioprio_get parent", "syslog read", "ioctl FIOSETOWN", "ioctl FIOASYNC"):
+        assert got[name] == "WORKED (-1, 1)", (name, got[name])
+    assert got["fcntl F_GETFD (allowed)"].startswith("WORKED"), got
+    assert resource.getrlimit(resource.RLIMIT_NOFILE) == nofile and os.getpriority(os.PRIO_PROCESS, me) == prio
+
+
+@pytest.mark.parametrize("name,body,event", [
+    ("e1 eval", 'x = g["__builtins__"]["eval"]("1+1")', "compile"),
+    ("e2 function new", 'def f():\n    return 7\nh = type(f)(f.__code__, {})', "function.__new__"),
+    ("e3 code replace", 'def f():\n    return 7\nc = f.__code__.replace(co_consts=(None, 9))', "code.__new__"),
+    ("e4 exec again", 'try:\n    1 / 0\nexcept ZeroDivisionError as e:\n    tb = e.__traceback__\n'
+                      'g["__builtins__"]["exec"](tb.tb_frame.f_code, {"__builtins__": {}})', "exec"),
+    ("e6 marshal", 'm = sys.modules["marshal"]\nc = m.loads(m.dumps((lambda: 5).__code__))', "marshal.loads"),
+])
+def test_r1_the_reviewers_catch_all_scripts_still_trip(name, body, event):
+    rec = scriptworker.run_local(ESCAPE + body + "\nresult = {}\n", SNAP, check=False)
+    assert rec["exit"] == "tripwire" and rec["tripped"]["event"] == event, (name, rec["exit"], rec["detail"][:200])
+
+
+def test_r1_the_worker_is_restarted_when_it_cannot_serve(tmp_path):
+    sock = tmp_path / "w.sock"
+    lost = []
+    server = scriptworker.serve_in_thread(socket_path=str(sock), on_lost=lost.append, answer_every=0.3, answer_within=0.5)
+    try:
+        assert scriptworker.answers(str(sock), 2.0) == ""
+        time.sleep(1.2)
+        assert not lost, "a worker that answers is left alone"
+        server.shutdown()  # it stops serving: the socket is still there, nothing answers on it
+        deadline = time.monotonic() + 8
+        while not lost and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert lost and "did not answer" in lost[0], lost
+    finally:
+        server.server_close()
+
+
+def test_r1_the_worker_notices_its_own_limits_changing(tmp_path):
+    import resource
+
+    sock = tmp_path / "w.sock"
+    lost = []
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    server = scriptworker.serve_in_thread(socket_path=str(sock), on_lost=lost.append)
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft - 1, hard))  # what a prlimit from outside would do
+        deadline = time.monotonic() + 5
+        while not lost and time.monotonic() < deadline:
+            time.sleep(0.05)
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+        server.shutdown()
+        server.server_close()
+    assert lost and "the worker's own limits changed (RLIMIT_NOFILE" in lost[0], lost
+
+
+def test_r2_the_reviewers_text_building_reads_no_attributes():
+    t1 = """import json
+u = "a_b"[1]
+p = "%c" % 95
+d = u * 2
+def gen():
+    yield ("{0.gi_frame.f_back.f_back.f_locals[setup][limits]}").format(g)
+g = gen()
+result = {"class_text": ("{0." + d + "class" + d + "}").format(())}
+"""
+    out = scriptcheck.check(t1)
+    assert any(".format is not allowed: it reads attributes by names written in the text" in r for r in out), out
+    assert any(".gi_frame" in r or "the text" in r for r in out), out

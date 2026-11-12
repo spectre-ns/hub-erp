@@ -9,15 +9,16 @@ standard library only. The protocol, every message a frame (8-byte big-endian le
 3. it **protects itself**, in the kernel, before any of the script is in the process. If any step fails it says so and
    exits, and the run is refused (fail closed):
    * hard limits (``resource.setrlimit``, soft and hard alike): CPU seconds, address space, file size, open files,
-     processes (none) and core files;
+     processes (none) and core files (the allow-list below then refuses setrlimit and prlimit64 altogether);
    * ``PR_SET_DUMPABLE`` 0: another process of the same user cannot open its ``/proc/<pid>/fd``, ``mem`` or
      ``environ``;
    * **Landlock** (the highest ABI the kernel has): from here on it may read only the standard library, the
      interpreter and this file, and read and write only its own temporary directory. Nothing else: not ``/proc``, not
      the hub's state, not the worker's socket. Also no TCP and, from ABI 6, no signals or abstract sockets outside it;
-   * **seccomp**: ``execve``/``execveat``, ``fork``/``vfork``/``clone``, ``socket``/``connect``/``bind``/...,
-     ``kill``, ``ptrace``, ``mount``, ``unshare``, ``setns``, ``bpf``, ``prctl`` (so nothing above is undone) and the
-     rest of ``BLOCKED`` fail with EPERM;
+   * **seccomp, as an allow-list** (``ALLOWED_CALLS``): every call not on it fails with EPERM, so nothing reaches
+     another process (``kill``, ``prlimit64``, ``setpriority``, ``fcntl(F_SETOWN)``), starts one, opens a connection,
+     changes metadata, or undoes the protection (``prctl``, ``seccomp``, ``setrlimit``); ``fcntl`` and ``ioctl`` only
+     for a few commands;
 4. it writes the **handshake** frame on the control descriptor (CTL_FD) and waits: the parent checks the protection
    itself (``/proc/<pid>/status``: Seccomp, filters, NoNewPrivs, and that ``/proc/<pid>`` is no longer the user's)
    before it sends anything of the script. What the handshake says was written before the script existed;
@@ -59,34 +60,52 @@ LIST_EVENTS = {"os.listdir", "os.scandir"}
 # Python modules the allowed modules import lazily (on first use, not at import): loaded before the restrictions.
 LAZY = ("_strptime", "traceback", "linecache", "copy", "fractions", "random", "numbers", "operator", "keyword",
         "reprlib", "heapq", "bisect", "contextlib", "enum", "types", "weakref", "abc", "textwrap", "warnings", "_colorize",
-        "tokenize", "token", "codecs", "unicodedata", "locale", "calendar", "encodings.idna", "_pydatetime", "_pydecimal", "_suggestions", "typing")
+        "tokenize", "token", "codecs", "unicodedata", "locale", "calendar", "encodings.idna", "_pydatetime", "_pydecimal", "_suggestions", "typing",
+        # text codecs, which bytes.decode and str.encode load on first use (another codec is refused: its import trips)
+        "encodings.utf_8", "encodings.utf_8_sig", "encodings.latin_1", "encodings.ascii", "encodings.utf_16",
+        "encodings.utf_16_le", "encodings.utf_16_be", "encodings.utf_32", "encodings.cp1252", "encodings.cp437",
+        "encodings.iso8859_15", "encodings.unicode_escape", "encodings.raw_unicode_escape", "encodings.hex_codec")
 WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
 EXIT_TRIPPED, EXIT_UNPROTECTED = 3, 4
 MAX_FRAME = 64 * 1024 * 1024
 
-# Calls the kernel filter refuses (x86_64 numbers, aarch64 numbers). Fork and clone included: the run starts nothing.
-# prctl and seccomp too: nothing set before the script (not dumpable, no_new_privs) can be undone by it.
-BLOCKED = {
-    "execve": (59, 221), "execveat": (322, 281), "fork": (57, None), "vfork": (58, None), "clone": (56, 220),
-    "clone3": (435, 435), "socket": (41, 198), "socketpair": (53, 199), "connect": (42, 203), "bind": (49, 200),
-    "listen": (50, 201), "accept": (43, 202), "accept4": (288, 242), "ptrace": (101, 117), "mount": (165, 40),
-    "umount2": (166, 39), "unshare": (272, 97), "setns": (308, 268), "bpf": (321, 280), "process_vm_readv": (310, 270),
-    "process_vm_writev": (311, 271), "kexec_load": (246, 104), "init_module": (175, 105), "finit_module": (313, 273),
-    "pivot_root": (155, 41), "chroot": (161, 51), "perf_event_open": (298, 241), "keyctl": (250, 219),
-    "add_key": (248, 217), "request_key": (249, 218), "userfaultfd": (323, 282), "io_uring_setup": (425, 425),
-    "open_tree": (428, 428), "move_mount": (429, 429), "fsopen": (430, 430), "fsmount": (432, 432),
-    "mount_setattr": (442, 442), "personality": (135, 92), "kill": (62, 129), "tkill": (200, 130), "tgkill": (234, 131),
-    "rt_sigqueueinfo": (129, 138), "rt_tgsigqueueinfo": (297, 240), "pidfd_open": (434, 434),
-    "pidfd_send_signal": (424, 424), "pidfd_getfd": (438, 438), "prctl": (157, 167), "seccomp": (317, 277),
-    # Metadata Landlock does not cover (modes, owners, times, extended attributes), truncate by path (Landlock covers it
-    # only from ABI 3), and watching files change (inotify, fanotify): a configuration script needs none of them.
-    "chmod": (90, None), "fchmod": (91, 52), "fchmodat": (268, 53), "fchmodat2": (452, 452), "chown": (92, None),
-    "fchown": (93, 55), "lchown": (94, None), "fchownat": (260, 54), "utime": (132, None), "utimes": (235, None),
-    "futimesat": (261, None), "utimensat": (280, 88), "setxattr": (188, 5), "lsetxattr": (189, 6), "fsetxattr": (190, 7),
-    "removexattr": (197, 14), "lremovexattr": (198, 15), "fremovexattr": (199, 16), "setxattrat": (463, 463),
-    "removexattrat": (466, 466), "truncate": (76, 45), "inotify_init": (253, None), "inotify_init1": (294, 26),
-    "inotify_add_watch": (254, 27), "fanotify_init": (300, 262), "fanotify_mark": (301, 263),
+# The run's own seccomp filter is an ALLOW-LIST: every call not named here fails with EPERM (and another architecture,
+# or the x32 ABI, kills the process). What is here is what CPython needs, once the script has been sent, to run a
+# pure computation with the allowed modules, use its own folder and write its answer, measured by tracing the run
+# (strace -f, tests/test_config_scripts.py's representative scripts, the worker image), plus a small margin of calls
+# that touch nothing but the process itself. Nothing here acts on another process (no kill, prlimit64, setpriority,
+# sched_set*, ioprio_set, ptrace, process_vm_*), starts one (execve, fork, clone), reaches out (socket, connect), or
+# changes metadata (chmod, chown, utime, xattrs, truncate), and nothing changes the process's own protection (prctl,
+# seccomp, setrlimit). (x86_64 number, aarch64 number); None where the architecture has no such call.
+ALLOWED_CALLS = {
+    # reading: the standard library, for a module an allowed one imports lazily (open and openat only read-only, below)
+    "read": (0, 63), "pread64": (17, 67), "readv": (19, 65), "close": (3, 57), "lseek": (8, 62), "fstat": (5, 80),
+    "stat": (4, None), "lstat": (6, None), "newfstatat": (262, 79), "statx": (332, 291), "getdents64": (217, 61),
+    "getcwd": (79, 17), "readlink": (89, None), "readlinkat": (267, 78), "access": (21, None), "faccessat": (269, 48),
+    "faccessat2": (439, 439),
+    # writing: only to descriptors it already holds (its answer, its standard output)
+    "write": (1, 64), "writev": (20, 66),
+    # memory
+    "mmap": (9, 222), "munmap": (11, 215), "mremap": (25, 216), "mprotect": (10, 226), "madvise": (28, 233),
+    "brk": (12, 214),
+    # its own signals, time, identity, randomness, the end
+    "rt_sigaction": (13, 134), "rt_sigprocmask": (14, 135), "rt_sigreturn": (15, 139), "sigaltstack": (131, 132),
+    "futex": (202, 98), "sched_yield": (24, 124), "clock_gettime": (228, 113), "clock_getres": (229, 114),
+    "gettimeofday": (96, 169), "time": (201, None), "nanosleep": (35, 101), "clock_nanosleep": (230, 115),
+    "getpid": (39, 172), "getppid": (110, 173), "gettid": (186, 178), "getuid": (102, 174), "geteuid": (107, 175),
+    "getgid": (104, 176), "getegid": (108, 177), "uname": (63, 160), "getrandom": (318, 278), "getrusage": (98, 165),
+    "times": (100, 153), "restart_syscall": (219, 128), "exit": (60, 93), "exit_group": (231, 94),
 }
+# open and openat only to read: no O_WRONLY, O_RDWR, O_CREAT, O_TRUNC or O_APPEND (args[1] for open, args[2] for openat).
+OPEN_READ_ONLY = {"open": ((2, None), 1), "openat": ((257, 56), 2)}
+OPEN_WRITE_FLAGS = 0o1 | 0o2 | 0o100 | 0o1000 | 0o2000
+# fcntl and ioctl are allowed only for these commands (args[1]); F_SETFL only without O_ASYNC (args[2]), so no
+# F_SETOWN, F_SETOWN_EX, F_SETSIG, F_SETLEASE, F_NOTIFY, FIOSETOWN, SIOCSPGRP or FIOASYNC: no signal to anyone.
+FCNTL = {"fcntl": (72, 25)}
+FCNTL_ALLOWED = {"F_GETFD": 1, "F_SETFD": 2, "F_GETFL": 3, "F_DUPFD_CLOEXEC": 1030}
+F_SETFL, O_ASYNC = 4, 0o20000
+IOCTL = {"ioctl": (16, 29)}
+IOCTL_ALLOWED = {"TCGETS": 0x5401, "FIOCLEX": 0x5451, "FIONCLEX": 0x5450}  # isatty; set_inheritable
 LANDLOCK_MIN_ABI = 3  # ABI 3 is the first that controls truncate; below it a run is refused (fail closed)
 AUDIT_ARCH = {"x86_64": (0xC000003E, 0), "aarch64": (0xC00000B7, 1)}
 # Landlock (the same numbers on x86_64 and aarch64): landlock_create_ruleset, landlock_add_rule, landlock_restrict_self.
@@ -176,9 +195,44 @@ def install_landlock(read_dirs, read_files, write_dirs, cap: int = 0) -> tuple[i
     return abi, "installed"
 
 
+def filter_program(machine: str) -> list[tuple[int, int, int, int]]:
+    """The allow-list as a classic BPF program (code, jt, jf, k) for ``machine`` ("x86_64" or "aarch64")."""
+    arch, col = AUDIT_ARCH[machine]
+    ld_abs, jeq, jge, jset, ret = 0x20, 0x15, 0x35, 0x45, 0x06
+    allow, deny, kill = 0x7FFF0000, 0x00050000 | 1, 0x80000000  # SECCOMP_RET_ALLOW, ERRNO(EPERM), KILL_PROCESS
+    lo, hi = (lambda i: 16 + 8 * i), (lambda i: 20 + 8 * i)  # struct seccomp_data: args[i], little-endian halves
+    prog = [(ld_abs, 0, 0, 4), (jeq, 1, 0, arch), (ret, 0, 0, kill), (ld_abs, 0, 0, 0)]
+    if machine == "x86_64":  # the x32 ABI: the same numbers with bit 30 set
+        prog += [(jge, 0, 1, 0x40000000), (ret, 0, 0, kill)]
+    for nums in ALLOWED_CALLS.values():
+        if nums[col] is not None:
+            prog += [(jeq, 0, 1, nums[col]), (ret, 0, 0, allow)]
+
+    def by_command(nr: int, allowed: list[int], setfl: bool) -> list:
+        # args[1] (the command) must fit in 32 bits and be one of ``allowed``; F_SETFL only without O_ASYNC in args[2].
+        body = [(ld_abs, 0, 0, hi(1)), None, (ld_abs, 0, 0, lo(1))]
+        for c in allowed:
+            body += [(jeq, 0, 1, c), (ret, 0, 0, allow)]
+        if setfl:
+            # == F_SETFL: load args[2]; O_ASYNC set -> deny, else allow. != F_SETFL: on to the final deny.
+            body += [(jeq, 0, 4, F_SETFL), (ld_abs, 0, 0, lo(2)), (jset, 0, 1, O_ASYNC), (ret, 0, 0, deny), (ret, 0, 0, allow)]
+        body += [(ret, 0, 0, deny)]
+        body[1] = (jeq, 0, len(body) - 3, 0)  # high half not 0: to the block's final deny
+        return [(jeq, 0, len(body), nr)] + body  # not this call: skip the block
+
+    for (nums, flags_at) in OPEN_READ_ONLY.values():  # any write flag: deny; else allow
+        if nums[col] is not None:
+            prog += [(jeq, 0, 4, nums[col]), (ld_abs, 0, 0, lo(flags_at)), (jset, 0, 1, OPEN_WRITE_FLAGS), (ret, 0, 0, deny),
+                     (ret, 0, 0, allow)]
+    prog += by_command(FCNTL["fcntl"][col], sorted(FCNTL_ALLOWED.values()), True)
+    prog += by_command(IOCTL["ioctl"][col], sorted(IOCTL_ALLOWED.values()), False)
+    prog += [(ret, 0, 0, deny)]
+    return prog
+
+
 def install_kernel_filter() -> str:
-    """Install the seccomp filter (``BLOCKED`` fails with EPERM from now on, in this process and anything it could
-    start). Returns "installed", or why not. Needs no_new_privs (``not_dumpable`` sets it)."""
+    """Install the seccomp allow-list (``filter_program``): from now on every call not on it fails with EPERM, in this
+    process and anything it could start. Returns "installed", or why not. Needs no_new_privs (``not_dumpable`` sets it)."""
     machine = os.uname().machine
     if sys.platform != "linux" or machine not in AUDIT_ARCH:
         return f"unavailable: no seccomp filter for {sys.platform}/{machine}"
@@ -187,9 +241,7 @@ def install_kernel_filter() -> str:
     except (ImportError, OSError) as e:
         return f"unavailable: ctypes cannot be loaded ({e})"
     try:
-        arch, col = AUDIT_ARCH[machine]
-        ld_abs, jeq, jge, ret = 0x20, 0x15, 0x35, 0x06
-        allow, errno_eperm, kill = 0x7FFF0000, 0x00050000 | 1, 0x80000000
+        prog = filter_program(machine)
 
         class Filter(ctypes.Structure):
             _fields_ = [("code", ctypes.c_ushort), ("jt", ctypes.c_ubyte), ("jf", ctypes.c_ubyte), ("k", ctypes.c_uint)]
@@ -197,14 +249,6 @@ def install_kernel_filter() -> str:
         class Prog(ctypes.Structure):
             _fields_ = [("len", ctypes.c_ushort), ("filter", ctypes.POINTER(Filter))]
 
-        prog = [(ld_abs, 0, 0, 4), (jeq, 1, 0, arch), (ret, 0, 0, kill), (ld_abs, 0, 0, 0)]
-        if machine == "x86_64":  # the x32 ABI: the same calls with bit 30 set; refuse them all
-            prog += [(jge, 0, 1, 0x40000000), (ret, 0, 0, errno_eperm)]
-        for nums in BLOCKED.values():
-            nr = nums[col]
-            if nr is not None:
-                prog += [(jeq, 0, 1, nr), (ret, 0, 0, errno_eperm)]
-        prog += [(ret, 0, 0, allow)]
         arr = (Filter * len(prog))(*[Filter(*p) for p in prog])
         fprog = Prog(len(prog), arr)
         libc.prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong]

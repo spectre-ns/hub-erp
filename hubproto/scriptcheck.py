@@ -79,6 +79,10 @@ INTROSPECTION = {
     "mro", "gi_frame", "gi_code", "gi_yieldfrom", "cr_frame", "cr_code", "cr_await", "ag_frame", "ag_code", "f_globals",
     "f_locals", "f_builtins", "f_back", "f_code", "tb_frame", "tb_next", "co_code", "get_field", "Formatter",
 }
+# str.format and format_map read attributes and items by names written in the text ("{0.gi_frame}"): use an f-string,
+# whose fields the check sees. (Text can still be built to spell anything: "%c" % 95, json.loads('"\\u005f"'), and
+# more. That is not refused; the run's catch-all and its kernel restrictions are the boundary.)
+FORMATS = {"format", "format_map"}
 EVALUATES = {"evaluate", "evaluate_bound", "evaluate_constraints", "evaluate_default", "_evaluate", "TypeVar", "ForwardRef",
              "get_type_hints", "namedtuple"}
 MAX_CHARS = 200_000
@@ -178,6 +182,8 @@ def check(text: str) -> list[str]:
                 out.append(f"{at}: .{node.attr} is not allowed: it reaches frames, code or attributes by name")
             elif node.attr in EVALUATES:
                 out.append(f"{at}: .{node.attr} is not allowed: it evaluates text as code")
+            elif node.attr in FORMATS:
+                out.append(f"{at}: .{node.attr} is not allowed: it reads attributes by names written in the text; use an f-string")
             elif base is not None and f"{base}.{node.attr}" in ALLOWED_NAMES and id(node) not in as_value:
                 out.append(f"{at}: {base}.{node.attr} is a module: use it only as {base}.{node.attr}.name, never as a value")
         elif isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)) and _underscored(node.value):

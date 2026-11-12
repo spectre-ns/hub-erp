@@ -927,7 +927,8 @@ under **What it carries** on a change order you are preparing. What happens:
    privileges and nothing of the hub's in it, one run at a time, under limits of time, memory, processor and output.
    Before the script is sent, the run's process is locked down by the kernel (it may read only Python's standard
    library and read and write only its own fresh folder; it cannot start a program, open a connection or reach another
-   process, or change a file's mode, owner, times or attributes), and the worker checks that itself; a run it cannot
+   process, or change any file; the kernel lets it make only the few calls a computation needs), and the worker checks
+   that itself; a run it cannot
    lock down is refused, and so is one on a kernel too old to lock it down fully (Landlock ABI 3, Linux 6.2). A script that tries more is
    stopped, and the change order says what it tried. A development hub without the worker
    (`HUBPROTO_SCRIPT_FALLBACK=1`, set by `hubproto dev serve`) runs it in a local subprocess with the same locks, and the

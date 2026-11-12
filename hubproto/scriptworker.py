@@ -622,17 +622,58 @@ def socket_problem(path: str, ident=None) -> str:
     return ""
 
 
-def watch_socket(path: str, on_lost, every: float = 1.0) -> threading.Thread:
-    """Call ``on_lost(why)`` once if the socket at ``path`` is removed or replaced (a run cannot: Landlock gives it
-    nothing outside its own folder; this is for anything else). ``serve`` exits then, so the restart policy brings a
-    worker back with a fresh socket."""
+def answers(path: str, within: float = 5.0) -> str:
+    """Whether the worker answers on its socket: '' when an HTTP answer to GET /healthz comes back within ``within``
+    seconds (a busy answer counts: it is serving), else why not. The healthcheck and the watchdog ask this."""
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(within)
+    try:
+        s.connect(path)
+        s.sendall(b"GET /healthz HTTP/1.0\r\n\r\n")
+        head = s.recv(64)
+    except OSError as e:
+        return f"the worker did not answer on {path} within {within:g} s ({type(e).__name__}: {e})"
+    finally:
+        s.close()
+    if not head.startswith(b"HTTP/1.") or head[9:12] not in (b"200", b"503"):
+        return f"the worker answered on {path} with {head[:20]!r}, not a health answer"
+    return ""
+
+
+LIMITS_WATCHED = ("RLIMIT_NOFILE", "RLIMIT_CPU", "RLIMIT_AS", "RLIMIT_DATA", "RLIMIT_FSIZE", "RLIMIT_NPROC", "RLIMIT_STACK")
+
+
+def _own_limits() -> dict:
+    import resource
+
+    return {n: resource.getrlimit(getattr(resource, n)) for n in LIMITS_WATCHED if hasattr(resource, n)}
+
+
+def watch_socket(path: str, on_lost, every: float = 1.0, answer_every: float = 5.0, answer_within: float = 5.0) -> threading.Thread:
+    """Call ``on_lost(why)`` once when the worker could no longer serve the hub: its socket removed, replaced or made
+    unusable (``socket_problem``), its own limits changed (a lowered open-file limit leaves it unable to accept), or it
+    no longer answers a health request on its own socket within ``answer_within`` seconds, twice running (spinning,
+    stuck, out of descriptors). A run can do none of these (its seccomp allow-list, Landlock); this is for anything
+    else. ``serve`` exits then, so the restart policy starts a fresh worker."""
     st = os.lstat(path)
     ident = (st.st_dev, st.st_ino)
+    limits = _own_limits()
 
     def loop():
+        last_answer, misses = time.monotonic(), 0
         while True:
             time.sleep(every)
             why = socket_problem(path, ident)
+            if not why:
+                now = _own_limits()
+                changed = [n for n in limits if now.get(n) != limits[n]]
+                if changed:
+                    why = f"the worker's own limits changed ({', '.join(f'{n} {limits[n]} -> {now.get(n)}' for n in changed)})"
+            if not why and time.monotonic() - last_answer >= answer_every:
+                last_answer = time.monotonic()
+                miss = answers(path, answer_within)
+                misses = misses + 1 if miss else 0
+                why = miss if misses >= 2 else ""
             if why:
                 return on_lost(why)
 
@@ -669,10 +710,11 @@ def serve(socket_path: str = "", host: str = "127.0.0.1", port: int = 9100):
         pass
 
 
-def serve_in_thread(host: str = "127.0.0.1", port: int = 0, socket_path: str = "", on_lost=None):
+def serve_in_thread(host: str = "127.0.0.1", port: int = 0, socket_path: str = "", on_lost=None, answer_every: float = 1.0,
+                    answer_within: float = 2.0):
     server = unix_server(socket_path) if socket_path else TcpServer((host, port), Handler)
     if socket_path and on_lost is not None:
-        watch_socket(socket_path, on_lost, every=0.2)
+        watch_socket(socket_path, on_lost, every=0.2, answer_every=answer_every, answer_within=answer_within)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
 
