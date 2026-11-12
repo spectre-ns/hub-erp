@@ -10,6 +10,10 @@ A call may carry pictures (``images``: bytes and a media type each) for a model 
 (``supports_images``): the hosted Anthropic API as image content blocks, Ollama in the message's ``images`` field.
 Asking a model that reads text only is refused with a sentence (``ImagesNotSupported``), never sent without the
 pictures. What is recorded of a call names each picture by its sha256, never its bytes.
+
+Ollama's cloud models (``gemma4:cloud``, ``gemma4:31b-cloud``) are called through the local Ollama but run on Ollama's
+servers: they are hosted models, like Claude (``ollama_cloud``, backend ``ollama-cloud``). With hosted models off
+(HUBPROTO_HOSTED_MODELS) one is refused with a sentence; with them on, every listing and call says it leaves the machine.
 """
 
 from __future__ import annotations
@@ -195,25 +199,59 @@ MAX_IMAGES = 20  # pictures in one call
 # size and build Ollama's library has of it reads pictures (the junior cogs' gemma4:12b-it-qat among them).
 VISION_FAMILIES = ("llava", "bakllava", "llama3.2-vision", "qwen2.5vl", "qwen3-vl", "minicpm-v", "moondream", "granite3.2-vision",
                    "llava-llama3", "llava-phi3", "gemma4")
-_CAPS: dict[str, list[str]] = {}  # what Ollama answered, by model; a lookup that failed is not kept (asked again next time)
+
+
+# ---------------------------------------------------------------- what Ollama says of a model: one record per model
+# One ``/api/show`` answer per model gives what it can do (capabilities), where it runs (a cloud model names a remote host)
+# and its context length. It is kept SHOW_TTL seconds; a lookup that failed is asked again after SHOW_RETRY seconds; a call
+# about to be sent asks again every time (``where_now``), so a send never relies on an old answer.
+SHOW_TTL = 60.0
+SHOW_RETRY = 15.0
+_SHOW: dict[tuple[str, str], dict] = {}  # (Ollama URL, model) -> {"at", "capabilities", "remote_host", "remote_model", "context_length"}
+_SHOW_MISSED: dict[tuple[str, str], float] = {}  # (Ollama URL, model) -> when Ollama last did not answer
+_clock = time.monotonic  # tests move it on
+
+
+def _ollama_show(name: str, max_age: float = SHOW_TTL, need: str = "") -> dict | None:
+    """Ollama's record of the model (``/api/show``): {"at", "capabilities" (a list, or None when Ollama does not report
+    them), "remote_host", "remote_model", "context_length" (or None)}; None when Ollama is not configured or did not
+    answer. A record younger than ``max_age`` is used as it is, unless it lacks ``need`` and is older than SHOW_RETRY;
+    ``max_age=0`` asks now, whatever was answered or failed before."""
+    url = ollama_url()
+    if not url:
+        return None
+    key, now = (url, name), _clock()
+    rec = _SHOW.get(key)
+    if max_age > 0:
+        if rec is not None and now - rec["at"] < max_age and (not need or rec.get(need) is not None or now - rec["at"] < SHOW_RETRY):
+            return rec
+        if now - _SHOW_MISSED.get(key, float("-inf")) < SHOW_RETRY:
+            return None
+    try:
+        req = urllib.request.Request(url + "/api/show", data=json.dumps({"model": name}).encode("utf-8"), method="POST",
+                                     headers={"content-type": "application/json"})
+        with urllib.request.urlopen(req, timeout=4) as r:
+            got = json.load(r)
+        if not isinstance(got, dict):
+            raise ValueError("not a model record")
+    except Exception:
+        _SHOW_MISSED[key] = _clock()
+        return None
+    caps = got.get("capabilities")
+    info = got.get("model_info") if isinstance(got.get("model_info"), dict) else {}
+    found = [int(v) for k, v in info.items() if str(k).endswith(".context_length") and str(v).isdigit()]
+    _SHOW[key] = {"at": _clock(), "capabilities": [str(c) for c in caps] if isinstance(caps, list) else None,
+                  "remote_host": str(got.get("remote_host") or ""), "remote_model": str(got.get("remote_model") or ""),
+                  "context_length": found[0] if found else None}
+    _SHOW_MISSED.pop(key, None)
+    return _SHOW[key]
 
 
 def _ollama_capabilities(name: str) -> list[str] | None:
     """What Ollama says the model can do (``/api/show``: "completion", "vision", "tools", ...); None when it does not say
-    (an Ollama before 0.6.4) or did not answer. Only an answer is cached: Ollama down at start-up is asked again later."""
-    if name in _CAPS:
-        return _CAPS[name]
-    try:
-        req = urllib.request.Request(ollama_url() + "/api/show", data=json.dumps({"model": name}).encode("utf-8"), method="POST",
-                                     headers={"content-type": "application/json"})
-        with urllib.request.urlopen(req, timeout=4) as r:
-            got = json.load(r).get("capabilities")
-    except Exception:
-        return None
-    if not isinstance(got, list):
-        return None
-    _CAPS[name] = [str(c) for c in got]
-    return _CAPS[name]
+    (an Ollama before 0.6.4) or did not answer. Either is asked again after SHOW_RETRY seconds."""
+    rec = _ollama_show(name, need="capabilities")
+    return rec["capabilities"] if rec else None
 
 
 def images_refused(model: str) -> str:
@@ -226,7 +264,7 @@ def images_refused(model: str) -> str:
     if model == DEFAULT_MODEL or model.startswith("claude"):
         return ""
     name = served_name(model)
-    if backend_for(model) == "ollama":
+    if backend_for(model) in OLLAMA_BACKENDS:
         caps = _ollama_capabilities(name)
         if caps is None:
             return (f"Ollama does not say whether {model} reads pictures (it did not answer, or it is a version that does not report "
@@ -302,9 +340,95 @@ def hosted_allowed() -> bool:
     return (os.environ.get("HUBPROTO_HOSTED_MODELS") or "").strip().lower() in ("1", "on", "yes", "true")
 
 
+# ---------------------------------------------------------------- Ollama's cloud models
+# Ollama's library has cloud tags (gemma4:cloud, gemma4:31b-cloud, gpt-oss:120b-cloud): the local Ollama passes the call on
+# to Ollama's servers, so the prompt and the records in it leave this machine. Such a model is hosted, like Claude.
+CLOUD_TAG = re.compile(r"[:-]cloud$", re.I)
+OFF_MACHINE = "runs on Ollama's servers, not this machine"
+
+def cloud_tag(model: str) -> bool:
+    """Whether the model's name is one of Ollama's cloud tags: it ends in ``:cloud`` or ``-cloud``."""
+    return bool(CLOUD_TAG.search(served_name((model or "").strip())))
+
+
+def _remote(info: dict | None) -> bool:
+    """Whether an Ollama answer (``/api/show``, or a model of ``/api/tags``) says the model runs elsewhere."""
+    return bool(info) and bool(str(info.get("remote_host") or "").strip() or str(info.get("remote_model") or "").strip())
+
+
+def _listed(name: str) -> dict | None:
+    """The model's entry in the list Ollama gave last (``/api/tags``, kept a minute), if it is that recent."""
+    if _TAGS["models"] is None or _clock() - _TAGS["at"] >= 60:
+        return None
+    return next((m for m in _TAGS["models"] if m["name"] in (name, f"{name}:latest") or m["name"].removesuffix(":latest") == name), None)
+
+
+def ollama_cloud(model: str, listed: dict | None = None) -> bool:
+    """Whether an Ollama model runs on Ollama's servers, not this machine. Ollama's own word comes first: its record of the
+    model (``/api/show``) or its entry in ``/api/tags`` (``listed``, or the list Ollama gave last) names a ``remote_host``
+    or ``remote_model`` for a cloud model, whatever it is called. The tag fails closed: a name ending in ``:cloud`` or
+    ``-cloud`` is a cloud model, never read as local. This answer is for listing and choosing; a call about to be sent
+    asks Ollama again (``where_now``) and is refused when Ollama does not say."""
+    if cloud_tag(model) or _remote(listed):
+        return True
+    name = served_name((model or "").strip())
+    if (_listed(name) or {}).get("cloud"):
+        return True
+    return _remote(_ollama_show(name))
+
+
+class WhereUnknown(RuntimeError):
+    """Ollama did not say whether the model runs on this machine or on its servers: nothing is sent."""
+
+
+def where_now(model: str, backend: str) -> str:
+    """Right before a call goes through Ollama: where the model runs, asked of Ollama now (``/api/show``), never from an
+    older answer. Returns the backend to send with ('ollama' or 'ollama-cloud'; any other backend unchanged). Raises
+    ModelUnavailable for a cloud model while hosted models are off, and WhereUnknown when Ollama does not say where a
+    model without a cloud tag runs: the hub fails closed and sends nothing."""
+    if backend not in OLLAMA_BACKENDS:
+        return backend
+    name = served_name((model or "").strip())
+    cloud = cloud_tag(model)
+    if not cloud:
+        rec = _ollama_show(name, max_age=0)
+        if rec is None:
+            raise WhereUnknown(f"Ollama did not say whether {model} runs on this machine or on Ollama's servers, so nothing was sent "
+                               "to it: try again when Ollama answers")
+        cloud = _remote(rec) or bool((_listed(name) or {}).get("cloud"))
+    if cloud and not hosted_allowed():
+        raise ModelUnavailable(hosted_refusal(model))
+    return "ollama-cloud" if cloud else "ollama"
+
+
+def off_machine(model: str, cog: str = "") -> str:
+    """The sentence that says a cog's model leaves the machine ('' for a model this machine runs): for the change order,
+    the draft's note and the policy owners when a person or a cog proposes one of Ollama's cloud models."""
+    if not model or model.startswith("claude") or not (cloud_tag(model) or (ollama_url() and ollama_cloud(model))):
+        return ""
+    whose = f"{cog}'s" if cog else "the cog's"
+    return f"{model} {OFF_MACHINE}: {whose} prompts and the records in them would leave this machine"
+
+
+def hosted_refusal(model: str) -> str:
+    """The sentence a cloud model is refused with while hosted models are off."""
+    return (f"{model} {OFF_MACHINE}, and hosted models are switched off here (HUBPROTO_HOSTED_MODELS), so nothing is sent to it: "
+            "choose a model Ollama runs on this machine, or ask a system administrator to switch hosted models on")
+
+
+def cloud_refused(model: str) -> str:
+    """Why the hub may not send work to the model ('' when it may, as far as where it runs goes): one of Ollama's cloud
+    models while hosted models are off."""
+    if not model or model.startswith("claude") or hosted_allowed():
+        return ""
+    return hosted_refusal(model) if cloud_tag(model) or (ollama_url() and ollama_cloud(model)) else ""
+
+
 def backend_for(model: str) -> str:
     """Which backend serves a profile's model: 'anthropic' for claude-* with a key, 'ollama' for 'ollama/<name>' or a
-    bare name with an Ollama configured, 'stand-in' when allowed, else 'none'. A claude-* model is never served locally."""
+    bare name with an Ollama configured, 'ollama-cloud' for one of Ollama's cloud models (``ollama_cloud``) with hosted
+    models on, 'stand-in' when allowed, else 'none'. A claude-* model is never served locally; a cloud model is hosted,
+    so with hosted models off it is 'none', never stood in for."""
     if os.environ.get("HUBPROTO_MODEL_FAKE"):
         return "stand-in"
     if not model or model == DEFAULT_MODEL:
@@ -315,8 +439,20 @@ def backend_for(model: str) -> str:
         if os.environ.get("ANTHROPIC_API_KEY"):
             return "anthropic"
     elif ollama_url():
+        if ollama_cloud(model):
+            return "ollama-cloud" if hosted_allowed() else "none"
         return "ollama"
+    elif cloud_tag(model) and not hosted_allowed():
+        return "none"
     return "stand-in" if stand_in_allowed() else "none"
+
+
+def leaves_machine(backend: str) -> bool:
+    """Whether a call to this backend sends the prompt off this machine."""
+    return backend in ("anthropic", "ollama-cloud")
+
+
+OLLAMA_BACKENDS = ("ollama", "ollama-cloud")  # both are called through the Ollama at HUBPROTO_OLLAMA_URL
 
 
 CLAUDE_MODELS = ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]
@@ -328,31 +464,17 @@ def served_name(model: str) -> str:
     return model.split("/", 1)[1] if model.startswith("ollama/") else model
 
 
-_CTX: dict[str, int] = {}
-
-
 def context_length(model: str) -> int:
-    """The longest context the model was trained for, as Ollama reports it (qwen3:14b: 40,960 tokens)."""
+    """The longest context the model was trained for, as Ollama reports it (qwen3:14b: 40,960 tokens); the last length
+    Ollama gave while it does not answer, so the window (and Ollama's loaded model) stays the same."""
     backend = backend_for(model)
     if backend == "anthropic":
         return 200000
-    if backend != "ollama":
+    if backend not in OLLAMA_BACKENDS:
         return 32768
     name = served_name(model)
-    if name not in _CTX:
-        n = 32768
-        try:
-            req = urllib.request.Request(ollama_url() + "/api/show", data=json.dumps({"model": name}).encode("utf-8"), method="POST",
-                                         headers={"content-type": "application/json"})
-            with urllib.request.urlopen(req, timeout=4) as r:
-                info = json.load(r).get("model_info") or {}
-            found = [int(v) for k, v in info.items() if k.endswith(".context_length") and str(v).isdigit()]
-            if found:
-                n = found[0]
-        except Exception:
-            pass
-        _CTX[name] = n
-    return _CTX[name]
+    rec = _ollama_show(name) or _SHOW.get((ollama_url(), name)) or {}
+    return rec.get("context_length") or 32768
 
 
 def num_ctx_for(model: str) -> int:
@@ -372,21 +494,23 @@ def prompt_budget_chars(model: str, max_tokens: int = 1200) -> int:
 
 
 def ollama_models(refresh: bool = False) -> tuple[list[dict], str]:
-    """The models installed in Ollama (cached for a minute): [{name, params, family, quant, size_gb}], and an error."""
+    """The models installed in Ollama (cached for a minute): [{name, params, family, quant, size_gb, cloud}], and an error.
+    ``cloud``: the model runs on Ollama's servers, not this machine (``ollama_cloud``)."""
     url = ollama_url()
     if not url:
         return [], "no Ollama is configured (HUBPROTO_OLLAMA_URL)"
-    if not refresh and _TAGS["models"] is not None and time.monotonic() - _TAGS["at"] < 60:
+    if not refresh and _TAGS["models"] is not None and _clock() - _TAGS["at"] < 60:
         return _TAGS["models"], _TAGS["error"]
     try:
         with urllib.request.urlopen(url + "/api/tags", timeout=4) as r:
             data = json.load(r)
         models = [{"name": m["name"], "params": (m.get("details") or {}).get("parameter_size") or "", "family": (m.get("details") or {}).get("family") or "",
-                   "quant": (m.get("details") or {}).get("quantization_level") or "", "size_gb": round((m.get("size") or 0) / 1e9, 1)}
+                   "quant": (m.get("details") or {}).get("quantization_level") or "", "size_gb": round((m.get("size") or 0) / 1e9, 1),
+                   "cloud": ollama_cloud(m["name"], listed=m)}
                   for m in data.get("models") or []]
-        _TAGS.update(at=time.monotonic(), models=sorted(models, key=lambda m: m["name"]), error="")
+        _TAGS.update(at=_clock(), models=sorted(models, key=lambda m: m["name"]), error="")
     except Exception as e:
-        _TAGS.update(at=time.monotonic(), models=[], error=f"Ollama at {url} did not answer: {e}")
+        _TAGS.update(at=_clock(), models=[], error=f"Ollama at {url} did not answer: {e}")
     return _TAGS["models"], _TAGS["error"]
 
 
@@ -395,39 +519,60 @@ def _installed(name: str, models: list[dict]) -> bool:
     return name in names or f"{name}:latest" in names or name.removesuffix(":latest") in names
 
 
+def model_label(m: dict) -> str:
+    """How a model Ollama lists is named in a picker: its size and family, and where it runs."""
+    what = " ".join(x for x in (m.get("params"), m.get("family")) if x)
+    where = OFF_MACHINE if m.get("cloud") else "local"
+    return f"{m['name']} ({what + ', ' if what else ''}{where})"
+
+
 def available_models(refresh: bool = False) -> dict:
     """What a cog's profile can name: installed Ollama models, Claude models when a key is set, and what a claude-*
-    name falls back to without one."""
+    name falls back to without one. Ollama's cloud models are hosted: labelled as running on Ollama's servers, after the
+    local ones, and not available while hosted models are off."""
     local, err = ollama_models(refresh)
     key = bool(os.environ.get("ANTHROPIC_API_KEY")) and hosted_allowed()
-    local = sorted(local, key=lambda m: -(m.get("size_gb") or 0))  # the most capable (largest) installed model first
-    choices = [{"value": f"ollama/{m['name']}", "label": f"{m['name']} ({m['params']} {m['family']}, local)".replace("( ", "("), "available": True} for m in local]
+    # The most capable (largest) model on this machine first; a cloud model (no size here) after every local one.
+    local = sorted(local, key=lambda m: (bool(m.get("cloud")), -(m.get("size_gb") or 0)))
+    choices = []
+    for m in local:
+        cloud = bool(m.get("cloud"))
+        label = model_label(m) + ("" if not cloud or hosted_allowed() else ": not available while hosted models are off")
+        choices.append({"value": f"ollama/{m['name']}", "label": label, "available": not cloud or hosted_allowed(), "cloud": cloud})
     if hosted_allowed():  # otherwise the hub offers only the models Ollama serves here
-        choices += [{"value": c, "label": c + (" (Anthropic)" if key else " (needs an Anthropic key: not available here)"), "available": key} for c in CLAUDE_MODELS]
+        choices += [{"value": c, "label": c + (" (Anthropic)" if key else " (needs an Anthropic key: not available here)"), "available": key, "cloud": False}
+                    for c in CLAUDE_MODELS]
     return {"ollama": local, "ollama_error": err, "anthropic_key": key, "choices": choices}
 
 
 def resolve_model(model: str, refresh: bool = False) -> dict:
-    """Who would answer for a profile's model right now, and whether that model is there."""
+    """Who would answer for a profile's model right now, and whether that model is there. ``leaves_machine``: the call
+    would send the prompt off this machine (a Claude model, or one of Ollama's cloud models)."""
     model = model or DEFAULT_MODEL
     backend = backend_for(model)
-    if backend == "ollama":
+    if backend in OLLAMA_BACKENDS:
         name = served_name(model)
         local, err = ollama_models(refresh)
         ok = _installed(name, local)
-        return {"asked": model, "backend": "ollama", "served": name, "available": ok,
-                "note": "local" if ok else (err or f"{name} is not installed in Ollama (ollama pull {name})")}
+        cloud = backend == "ollama-cloud"
+        here = f"hosted: {OFF_MACHINE}" if cloud else "local"
+        return {"asked": model, "backend": backend, "served": name, "available": ok, "leaves_machine": cloud,
+                "note": here if ok else (err or f"{name} is not installed in Ollama (ollama pull {name})" + (f"; it {OFF_MACHINE}" if cloud else ""))}
     if backend == "anthropic":
-        return {"asked": model, "backend": "anthropic", "served": model, "available": True, "note": "Anthropic API"}
+        return {"asked": model, "backend": "anthropic", "served": model, "available": True, "leaves_machine": True, "note": "Anthropic API"}
     if backend == "stand-in":
-        return {"asked": model, "backend": "stand-in", "served": "stand-in", "available": True, "note": "development stand-in (HUBPROTO_ALLOW_STAND_IN)"}
+        return {"asked": model, "backend": "stand-in", "served": "stand-in", "available": True, "leaves_machine": False,
+                "note": "development stand-in (HUBPROTO_ALLOW_STAND_IN)"}
+    away = False
     if not model or model == DEFAULT_MODEL:
         why = "the profile names no model"
     elif model.startswith("claude"):
-        why = f"{model} needs an Anthropic key (ANTHROPIC_API_KEY)"
+        why, away = f"{model} needs an Anthropic key (ANTHROPIC_API_KEY)", True
+    elif cloud_refused(model):
+        why, away = cloud_refused(model), True
     else:
         why = f"{model} needs an Ollama (HUBPROTO_OLLAMA_URL)"
-    return {"asked": model, "backend": "none", "served": "", "available": False, "note": why}
+    return {"asked": model, "backend": "none", "served": "", "available": False, "leaves_machine": away, "note": why}
 
 
 def cog_availability(bundle: dict, cog: str) -> tuple[bool, str]:
@@ -459,12 +604,15 @@ class ModelGateway:
             raise ModelUnavailable(resolve_model(model)["note"])
         imgs = prepare_images(model, images) if images else []  # refused before anything is sent, never dropped
         try:
+            backend = where_now(model, backend)  # through Ollama: where the model runs, asked now; refused when it does not say
             if backend == "anthropic":
                 text = self._anthropic(model, system, user, max_tokens, history, imgs)
-            elif backend == "ollama":
+            elif backend in OLLAMA_BACKENDS:
                 text = self._ollama(model, system, user, max_tokens, history, imgs)
             else:
                 text = self._stand_in(system, user, imgs)
+        except ModelUnavailable:
+            raise  # a cloud model while hosted models are off: refused, never stood in for
         except Exception as e:
             if not stand_in_allowed():
                 raise ModelUnavailable(f"{model} did not answer: {e}") from None
@@ -472,10 +620,11 @@ class ModelGateway:
             backend = "stand-in"
         text = strip_thinking(text)
         stand_in = backend == "stand-in"
-        usage = getattr(self, "_last_usage", None) if backend == "ollama" else None
+        usage = getattr(self, "_last_usage", None) if backend in OLLAMA_BACKENDS else None
         self._last_usage = None
         out = {"text": text, "model": model, "served_model": (usage or {}).get("served_model") or (model if backend == "anthropic" else "stand-in"),
-               "backend": backend, "stand_in": stand_in, "by": by, "at": utcnow(), "prompt_chars": len(system) + len(user), "usage": usage,
+               "backend": backend, "stand_in": stand_in, "leaves_machine": leaves_machine(backend), "by": by, "at": utcnow(),
+               "prompt_chars": len(system) + len(user), "usage": usage,
                "prompt_digest": prompt_digest(system, user, imgs), "response_digest": sha256_of(text)[:16],
                "ms": int((time.monotonic() - t0) * 1000)}
         if imgs:  # each picture by its hash: its bytes are never recorded
@@ -556,12 +705,15 @@ class ModelGateway:
 
         usage = None
         try:
-            if backend == "ollama":
+            backend = where_now(model, backend)  # through Ollama: where the model runs, asked now; refused when it does not say
+            if backend in OLLAMA_BACKENDS:
                 text, usage = self._ollama_tools(model, system, user, history, tools, run, max_tokens, max_rounds, as_text)
             elif backend == "anthropic":
                 text = self._anthropic_tools(model, system, user, history, tools, run, max_tokens, max_rounds, as_text)
             else:
                 text = self._stand_in_tools(user, run)
+        except ModelUnavailable:
+            raise  # a cloud model while hosted models are off: refused, never stood in for
         except Exception as e:
             if not stand_in_allowed():
                 raise ModelUnavailable(f"{model} did not answer: {e}") from None
@@ -569,7 +721,8 @@ class ModelGateway:
             backend = "stand-in"
         text = strip_thinking(text)
         out = {"text": text, "model": model, "served_model": (usage or {}).get("served_model") or (model if backend == "anthropic" else "stand-in"),
-               "backend": backend, "stand_in": backend == "stand-in", "by": by, "at": utcnow(), "prompt_chars": len(system) + len(user),
+               "backend": backend, "stand_in": backend == "stand-in", "leaves_machine": leaves_machine(backend), "by": by, "at": utcnow(),
+               "prompt_chars": len(system) + len(user),
                "usage": usage, "tool_calls": calls, "prompt_digest": sha256_of({"system": system, "user": user})[:16],
                "response_digest": sha256_of(text)[:16], "ms": int((time.monotonic() - t0) * 1000)}
         self.calls.append(out)

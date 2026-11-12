@@ -429,6 +429,22 @@ From any status except done to Cancelled ("Cancel"): the quality manager.
   say; by family, `VISION_FAMILIES`, only where the stand-in answers); any other raises `ImagesNotSupported` with a
   sentence. Limits are on the base64 size (5 MB a picture, 20 MB a call). The call's record and `prompt_digest` name
   each picture by its sha256. Fakes: `call(model, system, user, images=None)`.
+* **Where a model runs** (`model.backend_for`, the only gateway): `anthropic` (a `claude-*` model, hosted), `ollama`
+  (a model the local Ollama runs on this machine), `ollama-cloud` (one of Ollama's cloud models, issue #52), `stand-in`
+  (development only) or `none`. A cloud model is called through the local Ollama but runs on Ollama's servers, so it is
+  hosted like Claude: refused with a sentence while `HUBPROTO_HOSTED_MODELS` is off (never stood in for), and labelled
+  as running "on Ollama's servers, not this machine" wherever a model is named (`hubproto models`, the cog profile and
+  its model picker, `resolve_model`'s `leaves_machine`, each call's record). `model.ollama_cloud` decides for listing and
+  choosing: Ollama's own word first (`/api/show`, or the model's `/api/tags` entry, names a `remote_host` or
+  `remote_model`), then the tag, which fails closed (a name ending in `:cloud` or `-cloud` is never read as local).
+  What `/api/show` says of a model is one record (`model._SHOW`: capabilities, where it runs, context length), kept
+  `SHOW_TTL` (60 s); a lookup that failed is asked again after `SHOW_RETRY` (15 s). A call about to be sent asks Ollama
+  again every time (`model.where_now`), so a name re-pointed at a cloud model (`ollama cp gemma4:cloud team-reader`)
+  is never sent as local; when Ollama does not say where a model without a cloud tag runs, nothing is sent. A proposal
+  that names a cloud model for a cog (the cog page, a new cog, the `propose_cog_model` tool) says so in its change order
+  or draft note and in a notice to every policy owner. The SOP reader's largest-local-model fallback and a new cog's
+  default model never pick a cloud model. Tests use a fake Ollama for `/api/show` and move `model._clock` for the
+  lifetimes (`tests/test_ollama_cloud.py`).
 
 ## Record types (`config/record-types.json`)
 

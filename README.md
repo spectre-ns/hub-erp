@@ -183,7 +183,8 @@ from its own perspective (its About text, its persona's behaviour and the roles 
 and the answer format are the same for every member, so their readings stay comparable.
 A rule goes in only when every member reads it the same way; where members read a line differently, the proposal gets
 a `disagreement` question quoting the line and each member's reading, for a person to decide. A member whose model is
-not available here (not installed, Ollama down, or a `claude-*` model while hosted models are off) is a
+not available here (not installed, Ollama down, or a `claude-*` model or one of Ollama's cloud models, such as
+`gemma4:cloud`, while hosted models are off) is a
 `member-unavailable` question naming the committee's chair (`Chair: carol`), who intervenes: the prose of a changed SOP
 is not read until it is. **The senior cogs are available only where the administrator has switched hosted models on**
 (`HUBPROTO_HOSTED_MODELS=on` with `ANTHROPIC_API_KEY`, under the IT SOP); the call goes through the hub's model gateway

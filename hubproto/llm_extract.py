@@ -51,15 +51,16 @@ CONTEXT_LINES = 2  # unchanged lines shown around each change in the diff
 
 
 def local_model() -> str:
-    """The model that reads SOPs: HUBPROTO_EXTRACTOR_MODEL, else the largest model Ollama serves here. Never a hosted one
-    unless hosted models are switched on."""
-    from .model import hosted_allowed, ollama_models
+    """The model that reads SOPs: HUBPROTO_EXTRACTOR_MODEL, else the largest model Ollama runs on this machine. Never a
+    hosted one (Claude, or one of Ollama's cloud models) unless hosted models are switched on, and never one of Ollama's
+    cloud models in place of a local one."""
+    from .model import cloud_refused, hosted_allowed, ollama_models
 
     named = (os.environ.get("HUBPROTO_EXTRACTOR_MODEL") or "").strip()
-    if named and (not named.startswith("claude") or hosted_allowed()):
+    if named and (not named.startswith("claude") or hosted_allowed()) and not cloud_refused(named):
         return named
     models, _ = ollama_models()
-    models = sorted(models or [], key=lambda m: -(m.get("size_gb") or 0))
+    models = sorted((m for m in models or [] if not m.get("cloud")), key=lambda m: -(m.get("size_gb") or 0))
     return f"ollama/{models[0]['name']}" if models else ""
 
 

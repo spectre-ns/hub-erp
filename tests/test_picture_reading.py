@@ -37,7 +37,8 @@ READING = {"states_nothing": False, "sentences": [SAID], "process": "journal-rev
 def no_ollama(monkeypatch):
     """No test here reaches a real Ollama, whatever the shell says; Ollama's answers about models are forgotten."""
     monkeypatch.delenv("HUBPROTO_OLLAMA_URL", raising=False)
-    monkeypatch.setattr(model, "_CAPS", {})
+    monkeypatch.setattr(model, "_SHOW", {})
+    monkeypatch.setattr(model, "_SHOW_MISSED", {})
 
 
 def png(n: int = 1) -> dict:
@@ -158,6 +159,9 @@ def test_the_anthropic_api_gets_image_blocks_and_ollama_its_images_field(monkeyp
     monkeypatch.setenv("HUBPROTO_OLLAMA_URL", "http://127.0.0.1:9")
     monkeypatch.setattr(model, "context_length", lambda m: 32768)
     monkeypatch.setattr(model, "_ollama_capabilities", lambda name: ["completion", "vision"] if name == "qwen2.5vl:7b" else ["completion"])
+    # Ollama's record of each model: it runs on this machine (asked again before each call is sent).
+    monkeypatch.setattr(model, "_ollama_show", lambda name, max_age=0, need="": {"at": 0, "capabilities": None, "remote_host": "", "remote_model": "",
+                                                                                "context_length": None})
     out = model.ModelGateway().complete(model="ollama/qwen2.5vl:7b", system=SYSTEM, user=USER, images=[png()])
     assert out["backend"] == "ollama"
     assert sent[-1]["messages"][-1] == {"role": "user", "content": USER, "images": [b64]}
@@ -526,12 +530,21 @@ def test_ollama_that_does_not_say_is_refused_and_asked_again_later(monkeypatch):
         return Resp(answers[state["now"]])
 
     monkeypatch.setattr(model.urllib.request, "urlopen", urlopen)
+    clock = [1000.0]
+    monkeypatch.setattr(model, "_clock", lambda: clock[0])
+    # One /api/show record per model holds what it can do and where it runs: asking where (backend_for) asks once for both.
     assert "Ollama does not say whether ollama/llava:13b reads pictures" in model.images_refused("ollama/llava:13b"), "never guessed yes"
+    assert asked == ["down"], "a failed lookup is not asked again at once"
+    clock[0] += model.SHOW_RETRY
     state["now"] = "old"
     assert model.images_refused("ollama/llava:13b"), "an Ollama that reports no capabilities: refused"
+    assert asked == ["down", "old"]
+    clock[0] += model.SHOW_RETRY
     state["now"] = "up"
-    assert model.supports_images("ollama/llava:13b") and asked == ["down", "old", "up"], "a failed lookup is not kept"
+    assert model.supports_images("ollama/llava:13b") and asked == ["down", "old", "up"], "a failed lookup, or one that did not say, is asked again later"
     assert model.supports_images("ollama/llava:13b") and len(asked) == 3, "an answer is kept"
+    clock[0] += model.SHOW_TTL
+    assert model.supports_images("ollama/llava:13b") and len(asked) == 4, "for SHOW_TTL seconds"
 
 
 def test_a_picture_is_measured_as_it_is_sent():

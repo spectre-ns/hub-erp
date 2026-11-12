@@ -170,7 +170,7 @@ class Hub:
         member reads with the model its profile bundles it with: an Ollama model, or a Claude model only where hosted
         models are switched on (``model.backend_for``). The committee reads by consensus, so ``quorum`` is every member; a
         member that cannot read here is a ``member-unavailable`` question for a person (its chair), never skipped."""
-        from .model import backend_for, hosted_allowed, resolve_model
+        from .model import backend_for, cloud_refused, hosted_allowed, resolve_model
 
         meta = self.releases.current()
         if not meta:
@@ -188,6 +188,8 @@ class Hub:
                 why = "its profile names no model"
             elif m.startswith("claude") and not hosted_allowed():
                 why = f"{m} is a hosted model, and hosted models are switched off here (HUBPROTO_HOSTED_MODELS)"
+            elif cloud_refused(m):
+                why = cloud_refused(m)
             elif backend_for(m) == "stand-in":
                 why = f"{m} is not reachable here (only a development stand-in would answer)"
             else:
@@ -577,16 +579,24 @@ class Hub:
         """Change a cog's model as a policy proposal: the Model line of its profile, drafted and compiled."""
         import re as _re
 
+        from .model import cloud_refused, off_machine
+
         model = (model or "").strip()
         if not model or "\n" in model:
             raise ValueError("name a model")
+        if cloud_refused(model):  # one of Ollama's cloud models, with hosted models off: never proposed as if it were local
+            raise ValueError(cloud_refused(model))
+        away = off_machine(model, cog)  # with hosted models on: the change order, the draft and the policy owners say so
+        why = f"{cog} uses {model}" + (f". {away}." if away else "")
         if self.sop_source():
             # The Frame is derived from the SOPs: the Model line is changed in the cog-profiles policy document.
             rules = self.settings_rules()
             if not any(r["kind"] == "cog" and r["name"] == cog for r in rules):
                 raise ValueError(f"{cog} has no profile to change")
             new = [({**r, "model": model} if r["kind"] == "cog" and r["name"] == cog else r) for r in rules]
-            return self.rules_to_change_order(by, new, reason=f"{cog} uses {model}")
+            out = self.rules_to_change_order(by, new, reason=why)
+            self._tell_owners_off_machine(by, f"{by} proposes {model} for {cog} on {out['change_order']}", away, record=out["locator"])
+            return out
         released = self.released_frames()  # the change is made to the policy in force, not to unreleased edits on disk
         frame = next((f for f in released.frames.values() if f"## Cog: {cog}" in f.text), None)
         if frame is None:
@@ -601,8 +611,23 @@ class Hub:
             lines[at] = f"Model: {model}"
         text = "\n".join(lines) + ("\n" if frame.text.endswith("\n") else "")
         d = self.frame_draft(frame.name, by=by)
-        self.dms.add_version(d["locator"], text.encode("utf-8"), by=by, filename=frame.path.name, mime="text/markdown", note=f"{cog} uses {model}")
-        return self.compile(overrides={frame.name: text}, drafts={frame.name: d["locator"]}, by=by, from_release=True)
+        self.dms.add_version(d["locator"], text.encode("utf-8"), by=by, filename=frame.path.name, mime="text/markdown", note=why)
+        out = self.compile(overrides={frame.name: text}, drafts={frame.name: d["locator"]}, by=by, from_release=True)
+        self._tell_owners_off_machine(by, f"{by} proposes {model} for {cog} as proposal #{out.get('number')}", away, record=d["locator"])
+        return out
+
+    def _tell_owners_off_machine(self, by: str, subject: str, away: str, record: str | None = None) -> None:
+        """A proposal names one of Ollama's cloud models for a cog: every policy owner is told, in words, that the cog's
+        prompts and the records in them would leave this machine (``away``; nothing when it is empty)."""
+        if not away:
+            return
+        from . import authz
+
+        meta = self.releases.current()
+        b = self.releases.bundle(meta["digest"]) if meta else {}
+        owners = sorted(p for p, m in (b.get("members") or {}).items() if m.get("type") == "person" and "policy-owner" in authz.roles_of(b, p))
+        for owner in owners:
+            self.inbox.notify(owner, kind="policy-proposal", subject=f"{subject}: it leaves this machine", body=away + ".", record=record)
 
     def propose_new_person(self, *, name: str, roles: list[str], by: str) -> dict:
         """A new person as a policy proposal: the member and their roles in the organization model. (In production
@@ -620,6 +645,11 @@ class Hub:
                            persona: str = "") -> dict:
         import re as _re
 
+        from .model import cloud_refused, off_machine
+
+        if kind == "cog" and cloud_refused(model):  # one of Ollama's cloud models, with hosted models off
+            raise ValueError(cloud_refused(model))
+        away = off_machine(model, name) if kind == "cog" else ""  # with hosted models on: the proposal and the owners say so
         about = " ".join((about or "").split())
         persona = (persona or "").strip().removeprefix("persona-")
         if self.sop_source():
@@ -631,7 +661,9 @@ class Hub:
             new = rules + [{"kind": "member", "principal": name, "principal_type": kind, "roles": list(roles)}]
             if kind == "cog":
                 new.append({"kind": "cog", "name": name, "about": about, "model": model, "persona": persona, "prompt_from": "", "references": []})
-            return self.rules_to_change_order(by, new, reason=f"add {name} ({kind})")
+            out = self.rules_to_change_order(by, new, reason=f"add {name} ({kind})" + (f". {away}." if away else ""))
+            self._tell_owners_off_machine(by, f"{by} proposes a new cog, {name}, on {out['change_order']}", away, record=out["locator"])
+            return out
         meta = self.releases.current()
         bundle = self.releases.bundle(meta["digest"]) if meta else {}
         name = (name or "").strip().lower()
@@ -680,9 +712,11 @@ class Hub:
         for frame_name, text in texts.items():
             d = self.frame_draft(frame_name, by=by)
             self.dms.add_version(d["locator"], text.encode("utf-8"), by=by, filename=self.frames.get(frame_name).path.name, mime="text/markdown",
-                                 note=f"new {kind} {name}")
+                                 note=f"new {kind} {name}" + (f". {away}." if away else ""))
             drafts[frame_name] = d["locator"]
-        return self.compile(overrides=texts, drafts=drafts, by=by)
+        out = self.compile(overrides=texts, drafts=drafts, by=by)
+        self._tell_owners_off_machine(by, f"{by} proposes a new cog, {name}, as proposal #{out.get('number')}", away)
+        return out
 
     def withdraw_frame_draft(self, ref: str, by: str, reason: str = "") -> dict:
         """Withdraw a Frame draft: it leaves every open proposal (which is withdrawn with it, so the next compile reads

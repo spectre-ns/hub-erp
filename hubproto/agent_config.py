@@ -103,7 +103,7 @@ def propose_policy_change(tools, a: dict) -> dict:
 
 # ---------------------------------------------------------------- propose_cog_model
 def propose_cog_model(tools, a: dict) -> dict:
-    from .model import resolve_model
+    from .model import off_machine, resolve_model
 
     hub = tools.hub
     cog = str(a.get("cog") or tools.cog).strip()
@@ -124,9 +124,14 @@ def propose_cog_model(tools, a: dict) -> dict:
     except (ValueError, FrameError) as e:
         return {"error": str(e)}
     out = _summary(proposal)
-    out.update({"ok": True, "cog": cog, "model": model, "served_by": res["served"]})
+    away = res.get("backend") == "ollama-cloud"
+    out.update({"ok": True, "cog": cog, "model": model, "served_by": res["served"], "leaves_machine": bool(res.get("leaves_machine"))})
+    if away:
+        out["where"] = off_machine(model, cog)
+    # The hub tells the policy owners when the model leaves the machine (Hub.propose_cog_model); this notice says so too.
     _notify_owners(tools, proposal, f"{tools.cog} proposes {model} for {cog}: proposal #{proposal.get('number')}",
-                   (f"Reason: {reason}\n" if reason else "") + f"{cog} uses {profile.get('model') or 'no model'} now.")
+                   (f"Reason: {reason}\n" if reason else "") + f"{cog} uses {profile.get('model') or 'no model'} now."
+                   + (f"\n{out['where']}." if away else ""))
     return out
 
 
@@ -199,7 +204,9 @@ register({"name": "propose_policy_change",
               "reason": {"type": "string"}}, "required": ["frame", "reason"]}},
          propose_policy_change, write=True, intent=intent_change_order)
 register({"name": "propose_cog_model",
-          "description": "Propose that a cog use a different model, as a policy proposal. The model must be one this hub can reach. " + _OWNERS_DECIDE,
+          "description": "Propose that a cog use a different model, as a policy proposal. The model must be one this hub can reach. An Ollama "
+                         "cloud model (a tag ending in :cloud or -cloud) runs on Ollama's servers, not this machine: it is hosted, refused "
+                         "while hosted models are off. " + _OWNERS_DECIDE,
           "parameters": {"type": "object", "properties": {"cog": {"type": "string", "description": "the cog (default: you)"},
                                                          "model": {"type": "string"}, "reason": {"type": "string"}}, "required": ["model"]}},
          propose_cog_model, write=True, intent=intent_change_order)

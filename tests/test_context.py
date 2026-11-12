@@ -30,7 +30,9 @@ def ctx_for(hub, cog: str, **extras) -> RunContext:
 
 def test_the_window_comes_from_the_model(monkeypatch):
     monkeypatch.setattr(model_mod, "backend_for", lambda m: "ollama")
-    monkeypatch.setitem(model_mod._CTX, "qwen3:14b", 40960)
+    monkeypatch.setenv("HUBPROTO_OLLAMA_URL", "http://127.0.0.1:9")  # nothing answers there: Ollama's record of the model is this one
+    monkeypatch.setitem(model_mod._SHOW, ("http://127.0.0.1:9", "qwen3:14b"), {"at": model_mod._clock(), "capabilities": ["completion"], "remote_host": "",
+                                                                             "remote_model": "", "context_length": 40960})
     monkeypatch.delenv("HUBPROTO_MODEL_CTX", raising=False)
     monkeypatch.delenv("HUBPROTO_MODEL_MAX_CHARS", raising=False)
     assert model_mod.num_ctx_for("ollama/qwen3:14b") == 40960

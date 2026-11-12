@@ -173,8 +173,9 @@ new version until the change order is released or sent back. It is approved by t
 
 **Hold.** A stop put on an item by one of its approvers, with a reason; nothing can be decided until it is released.
 
-**Hosted models.** Models served outside the hub (Claude, from Anthropic). Off unless an administrator sets
-`HUBPROTO_HOSTED_MODELS=on` with an `ANTHROPIC_API_KEY`; under the IT SOP, for the senior cogs' compiling only (chapter
+**Hosted models.** Models served outside the hub (Claude, from Anthropic, and Ollama's cloud models such as
+`gemma4:cloud`, which run on Ollama's servers, not this machine). Off unless an administrator sets
+`HUBPROTO_HOSTED_MODELS=on` (Claude also needs an `ANTHROPIC_API_KEY`); under the IT SOP, for the senior cogs' compiling only (chapter
 8.4).
 
 **Independent approver.** A person who contributed nothing to a change order and approved every item of its delta.

@@ -979,20 +979,24 @@ def cmd_tick(args) -> int:
 
 
 def cmd_models(args) -> int:
-    from .model import available_models, resolve_model
+    from .model import OFF_MACHINE, available_models, hosted_allowed, resolve_model
 
     hub = _hub(args)
     av = available_models(refresh=True)
     print("installed in Ollama:" if av["ollama"] else f"Ollama: {av['ollama_error'] or 'no models installed'}")
     for m in av["ollama"]:
-        print(f"  ollama/{m['name']:28s} {m['params']:>7s} {m['family']:10s} {m['quant']:8s} {m['size_gb']} GB")
+        if m.get("cloud"):  # nothing of it is on this machine: no size, and where it runs instead
+            print(f"  ollama/{m['name']:28s} cloud: {OFF_MACHINE}" + ("" if hosted_allowed() else " (not available: hosted models are off)"))
+        else:
+            print(f"  ollama/{m['name']:28s} {m['params']:>7s} {m['family']:10s} {m['quant']:8s} {m['size_gb']} GB")
     print("Claude:", "Anthropic key set" if av["anthropic_key"] else "no Anthropic key: a cog bundled with a claude-* model is not available here")
     meta = hub.releases.current()
     cogs = (hub.releases.bundle(meta["digest"]).get("cogs") or {}) if meta else {}
     print("cogs:")
     for name, prof in sorted(cogs.items()):
         r = resolve_model(prof.get("model") or "")
-        print(f"  {name:22s} {prof.get('model') or '-':22s} " + (f"-> {r['served']} ({r['backend']})" if r["available"] else f"NOT AVAILABLE: {r['note']}"))
+        where = f"{r['backend']}: {OFF_MACHINE}" if r["backend"] == "ollama-cloud" else r["backend"]
+        print(f"  {name:22s} {prof.get('model') or '-':22s} " + (f"-> {r['served']} ({where})" if r["available"] else f"NOT AVAILABLE: {r['note']}"))
     return 0
 
 
