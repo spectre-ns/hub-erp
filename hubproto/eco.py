@@ -94,7 +94,7 @@ def add_new_sop(hub, co_ref: str, name: str, text: str, *, by: str, author: str 
     owner);
     ``author`` writes it (default ``by``). ``relpath`` is where its Frame file goes under frames/ (default
     ``<name>.frame.md``). Returns the draft (or the one the change order already carries for that name)."""
-    from .frames import load_frame_text
+    from .frames import header_of, load_frame_text
 
     co = _co(hub, co_ref)
     if finished(co) or (co.get("state") or "").startswith("awaiting"):
@@ -119,7 +119,7 @@ def add_new_sop(hub, co_ref: str, name: str, text: str, *, by: str, author: str 
         raise ValueError(f"the text is the Frame {frame.name!r}, not {name!r}")
     doc_type, folder = sopdocs.kind_of(frame)
     writer = author or by
-    head = "\n".join(text.splitlines()[: max(0, frame.body_start - 1)])
+    head = header_of(text, frame.body_start)
     tail = max(1, len(text) - len(text.rstrip("\n")))
     draft = hub.dms.create(title=sopdocs.title_of(frame), doc_class="controlled", folder=folder, by=writer, content=sopdocs.to_docx(frame.body),
                            filename=f"{name}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
