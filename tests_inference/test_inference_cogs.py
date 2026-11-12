@@ -5,7 +5,7 @@ Properties, not words: the model's answer varies; what must hold is that the hub
 
 import re
 
-from conftest import BIG_BILL, JUNIOR, SMALL_BILL, dated, need
+from conftest import BIG_BILL, CALLS, JUNIOR, SMALL_BILL, _current, dated, need
 from hubproto.agent import AgentStore, AgentTools
 from hubproto.edits import squash
 from hubproto.review import _FINDING, _VERDICT, checklist, gather
@@ -69,11 +69,12 @@ def test_a_junior_cog_asked_to_sign_decides_on_its_review_or_hands_it_back_with_
     hub.runner.cog_step_in(rid, "qa-manager", asked_by="carol")
     track = hub.runner.track(rid)
     [rv] = [e for e in track if e["type"] == "gate.cog_review" and e["cog"] == "qa-manager"][-1:]
-    assert rv["judged"], "the decision rests on its review, by its model"
     reviews = [c for c in hub.model.calls if c["by"] == "qa-manager"]
     assert reviews and not any(c["stand_in"] for c in reviews), f"its model answered:\n{raw()}"
     after = hub.runner.load(rid)
     if rv["verdict"] == "approve":
+        # ``judged`` is recorded only on an approval (cogs._decide): the approval rests on its model's review.
+        assert rv["judged"], f"the approval rests on its review, by its model:\n{raw()}"
         assert after["pending"].get("countersign_of") and after["pending"]["countersign_role"] == "quality-manager", \
             "a cog's approval here waits for a quality manager's countersignature"
     else:
@@ -108,5 +109,8 @@ def test_the_ap_cog_answers_about_a_bill_it_approved_from_the_record(released, t
     msg = hub.chat("alice", "ap-reviewer", f"What is the amount of {number}, and who approved it?")
     text = msg.get("body") or msg.get("text") or ""
     assert msg.get("stand_in") is False, f"its model answered:\n{raw()}"
+    # The model itself must use a tool: the hub's own search before the call (chat_lookup) does not count.
+    model_tools = [t for c in CALLS.get(_current[0], []) if c["kind"] == "tools" for t in c.get("tools") or []]
+    assert model_tools, f"the model answered without looking anything up with its tools:\n{raw()}"
     assert re.search(r"1[,.]?500", text), f"the answer does not give the bill's amount (1,500 USD):\n{raw()}"
     timed()

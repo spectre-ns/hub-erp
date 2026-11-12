@@ -35,7 +35,10 @@ DEFAULT_URL = "http://localhost:11434"
 
 # Cleared before anything of the hub is imported: no stand-in answers, no hosted model is reachable.
 for _name in ("HUBPROTO_ALLOW_STAND_IN", "HUBPROTO_HOSTED_MODELS", "ANTHROPIC_API_KEY", "HUBPROTO_MODEL_FAKE", "HUBPROTO_EXTRACTOR",
-              "HUBPROTO_EXTRACTOR_MODEL", "HUBPROTO_MODEL_MAX_CHARS"):
+              "HUBPROTO_EXTRACTOR_MODEL", "HUBPROTO_MODEL_MAX_CHARS",
+              # the deployed stack's services: a shell with the Docker settings exported must never reach them
+              "HUBPROTO_COLLABORA_URL", "HUBPROTO_COLLABORA_DISCOVERY", "HUBPROTO_CAD_WORKER_URL", "HUBPROTO_WOPI_BASE",
+              "HUBPROTO_PUBLIC_URL"):
     os.environ.pop(_name, None)
 os.environ["HUBPROTO_OLLAMA_URL"] = (os.environ.get("HUBPROTO_OLLAMA_URL") or DEFAULT_URL).rstrip("/")
 os.environ["HUBPROTO_COG_QUEUE"] = "inline"  # a cog's work is done when the call returns
@@ -88,6 +91,9 @@ def capabilities(name: str) -> list[str]:
 
 def need(*models: str) -> None:
     """Skip the test, with a sentence saying what to do, unless Ollama answers and has every model pulled."""
+    cloud = [m for m in models if re.search(r"(:|-)cloud$", model_mod.served_name(m))]
+    if cloud:  # Ollama's "cloud" tags run on Ollama's servers: this suite never sends a prompt off the machine
+        pytest.skip(f"{', '.join(cloud)} runs on Ollama's servers, not this machine; the local-inference suite only runs local models")
     names, why = installed()
     if names is None:
         pytest.skip(f"{why}: start Ollama (ollama serve), or set HUBPROTO_OLLAMA_URL to one that runs")
@@ -167,6 +173,16 @@ def pytest_runtest_makereport(item, call):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "slow: asks a model more than once or reads a whole SOP diff; deselect with -m 'not slow'")
+
+
+def pytest_collection_modifyitems(config, items):
+    """This conftest turns the stand-in off and points the hub at a real Ollama: it must never share a session with the
+    main suite (``pytest tests tests_inference``, ``pytest .``), whose tests would then call real models."""
+    here = Path(__file__).resolve().parent
+    other = [i.nodeid for i in items if here not in Path(str(i.path)).resolve().parents]
+    if other:
+        raise pytest.UsageError(f"the local-inference suite runs on its own (python -m pytest tests_inference); "
+                                f"this session also collected {len(other)} other tests, such as {other[0]}")
 
 
 def pytest_terminal_summary(terminalreporter):
