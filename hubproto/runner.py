@@ -953,16 +953,19 @@ class Runner:
     def _change_order_signers(self, state: dict, out: dict, owner: str, rec: dict | None, signing: bool = True) -> None:
         """Who may sign a change order (change control 3.6, as agreed): the author of a revision it carries never; any other
         contributor (its requester and preparer included) only alongside an independent approver, a person who
-        contributed nothing and approved every item of its delta (``changecontrol.may_not_sign``)."""
+        contributed nothing and approved every item of its delta (``changecontrol.may_not_sign``); whoever's authority its
+        delta widens never (``changecontrol.widened_holders``: nobody signs a change that widens their own authority)."""
         contribs = set(self.contributors(state)) | {owner} | ({rec.get("created_by")} if rec and rec.get("created_by") else set())
         blocked: set[str] | None = None
         authors: set[str] = set()
+        widened: dict[str, str] = {}
         if getattr(self, "hub", None) is not None:
             try:
                 from . import changecontrol
 
                 blocked = set(changecontrol.may_not_sign(self.hub, state["record"]))
                 authors = set(changecontrol.revision_authors(self.hub, state["record"]))
+                widened = changecontrol.widened_holders(self.hub, state["record"])
             except Exception:  # the change-control module cannot read it: every contributor stays off the Gate
                 blocked = None
         if blocked is None:
@@ -981,6 +984,8 @@ class Runner:
                 why = said.get(p) or "segregation of duties: they are a contributor of this change order"
                 out[p] = (f"{why}; a contributor signs only alongside an independent approver (a person who contributed nothing "
                           "and approved every item of its delta)")
+        for p, why in widened.items():  # never, routed or not: the change order widens their own authority
+            out[p] = f"the change order widens their own authority ({p} {why}), and nobody signs such a change"
 
     @staticmethod
     def cog_work_needs_person(bundle: dict, obj: str) -> dict | None:

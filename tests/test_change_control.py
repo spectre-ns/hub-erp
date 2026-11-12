@@ -271,7 +271,9 @@ def test_people_review_ask_and_suggest_and_the_author_answers(hub):
 
 def test_every_warning_is_accepted_and_a_widening_needs_both_policy_owners(hub, monkeypatch):
     co = new_co(hub, title="Document approvals")
-    revise(hub, co, "document-control-sop", ROUTE_OLD, ROUTE_NEW)
+    # To a role neither policy owner holds: a route to the quality manager would widen carol's own authority, and she would
+    # then neither decide nor sign it (tests/test_role_widening.py).
+    revise(hub, co, "document-control-sop", ROUTE_OLD, "Approvals in document-control go to the process owner.")
 
     def reviewer(hub_, co_, cog, brief):
         add = next(c for c in brief["items"] if c.get("op") == "add")

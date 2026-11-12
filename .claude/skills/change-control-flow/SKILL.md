@@ -46,7 +46,10 @@ functions, in the same order. Each step's work is in `changecontrol` (`round_*`)
 5. `c_stage`: the delta is staged on the CO (`staged_proposal`).
 6. `c_panel` -> `round_panel` -> `suggest_panel`: the quality-assistant cog reads the change-control SOP's "Review
    of changes" section (`review_section`; without a model its sentences are applied literally to `touches`). Members
-   whose authority the delta widens (`widened_principals`) are left off; contributors are on it but not asked.
+   whose authority the delta widens (`widened_holders`: who it names, every holder of a role and member of a group it
+   widens, in force or added by the same CO) are left off; contributors are on it but not asked. The same people decide
+   no item (`item_state` does not count them), accept no warning, answer no committee question and never sign the Gate
+   (`runner._change_order_signers`); `too_few_approvers` says when that leaves too few.
 7. `c_queue` -> `round_queue`: cogs get a `co-review` task in the cog queue (`cog_review`); people are told and
    answer with `submit_review`. Committees on the panel: `committee_reviews`, `intervene_review`.
 8. `c_tell` -> `round_tell`.

@@ -192,6 +192,18 @@ authority, so both policy owners must approve it". Chapter 10.9 lists where the 
 people do, decides; for example, editing a workflow so that a gate goes to a cog, or removing an approval step, is not
 a widening unless the editor's bypass check catches it.)
 
+**Whose authority a widening widens.** Nobody, person or cog, reviews, decides, accepts a warning on or signs a change
+order that widens their own authority (hubproto/changecontrol.py, `widened_holders`). That is whoever it names (a cog
+that may approve more, a member gaining a role), everyone holding a role it widens (in force, or given that role by the
+same change order), everyone in a group it widens (listed, or holding one of its roles), and whoever loses a "may
+not". "Internal auditors may create nonconformances in Quality/Audits" leaves bob out, because he holds
+internal-auditor. The change order's Approval section lists who is left out and why: "bob holds the internal auditor
+role, which this change order widens (...)". A narrowing leaves nobody out. When too few people are left, the change
+order says which approver is missing and cannot be signed: "too few policy owners are left to approve ...: it needs
+another policy owner", or, before it is sent, "nobody is left to sign it: carol holds the quality manager role, which
+this change order widens". On an open change order this holds from its next evaluation: a decision recorded earlier
+by someone it leaves out no longer counts. A released change order keeps what was true when it was decided.
+
 **Validation classes.** The IT SOP's `## Validation` section compiles into the release as classes: high risk
 (widenings; permissions, approval criteria, segregation of duties, members, roles, groups, committees, cog profiles,
 personas; record types and workflow gates), medium (routing, due dates, processes, thresholds, required fields,

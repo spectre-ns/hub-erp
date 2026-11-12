@@ -146,7 +146,8 @@ def test_a_cog_whose_authority_the_change_widens_is_left_off_its_review_panel(sh
     ok(post(shell, "/co-review", {"as": "alice", "co": co["locator"], "choose": "own", "panel": ["ap-reviewer", "management"]}))
     rnd = cc.current_round(hub.kernel.get(co["locator"]))
     assert "ap-reviewer" not in {e["who"] for e in rnd["panel"]} and [x["who"] for x in rnd["left_off"]] == ["ap-reviewer"]
-    assert "Left off the panel: <b>ap-reviewer</b>, the change widens its own authority" in co_page(shell, co, "alice")
+    assert ("Left off the panel: <b>ap-reviewer</b> gains authority from this change order (“The ap-reviewer cog may approve purchase-to-pay "
+            "items under 5,000 USD") in co_page(shell, co, "alice")
     assert NEW  # the narrowing edit (2,000 -> 1,500) is the other tests'
 
 

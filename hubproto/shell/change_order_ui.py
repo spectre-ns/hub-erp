@@ -370,7 +370,8 @@ class ChangeOrderMixin:
         me = (rnd.get("results") or {}).get(self.user) or {}
         on_panel = self.user in {e["who"] for e in rnd.get("panel") or []}
         return {"ov": ov, "co": co, "f": co["fields"], "stage": stage, "mine": mine, "editable": stage in cc.EDITABLE and not eco.finished(co),
-                "decider": not cc_api("may_decide")(self.hub, co, self.user) and not eco.finished(co), "run": run, "waiting": waiting,
+                "decider": not cc_api("may_decide")(self.hub, co, self.user) and not eco.finished(co) and self.user not in (ov.get("widened") or {}),
+                "run": run, "waiting": waiting,
                 "p": p, "current": current, "round": ov["round"], "reviewing_me": on_panel and me.get("status") == "queued" and not self._viewing_cog(),
                 "answerer": (mine or self.user in ov["contributors"]) and not eco.finished(co), "groups": groups(ov["delta"]),
                 "requester": cc.requester(co)}
@@ -869,7 +870,8 @@ class ChangeOrderMixin:
         elif st != "compiling":
             out += "<p class='why'>No reviewer suggested: the change-control SOP's section on reviewing changes names none for this delta.</p>"
         for x in rnd.get("left_off") or []:
-            out += f"<p class='why'>Left off the panel: <b>{esc(x['who'])}</b>, {esc(x['reason'])}.</p>"
+            sep = ", " if str(x.get("reason") or "").startswith("the change") else " "  # a round recorded before the reason named who
+            out += f"<p class='why'>Left off the panel: <b>{esc(x['who'])}</b>{sep}{esc(x['reason'])}.</p>"
         results = rnd.get("results") or {}
         rows = self._co_committee_rows(rnd)
         for e in rnd.get("panel") or []:
@@ -1446,6 +1448,10 @@ class ChangeOrderMixin:
         else:
             out += "<ol class='co-delta'>" + "".join(self._co_item_html(ctx, i, g) for i, g in enumerate(gs, 1)) + "</ol>"
         out += self._co_not_decided_html(ctx)
+        mine = (ctx["ov"].get("widened") or {}).get(self.user)
+        if mine and ctx["stage"] == "awaiting-approval":
+            out += (f"<div class='card info' role='status'>You do not decide these items: {esc(self.user)} {esc(mine)}. Nobody reviews, "
+                    "decides or signs a change that widens their own authority.</div>")
         return out + "</section>"
 
     def _co_item_html(self, ctx: dict, n: int, g: list[dict]) -> str:
@@ -1834,6 +1840,16 @@ class ChangeOrderMixin:
         return out
 
     # ------------------------------------------------------------ 9. approval
+    def _co_widened_html(self, ctx: dict) -> str:
+        """Who takes no part in the change order because its delta widens their own authority, each with why, in a sentence."""
+        widened = ctx["ov"].get("widened") or {}
+        if not widened:
+            return ""
+        lis = "".join(f"<li><b>{esc(w)}</b> {esc(why)}.</li>" for w, why in sorted(widened.items()))
+        return ("<div class='card info' role='status' id='co-widened'><p>Left out of this change order's review, decisions and signature, "
+                "because it widens their own authority (nobody, person or cog, reviews such a change):</p>"
+                f"<ul>{lis}</ul></div>")
+
     def _co_approval_html(self, ctx: dict) -> str:
         co, stage = ctx["co"], ctx["stage"]
         ov = ctx["ov"]
@@ -1842,6 +1858,7 @@ class ChangeOrderMixin:
             return out + "<p class='status'>Released.</p></section>"
         if stage == "approved":
             return out + "<p class='status'>Approved: being released.</p></section>"
+        out += self._co_widened_html(ctx)
         if stage in cc.EDITABLE:
             if ov["send_reasons"]:
                 out += ("<h3>Before it can be sent for approval</h3><ul class='blockers'>" + "".join(f"<li>{esc(b)}</li>" for b in ov["send_reasons"]) + "</ul>")

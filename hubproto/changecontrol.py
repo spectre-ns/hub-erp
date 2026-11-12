@@ -1022,9 +1022,15 @@ def _refresh(hub, co: dict, p: dict) -> dict:
     authors = _draft_authors(hub, co)
     contribs = contributors(hub, co)
     ids = {c["id"] for c in p.get("changes") or []}
+    if p.get("status") == "open" and not p.get("applied"):
+        # Whose authority the delta widens: they decide none of its items (``item_state`` does not count them). Kept on the
+        # proposal, so a released change order shows what was true when it was decided.
+        p["widened"] = widened_holders(hub, co, p)
+    widened = sorted(p.get("widened") or {})
     for c in p.get("changes") or []:
         c["makers"] = _makers(c, authors, co)
         c["contributors"] = contribs
+        c["widened"] = widened
         # The removal a change supersedes is that change's other half (its "from"): decided with it, never on its own.
         half = "add:" + rule_key(c["changed_to"]) if c.get("op") == "remove" and c.get("changed_to") else None
         if half in ids:
@@ -1056,18 +1062,20 @@ def _refresh_saved(hub, co_ref) -> None:
 def item_state(c: dict, owners) -> str:
     """approved, rejected or pending: a reject decides it; a widening needs two policy owners, anything else one
     approver. Stale decisions (made before the baseline changed) do not count, nor does a decision by one of the item's
-    makers (who made a change never approves it: a maker is not the second owner on their own widening)."""
+    makers (who made a change never approves it: a maker is not the second owner on their own widening), nor one by
+    anyone whose authority the change order widens (``widened``: ``widened_holders``)."""
     makers = set(c.get("makers") or [])
+    widened = set(c.get("widened") or [])  # whose authority the change order widens: their decisions never count
     if _widening(c):
         # Whoever made a change is not its only approver (the agreed rule): a maker who is a policy owner may be one of
         # the two owners, when the other owner contributed nothing to the change order and approves it too.
-        live = [d for d in c.get("decisions") or [] if not d.get("stale")]
+        live = [d for d in c.get("decisions") or [] if not d.get("stale") and d["by"] not in widened]
         if any(d["verdict"] == "reject" for d in live if d["by"] not in makers):
             return "rejected"
         approvers = {d["by"] for d in live if d["verdict"] == "approve"} & set(owners)
         independent = approvers - makers - set(c.get("contributors") or [])
         return "approved" if len(approvers) >= 2 and independent else "pending"
-    live = [d for d in c.get("decisions") or [] if not d.get("stale") and d["by"] not in makers]
+    live = [d for d in c.get("decisions") or [] if not d.get("stale") and d["by"] not in makers and d["by"] not in widened]
     if any(d["verdict"] == "reject" for d in live):
         return "rejected"
     approvers = {d["by"] for d in live if d["verdict"] == "approve"}
@@ -1580,21 +1588,108 @@ def round_check(hub, co_ref, n: int) -> str:
             + (f"; {len(left)} direct change(s) the prose does not state (round-trip questions)" if left else ""))
 
 
-def widened_principals(hub, co_ref) -> set[str]:
-    """The members whose own authority the change order's delta widens: a cog that may approve more, is routed more, or
-    may do more (a permission), a member gaining roles. Like a person, none of them reviews that change."""
+def _gains(c: dict) -> set[str]:
+    """The subjects ("role:x", "group:g", "person:x", "cog:x", "member:x") whose authority a widening item grows: a
+    permission's subject, a route's assignee, a criterion's approver, a member line's principal; the members and roles a
+    group change brings into the group; who a process or committee change names that it did not name before; for a
+    removed "may not" (or "when a person confirms"), its subject. A narrowing grows nobody's."""
+    from .release import rule_names
+
+    if c.get("op") == "text" or not _widening(c):
+        return set()
+    r = _effective(c)
+    kind = r.get("kind")
+    if c.get("op") == "remove":
+        return {r["subject"]} if kind == "permission" and r.get("effect") in ("deny", "propose") and r.get("subject") else set()
+    was = c.get("changes_from") or c.get("was") or {}
+    if kind == "group":
+        return ({f"member:{m}" for m in set(r.get("members") or []) - set(was.get("members") or [])}
+                | {f"role:{x}" for x in set(r.get("roles") or []) - set(was.get("roles") or [])})
+    if kind in ("process", "committee"):
+        return rule_names(r) - (rule_names(was) if was else set())
+    out = {r.get("subject"), r.get("assignee"), r.get("approver")}
+    if kind == "member" and r.get("principal"):
+        out.add(f"{r.get('principal_type') or 'person'}:{r['principal']}")
+    return {x for x in out if x and not str(x).startswith("field:")}
+
+
+def _words(name: str) -> str:
+    return str(name or "").replace("-", " ")
+
+
+def widened_holders(hub, co_ref, p: dict | None = None) -> dict[str, str]:
+    """Who the change order's delta widens the authority of, each with why, in words that follow their name ("bob holds
+    the internal auditor role, which this change order widens (“...”)"): a member it names (a cog that may approve more, is
+    routed more or may do more; a member gaining roles); everyone holding a role it widens, in force or given that role by
+    this change order; everyone in a group it widens (listed, or holding one of its roles), in force or after it; whoever a
+    group change brings into the group; and whoever loses a "may not" with it. Like a person, none of them reviews,
+    decides, accepts a warning on or signs that change order (AGENTS.md: nobody reviews a change that widens their own
+    authority). A narrowing excludes nobody. Read from the open compile against the release in force; once its delta is
+    applied (released) it is what was recorded on its proposal then."""
+    from .groups import group_members
+    from .guards import _denies
+    from .release import render_light
+
     co = _co(hub, co_ref)
-    p = _proposal(hub, co)
-    out: set[str] = set()
-    for c in (p or {}).get("changes") or []:
-        if c.get("op") == "text" or not _widening(c):
-            continue
-        r = _effective(c)
-        for ref in (r.get("approver"), r.get("assignee"), r.get("subject"), f"person:{r['principal']}" if r.get("kind") == "member" else None):
-            kind, _, name = str(ref or "").partition(":")
-            if kind in ("cog", "person") and name:
-                out.add(name)
+    p = p if p is not None else _proposal(hub, co)
+    if p is None:
+        return {}
+    if p.get("status") != "open" or p.get("applied"):
+        return dict(p.get("widened") or {})  # a released change order keeps what was true when it was decided
+    before = _bundle(hub)
+    base = hub.settings_rules()
+    target = new_rules(hub, co, p)
+    after = render_light(target)
+    members = set(before.get("members") or {}) | set(after.get("members") or {})
+    out: dict[str, str] = {}
+
+    def put(who: str, why: str) -> None:
+        if who and who in members and who not in MACHINES:
+            out.setdefault(who, why)
+
+    gained = [(c, ref) for c in p.get("changes") or [] for ref in sorted(_gains(c))]
+    # A role or group first: "bob holds the internal auditor role" says more than "bob gains authority".
+    for c, ref in sorted(gained, key=lambda x: x[1].partition(":")[0] not in ("role", "group")):
+        said = _sentence(_effective(c)) or c.get("reason") or c["id"]
+        quote = f"(“{said}”)" if c.get("op") != "remove" else f"(it takes out “{said}”)"
+        kind, _, name = ref.partition(":")
+        if kind == "role":
+            now = {m for m, x in (before.get("members") or {}).items() if name in (x.get("roles") or [])}
+            later = {m for m, x in (after.get("members") or {}).items() if name in (x.get("roles") or [])}
+            for who in sorted(now):
+                put(who, f"holds the {_words(name)} role, which this change order widens {quote}")
+            for who in sorted(later - now):
+                put(who, f"is given the {_words(name)} role by this change order, which also widens that role {quote}")
+        elif kind == "group":
+            now = set(group_members(before, name))
+            for who in sorted(now):
+                put(who, f"is in the {_words(name)} group, which this change order widens {quote}")
+            for who in sorted(set(group_members(after, name)) - now):
+                put(who, f"is put in the {_words(name)} group by this change order, which also widens that group {quote}")
+        elif kind == "member" and c.get("rule", {}).get("kind") == "group":
+            put(name, f"is brought into the {_words(_effective(c).get('name'))} group by this change order {quote}")
+        elif kind in ("person", "cog", "member"):
+            put(name, f"gains authority from this change order {quote}")
+    for who in sorted(set(before.get("members") or {})):
+        lost = _denies(base, who) - _denies(target, who)
+        if lost:
+            a, o, res = sorted(lost, key=str)[0]
+            put(who, f"loses a “may not” with this change order (they may now {a} {o} in {str(res).partition(':')[2]})")
     return out
+
+
+def widened_principals(hub, co_ref) -> set[str]:
+    """The members whose own authority the change order's delta widens (``widened_holders``): a cog that may approve
+    more, is routed more, or may do more (a permission), a member gaining roles, and everyone holding a role or in a
+    group it widens. Like a person, none of them reviews that change."""
+    return set(widened_holders(hub, co_ref))
+
+
+def excluded_words(hub, co_ref, who: str, p: dict | None = None) -> str:
+    """Why ``who`` takes no part in the change order's review, decisions or signature (its delta widens their own
+    authority), as a sentence; empty when it does not."""
+    why = widened_holders(hub, co_ref, p).get(who)
+    return f"{who} {why}: nobody reviews, decides or signs a change that widens their own authority" if why else ""
 
 
 def round_panel(hub, co_ref, n: int) -> str:
@@ -1610,8 +1705,8 @@ def round_panel(hub, co_ref, n: int) -> str:
                     panel.append(e)
     else:
         panel = [dict(s) for s in suggested]
-    interested = widened_principals(hub, co)
-    left_off = [{"who": e["who"], "reason": "the change widens its own authority: like a person, it does not review its own"}
+    interested = widened_holders(hub, co)
+    left_off = [{"who": e["who"], "reason": f"{interested[e['who']]}: nobody, person or cog, reviews a change that widens their own authority"}
                 for e in panel if e["who"] in interested]
     panel = [e for e in panel if e["who"] not in interested]
     contribs = set(contributors(hub, co))
@@ -1707,6 +1802,9 @@ def add_reviewer(hub, co_ref, who: str, by: str, reason: str = "") -> dict:
     mine = [e["who"] for e in entries if e["who"] in contributors(hub, co)]
     if mine:
         raise ValueError(f"segregation of duties: {', '.join(mine)} contributed to {co['number']} and does not review it")
+    widened = [w for w in (excluded_words(hub, co, e["who"]) for e in entries) if w]
+    if widened:
+        raise ValueError("; ".join(widened))
     new = [e for e in entries if e["who"] not in {x["who"] for x in rnd.get("panel") or []}]
     if not new:
         return rnd
@@ -1892,6 +1990,12 @@ def cog_review(hub, co_ref, n: int, cog: str) -> dict:
                   "error": f"{cog} contributed to {co['number']} (it drafted or made part of it), so it does not review it"}
         _record_result(hub, co, n, cog, result)
         return result
+    why = excluded_words(hub, co, cog)
+    if why:  # the delta changed since the panel was set (a later compile): it no longer reviews it
+        result = {"status": "failed", "kind": "cog", "at": utcnow(), "excluded": True, "findings": [], "questions": [], "suggestions": [],
+                  "error": why}
+        _record_result(hub, co, n, cog, result)
+        return result
     b = brief(hub, co, n, cog)
     ids = {c["id"] for c in b["items"]}
     prefix = f"R{n}.{cog}."
@@ -1953,6 +2057,9 @@ def submit_review(hub, co_ref, who: str, findings=(), questions=(), suggestions=
         raise ValueError(f"{who} is not on the panel of the current round of {co['number']}")
     if who in contributors(hub, co):
         raise ValueError(f"segregation of duties: {who} contributed to {co['number']} and does not review it")
+    why = excluded_words(hub, co, who)
+    if why:
+        raise ValueError(why)
     n = rnd["n"]
     prefix = f"R{n}.{who}."
     fs = []
@@ -2078,6 +2185,9 @@ def committee_answerer(hub, co_ref, q: dict, by: str, p: dict | None = None) -> 
     b = _bundle(hub)
     if not _person(hub, by):
         return f"{by} is a cog: a person answers a {q.get('code')} question for the committee", "", []
+    why = excluded_words(hub, co, by, p)
+    if why:
+        return why, "", []
     if by == chair or "system-administrator" in authz.roles_of(b, by):
         if by in contributors(hub, co):
             return f"segregation of duties: {by} contributed to {co['number']}; someone who did not answers for the committee", "", []
@@ -2651,6 +2761,9 @@ def send_reasons(hub, co_ref) -> list[str]:
     reasons += _cr_reasons(hub, co)
     reasons += [c["reason"] for c in committee_reviews(hub, co) if c["status"] != "agreed"]
     reasons += cog_sign_problems(new_rules(hub, co))
+    p = _proposal(hub, co)
+    if p is not None and p.get("status") == "open":
+        reasons += _no_signer(hub, co, widened_holders(hub, co, p))  # the Gate would have nobody to route to
     return reasons
 
 
@@ -2756,11 +2869,12 @@ def _panel_interveners(hub, co: dict, c: dict, member: str) -> tuple[list[str], 
 
     b = _bundle(hub)
     chair = c.get("chair") or ""
-    keep_out = set(contributors(hub, co)) | {member}
+    keep_out = set(contributors(hub, co)) | {member} | widened_principals(hub, co)
     if chair and (b.get("members", {}).get(chair) or {}).get("type") == "person" and chair not in keep_out:
         return [chair], "the chair"
     why = (f"the chair, {chair}, is the member in question" if chair == member else
-           f"the chair, {chair}, contributed to {co['number']}" if chair in keep_out else "the chair is absent")
+           f"the chair, {chair}, contributed to {co['number']}" if chair in contributors(hub, co) else
+           f"the chair, {chair}, is someone whose authority {co['number']} widens" if chair in keep_out else "the chair is absent")
     rules = [r for r in candidates(b, "change-order", "*", {"overdue": True}) if r["step"] == "*" and r.get("mode", "assign") == "assign"]
     people = []
     for r in rules:
@@ -2899,6 +3013,7 @@ def approval_reasons(hub, co_ref) -> list[str]:
                         reasons.append(f"accept the warning on “{c.get('reason')}”: [{w['code']}] {w['text']}")
                 if c.get("op") in ("add", "change") or (c.get("op") == "remove" and c.get("override")):
                     slots.setdefault(_slot_key(_effective(c)), []).append(c.get("reason") or c["id"])
+        reasons += too_few_approvers(hub, co, p, owners, signer=False)  # who may sign: send_reasons says it
         for s, reasons_of in slots.items():
             if len(reasons_of) > 1 and _unique_slot(s):
                 reasons.append("two approved items set the same rule: " + " and ".join(f"“{r}”" for r in reasons_of) + "; reject one")
@@ -2923,6 +3038,64 @@ def approval_reasons(hub, co_ref) -> list[str]:
     if validation is not None and hasattr(validation, "requirements"):
         reasons += list(validation.requirements(hub, co["locator"]) or [])
     return reasons
+
+
+def _about(widened: dict[str, str], names) -> str:
+    """Who is left out and why, without the rule's words (the sentence that uses it quotes them once)."""
+    return "; ".join(f"{w} {re.sub(r' [(](?:“|it takes out “).*[)]$', '', widened[w])}" for w in sorted(names) if w in widened)
+
+
+def _no_signer(hub, co: dict, widened: dict[str, str]) -> list[str]:
+    """A sentence when leaving out whoever's authority the change order widens leaves nobody who may sign it."""
+    if not widened:
+        return []
+    b = _bundle(hub)
+    signers = {x for x, m in (b.get("members") or {}).items()
+               if m.get("type") == "person" and authz.check(b, x, "approve", "change-order", co["folder"])["allowed"]}
+    if signers & set(widened) and not signers - set(widened) - set(revision_authors(hub, co)):
+        return [f"nobody is left to sign it: {_about(widened, signers & set(widened))}; it needs someone else who may approve change "
+                "orders and whose authority it does not widen"]
+    return []
+
+
+def too_few_approvers(hub, co_ref, p: dict | None = None, owners=None, *, signer: bool = True) -> list[str]:
+    """When leaving out everyone whose authority the change order widens (``widened_holders``) leaves too few people to
+    approve an item still pending (a widening: two policy owners, one of whom contributed nothing; anything else: one
+    approver who did not make it) or, with ``signer``, to sign it at its Gate (someone who may approve change orders;
+    ``send_reasons`` says that one before it is sent): a sentence for each, saying who is left out and who is missing. It
+    never passes by default: the item stays pending and the Gate unsigned."""
+    co = _co(hub, co_ref)
+    p = p if p is not None else _proposal(hub, co)
+    widened = widened_holders(hub, co, p)
+    if not widened:
+        return []
+    owners = set(owners if owners is not None else ((p or {}).get("reviewers") or _owners(hub)))
+    b = _bundle(hub)
+    people = sorted(x for x, m in (b.get("members") or {}).items() if m.get("type") == "person")
+    deciders = {x for x in people if not _may_decide(hub, co, x)}
+    out = []
+    for c in (p or {}).get("changes") or []:
+        if c.get("op") == "text" or c.get("half_of") or state_in(c, p, owners) != "pending":
+            continue
+        makers = set(c.get("makers") or [])
+        said = (_sentence(_effective(c)) or c.get("reason") or c["id"]).rstrip(".")
+        if _widening(c):
+            left = owners - set(widened)
+            independent = left - makers - set(c.get("contributors") or [])
+            if len(left) >= 2 and independent:
+                continue
+            need = ("two policy owners, one of whom contributed nothing to it" if not left else
+                    ("another policy owner" if len(left) == 1 else "a policy owner") + ("" if independent else " who contributed nothing to it"))
+            out.append(f"too few policy owners are left to approve “{said}”: a widening needs two whose authority it does not "
+                       f"widen, one of whom contributed nothing, and {('only ' + ', '.join(sorted(left))) if left else 'nobody'} is left "
+                       f"({_about(widened, owners & set(widened))}); it needs {need}, named in the organization model by another change order")
+        else:
+            left = deciders - set(widened) - makers
+            if not left:
+                out.append(f"nobody is left to decide “{said}”: "
+                           f"{_about(widened, deciders & set(widened)) or 'everyone who decides items made it'}; it needs a policy owner or an "
+                           "approver of change orders who did not make it and whose authority it does not widen")
+    return out + (_no_signer(hub, co, widened) if signer else [])
 
 
 def validation_items(hub, co_ref) -> list[dict]:
@@ -3031,6 +3204,9 @@ def decide_item(hub, co_ref, item_id: str, verdict: str, by: str, meaning: str, 
         if override is not None:
             raise ValueError(f"this removal is the other half of a change ({c.get('reason')}): override the change it is superseded by")
         return {**c, "state": state_in(c, p, p.get("reviewers") or _owners(hub)), "note": "decided with the change it is superseded by"}
+    why = excluded_words(hub, co, by, p)
+    if why:
+        raise ValueError(why)
     if by in (c.get("makers") or []) and not (_widening(c) and by in (p.get("reviewers") or _owners(hub)) and override is None):
         raise ValueError(f"segregation of duties: {by} made this change ({c.get('reason')}); someone who did not decides it "
                          f"({CHANGE_CONTROL_SOP}: “{SOD_SENTENCE}”; a policy owner who made a widening may be one of its two owners)")
@@ -3103,6 +3279,9 @@ def accept_warning(hub, co_ref, ref: str, by: str, meaning: str) -> dict:
         raise ValueError(why)
     if by in contributors(hub, co):
         raise ValueError(f"segregation of duties: {by} contributed to {co['number']}; someone independent accepts what is raised against it")
+    why = excluded_words(hub, co, by)
+    if why:
+        raise ValueError(why)
     if not (meaning or "").strip():
         raise ValueError("say what you accept, in a few words")
     p = _proposal(hub, co)
@@ -3140,6 +3319,9 @@ def approve_revisions(hub, co_ref) -> list[str]:
     if approver in may_not_sign(hub, co):
         raise ValueError(f"segregation of duties: {approver} contributed to {co['number']} and may not approve it "
                          f"({CHANGE_CONTROL_SOP}: “{SOD_SENTENCE}”)")
+    why = excluded_words(hub, co, approver)
+    if why:
+        raise ValueError(why)
     frozen = co["fields"].get("frozen") or {}
     grant = state.get("grant") or {}
     done = []
@@ -3730,7 +3912,8 @@ def cog_impact(hub, co_ref) -> dict[str, list[dict]]:
 def overview(hub, co_ref) -> dict:
     """Everything a change-order page shows: {"co", "stage", "rounds", "round", "panel", "delta", "warnings",
     "questions", "findings", "suggestions", "send_reasons", "approval_reasons", "contributors", "baseline_changed",
-    "state_questions", "proposal", "committees"} (``committees``: each committee on the panel and where its consensus stands)."""
+    "state_questions", "proposal", "committees", "widened"} (``committees``: each committee on the panel and where its consensus stands;
+    ``widened``: who takes no part in it because it widens their own authority, with why)."""
     co = sync(hub, co_ref)
     rnd = current_round(co)
     p = _proposal(hub, co)
@@ -3739,4 +3922,5 @@ def overview(hub, co_ref) -> dict:
             "suggestions": suggestions(hub, co), "send_reasons": send_reasons(hub, co), "approval_reasons": approval_reasons(hub, co),
             "contributors": contributors(hub, co), "baseline_changed": co["fields"].get("baseline_changed"),
             "state_questions": state_questions(hub, co), "proposal": p, "committees": committee_reviews(hub, co),
-            "cog_impact": cog_impact(hub, co), "may_not_sign": list(co["fields"].get("contributor") or [])}
+            "cog_impact": cog_impact(hub, co), "may_not_sign": list(co["fields"].get("contributor") or []),
+            "widened": widened_holders(hub, co)}
