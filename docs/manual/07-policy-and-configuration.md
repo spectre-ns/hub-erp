@@ -199,10 +199,13 @@ same change order), everyone in a group it widens (listed, or holding one of its
 not". "Internal auditors may create nonconformances in Quality/Audits" leaves bob out, because he holds
 internal-auditor. The change order's Approval section lists who is left out and why: "bob holds the internal auditor
 role, which this change order widens (...)". A narrowing leaves nobody out. When too few people are left, the change
-order says which approver is missing and cannot be signed: "too few policy owners are left to approve ...: it needs
-another policy owner", or, before it is sent, "nobody is left to sign it: carol holds the quality manager role, which
-this change order widens". On an open change order this holds from its next evaluation: a decision recorded earlier
-by someone it leaves out no longer counts. A released change order keeps what was true when it was decided.
+order says which approver is missing before it is sent, and it is not sent: "too few policy owners are left to approve
+...: it needs another policy owner", "nobody is left to sign it: carol holds the quality manager role, which this change
+order widens", "nobody is left to answer the committee's question ...". On an open change order this holds from its
+next evaluation: a decision recorded earlier by someone it leaves out no longer counts (the item says so: "this change
+order widens bob's own authority, so bob's decision does not count"), and one waiting for approval that nobody could
+now sign or approve goes back to revising, with that sentence, and its requester is told. A released change order
+keeps what was true when it was decided.
 
 **Validation classes.** The IT SOP's `## Validation` section compiles into the release as classes: high risk
 (widenings; permissions, approval criteria, segregation of duties, members, roles, groups, committees, cog profiles,

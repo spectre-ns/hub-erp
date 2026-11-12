@@ -965,9 +965,19 @@ class Runner:
 
                 blocked = set(changecontrol.may_not_sign(self.hub, state["record"]))
                 authors = set(changecontrol.revision_authors(self.hub, state["record"]))
-                widened = changecontrol.widened_holders(self.hub, state["record"])
             except Exception:  # the change-control module cannot read it: every contributor stays off the Gate
                 blocked = None
+            try:
+                from . import changecontrol
+
+                widened = changecontrol.widened_holders(self.hub, state["record"])
+            except Exception as e:  # fail closed: whose authority it widens is unknown, so nobody may sign it
+                why = (f"the hub could not tell whose authority this change order widens ({e}), so nobody signs it until it can: "
+                       "nobody signs a change that widens their own authority")
+                for p, m in (self.hub.current_bundle() or {}).get("members", {}).items():
+                    if m.get("type") == "person":
+                        out[p] = why
+                return
         if blocked is None:
             blocked = contribs
         said = dict(out)

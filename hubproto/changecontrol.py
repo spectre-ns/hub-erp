@@ -290,7 +290,9 @@ def sync(hub, co_ref) -> dict:
     """The change order, after noticing what happened to it outside this module: an approval Gate that was rejected
     sends it back to revising (the record is open again, the rejection kept in ``rejected``); anything it carries that
     changed after it was sent for approval (a revision, a direct, form, record-type or workflow change, the state map)
-    sends it back to revising too, its decisions void (``_back_to_revising``)."""
+    sends it back to revising too, its decisions void (``_back_to_revising``); so does a change order waiting for approval
+    that leaving out whoever's authority it widens leaves without enough people to approve or sign it
+    (``too_few_approvers``)."""
     co = _co(hub, co_ref)
     eco.withdraw_cancelled_drafts(hub, co)
     if co["state"] == "rejected":
@@ -302,6 +304,13 @@ def sync(hub, co_ref) -> dict:
         changed = changed_since_sent(hub, co)
         if changed:
             co = _back_to_revising(hub, co, "changed after it was sent for approval: " + ", ".join(changed))
+        else:
+            # Sent before the hub left out whoever's authority it widens (or before a release changed who holds what): if
+            # that leaves nobody to sign it or too few to approve it, nobody could act on it at its Gate. It goes back to
+            # its requester, who changes it or has an approver named first.
+            stuck = too_few_approvers(hub, co)
+            if stuck:
+                co = _back_to_revising(hub, co, "it can no longer be approved as it stands: " + "; ".join(stuck))
     return co
 
 
@@ -642,7 +651,7 @@ def independent_approval(hub, co_ref, p: dict | None = None) -> bool:
     items = [c for c in (p or {}).get("changes") or [] if c.get("op") != "text" and not c.get("half_of")]  # a half follows its change
     if not items:
         return False
-    contribs = set(contributors(hub, co))
+    contribs = set(contributors(hub, co)) | set(widened_holders(hub, co, p))  # nor anyone whose authority it widens
     return all(any(d["verdict"] == "approve" and not d.get("stale") and d["by"] not in contribs for d in c.get("decisions") or [])
                for c in items)
 
@@ -2763,7 +2772,7 @@ def send_reasons(hub, co_ref) -> list[str]:
     reasons += cog_sign_problems(new_rules(hub, co))
     p = _proposal(hub, co)
     if p is not None and p.get("status") == "open":
-        reasons += _no_signer(hub, co, widened_holders(hub, co, p))  # the Gate would have nobody to route to
+        reasons += too_few_approvers(hub, co, p)  # it could never be approved: say so before it is sent
     return reasons
 
 
@@ -2831,7 +2840,9 @@ def committee_reviews(hub, co_ref, today: str | None = None) -> list[dict]:
             status = "paused"
             people = sorted({x for p in paused for x in p["interveners"]})
             reason = (f"the {name} committee cannot agree: " + "; ".join(f"{p['member']} {p['why']}" for p in paused)
-                      + (f"; its chair, {chair}, intervenes" if people == [chair] else f"; {', '.join(people) or 'nobody'} intervenes ({paused[0]['who']})")
+                      + (f"; its chair, {chair}, intervenes" if people == [chair] else
+                         f"; {', '.join(people)} intervenes ({paused[0]['who']})" if people else
+                         "; " + "; ".join(dict.fromkeys(p["who"] for p in paused)))
                       + " (decide in the member's place, extend the due date, or return it)")
         elif waiting:
             status = "waiting"
@@ -2880,14 +2891,23 @@ def _panel_interveners(hub, co: dict, c: dict, member: str) -> tuple[list[str], 
     for r in rules:
         people += [p for p in principals_for(b, r["assignee"]) if (b["members"].get(p) or {}).get("type") == "person"
                    and p not in keep_out and p not in people]
+    if not people:
+        widened = widened_holders(hub, co)
+        left_out = _about(widened, [chair] + [p for r in rules for p in principals_for(b, r["assignee"])])
+        return [], (f"nobody is left to step in for {member}: {why}, and the overdue rule names nobody else"
+                    + (f" ({left_out})" if left_out else "")
+                    + "; it needs a chair or an overdue route to a person who contributed nothing and whose authority it does not widen")
     return people, f"{why}: escalated under the overdue rule" + (f" ({rules[0]['source']['text']})" if rules else "")
 
 
 def tick_panels(hub, today: str | None = None) -> list[dict]:
-    """Tell whoever intervenes, once, when a committee member on an open change order's panel is late. Called by the
+    """Tell whoever intervenes, once, when a committee member on an open change order's panel is late; and send back to
+    revising a change order waiting for approval that nobody could sign or approve any longer (``sync``). Called by the
     runner's tick."""
     told = []
     for co in open_change_orders(hub):
+        if stage_of(co) == "awaiting-approval":
+            co = sync(hub, co)  # one nobody could sign or approve any longer goes back to its requester without waiting for a visit
         rnd = current_round(co)
         if not rnd:
             continue
@@ -3000,20 +3020,19 @@ def approval_reasons(hub, co_ref) -> list[str]:
                 if c.get("stale"):
                     reasons.append(f"decided before the baseline changed (or before it went back to revising), decide it again: {c.get('reason')}")
                 elif _widening(c):
-                    have = sorted({d["by"] for d in live if d["verdict"] == "approve"})
+                    have = sorted({d["by"] for d in live if d["verdict"] == "approve" and d["by"] not in (c.get("widened") or [])})
                     reasons.append(f"widening: {c.get('reason')} needs two policy owners, one of whom contributed nothing to it"
-                                   + (f" (approved by {', '.join(have)})" if have else ""))
+                                   + (f" (approved by {', '.join(have)})" if have else "") + uncounted(c))
                 elif any(d["by"] in (c.get("makers") or []) for d in live):
                     reasons.append(f"not decided by anyone who did not make it: {c.get('reason')}")
                 else:
-                    reasons.append(f"not decided yet: {c.get('reason')}")
+                    reasons.append(f"not decided yet: {c.get('reason')}{uncounted(c)}")
             elif st == "approved":
                 for w in c.get("warnings") or []:
                     if not w.get("accepted"):
                         reasons.append(f"accept the warning on “{c.get('reason')}”: [{w['code']}] {w['text']}")
                 if c.get("op") in ("add", "change") or (c.get("op") == "remove" and c.get("override")):
                     slots.setdefault(_slot_key(_effective(c)), []).append(c.get("reason") or c["id"])
-        reasons += too_few_approvers(hub, co, p, owners, signer=False)  # who may sign: send_reasons says it
         for s, reasons_of in slots.items():
             if len(reasons_of) > 1 and _unique_slot(s):
                 reasons.append("two approved items set the same rule: " + " and ".join(f"“{r}”" for r in reasons_of) + "; reject one")
@@ -3058,12 +3077,47 @@ def _no_signer(hub, co: dict, widened: dict[str, str]) -> list[str]:
     return []
 
 
-def too_few_approvers(hub, co_ref, p: dict | None = None, owners=None, *, signer: bool = True) -> list[str]:
+def _no_answerer(hub, co: dict, p: dict | None, widened: dict[str, str]) -> list[str]:
+    """A sentence for each open committee question nobody is left to answer once whoever's authority the change order
+    widens is left out (``committee_answerer`` refuses every person)."""
+    out = []
+    people = [x for x, m in (_bundle(hub).get("members") or {}).items() if m.get("type") == "person"]
+    for q in (p or {}).get("questions") or []:
+        if q.get("code") not in COMMITTEE_CODES or not q.get("blocking") or q.get("status", "open") != "open":
+            continue
+        if any(not committee_answerer(hub, co, q, x, p)[0] for x in people):
+            continue
+        out.append(f"nobody is left to answer the committee's question “{short_text(q.get('text'))}”: "
+                   f"{_about(widened, people) or 'every person who may answer it contributed to it'}; it needs its chair, a system "
+                   "administrator or (when the release names neither) a policy owner whose authority it does not widen")
+    return out
+
+
+def short_text(text, n: int = 120) -> str:
+    t = " ".join(str(text or "").split())
+    return t if len(t) <= n else t[: n - 1].rstrip() + "…"
+
+
+def uncounted(c: dict) -> str:
+    """Words to add to what an item still needs when someone it leaves out (``widened``) decided it: their decision is on
+    the record and does not count. Empty when there is none."""
+    widened = set(c.get("widened") or [])
+    who = sorted({d["by"] for d in c.get("decisions") or [] if not d.get("stale") and d["by"] in widened})
+    if not who:
+        return ""
+    if len(who) == 1:
+        return f"; this change order widens {who[0]}'s own authority, so {who[0]}'s decision does not count"
+    names = ", ".join(who[:-1]) + " and " + who[-1]
+    return f"; this change order widens the authority of {names}, so their decisions do not count"
+
+
+def too_few_approvers(hub, co_ref, p: dict | None = None, owners=None) -> list[str]:
     """When leaving out everyone whose authority the change order widens (``widened_holders``) leaves too few people to
-    approve an item still pending (a widening: two policy owners, one of whom contributed nothing; anything else: one
-    approver who did not make it) or, with ``signer``, to sign it at its Gate (someone who may approve change orders;
-    ``send_reasons`` says that one before it is sent): a sentence for each, saying who is left out and who is missing. It
-    never passes by default: the item stays pending and the Gate unsigned."""
+    approve an item not decided yet (a widening: two policy owners, one of whom contributed nothing; anything else: one
+    approver who did not make it), to answer a committee question, or to sign it at its Gate (someone who may approve
+    change orders): a sentence for each, saying who is left out and who is missing. None of this depends on decisions,
+    so ``send_reasons`` says it before the change order is sent (it is not sent), and a change order waiting for approval
+    goes back to revising with it (``sync``). It never passes by default: the item stays pending and the Gate unsigned."""
     co = _co(hub, co_ref)
     p = p if p is not None else _proposal(hub, co)
     widened = widened_holders(hub, co, p)
@@ -3095,7 +3149,7 @@ def too_few_approvers(hub, co_ref, p: dict | None = None, owners=None, *, signer
                 out.append(f"nobody is left to decide “{said}”: "
                            f"{_about(widened, deciders & set(widened)) or 'everyone who decides items made it'}; it needs a policy owner or an "
                            "approver of change orders who did not make it and whose authority it does not widen")
-    return out + (_no_signer(hub, co, widened) if signer else [])
+    return out + _no_answerer(hub, co, p, widened) + _no_signer(hub, co, widened)
 
 
 def validation_items(hub, co_ref) -> list[dict]:

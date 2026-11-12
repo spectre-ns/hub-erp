@@ -1464,7 +1464,8 @@ class ChangeOrderMixin:
         stale = any(x.get("stale") for x in g)
         chips = chip(st, {"approved": "ok", "rejected": "crit"}.get(st, "warn"))
         if widening:
-            have = sorted({d["by"] for d in c.get("decisions") or [] if d["verdict"] == "approve" and not d.get("stale")})
+            have = sorted({d["by"] for d in c.get("decisions") or [] if d["verdict"] == "approve" and not d.get("stale")
+                           and d["by"] not in (c.get("widened") or [])})  # a decision by someone it leaves out does not count
             chips += " " + chip("widening: needs both policy owners", "warn") + (f" <span class='why'>approved by {esc(', '.join(have))}</span>" if have and st != "approved" else "")
         if stale:
             chips += " " + chip("stale: decide it again", "warn")
@@ -1827,10 +1828,12 @@ class ChangeOrderMixin:
                 if any(x.get("stale") for x in g):
                     out.append(f"{link} was decided before the baseline changed: decide it again ({words})")
                 elif any(cc_api("widening")(x) for x in g):
-                    have = sorted({d["by"] for d in c.get("decisions") or [] if d["verdict"] == "approve" and not d.get("stale")} & owners)
-                    out.append(f"{link} widens authority: both policy owners approve it" + (f" (approved by {esc(', '.join(have))})" if have else "") + f": {words}")
+                    have = sorted({d["by"] for d in c.get("decisions") or [] if d["verdict"] == "approve" and not d.get("stale")}
+                                  & owners - set(c.get("widened") or []))
+                    out.append(f"{link} widens authority: two policy owners approve it" + (f" (approved by {esc(', '.join(have))})" if have else "")
+                               + f"{esc(cc.uncounted(c))}: {words}")
                 else:
-                    out.append(f"{link} is not decided yet: {words}")
+                    out.append(f"{link} is not decided yet{esc(cc.uncounted(c))}: {words}")
             elif st == "approved":
                 for x in g:
                     for w in x.get("warnings") or []:
