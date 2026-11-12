@@ -171,3 +171,20 @@ def test_frontmatter_flow_values_read_without_pyyaml(monkeypatch):
     for bad, why in (("{a b}", "expected ':'"), ('{a: "b}', "not closed"), ("[base, 'x]", "not closed"), ("[a, {b}]", "expected ':'")):
         with pytest.raises(frames.FrameError, match=why):
             frames.parse_frontmatter(f"---\nv: {bad}\n---\n")
+
+
+def test_a_quoted_frontmatter_value_reads_its_escapes_without_pyyaml(monkeypatch):
+    """A top-level quoted value reads as PyYAML reads it and as the same string inside a list does (#9): a description
+    written with json.dumps comes back as it went in. What YAML would refuse keeps the old reading: quotes stripped."""
+    import json
+
+    import hubproto.frames as frames
+
+    said = 'He said "hi" \\ and left'
+    text = (f"---\ndescription: {json.dumps(said)}\nsingle: 'it''s'\nlisted:\n  - {json.dumps(said)}\n"
+            f"inline: [{json.dumps(said)}]\nplain: \"no escapes\"\nwin: \"C:\\path\"\n---\nbody\n")
+    monkeypatch.setattr(frames, "yaml", None)
+    data, _ = frames.parse_frontmatter(text)
+    assert data["description"] == said and data["listed"] == [said] and data["inline"] == [said], "top level and lists agree"
+    assert data["single"] == "it's" and data["plain"] == "no escapes"
+    assert data["win"] == "C:\\path", "an escape JSON has no reading for keeps the old reading"
