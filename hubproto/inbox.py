@@ -117,9 +117,14 @@ CREATE INDEX IF NOT EXISTS messages_run ON messages(run_id);
     def sent_by(self, principal: str) -> list[dict]:
         return self._select("frm = ?", (principal,))
 
-    def notify(self, to: str, *, kind: str, subject: str, body: str, run_id: str = "", record: str | None = None) -> dict:
-        return self._append({"id": _new_id(), "at": utcnow(), "from": "hub", "to": to, "channel": "dm",
-                             "kind": kind, "subject": subject, "body": body, "run_id": run_id, "record": record, "attachments": []})
+    def notify(self, to: str, *, kind: str, subject: str, body: str, run_id: str = "", record: str | None = None,
+               key: str | None = None, data: dict | None = None) -> dict:
+        """A message from the hub. ``key``, when given, is its id: a second notify with the same key writes nothing,
+        so a step that is retried tells once. ``data`` adds fields to the message (never over its own)."""
+        msg = {"id": key or _new_id(), "at": utcnow(), "from": "hub", "to": to, "channel": "dm",
+               "kind": kind, "subject": subject, "body": body, "run_id": run_id, "record": record, "attachments": []}
+        msg.update({k: v for k, v in (data or {}).items() if k not in msg})
+        return self._append(msg)
 
     def notify_all(self, people, **kw) -> list[dict]:
         return [self.notify(p, **kw) for p in people]

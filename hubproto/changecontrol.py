@@ -882,6 +882,18 @@ def _warnings(hub, co: dict, p: dict) -> tuple[dict[str, list[dict]], list[dict]
     for f in p.get("findings") or []:
         if f.get("guard") == "divergence":
             general.append({"code": "divergence", "ref": str(f.get("rule_key") or "").split(":", 1)[-1], "text": f["detail"]})
+    # A citation of a document not in force (hubproto.references) is a warning the approver accepts when this change
+    # order makes it: an SOP it changes cites one, or it retires or supersedes a document an SOP cites. A stale citation
+    # in an SOP it does not touch was flagged to that SOP's owner by the release that made it stale.
+    changed = set(p.get("overrides") or {})
+    for ref in p.get("references") or []:
+        r = ref.get("resolved") or {}
+        if r.get("status") in (None, "in-force", "self") or not (ref.get("frame") in changed or r.get("by_this_change")):
+            continue
+        attach({"frame": ref.get("frame"), "line": ref.get("line")},
+               {"code": "reference", "ref": f"ref:{ref.get('frame')}:{ref.get('line')}:{ref.get('document')}"
+                + (f"@{ref['revision']}" if ref.get("revision") else ""),
+                "text": f"{ref.get('frame')} line {ref.get('line')} cites {ref.get('text')}: {r.get('why')}"})
     for q in questions(hub, co):
         if q.get("code") in COMMITTEE_CODES and q.get("status") == "answered":
             # The chair's (or a system administrator's) answer for the committee stays visible, as an accepted warning; a

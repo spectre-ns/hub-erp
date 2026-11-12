@@ -7,7 +7,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 keywords = ["erp", "qms", "quality-management", "iso-9001", "iso-13485", "sop", "change-control", "document-control",
             "ai-agents", "llm", "governance", "audit-trail", "electronic-signatures", "workflow"]
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = []
 
 [project.optional-dependencies]

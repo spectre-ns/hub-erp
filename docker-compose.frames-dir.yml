@@ -1,0 +1,63 @@
+# Development only: a hub of its own whose containers read and write the Frames (and read the seed profiles) in this
+# checkout's frames/ and profiles/ folders instead of a frames volume and the image's profiles, so a Frame edited on
+# the host is what they compile, and every release writes the released texts back into the checkout (they show up in
+# `git status`). Never use it for the live hub: its policy would live in the working tree, the tests run from the
+# checkout would read it, and it could be committed by accident (issue #5). For most development work a hub from
+# `hubproto dev serve` is simpler (DEV-NOTES.md, "Running hubs for development and for agents").
+#
+#   docker compose -f docker-compose.yml -f docker-compose.frames-dir.yml up -d --build hub
+#   docker compose -f docker-compose.yml -f docker-compose.frames-dir.yml exec hub hubproto compile
+#   docker compose -f docker-compose.yml -f docker-compose.frames-dir.yml down -v      # removes only hub-dev
+#
+# (or COMPOSE_FILE=docker-compose.yml:docker-compose.frames-dir.yml in the shell you work in). Everything that could
+# meet the live hub is its own here, so it can run beside it: the Compose project (`name: hub-dev`, so its volumes
+# are hub-dev_*), the container names, the image tags (`:dev`, so a build never retags the live hub's image) and the
+# host ports (HUB_DEV_PORT, default 8090, and HUB_DEV_COLLABORA_PORT, default 9990). Do not pass `-p` or set
+# COMPOSE_PROJECT_NAME with it: either one overrides `name:`, and the live hub's project name would point the live
+# hub's state at the checkout's Frames. The Ollama relay is left out (it binds 11434 on the Docker bridge, where the
+# live hub's relay already listens; the dev hub reaches the host's Ollama through that one). A first `up` builds the
+# CAD worker under its own tag; `CAD_TOOLS=none` in front of the command builds the small one that fakes exports.
+name: hub-dev
+
+services:
+  hub:
+    image: hub-erp-proto:dev
+    container_name: hub-dev
+    ports: !override
+      - "127.0.0.1:${HUB_DEV_PORT:-8090}:8080"
+    volumes:
+      - ./frames:/hub/frames
+      - ./profiles:/hub/profiles
+    environment:
+      HUBPROTO_PUBLIC_URL: http://localhost:${HUB_DEV_PORT:-8090}
+      HUBPROTO_COLLABORA_URL: http://localhost:${HUB_DEV_COLLABORA_PORT:-9990}
+  ollama-relay:
+    container_name: hub-dev-ollama-relay
+    profiles: ["relay"]
+  cog-users:
+    image: hub-erp-proto:dev
+    container_name: hub-dev-cog-users
+    volumes:
+      - ./frames:/hub/frames
+      - ./profiles:/hub/profiles
+  agents:
+    image: hub-erp-proto:dev
+    container_name: hub-dev-agents
+    volumes:
+      - ./frames:/hub/frames
+      - ./profiles:/hub/profiles
+  collabora:
+    container_name: hub-dev-collabora
+    ports: !override
+      - "127.0.0.1:${HUB_DEV_COLLABORA_PORT:-9990}:9980"
+    environment:
+      server_name: localhost:${HUB_DEV_COLLABORA_PORT:-9990}
+      extra_params: --o:ssl.enable=false --o:ssl.termination=false --o:net.content_security_policy=frame-ancestors http://localhost:${HUB_DEV_PORT:-8090};
+  cad-worker:
+    image: hub-erp-cad-worker:dev
+    container_name: hub-dev-cad-worker
+  tick:
+    image: hub-erp-proto:dev
+    volumes:
+      - ./frames:/hub/frames
+      - ./profiles:/hub/profiles

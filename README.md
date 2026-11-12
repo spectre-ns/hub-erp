@@ -15,7 +15,10 @@ control, calibration and training.
 
 - **SOPs as the single source of truth.** Policies are written in plain prose. The hub compiles them into the rules
   it enforces — every rule cites the sentence it came from — and a released policy version is immutable and
-  content-addressed. There is no separate settings screen to drift away from the procedures.
+  content-addressed. An edit made in Settings or one of the editors becomes a change on a change order, and a cog
+  writes it back into the SOP's prose for review, so the configuration never drifts away from the procedures. A
+  picture put into an SOP is a question for a person, and a citation of another document is checked, linked, and
+  flagged to the SOP's owner when the cited document is retired or superseded.
 - **AI agents as governed team members.** Cogs are members of the organization with roles, like anyone else, and no
   outsized permissions. Senior cogs (hosted models) read policy changes and propose the configuration they imply;
   junior cogs (local models) review changes, answer questions and take routine approvals — each within criteria a
@@ -57,13 +60,14 @@ in copies of the code.)
 | **Frames** | SOPs, policies and work instructions in prose, compiled into an immutable **policy release** |
 | **Cogs** | AI team members with roles: senior cogs compile policy changes, junior cogs review and do routine work |
 | **Ops** | Business processes, run as workflows under the release in force; the hub's own automations are Ops too |
-| **Guards** | Deterministic checks with no model: grammar and grounding, consistency, widenings, permissions, criteria |
+| **Guards** | Deterministic checks with no model: grammar and grounding, consistency, widenings, document references, permissions, criteria |
 | **Gates** | Where a person, a cog within its criteria, or a committee decides; each decision is an electronic signature |
 | **Tracks** | The append-only, chained, signed record of every run |
 
 One record system and one document management system (DMS) span every module. Standard-library Python, SQLite and
-files, packaged in a single Docker image. Developer notes: [DEV-NOTES.md](DEV-NOTES.md); the design of change control:
-[docs/design/change-control.md](docs/design/change-control.md); the user manual: [docs/manual/](docs/manual/).
+files, packaged in a single Docker image. Developer notes: [DEV-NOTES.md](DEV-NOTES.md); for coding agents:
+[AGENTS.md](AGENTS.md); the design of change control: [docs/design/change-control.md](docs/design/change-control.md);
+the user manual: [docs/manual/](docs/manual/).
 
 ## Run it
 
@@ -81,7 +85,16 @@ notes it in `state/.bootstrap-failed`, and still serves the shell with no
 release in effect; fix the Frame and run
 `docker compose exec hub hubproto bootstrap-release --as bob --second carol`
 (run again on a released hub whose SOPs are not documents yet, it converts them).
-State lives in the `hub-state` volume. Frames are bind-mounted from `./frames`.
+State lives in the `hub-state` volume and the hub's Frames in the `hub-frames`
+volume: the first start fills it with the Frames the image ships, and every
+release writes the released texts into it, never into the checkout (the
+repository's `frames/` are the example Frames, not a hub's policy). A newer
+image's Frames reach a running hub only through a change order. To work on the
+checkout's `frames/` and `profiles/` folders from Docker, add
+`docker-compose.frames-dir.yml`: a separate development hub (its own Compose
+project, containers, image tag and ports; see its header), never the live one. A hub
+whose Frames were bind-mounted from the checkout before (issue #5) is moved with
+`docs/rollout/frames-volume.md`.
 
 Without Docker (`--root` is the directory holding `frames/` and `state/`;
 set `HUBPROTO_ROOT` or pass `--root` when you are not in it):
@@ -123,7 +136,8 @@ changes without change orders. It is recorded and `status` shows it on every
 run; it is meant for work on the Frames themselves and for the test suites
 (`tests/conftest.py`'s `release_all` opts out this way), and it ends with
 `hubproto sops convert`. On such a hub, edit a sentence in `frames/` on the
-host, then compile, have it reviewed and release it. Until the release, the
+host (in Docker: on a development hub from `docker-compose.frames-dir.yml`,
+or in the `hub-frames` volume), then compile, have it reviewed and release it. Until the release, the
 shell and every run keep applying the release in force (the Frames as they
 were released), and on its next start the container says so: `hubproto status
 --check` lists the files that differ and prints these commands.
@@ -419,7 +433,12 @@ The state is one SQLite file plus directories under `state/`: `kernel.db`,
 `runs/` (one directory per run with its Track), `releases/` (bundles and
 `index.json`), `proposals/`, `blobs/` and `inbox/`. They reference each other
 (a record names its run and release, a run is pinned to a release digest), so
-a backup is only usable as a whole.
+a backup is only usable as a whole. The backup also holds the hub's Frames
+(`frames/`, in Docker the `hub-frames` volume), which the releases write. They
+are copied after the kernel's snapshot, with no lock: a release during a backup
+of a running hub can leave Frames newer than the state, which a restore then
+reports as drift (it prints what `status --check` will say). Stop the hub for a
+backup consistent across all parts.
 
 ```bash
 docker compose exec hub hubproto backup /hub/state/backups/2026-11-06   # a new or empty directory
@@ -443,8 +462,12 @@ beside the new one (`state.before-restore-<time>`), or, when `state/` cannot be
 renamed (in the container it is the volume's mount point) or holds the backup
 being restored (`/hub/state/backups/...` above), into
 `state/.before-restore-<time>/`, leaving the backups folder where it is; the
-command above works in the container as written. `hubproto status` then shows
-the release in force and the run counts.
+command above works in the container as written. The Frames in the backup
+replace the hub's (the ones replaced are kept in `frames/.before-restore-<time>/`);
+a backup made before backups held the Frames, or one with no Frame files in its
+`frames/`, restores the state and leaves the Frames as they are. `restore` then
+says whether the Frames match the restored release, listing any that differ. `hubproto status` then shows the release in force and the
+run counts.
 
 ## What it demonstrates
 
@@ -468,12 +491,12 @@ the release in force and the run counts.
 ## Layout
 
 ```
-frames/              the example company's Frames (org-model is the scope root)
+frames/              the example company's Frames (org-model is the scope root); a new hub starts from them
 profiles/iso9001/    the seed profile: frames, templates, clause map
 config/              record types, link vocabulary, retention classes (versioned configuration)
 hubproto/            see DEV-NOTES.md for the module map and APIs
 tests/               pytest suites
-docker/, Dockerfile, docker-compose.yml
+docker/, Dockerfile, docker-compose.yml, docker-compose.frames-dir.yml (development: Frames from the checkout)
 ```
 
 ## Deviations from the published specs, on purpose

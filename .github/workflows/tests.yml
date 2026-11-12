@@ -1,0 +1,44 @@
+# The test suite on every pull request and every push to main. It needs nothing outside the repository: tests never
+# call a model (stand-in answers and fakes), the CAD tests run in fake mode, and Ollama URLs are faked.
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:   # a pull request's newer push cancels its older run; every push to main has a group of its own
+  group: tests-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  pytest:
+    name: pytest (Python ${{ matrix.python-version }}${{ matrix.pyyaml && ', with PyYAML' || '' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.14"]   # the oldest supported (requires-python) and the newest
+        pyyaml: [false]                    # as the Docker image: the frontmatter subset reads its own YAML
+        include:
+          - python-version: "3.14"
+            pyyaml: true                   # as a developer venv: PyYAML reads the frontmatter
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0   # v7.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements-dev.txt
+      - name: Install
+        run: python -m pip install -e . -r requirements-dev.txt ${{ matrix.pyyaml && 'pyyaml' || '' }}
+      - name: Test
+        run: python -m pytest -q -n auto

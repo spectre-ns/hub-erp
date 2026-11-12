@@ -600,3 +600,471 @@ by name when you rely on it. If the procedures you follow do not cover the quest
 
 def writing_interface(kind: str) -> str:
     return WRITING_INTERFACE.get(kind, "")
+
+
+# ---------------------------------------------------------------- pictures in a text document
+# A picture in an SOP has a place in the Frame text: a line of its own, ``![<its description>](sha256:<hash>)``, after
+# the paragraph, heading or table it is in (``link:<address>`` for a picture linked from outside the file). The hash is
+# the picture's bytes; for a picture with more than one image (an SVG with its PNG for older readers, a copy for old
+# readers in mc:Fallback that differs) or with a crop, rotation or flip, it is the hash of all of them together. The
+# line names what the picture is and what it holds, never where the file keeps it (an editor renumbers its media
+# parts on save), so an unchanged picture reads the same and an added, removed or replaced one is a changed line.
+_PICTURE = r"!\[[^\[\]\n]*\]\((?:sha256:[0-9a-f]{64}|link:[^\s()]+)\)"
+PICTURE_LINE = re.compile(r"!\[([^\[\]\n]*)\]\((sha256:[0-9a-f]{64}|link:[^\s()]+)\)")
+_LOOKS_LIKE_PICTURE = re.compile(rf"^(\s*)(\\*{_PICTURE})(\s*)$")
+PICTURE_ALT = "picture"  # the description a picture with none reads as
+DEFAULT_EXTENT = (2743200, 2057400)  # 3 x 2.25 inches, in EMU, for a picture whose size is not known
+EMU = {"cm": 360000, "mm": 36000, "in": 914400, "pt": 12700, "pc": 152400, "px": 9525}
+PICTURE_TYPES = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "gif": "image/gif", "bmp": "image/bmp",
+                 "tif": "image/tiff", "tiff": "image/tiff", "svg": "image/svg+xml", "emf": "image/x-emf", "wmf": "image/x-wmf",
+                 "webp": "image/webp"}
+SVG_EXT_URI = "{96DAC541-7B7A-43D3-8B79-37D633B846F1}"  # the DrawingML extension that holds an SVG next to its PNG
+
+_PKG_RELS = "http://schemas.openxmlformats.org/package/2006/relationships"
+R_NS = ("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "http://purl.oclc.org/ooxml/officeDocument/relationships")
+W_NS = ("http://schemas.openxmlformats.org/wordprocessingml/2006/main", "http://purl.oclc.org/ooxml/wordprocessingml/main")
+A_NS = ("http://schemas.openxmlformats.org/drawingml/2006/main", "http://purl.oclc.org/ooxml/drawingml/main")
+WP_NS = ("http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing", "http://purl.oclc.org/ooxml/drawingml/wordprocessingDrawing")
+MC_NS = "http://schemas.openxmlformats.org/markup-compatibility/2006"
+O_NS = "urn:schemas-microsoft-com:office:office"
+DRAW_NS = "urn:oasis:names:tc:opendocument:xmlns:drawing:1.0"
+SVG_NS = "urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"
+XLINK_NS = "http://www.w3.org/1999/xlink"
+DOCX_PICTURE_NAMESPACES = {
+    "wp": WP_NS[0], "a": A_NS[0], "pic": "http://schemas.openxmlformats.org/drawingml/2006/picture", "r": R_NS[0],
+}
+
+
+def is_picture_line(line: str) -> bool:
+    """True for a Frame line that stands for a picture in the document (``picture_line``)."""
+    return bool(PICTURE_LINE.fullmatch((line or "").strip()))
+
+
+def picture_line(alt: str, ref: str) -> str:
+    alt = " ".join(re.sub(r"[\[\]]", " ", alt or "").split()) or PICTURE_ALT
+    return f"![{alt}]({ref})"
+
+
+def escape_text_line(text: str) -> str:
+    """A paragraph whose words are written like a picture line reads with a backslash in front, so typed text never reads
+    as a picture (and a picture the document does not hold never hides behind it). ``unescape_text_line`` undoes it."""
+    m = _LOOKS_LIKE_PICTURE.match(text)
+    return f"{m.group(1)}\\{m.group(2)}{m.group(3)}" if m else text
+
+
+def unescape_text_line(line: str) -> str:
+    m = _LOOKS_LIKE_PICTURE.match(line)
+    return f"{m.group(1)}{m.group(2)[1:]}{m.group(3)}" if m and m.group(2).startswith("\\") else line
+
+
+def escape_text(text: str) -> str:
+    """``escape_text_line`` for each physical line of ``text`` (a paragraph's words may hold line breaks, and a Frame line
+    is what ``str.splitlines`` makes of them), so no line of typed words reads as a picture."""
+    out = []
+    for piece in text.splitlines(keepends=True) or [text]:
+        body = piece.rstrip("\r\n\x0b\x0c\x1c\x1d\x1e\x85  ")
+        out.append(escape_text_line(body) + piece[len(body):])
+    return "".join(out)
+
+
+def _split(tag: str) -> tuple[str, str]:
+    """(namespace, local name) of an ElementTree tag or attribute name."""
+    if tag.startswith("{"):
+        ns, _, local = tag[1:].partition("}")
+        return ns, local
+    return "", tag
+
+
+def _length_emu(value: str) -> int | None:
+    m = re.fullmatch(r"\s*([\d.]+)\s*(cm|mm|in|pt|pc|px)\s*", value or "")
+    try:
+        return int(float(m.group(1)) * EMU[m.group(2)]) if m else None
+    except ValueError:
+        return None
+
+
+def part_extension(name: str) -> str:
+    """The extension a picture is stored under: the source part's when it is a picture type (``PICTURE_TYPES``), else
+    ``bin``."""
+    ext = name.rsplit(".", 1)[-1].lower() if "." in (name or "") else ""
+    return ext if ext in PICTURE_TYPES else "bin"
+
+
+O_RELID = "{%s}relid" % O_NS
+
+
+def _web(address: str) -> bool:
+    """An address the hub may write a linked picture to: http or https only (never a file share a reader would fetch)."""
+    return bool(re.match(r"^https?://", address or "", re.I))
+PACKAGE_ALT = "pictures in the file that no line above places"
+
+
+def _loose(name: str) -> bool:
+    """A part of the package that holds bytes a picture may show: everything but its XML, its relationships, and the
+    renderings and caches an editor writes on every save (a thumbnail of the first page, ODF's layout cache)."""
+    low = name.lower()
+    if name.endswith("/") or low.endswith((".xml", ".rels")) or low in ("mimetype", "layout-cache"):
+        return False
+    return not low.startswith(("thumbnails/", "docprops/thumbnail.", "meta-inf/"))
+
+
+class PictureReader:
+    """The pictures of a docx or odt package, read so that it fails closed: whatever it cannot place or recognise still
+    changes a line when its bytes change.
+
+    The body is parsed once with ElementTree (so namespaces are as the document scopes them: any prefix, any quote,
+    a declaration redeclared on the body). A picture is everything under one drawing (w:drawing, w:pict, w:object or
+    mc:AlternateContent, Choice and Fallback together; in ODF the outermost draw: element): every attribute in the
+    relationships namespace and every o:relid, whatever the relationship's type, every xlink:href of a draw: element,
+    and every office:binary-data. A relationship is external only when its TargetMode is exactly "External"; an Id
+    defined twice names both targets; a target is looked up as written and as the package format resolves it, and
+    every part that could be meant is hashed. ``read`` returns the pictures block by block of the body, and a last
+    line (``PACKAGE_ALT``) hashing every part with bytes (``_loose``) that no picture line covers: a picture in a
+    header, a style, a comment, or written in a way this reader does not know."""
+
+    def __init__(self, files: dict[str, bytes], ext: str):
+        self.files, self.ext = files, ext
+        self.lower: dict[str, list[str]] = {}
+        for n in files:
+            self.lower.setdefault(n.lower(), []).append(n)
+        self._sha: dict[str, str] = {}
+        self.rels = self._docx_rels() if ext == "docx" else {}
+
+    def sha(self, name: str) -> str:
+        from hashlib import sha256
+
+        if name not in self._sha:
+            self._sha[name] = sha256(self.files[name]).hexdigest()
+        return self._sha[name]
+
+    # -- relationships and parts
+    def _docx_rels(self) -> dict[str, list[dict]]:
+        """{relationship id: [{"target", "external"}]} of word/document.xml (every definition of an Id)."""
+        data = self.files.get("word/_rels/document.xml.rels")
+        if data is None:
+            return {}
+        try:
+            root = ElementTree.fromstring(data)
+        except ElementTree.ParseError:
+            return {}  # read as no relationship: every picture's parts are then on the last line (``read``)
+        out: dict[str, list[dict]] = {}
+        for rel in root.iter():
+            if _split(rel.tag)[1] != "Relationship":
+                continue
+            out.setdefault(rel.get("Id") or "", []).append({"target": rel.get("Target") or "", "external": rel.get("TargetMode") == "External"})
+        return out
+
+    def candidates(self, target: str, base: str) -> list[str]:
+        """Every part ``target`` could mean, relative to ``base``: as written, percent-decoded, with '\\' as '/', without
+        a '#' or '?' suffix, normalised; matched exactly, then without regard to case, then as a folder (an embedded
+        object's parts). The first is the exact match of the decoded target, when there is one."""
+        import posixpath
+        from urllib.parse import unquote
+
+        forms = []
+        for t in (unquote(target), target):
+            for u in (t, t.replace("\\", "/")):
+                for v in (u, re.split(r"[#?]", u, maxsplit=1)[0]):
+                    forms.append(v)
+        out: list[str] = []
+        for f in dict.fromkeys(forms):
+            if not f:
+                continue
+            path = f.lstrip("/") if f.startswith("/") else posixpath.normpath(posixpath.join(base, f)) if base else posixpath.normpath(f)
+            path = path.lstrip("/")
+            for name in ([path] if path in self.files else []) + self.lower.get(path.lower(), []):
+                if name not in out:
+                    out.append(name)
+            prefix = path.rstrip("/") + "/"
+            out += [n for n in self.files if n.startswith(prefix) and not n.endswith("/") and n not in out]
+        return out
+
+    def _member(self, role: str, target: str, external: bool, base: str) -> dict:
+        if external:
+            return {"role": role, "external": True, "target": target, "parts": [], "shas": [], "part": None, "data": None, "sha": None}
+        parts = self.candidates(target, base)
+        one = parts[0] if len(parts) == 1 else None
+        return {"role": role, "external": False, "target": target, "parts": parts, "shas": [self.sha(n) for n in parts], "part": one,
+                "data": self.files[one] if one else None, "sha": self.sha(one) if one else None}
+
+    # -- the body
+    def read(self, blocks: list | None = None) -> tuple[list[list[dict]], list[dict]]:
+        """(the pictures of each block of the body, in order; the pictures read after the last block). ``blocks`` are
+        the body's blocks as ``edits.TextDoc`` cuts it (their kind and text say whether a picture can be written again
+        where it was); when the parsed body does not line up with them, every picture is read after the last block."""
+        blocks = blocks or []
+        per: list[list[dict]] = [[] for _ in blocks]
+        tail: list[dict] = []
+        body = self._body()
+        if body is not None:
+            children = list(body)
+            aligned = len(children) == len(blocks)
+            for i, child in enumerate(children):
+                groups = self._groups(child)
+                pics = [p for p in (self._picture(g) for g in groups) if p]
+                if aligned:
+                    b = blocks[i]
+                    alone = b.kind == "p" and not (b.text or "").strip() and len(pics) == 1
+                    for p in pics:
+                        p["writable"] = p["writable"] and alone  # in a table, beside words or another picture: not where it was
+                    per[i] = pics
+                else:
+                    for p in pics:
+                        p["writable"] = False
+                    tail += pics
+        covered = {n for ps in per for p in ps for m in p["members"] for n in m["parts"]} | \
+            {n for p in tail for m in p["members"] for n in m["parts"]}
+        loose = sorted(self.sha(n) for n in self.files if _loose(n) and n not in covered)
+        if loose:
+            import json
+            from hashlib import sha256
+
+            ref = "sha256:" + sha256(json.dumps({"loose": loose}).encode("utf-8")).hexdigest()
+            tail.append({"ref": ref, "alt": PACKAGE_ALT, "members": [], "crop": [], "xfrm": [], "cx": None, "cy": None, "writable": False})
+        return per, tail
+
+    def _body(self):
+        part = "word/document.xml" if self.ext == "docx" else "content.xml"
+        try:
+            root = ElementTree.fromstring(self.files.get(part) or b"")
+        except ElementTree.ParseError:
+            return None  # every part with bytes is on the last line
+        for el in root.iter():
+            ns, local = _split(el.tag)
+            if self.ext == "docx" and ns in W_NS and local == "body":
+                return el
+            if self.ext == "odt" and ns == OFFICE[1:-1] and local == "text":
+                return el
+        return None
+
+    def _groups(self, top) -> list:
+        """The drawings under ``top``, outermost first, in document order (iteratively: no depth limit)."""
+        out, stack = [], [top]
+        while stack:
+            el = stack.pop()
+            ns, local = _split(el.tag)
+            if self.ext == "odt":
+                if ns == OFFICE[1:-1] and local == "annotation":
+                    continue  # a comment is not the SOP's text (its pictures are on the last line)
+                if ns == DRAW_NS or (ns == OFFICE[1:-1] and local == "binary-data"):
+                    out.append(el)
+                    continue
+            else:
+                if (ns in W_NS and local in ("drawing", "pict", "object")) or (ns == MC_NS and local == "AlternateContent"):
+                    out.append(el)
+                    continue
+                if self._refs(el):
+                    out.append(el)  # a relationship outside a drawing that names a part with bytes (or an image)
+                    continue
+            stack.extend(reversed(list(el)))
+        return out
+
+    def _refs(self, el, inside: bool = False) -> list[tuple[str, str]]:
+        """(relationship id, role) of the attributes of ``el`` naming a relationship: inside a drawing every one; outside,
+        those whose relationship is to a part with bytes or of an image type (a hyperlink or a header is not a picture)."""
+        out = []
+        for k, v in el.attrib.items():
+            ns, local = _split(k)
+            if ns not in R_NS and k != O_RELID:
+                continue
+            if not inside:
+                rels = self.rels.get(v) or []
+                if not any((not r["external"] and any(_loose(n) for n in self.candidates(r["target"], "word"))) for r in rels):
+                    continue
+            tag = _split(el.tag)[1]
+            role = "svg" if tag == "svgBlip" else "image" if tag in ("blip", "imagedata") and local in ("embed", "id", "link") else f"{tag}:{local}"
+            out.append((v, role))
+        return out
+
+    def _picture(self, g) -> dict | None:
+        return self._docx_picture(g) if self.ext == "docx" else self._odt_picture(g)
+
+    def _docx_picture(self, g) -> dict | None:
+        members, seen = [], set()
+        alt, cx, cy, crops, xfrms = "", None, None, [], []
+        anchored = fallback = False
+        unresolved = []
+        for el in g.iter():
+            ns, local = _split(el.tag)
+            for rid, role in self._refs(el, inside=True):
+                rels = self.rels.get(rid)
+                if not rels:
+                    unresolved.append(rid)
+                    continue
+                for rel in rels:
+                    m = self._member(role, rel["target"], rel["external"], "word")
+                    key = (m["external"], m["target"] if m["external"] else tuple(m["parts"]) or ("missing", m["target"]))
+                    if key not in seen:
+                        seen.add(key)
+                        members.append(m)
+            if ns in WP_NS and local == "docPr" and not alt:
+                alt = el.get("descr") or el.get("title") or ""
+            elif ns in WP_NS and local == "anchor":
+                anchored = True
+            elif ns == MC_NS and local == "Fallback":
+                fallback = True
+            elif local == "shape" and not alt and el.get("alt"):
+                alt = el.get("alt")
+            elif local == "imagedata" and not alt and el.get("{%s}title" % O_NS):
+                alt = el.get("{%s}title" % O_NS)
+            elif ns in WP_NS and local == "extent" and cx is None:
+                try:
+                    cx, cy = int(el.get("cx")), int(el.get("cy"))
+                except (TypeError, ValueError):
+                    pass
+            elif ns in A_NS and local == "srcRect":
+                c = {k: v for k, v in sorted(el.attrib.items()) if k in ("l", "t", "r", "b") and v not in ("0", "")}
+                if c:
+                    crops.append(c)
+            elif ns in A_NS and local == "xfrm":
+                x = {k: v for k, v in sorted(el.attrib.items()) if (k == "rot" and v not in ("0", "")) or (k in ("flipH", "flipV") and v in ("1", "true"))}
+                if x:
+                    xfrms.append(x)
+        if not members and not unresolved:
+            return None
+        ns, local = _split(g.tag)
+        roles = [m["role"] for m in members]
+        writable = (not unresolved and not anchored and not fallback and ns in W_NS and local == "drawing"
+                    and all((m["part"] and not m["external"]) or (m["external"] and _web(m["target"])) for m in members)
+                    and roles in (["image"], ["image", "svg"]) and not (len(members) > 1 and any(m["external"] for m in members))
+                    and len(crops) <= 1 and len(xfrms) <= 1)
+        return self._make(members, unresolved, alt, crops, xfrms, cx, cy, writable)
+
+    def _odt_picture(self, g) -> dict | None:
+        import base64
+        from hashlib import sha256
+
+        members, seen, alt, xfrms = [], set(), "", []
+        for el in g.iter():
+            ns, local = _split(el.tag)
+            href = el.get("{%s}href" % XLINK_NS)
+            if ns == DRAW_NS and href:
+                import posixpath
+
+                # an address, or a file beside the document (outside the package): a link
+                external = bool(re.match(r"^[a-z][a-z0-9+.\-]*:", href, re.I)) or posixpath.normpath(href.replace("\\", "/")).startswith("..")
+                m = self._member("image" if local == "image" else f"{local}:href", href, external, "")
+                key = (m["external"], m["target"] if m["external"] else tuple(m["parts"]) or ("missing", m["target"]))
+                if key not in seen:
+                    seen.add(key)
+                    members.append(m)
+            elif ns == OFFICE[1:-1] and local == "binary-data":
+                text = "".join(el.itertext())
+                try:
+                    data = base64.b64decode("".join(text.split()), validate=False)
+                except ValueError:
+                    data = text.encode("utf-8")
+                members.append({"role": "binary-data", "external": False, "target": "", "parts": [], "shas": [], "part": None, "data": data,
+                                "sha": sha256(data).hexdigest()})
+            elif ns == SVG_NS and local in ("desc", "title") and not alt:
+                alt = "".join(el.itertext())
+            if ns == DRAW_NS and el.get("{%s}transform" % DRAW_NS):
+                xfrms.append({"transform": el.get("{%s}transform" % DRAW_NS)})
+        if not members:
+            return None
+        cx, cy = _length_emu(g.get("{%s}width" % SVG_NS)), _length_emu(g.get("{%s}height" % SVG_NS))
+        return self._make(members, [], alt, [], xfrms, cx, cy, False)  # a picture from ODF is never written into a .docx
+
+    @staticmethod
+    def _make(members, unresolved, alt, crops, xfrms, cx, cy, writable) -> dict:
+        import json
+        from hashlib import sha256
+        from urllib.parse import quote
+
+        one = members[0] if len(members) == 1 and not unresolved and not crops and not xfrms and members[0]["role"] in ("image",) else None
+        if one is not None and one["external"]:
+            ref = "link:" + quote(one["target"], safe=":/?#@!$&'*+,;=%~.-_")
+        elif one is not None and one["part"]:
+            ref = "sha256:" + one["sha"]
+        else:  # several images or parts, a transform, an unknown kind, or one the package does not hold: all of it, together
+            images = []
+            for m in members:
+                if m["external"]:
+                    images.append([m["role"], "link:" + m["target"]])
+                elif m["role"] == "binary-data":
+                    images.append([m["role"], m["sha"]])
+                elif m["parts"]:
+                    images.append([m["role"], sorted(m["shas"])])
+                else:
+                    images.append([m["role"], "missing:" + m["target"]])
+            canon = {"images": images, "unresolved": sorted(unresolved), "crop": crops, "xfrm": xfrms}
+            ref = "sha256:" + sha256(json.dumps(canon, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        return {"ref": ref, "alt": alt, "members": members, "crop": crops, "xfrm": xfrms, "cx": cx, "cy": cy, "writable": writable}
+
+
+class DocxPictureWriter:
+    """Pictures written into a .docx ``sopdocs.to_docx`` makes: each picture line becomes an inline DrawingML picture
+    (its images, its crop, rotation and flip), with its parts, relationships and content types (``finish``)."""
+
+    def __init__(self, pictures: dict[str, dict] | None):
+        self.pictures = pictures or {}
+        self.rels: dict[str, str] = {}  # relationship id -> its XML
+        self.media: dict[str, bytes] = {}
+        self.by_key: dict[str, str] = {}  # image sha or address -> relationship id
+        self.types: set[str] = set()
+        self.n = 0
+
+    def _rid(self, member: dict | None, address: str = "") -> str:
+        key = address or member["sha"]
+        if key in self.by_key:
+            return self.by_key[key]
+        rid = f"rIdPicture{len(self.by_key) + 1}"
+        self.by_key[key] = rid
+        typ = f"{R_NS[0]}/image"
+        if address:
+            self.rels[rid] = f'<Relationship Id="{rid}" Type="{typ}" Target="{_escape(address)}" TargetMode="External"/>'
+        else:
+            ext = part_extension(member["part"])
+            part = f"media/{member['sha'][:16]}.{ext}"  # named by what it holds
+            self.media["word/" + part] = member["data"]
+            self.types.add(ext)
+            self.rels[rid] = f'<Relationship Id="{rid}" Type="{typ}" Target="{part}"/>'
+        return rid
+
+    def paragraph(self, line_no: int, alt: str, ref: str) -> str:
+        p = self.pictures.get(ref)
+        if p is None:
+            raise ValueError(f"line {line_no} is a picture ({picture_line(alt, ref)}) that the document it was read from does not "
+                             "hold: the revision would lose it")
+        if not p.get("writable"):
+            raise ValueError(f"line {line_no} is a picture ({picture_line(alt, ref)}) the hub cannot write again as it is in the "
+                             "document (anchored, in a table, beside words, with a copy for old readers, several images, or one the "
+                             "document does not hold): change the document in the editor instead")
+        if ref.startswith("link:"):
+            blip = f'<a:blip r:link="{self._rid(None, p["members"][0]["target"])}"/>'
+        else:
+            image = next(m for m in p["members"] if m["role"] == "image")
+            svg = next((m for m in p["members"] if m["role"] == "svg"), None)
+            ext = ('<a:extLst><a:ext uri="' + SVG_EXT_URI + '"><asvg:svgBlip xmlns:asvg="http://schemas.microsoft.com/office/'
+                   f'drawing/2016/SVG/main" r:embed="{self._rid(svg)}"/></a:ext></a:extLst>') if svg else ""
+            blip = f'<a:blip r:embed="{self._rid(image)}">{ext}</a:blip>' if ext else f'<a:blip r:embed="{self._rid(image)}"/>'
+        crop, xfrm, cx, cy = (p["crop"] or [{}])[0], (p["xfrm"] or [{}])[0], p.get("cx"), p.get("cy")
+        self.n += 1
+        n, d = self.n, _escape(" ".join((alt or "").split()))
+        cx, cy = cx or DEFAULT_EXTENT[0], cy or DEFAULT_EXTENT[1]
+        src = ("<a:srcRect" + "".join(f' {k}="{_escape(v)}"' for k, v in sorted(crop.items())) + "/>") if crop else ""
+        xf = "".join(f' {k}="{_escape(v)}"' for k, v in sorted(xfrm.items()))
+        return (f'<w:p><w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="{cx}" cy="{cy}"/>'
+                f'<wp:docPr id="{n}" name="Picture {n}" descr="{d}"/><wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/>'
+                '</wp:cNvGraphicFramePr><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+                f'<pic:pic><pic:nvPicPr><pic:cNvPr id="{n}" name="Picture {n}" descr="{d}"/><pic:cNvPicPr/></pic:nvPicPr>'
+                f'<pic:blipFill>{blip}{src}<a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm{xf}><a:off x="0" y="0"/>'
+                f'<a:ext cx="{cx}" cy="{cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic>'
+                "</a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>")
+
+    def finish(self, name: str, data: bytes) -> bytes:
+        """A part of the package with what the pictures need (unchanged when there are none)."""
+        if not self.rels:
+            return data
+        if name == "word/document.xml":
+            xml = data.decode("utf-8")
+            decl = "".join(f' xmlns:{k}="{v}"' for k, v in DOCX_PICTURE_NAMESPACES.items() if f"xmlns:{k}=" not in xml)
+            return re.sub(r"<w:document\b", lambda m: m.group(0) + decl, xml, count=1).encode("utf-8")
+        if name == "word/_rels/document.xml.rels":
+            return data.decode("utf-8").replace("</Relationships>", "".join(self.rels.values()) + "</Relationships>").encode("utf-8")
+        if name == "[Content_Types].xml":
+            xml = data.decode("utf-8")
+            add = "".join(f'<Default Extension="{e}" ContentType="{PICTURE_TYPES.get(e, "application/octet-stream")}"/>'
+                          for e in sorted(self.types) if f'Extension="{e}"' not in xml)
+            return xml.replace("</Types>", add + "</Types>").encode("utf-8")
+        return data

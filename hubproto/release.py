@@ -547,7 +547,8 @@ class ReleaseStore:
 
     def save(self, bundle: dict, *, effective_from: str, released_by: str, proposal_id: str,
              bom: list[dict], rules: list[dict], parent: str | None, now: str | None = None,
-             config: dict | None = None, clauses: dict | None = None, frame_texts: dict[str, str] | None = None) -> dict:
+             config: dict | None = None, clauses: dict | None = None, frame_texts: dict[str, str] | None = None,
+             references: list[dict] | None = None) -> dict:
         """Save a release. Its identity is the bundle's digest, unless that bundle was already released from other
         Frame texts: then the identity also covers the Frames' content, so a change to an SOP's wording is a new
         release in the history, never a rewrite of an earlier one. An identical release (same bundle, same Frames)
@@ -575,6 +576,8 @@ class ReleaseStore:
             "clauses": clauses or {},
             "inheritance": "transitive",
         }
+        if references:  # citations of documents in the prose (hubproto.references); not part of the digest
+            meta["references"] = references
         rel_dir.mkdir(exist_ok=True)
         (rel_dir / "bundle.json").write_text(canonical(bundle))
         (rel_dir / "rules.json").write_text(json.dumps(rules, indent=1, sort_keys=True))
