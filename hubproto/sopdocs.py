@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from datetime import date, timedelta
 
-from .frames import Frame
+from .frames import Frame, header_of
 
 LINEAGE = "sop:"  # lineage key prefix: sop:<frame name>
 POLICY_FOLDER = "Policy"
@@ -353,7 +353,7 @@ def convert(hub, *, by: str, frames=None) -> list[dict]:
         doc_type, folder = kind_of(frame)
         content = to_docx(frame.body)
         fields = {"lineage": LINEAGE + name, "sop_name": name, "frame_meta": dict(frame.frontmatter),
-                  "frame_header": "\n".join((frame.text or "").splitlines()[: max(0, frame.body_start - 1)]),
+                  "frame_header": header_of(frame.text, frame.body_start),
                   "frame_tail": max(1, len(frame.text) - len(frame.text.rstrip("\n"))),
                   "revision": "A", "doc_type": doc_type, "frame_mirror": False, "description": frame.description,
                   "converted_from": {"frame": frame.relpath, "version": frame.version, "release": meta["digest"] if meta else "",
@@ -375,7 +375,7 @@ def convert(hub, *, by: str, frames=None) -> list[dict]:
                              filename=f"{name}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                              doc_type=doc_type,
                              fields={"lineage": LINEAGE + name, "sop_name": name, "frame_meta": dict(frame.frontmatter),
-                                     "frame_header": "\n".join((frame.text or "").splitlines()[: max(0, frame.body_start - 1)]),
+                                     "frame_header": header_of(frame.text, frame.body_start),
                                      "frame_tail": max(1, len(frame.text) - len(frame.text.rstrip("\n"))),
                                      "revision": "A", "owner": frame.maintainer or by, "description": frame.description,
                                      "review_date": (date.today() + timedelta(days=365)).isoformat(),
@@ -508,7 +508,7 @@ def roundtrip_problems(hub, frames=None) -> list[str]:
             continue
         while lines and not lines[-1].strip():
             lines.pop()
-        head = "\n".join((frame.text or "").splitlines()[: max(0, frame.body_start - 1)])
+        head = header_of(frame.text, frame.body_start)
         tail = max(1, len(frame.text) - len(frame.text.rstrip("\n")))
         if head + "\n" + "\n".join(lines) + "\n" * tail != frame.text:
             problems.append(name)

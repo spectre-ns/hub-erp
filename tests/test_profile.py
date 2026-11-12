@@ -334,20 +334,48 @@ def test_complaint_is_answered_and_opens_an_ncr(seeded):
 
 
 def test_internal_audit_records_findings_and_the_quality_manager_accepts_them(seeded):
-    run_id = seeded.runner.submit("internal-audit", {"record": {"title": "Audit of document control", "planned": "2026-12-01",
-                                                                "processes": ["document-control"]}}, owner="bob")
+    run_id = seeded.runner.submit("internal-audit", {"record": {"title": "Audit of corrective actions", "planned": "2026-12-01",
+                                                                "processes": ["capa"]}}, owner="bob")  # bob decides no step of it
     state = run_state(seeded, run_id)
     assert state["status"] == "waiting" and state["pending"]["assignees"] == ["bob"]
     audit = seeded.kernel.get(state["record"])
     assert audit["fields"]["auditor"] == "bob"
-    assert [c["process"] for c in audit["fields"]["checklist"]] == ["document-control"] * 5
-    findings = [{"clause": "7.5.3", "statement": "Two obsolete copies on the shop floor", "severity": "minor"}]
+    steps = seeded.current_bundle()["processes"]["capa"]["steps"]
+    assert [c["process"] for c in audit["fields"]["checklist"]] == ["capa"] * len(steps)
+    findings = [{"id": "F-1", "clause": "7.5.3", "criterion": "Obsolete documents are withdrawn.", "found": "Two obsolete copies on the shop floor",
+                 "evidence": [audit["number"]], "grade": "minor", "action": "ncr"},
+                {"id": "F-2", "clause": "10.2", "criterion": "Corrective actions are verified.", "found": "Verified.", "evidence": [audit["number"]],
+                 "grade": "observation"}]
+    # The profile's work instruction says no empty list and no unnumbered finding: the Gate refuses both.
+    for wrong in ([], [{"clause": "7.5.3", "statement": "free text", "severity": "minor"}]):
+        with pytest.raises(RunError):
+            seeded.runner.decide(run_id, "bob", "approve", fields={"findings": wrong}, meaning="ok", payload_digest=seen(seeded.runner, run_id))
     state = seeded.runner.decide(run_id, "bob", "approve", fields={"findings": findings}, meaning="ok", payload_digest=seen(seeded.runner, run_id))
     assert state["status"] == "waiting" and state["pending"]["checkpoint"] == "accept-the-findings"
     assert state["pending"]["assignees"] == ["carol"]
     assert seeded.kernel.get(audit["locator"])["state"] == "awaiting-accept-the-findings"
-    state = seeded.runner.decide(run_id, "carol", "approve", fields={"summary": "One minor finding; NCR raised."}, meaning="ok", payload_digest=seen(seeded.runner, run_id))
-    assert state["status"] == "completed" and seeded.kernel.get(audit["locator"])["state"] == "closed"
+    with pytest.raises(RunError, match="F-1, F-2 have no verdict"):
+        seeded.runner.decide(run_id, "carol", "approve", fields={"summary": "s"}, meaning="ok", payload_digest=seen(seeded.runner, run_id))
+    state = seeded.runner.decide(run_id, "carol", "approve", fields={"summary": "One minor finding; NCR raised.",
+                                                                     "finding_decisions": [{"finding": "F-1", "verdict": "accept"},
+                                                                                           {"finding": "F-2", "verdict": "reject", "reason": "no gap"}]},
+                                 meaning="ok", payload_digest=seen(seeded.runner, run_id))
+    audit = seeded.kernel.get(audit["locator"])
+    assert state["status"] == "completed" and audit["state"] == "closed"
+    raised = audit["fields"]["actions_raised"]
+    assert [(r["finding"], r["process"]) for r in raised] == [("F-1", "nonconformance")], "the profile's Raise the actions step"
+    assert seeded.kernel.get(raised[0]["record"])["fields"]["source"] == "audit"
+
+
+def test_the_profile_gives_the_auditor_cog_its_monthly_duty(seeded):
+    from hubproto.agent import due_duties
+
+    sop = seeded.frames.get("audit-sop")
+    assert "beyond Quality and Tasks" in sop.body, "the profile's own copy"
+    assert "Every month the auditor cog audits the next process in the programme." in sop.body
+    assert dict(due_duties(seeded, today="2026-11-07"))["auditor"].startswith("Every month the auditor cog")
+    steps = [s["id"] for s in seeded.current_bundle()["processes"]["internal-audit"]["steps"]]
+    assert steps[-2:] == ["raise-the-actions", "render-the-record"]
 
 
 def test_change_request_is_approved_then_verified_by_the_requester(seeded):

@@ -23,6 +23,7 @@ for pytest-xdist, a development-only dependency; without `-n auto` the suite run
 | `hubproto/process_graph.py` | processes as graphs (change control 10.1): compile numbered steps and graph sentences into one shape, read it (options, verdicts, globals), write it back as sentences, the earlier shape's view | core |
 | `hubproto/cogs.py` | Cog catalog (code cogs, context stand-ins, reviewer cogs) | core |
 | `hubproto/groups.py` | groups (listed, by role) and committees (on a group, a chair, consensus): who is in each, resolving a role-like name to a group | core |
+| `hubproto/audit.py`, `hubproto/agent_audit.py`, `hubproto/shell/audit_ui.py` | the internal audit and the auditor cog (issue #25): exact checks from records and the Track, the clause criteria (`config/standard-clauses.json`), findings validated against their evidence (and again at the Gate: `runner.DECISION_FIELD_GUARDS`), the programme, the audit budget, the quality manager's per-finding verdicts, the audit-action-raiser cog; the cog's audit tools; the findings panel on an audit's page | core |
 | `hubproto/org_cog.py` | the organization cog (junior) and the senior cogs of the compile-frame committee | core |
 | `hubproto/inbox.py` | DMs and email to people and cogs | core |
 | `hubproto/cad.py` | CAD/ECAD: FreeCAD and KiCad stdlib extraction, worker client, cad-exporter, bom-reconciler, part-releaser cogs | core |
@@ -436,7 +437,7 @@ Cog ids available for process steps: record-filer, record-linker, notifier,
 document-renderer, risk-scorer, invoice-extractor, three-way-matcher,
 ledger-poster, document-drafter, document-publisher, ncr-classifier,
 capa-opener, ncr-opener, capa-drafter, effectiveness-scheduler,
-audit-checklist-drafter, document-classifier; reviewer cogs (members):
+audit-checklist-drafter, audit-action-raiser, document-classifier; reviewer cogs (members):
 ap-reviewer, doc-reviewer, quality-assistant.
 
 Workflow bundle shape (change control 10.1): `bundle["workflows"][process] = {process, record_type, form: steps|graph,

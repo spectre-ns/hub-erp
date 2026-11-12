@@ -77,13 +77,15 @@ def test_the_kill_switch_and_duties(released, monkeypatch):
     monkeypatch.delenv("HUBPROTO_AGENTS")
     # Duties are sentences in the SOPs that own the work: every day, every week or every month.
     due = due_duties(hub, today="2026-11-07")
-    assert {c for c, _ in due} == {"quality-assistant", "purchasing-assistant", "it-admin", "management"}
+    assert {c for c, _ in due} == {"quality-assistant", "purchasing-assistant", "it-admin", "management", "auditor"}
     assert any(d.startswith("Every day the quality-assistant cog finds nonconformances") for _, d in due)
     monkeypatch.setattr(hub.model, "complete_with_tools", scripted([("finish", {"summary": "nothing overdue"})]))
     done = run_duties(hub, today="2026-11-07")
-    assert len(done) == 4 and due_duties(hub, today="2026-11-07") == []
-    assert {c for c, _ in due_duties(hub, today="2026-11-08")} == {"quality-assistant", "purchasing-assistant"}, "the daily ones"
-    assert {c for c, _ in due_duties(hub, today="2026-11-14")} == {"quality-assistant", "purchasing-assistant", "it-admin"}, "a week on"
+    # The auditor is a senior cog on a hosted model, which tests leave off: it is not available, and its duty stays due.
+    assert sorted(d["status"] for d in done) == ["done"] * 4 + ["unavailable"]
+    assert [c for c, _ in due_duties(hub, today="2026-11-07")] == ["auditor"]
+    assert {c for c, _ in due_duties(hub, today="2026-11-08")} == {"quality-assistant", "purchasing-assistant", "auditor"}, "the daily ones"
+    assert {c for c, _ in due_duties(hub, today="2026-11-14")} == {"quality-assistant", "purchasing-assistant", "it-admin", "auditor"}, "a week on"
 
 
 def test_a_new_cog_from_a_proposal_works_with_no_code(released, monkeypatch):

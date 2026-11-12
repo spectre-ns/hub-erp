@@ -28,6 +28,10 @@ Add one line per person and per cog under Members, in the shape
 * every person holding `staff` (training is assigned by that role);
 * the reviewer cogs `doc-reviewer (cog): reviewer, author` and
   `quality-assistant (cog): quality-manager, staff`.
+* the auditor cog `auditor (cog): internal-auditor`, which runs the monthly internal
+  audit (audit-sop). It is a senior cog: give it a profile (`## Cog: auditor`) naming
+  its hosted model, for example `Model: claude-opus-5-5`; without it the audit duty
+  stays due and nothing stands in for it.
 
 ## Roles
 - quality-manager
