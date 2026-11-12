@@ -250,3 +250,19 @@ def test_a_converted_sop_keeps_its_whole_header_when_its_description_holds_a_lin
     head = doc["fields"]["frame_header"]
     assert head.startswith("---\n") and head.endswith("\n---"), f"the stored header lost its closing ---: {head!r}"
     assert sopdocs.frame_text(hub, doc).startswith(head + "\n# Finance policy")
+
+
+def test_a_lone_carriage_return_in_a_header_keeps_the_closing_dashes_in_the_kept_header(monkeypatch):
+    """A lone ``\\r`` ends a YAML line (both readers see ``scope`` as a key of its own) but no file line, as body_start
+    counts them: the kept header still ends with its closing ``---`` and file line n is still the line the rules cite."""
+    from pathlib import Path
+
+    import hubproto.frames as frames
+
+    text = "---\ntype: frame\nname: x\ndescription: d\rscope: s\nvisibility: internal\n---\n# X\n\nA line.\n"
+    monkeypatch.setattr(frames, "yaml", None)
+    frame = frames.load_frame_text(text, Path("x.frame.md"))
+    assert frame.frontmatter["scope"] == "s" and frame.description == "d" and frame.body_start == 7
+    head = frames.header_of(text, frame.body_start)
+    assert head.endswith("\n---") and head + "\n# X\n\nA line.\n" == text, f"the kept header lost its closing ---: {head!r}"
+    assert frame.file_lines[5] == "---" and frame.line(7) == "# X" and frame.line(9) == "A line."
