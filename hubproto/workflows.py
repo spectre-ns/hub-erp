@@ -479,17 +479,25 @@ def delta_items(hub, co: dict) -> list[dict]:
 
 def activate(hub, co: dict, digest: str) -> list[str]:
     """The release step (with the form layouts): each carried layout comes into force as the next version of that
-    process's layout. Safe to repeat; refuses a change order that is not approved (hubproto.closure). The graph itself
-    comes into force with the release (its direct change, compiled from the SOP); this says whether the release now
+    process's layout. Safe to repeat (a layout already in force with it counts as done only when it was made from what
+    is signed: ``closure.check_in_force_as_signed``); refuses a change order that is not approved (hubproto.closure).
+    The graph itself comes into force with the release (its direct change, compiled from the SOP); this says whether the release now
     has the graph that was carried. Returns what it did."""
     carried = changes_of(co)
     if not carried:
         return []
+    from .closure import check_co_approved, check_in_force_as_signed, part_digest
+    from .rules import sha256_of
+
     s = store(hub)
     if any((s.layouts().get(p) or {}).get("released_with") != co["number"] for p in carried):
-        from .closure import check_co_approved
-
         check_co_approved(co, "its workflow changes")
+    signed_part = co["fields"].get("workflow_changes") or {}
+    for process, c in sorted(carried.items()):  # a layout already in force with it counts only when made from what is signed (#53)
+        now = s.layouts().get(process) or {}
+        if now.get("released_with") == co["number"]:
+            check_in_force_as_signed(co, "workflows", signed_part, now, f"the {process} workflow layout v{now['version']}",
+                                     same_content=sha256_of(now.get("layout")) == sha256_of(c.get("layout")))
     done = []
     _, bundle = bundle_in_force(hub)
     for process, c in sorted(carried.items()):
@@ -498,7 +506,7 @@ def activate(hub, co: dict, digest: str) -> list[str]:
             done.append(f"{process} layout v{now['version']}")
             continue
         entry = {"version": int(now.get("version") or 0) + 1, "layout": c["layout"], "released_with": co["number"], "release": digest,
-                 "by": c.get("by"), "at": utcnow(), "changes": [i["text"] for i in c.get("delta") or []]}
+                 "by": c.get("by"), "at": utcnow(), "changes": [i["text"] for i in c.get("delta") or []], "signed_digest": part_digest(signed_part)}
         s.set_layout(process, entry)
         done.append(f"{process} layout v{entry['version']}")
         if not c.get("layout_only"):

@@ -432,9 +432,15 @@ def activate_frame(hub, co_ref: str) -> dict:
     changes are covered by the change order's approval; widenings carry both policy owners' signatures already."""
     from .compile import change_state
 
+    from .closure import not_as_signed, signed_frame_digest
+
     co = _co(hub, co_ref)
-    if co["fields"].get("released_release"):
-        return hub.releases.get(co["fields"]["released_release"]) or {"digest": co["fields"]["released_release"]}
+    if co["fields"].get("released_release"):  # in force from a release that stopped part-way: only as signed (issue #53)
+        digest = co["fields"]["released_release"]
+        recorded = co["fields"].get("released_signed")
+        if recorded is not None and recorded != signed_frame_digest(co):
+            raise ValueError(not_as_signed(co, f"the policy release {digest[:12]}"))
+        return hub.releases.get(digest) or {"digest": digest}
     if not co["fields"].get("staged_proposal") and not carried(hub, co) and not retirements(co):
         return hub.releases.current()  # it changes forms only: the Frame in force stays
     proposal = hub.proposals.load(co["fields"]["staged_proposal"])
@@ -446,7 +452,7 @@ def activate_frame(hub, co_ref: str) -> dict:
                                               "the revisions it carries"})
     hub.proposals.save(proposal)
     meta = hub.release(proposal["id"], f"change-order:{co['number']}")
-    hub.kernel.set_fields(co["locator"], {"released_release": meta["digest"]}, by="hub")
+    hub.kernel.set_fields(co["locator"], {"released_release": meta["digest"], "released_signed": signed_frame_digest(co)}, by="hub")
     return meta
 
 
@@ -494,6 +500,14 @@ def publish_revisions(hub, co_ref: str, digest: str) -> list[str]:
     """Every carried revision becomes effective, replacing the one it revises (step 3). Safe to repeat."""
     co = _co(hub, co_ref)
     texts = hub.releases.frame_texts(digest) if hasattr(hub.releases, "frame_texts") else {}
+    signed = (((co["fields"].get("signed") or {}).get("frozen") or {}).get("drafts") or {})
+    for c in carried(hub, co):  # a revision already published counts as done only when it is the one signed (issue #53)
+        d = hub.kernel.get(c["draft"]["locator"])
+        sha = str(d["fields"].get("content_sha") or "")
+        if d["state"] == "effective" and signed.get(c["name"], sha) != sha:
+            from .closure import not_as_signed
+
+            raise ValueError(not_as_signed(co, f"{d['number']} (published)"))
     done = []
     for c in carried(hub, co):
         d = hub.kernel.get(c["draft"]["locator"])

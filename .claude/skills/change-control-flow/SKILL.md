@@ -97,6 +97,11 @@ applies what was signed.
 - `AUTOMATIONS[...]["steps"]` (titles) and `STEPS[...]` (functions) are parallel lists, and `MODEL_STEPS` is keyed
   by automation name, then step title (`MODEL_STEPS["compile-frame"]["Compile the Frame"]`): renaming or reordering a step without the other list breaks the job or silently drops its model note.
   If a step starts calling a model, add it to `MODEL_STEPS`.
+- A signed CO part of which is in force (a release that stopped part-way: `changecontrol.in_force_from`) is never sent
+  back to revising: `_back_to_revising` refuses it (`in_force_refusal`), so `reopen` does, and `r_restage` and
+  `find_related` leave it approved and say why; its release is retried. A release step that finds something in force
+  with its CO counts it as done only when its recorded `signed_digest` matches the signed digest
+  (`closure.check_in_force_as_signed`); a new step that writes configuration records one the same way (issue #53).
 - Anything that changes what a frozen CO carries sends it back to revising with its decisions void (`sync`,
   `changed_since_sent`, `_back_to_revising`). A test that edits after sending must expect that.
 - A stand-in hub has no compile-frame committee (`Hub.compile_committee` never counts a stand-in): rounds read

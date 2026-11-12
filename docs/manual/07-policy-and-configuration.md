@@ -654,7 +654,9 @@ are kept; an item the release made moot becomes a `rebase` question.
   type, form or role. It goes back to revising with a banner "The baseline changed: CO-... was released and is related
   by definition: both change finance-policy ...", its decisions are stale, it cannot be sent until another round has run,
   and its requester is told. "Found by the hub (the same SOP, process, rule, record type, form or role): it cannot be
-  dismissed. Run another review round." An approved change order not yet released is sent back the same way.
+  dismissed. Run another review round." An approved change order not yet released is sent back the same way, unless
+  part of it is already in force (its release stopped part-way, below): it stays approved, the step says why ("not sent
+  back: CO-... cannot go back to revising: part of it is already in force ..."), and its release is retried.
 * **Related by meaning**, found by the released change order's panel cogs, each looking at open change orders and at
   approved change requests no change order carries yet: a finding with a reason. Only the requester may **Dismiss the
   flag**, with a reason, which becomes an accepted `related` warning. A change request found this way is flagged and its
@@ -742,6 +744,22 @@ in 7.9, "Release".
 A job ends as **succeeded**, **stopped part way** (some steps done; retry it after fixing what it says), **nothing to
 do** or **failed**. When a job stops, the change order's requester is told. Steps already done are not repeated on a
 retry; a compile-frame job retried after the drafts changed compiles again.
+
+**A release that stopped part-way** has brought some of the change order into force: its policy release and the
+revisions it published, or its form and workflow layouts, link vocabulary and retention classes, record types. Such a
+change order is never sent back to revising (hubproto/changecontrol.py, `reopen` and `in_force_from`), nor by a later
+release: it would be signed again with other content while what is in force stayed as the first signature made it. The
+refusal names what is in force: "CO-2026-0001 cannot go back to revising: part of it is already in force (link
+vocabulary v2). Retry its release to bring the rest into force as signed, or put the rest of the change on a new change
+order". When another change order is released meanwhile, this one is neither sent back nor compiled again; that
+release's steps say so, and its requester is told ("CO-... stays approved: part of it is in force"). A change order
+whose release stopped before anything came into force can still be sent back.
+
+A step counts what is already in force with its change order as done only when it was made from what is signed: each
+records the digest of the changes it applied, and compares it with the digest the signature keeps. Anything else stops
+the step, and nothing more of it comes into force: "link vocabulary v2 is in force with CO-..., but it was made from
+other changes than the ones signed: it does not count as done, and nothing more of this step comes into force. Put what
+should change on a new change order" (hubproto/closure.py, `check_in_force_as_signed`).
 
 ## 7.11 The Automation page
 

@@ -505,19 +505,28 @@ def carried_reasons(hub, co: dict) -> list[str]:
 
 def activate(hub, co: dict, digest: str) -> list[str]:
     """The release automation's step: each carried layout comes into force (a new version), with its custom fields.
-    Only for an approved change order (hubproto.closure)."""
-    done = []
-    if any(((active_entry(hub, t) or {}).get("released_with") != co["number"]) for t in (co["fields"].get("form_changes") or {})):
-        from .closure import check_co_approved
+    Only for an approved change order (hubproto.closure). A layout already in force with this change order (a release
+    that stopped part-way) is left as it is, only when it was made from what is signed
+    (``closure.check_in_force_as_signed``)."""
+    from .closure import check_co_approved, check_in_force_as_signed, part_digest
+    from .rules import sha256_of
 
+    carried = co["fields"].get("form_changes") or {}
+    done = []
+    if any(((active_entry(hub, t) or {}).get("released_with") != co["number"]) for t in carried):
         check_co_approved(co, "its form layouts")
-    for type_, c in (co["fields"].get("form_changes") or {}).items():
+    for type_, c in carried.items():  # every layout already in force is checked before anything comes into force
+        now = active_entry(hub, type_) or {}
+        if now.get("released_with") == co["number"]:
+            check_in_force_as_signed(co, "forms", carried, now, f"the {type_.replace('-', ' ')} form v{now['version']}",
+                                     same_content=sha256_of(now.get("layout")) == sha256_of(c.get("layout")))
+    for type_, c in carried.items():
         now = active_entry(hub, type_) or {}
         if now.get("released_with") == co["number"]:
             done.append(f"{type_} v{now['version']}")
             continue
         entry = {"version": int(now.get("version", 0)) + 1, "layout": c["layout"], "released_with": co["number"], "release": digest,
-                 "by": c.get("by"), "at": utcnow(), "changes": c.get("changes") or []}
+                 "by": c.get("by"), "at": utcnow(), "changes": c.get("changes") or [], "signed_digest": part_digest(carried)}
         hub.forms.set_active(type_, entry)
         done.append(f"{type_} v{entry['version']}")
     apply_custom_fields(hub)

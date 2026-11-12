@@ -784,7 +784,8 @@ def delta_items(hub, co: dict) -> list[dict]:
 def activate(hub, co: dict, digest: str) -> list[str]:
     """The release step (workstream 1's release automation calls it, after the Frame and the form layouts): the record
     types the approved change order carries come into force, as the next version of the record types in force. Safe to
-    repeat (a change order already in force returns what it did). Refuses a change order that is not approved, and
+    repeat (a change order already in force returns what it did, when what is in force was made from the changes signed:
+    ``closure.check_in_force_as_signed``). Refuses a change order that is not approved, and
     changes that no longer check against the record types in force (nothing changes then). Returns what it did."""
     from . import closure
 
@@ -793,7 +794,10 @@ def activate(hub, co: dict, digest: str) -> list[str]:
         return []
     s = store(hub)
     done = [e for e in s.history() if e.get("released_with") == co["number"]]
-    if done:
+    if done:  # already in force with this change order: only when made from what is signed (issue #53)
+        summaries = [c.get("summary") or describe(c) for c in changes]
+        closure.check_in_force_as_signed(co, "record_types", co["fields"].get("record_type_changes") or [], done[-1],
+                                         f"record types v{done[-1]['version']}", same_content=list(done[-1].get("changes") or []) == summaries)
         return [f"record types v{done[-1]['version']} (already in force with {co['number']})"]
     closure.check_co_approved(co, "its record-type changes")
     base = ensure(hub)
@@ -810,7 +814,8 @@ def activate(hub, co: dict, digest: str) -> list[str]:
     entry = {"version": int(base["version"]) + 1, "types": types, "digest": sha256_of(types),
              "file_sha": adopted or base.get("file_sha"), "source": f"released with {co['number']}", "release": digest,
              "released_with": co["number"], "by": f"change-order:{co['number']}", "at": utcnow(),
-             "changes": [c.get("summary") or describe(c) for c in changes]}
+             "changes": [c.get("summary") or describe(c) for c in changes],
+             "signed_digest": closure.part_digest(co["fields"].get("record_type_changes") or [])}
     s.set_active(entry)
     install(hub)
     return [f"record types v{entry['version']}: " + "; ".join(entry["changes"])]

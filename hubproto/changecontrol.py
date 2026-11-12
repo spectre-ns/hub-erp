@@ -50,6 +50,7 @@ Reading
     contributors(hub, co)                               who wrote or made what it carries (none of them may approve it)
     touches(hub, co)                                    what it changes: SOPs, processes, rule slots, record types, forms, roles
     state_questions(hub, co)                            states the delta removes that items are in, and the answer
+    in_force_from(hub, co)                              what it already brought into force (a release that stopped part-way)
 
 The loop
     request_review(hub, co, by, panel=None)             start a round; ``panel`` (names or {"who", "reason"}) replaces the suggestion
@@ -316,11 +317,76 @@ def on_approved(hub, co_ref) -> dict:
                         "at": dec.get("at"), "signature": dec.get("signature")})
 
 
+def in_force_from(hub, co_ref) -> list[str]:
+    """What this change order already brought into force, in words (empty when nothing is: its release has not run,
+    or stopped before any step applied anything): its policy release, the revisions it published and the documents it
+    retired, its form and workflow layouts, its link-vocabulary and retention versions, its record-type version. Each is
+    found by the change order's number on what is in force or in its history, as the release steps find it."""
+    from . import configdocs, formlayout, recordtypes, workflows
+
+    co = _co(hub, co_ref)
+    f = co["fields"]
+    n = co["number"]
+    out = []
+    if f.get("released_release"):
+        out.append(f"the policy release {f['released_release'][:12]}")
+    for c in eco.carried(hub, co):
+        d = hub.kernel.get(c["draft"]["locator"])
+        if d and d["state"] == "effective":
+            out.append(f"{d['number']} published")
+    for name, r in eco.retirements(co).items():
+        old = hub.kernel.get(r["locator"]) if r.get("locator") else None
+        if old and old["state"] == "obsolete" and f.get("released_release"):
+            out.append(f"{old['number']} retired")
+
+    def mine(entries) -> dict | None:
+        return next((e for e in reversed([e for e in entries if e]) if e.get("released_with") == n), None)
+
+    for type_ in sorted(f.get("form_changes") or {}):
+        e = mine([*hub.forms.history(type_), formlayout.active_entry(hub, type_)])
+        if e:
+            out.append(f"the {type_.replace('-', ' ')} form v{e['version']}")
+    if workflows.changes_of(co):
+        ws = workflows.store(hub)
+        for process in sorted(workflows.changes_of(co)):
+            e = mine([*ws.history(process), ws.layouts().get(process)])
+            if e:
+                out.append(f"the {process} workflow layout v{e['version']}")
+    for doc in sorted({c.get("doc") for c in configdocs.changes_of(co) if c.get("doc") in configdocs.DOCS}):
+        e = configdocs.released_by(hub, doc, co)
+        if e:
+            out.append(f"{configdocs.WORDS[doc]} v{e['version']}")
+    if recordtypes.changes_of(co):
+        rs = recordtypes.store(hub)
+        e = mine([*rs.history(), rs.active()])
+        if e:
+            out.append(f"record types v{e['version']}")
+    return out
+
+
+def in_force_refusal(co: dict, parts: list[str]) -> str:
+    """Why a change order part of which is in force is not sent back to revising: what is in force, and what to do."""
+    return (f"{co['number']} cannot go back to revising: part of it is already in force ({', '.join(parts)}). Retry its release to bring "
+            "the rest into force as signed, or put the rest of the change on a new change order")
+
+
+def _refuse_if_in_force(hub, co: dict) -> None:
+    """A signed change order that a release has partly brought into force is never sent back to revising (issue #53): it
+    would be signed again with other content, and what is already in force from it would stay as the first signature
+    made it. Its release is retried, or the rest goes on a new change order."""
+    if co["state"] == "approved":
+        parts = in_force_from(hub, co)
+        if parts:
+            raise ValueError(in_force_refusal(co, parts))
+
+
 def reopen(hub, co_ref, by: str, reason: str) -> dict:
     """Send an approved change order that was not released (its release stopped: another release came first, its
     content changed after the signature, a step refused) back to revising: its decisions are void and it is reviewed,
-    decided and signed again. Its requester or anyone who may approve change orders does it, with a reason."""
+    decided and signed again. Its requester or anyone who may approve change orders does it, with a reason. Refused
+    once any part of it is in force (``in_force_from``): retry its release, or put the rest on a new change order."""
     co = _co(hub, co_ref)
+    _refuse_if_in_force(hub, co)
     if co["state"] != "approved" or co["fields"].get("released_release"):
         raise ValueError(f"{co['number']} is {co['state']}: only an approved change order that was not released is sent back")
     if by != requester(co) and not authz.check(_bundle(hub), by, "approve", "change-order", co["folder"])["allowed"]:
@@ -2424,6 +2490,7 @@ def _hold_drafts(hub, co: dict, hold: bool) -> None:
 
 def _back_to_revising(hub, co: dict, why: str, by: str = "hub") -> dict:
     co = _co(hub, co)
+    _refuse_if_in_force(hub, co)  # every path that sends a signed change order back: reopen, a release before it, a related one
     if co["state"] == "approved" and not co["fields"].get("released_release"):
         hub.kernel.transition(co["locator"], "open", by=by, reason=f"back to revising: {why}")
     p = _proposal(hub, co)
@@ -3148,14 +3215,14 @@ def approve_revisions(hub, co_ref) -> list[str]:
     for c in eco.carried(hub, co):
         d = hub.kernel.get(c["draft"]["locator"])
         f = d["fields"]
+        sha = str(f.get("content_sha") or "")
+        if (frozen.get("drafts") or {}).get(c["name"], sha) != sha:  # one approved already counts only as signed (issue #53)
+            raise ValueError(f"{d['number']} changed after {co['number']} was sent for approval: it is not what was signed")
         if d["state"] == "effective" or (d["state"] == "approved" and f.get("held_for") == co["number"] and f.get("approved_run")):
             done.append(d["number"])
             continue
         if approver in _version_authors(hub, d):
             raise ValueError(f"segregation of duties: {approver} wrote {d['number']} and may not approve it (document-control-sop)")
-        sha = str(f.get("content_sha") or "")
-        if (frozen.get("drafts") or {}).get(c["name"], sha) != sha:
-            raise ValueError(f"{d['number']} changed after {co['number']} was sent for approval: it is not what was signed")
         # The CO's signature, unchanged (it verifies), with what it approves here beside it.
         sig = {k: decision.get(k) for k in ("by", "by_type", "verdict", "meaning", "at", "payload_digest", "record_digest", "signature",
                                             "run_id", "step", "release_digest")}
@@ -3478,7 +3545,11 @@ def _meaning(hub, cog: str, released: dict, candidates: list[dict]) -> list[tupl
     return found
 
 
-def _flag_co(hub, other: dict, released: dict, kind: str, reasons: list[str], cog: str | None = None) -> None:
+def _flag_co(hub, other: dict, released: dict, kind: str, reasons: list[str], cog: str | None = None) -> bool:
+    """Send a change order related to the released one back with a ``baseline_changed`` flag (True), unless it is signed
+    and part of it is already in force (False: it is not sent back; ``find_related`` says so)."""
+    if other["state"] == "approved" and in_force_from(hub, other):
+        return False  # part of it is in force: it is not sent back, and nothing it was signed with is made stale (issue #53)
     f = other["fields"]
     cur = f.get("baseline_changed") or {}
     if cur and not cur.get("dismissed") and cur.get("by") == released["number"]:
@@ -3518,6 +3589,7 @@ def _flag_co(hub, other: dict, released: dict, kind: str, reasons: list[str], co
             hub.inbox.notify(a, kind="automation", subject=f"{other['number']} cannot be signed now",
                              body=f"{released['number']} was released and touches what it changes. Another review round must run first: reject it to "
                                   "send it back, or wait for the requester.", record=other["locator"])
+    return True
 
 
 def _flag_cr(hub, cr: dict, released: dict, cog: str, reason: str) -> None:
@@ -3547,17 +3619,25 @@ def find_related(hub, co_ref) -> dict:
     touches the same SOP, process, rule slot, record type, form or role: cannot be dismissed); related by meaning (a
     cog of the released CO's panel, in its area, finds it so; its stand-in finds none). A related CO goes back to
     revising with a ``baseline_changed`` flag, its review results and item decisions stale. An approved change request
-    no change order carries yet, found related by meaning, is flagged and its approver given a review task. Returns
-    {"cos": [{"number", "kind", "reasons"}], "crs": [{"number", "cog", "reason"}]}."""
+    no change order carries yet, found related by meaning, is flagged and its approver given a review task. A signed
+    change order part of which is already in force is not sent back (``kept``: the sentence why, issue #53). Returns
+    {"cos": [{"number", "kind", "reasons"}], "crs": [{"number", "cog", "reason"}], "kept": [str]}."""
     co = _co(hub, co_ref)
     mine = touches(hub, co)
-    out: dict = {"cos": [], "crs": []}
+    out: dict = {"cos": [], "crs": [], "kept": []}
     others = open_change_orders(hub, exclude=co["locator"])
     flagged = set()
+
+    def kept(o: dict) -> None:  # signed, and part of it in force: not sent back (issue #53)
+        out["kept"].append(in_force_refusal(o, in_force_from(hub, o)))
+        flagged.add(o["number"])
+
     for o in others:
         reasons = _overlap(mine, touches(hub, o))
         if reasons:
-            _flag_co(hub, o, co, "definition", reasons)
+            if not _flag_co(hub, o, co, "definition", reasons):
+                kept(o)
+                continue
             out["cos"].append({"number": o["number"], "kind": "definition", "reasons": reasons})
             flagged.add(o["number"])
     panel = [e["who"] for e in (current_round(co) or {}).get("panel") or [] if e.get("kind") == "cog" and e.get("member")]
@@ -3575,7 +3655,9 @@ def find_related(hub, co_ref) -> dict:
             if target is None:
                 continue
             if target["type"] == "change-order":
-                _flag_co(hub, _co(hub, target["locator"]), co, "meaning", [f"{cog}: {reason}"], cog=cog)
+                if not _flag_co(hub, _co(hub, target["locator"]), co, "meaning", [f"{cog}: {reason}"], cog=cog):
+                    kept(target)
+                    continue
                 out["cos"].append({"number": number, "kind": "meaning", "reasons": [reason], "cog": cog})
                 flagged.add(number)
             else:
