@@ -67,7 +67,7 @@ def _parse_scalar(raw: str):
     raw = raw.strip()
     if not raw:
         return ""
-    if raw[0] in "{[":  # a flow mapping or sequence on one line (e.g. workflow_ids), read as YAML would
+    if raw[0] in "{[\"'":  # a flow mapping or sequence on one line (e.g. workflow_ids), or a quoted string, read as YAML would
         import json
 
         if raw[0] == "{":
@@ -76,19 +76,17 @@ def _parse_scalar(raw: str):
             except ValueError:
                 pass
         text = _strip_comment(raw)
-        if not text.endswith("}" if raw[0] == "{" else "]"):
+        if raw[0] in "{[" and not text.endswith("}" if raw[0] == "{" else "]"):
             return raw  # as before: a value such as "[Draft] Supplier review" or "{Company} policy" is a plain string
-        try:
+        try:  # a quoted string as inside a list: JSON escapes in double quotes (the hub writes headers with json.dumps), '' in single
             value, end = _flow(text, 0)
             if text[end:].strip():
-                raise ValueError("unexpected text after the closing bracket")
+                raise ValueError("unexpected text after the closing " + ("quote" if raw[0] in "\"'" else "bracket"))
             return value
         except (ValueError, IndexError, RecursionError) as e:
             why = ("a bracket or a quote is not closed" if isinstance(e, IndexError)
                    else "nested too deeply" if isinstance(e, RecursionError) else str(e))
             raise FrameError(f"cannot parse frontmatter value {raw!r}: {why}") from None
-    if (raw[0] == raw[-1]) and raw[0] in "\"'" and len(raw) >= 2:
-        return raw[1:-1]
     return raw
 
 

@@ -171,3 +171,59 @@ def test_frontmatter_flow_values_read_without_pyyaml(monkeypatch):
     for bad, why in (("{a b}", "expected ':'"), ('{a: "b}', "not closed"), ("[base, 'x]", "not closed"), ("[a, {b}]", "expected ':'")):
         with pytest.raises(frames.FrameError, match=why):
             frames.parse_frontmatter(f"---\nv: {bad}\n---\n")
+
+
+# Quoted top-level values as the hub writes them (sopdocs.header_text: json.dumps) and as people write them, verbatim.
+QUOTED_HEADER = r"""---
+name: x
+description: "He said \"hi\" and saved it to C:\\temp"
+lines: "one\ntwo\tthree"
+uni: "caf\u00e9 and café"
+title: 'it''s a ''quote'''
+raw: 'C:\temp "as is"'
+note: "kept" # a comment
+empty: ""
+version: "0.2.0"
+clauses:
+  - "7.\"5\""
+  - '8''s'
+---
+body
+"""
+QUOTED_VALUES = {"name": "x", "description": 'He said "hi" and saved it to C:\\temp', "lines": "one\ntwo\tthree",
+                 "uni": "café and café", "title": "it's a 'quote'", "raw": 'C:\\temp "as is"', "note": "kept",
+                 "empty": "", "version": "0.2.0", "clauses": ['7."5"', "8's"]}
+
+
+def test_a_quoted_frontmatter_value_reads_its_escapes_without_pyyaml(monkeypatch):
+    """Without PyYAML (the Docker image has none) a top-level double-quoted value takes JSON escapes and '' in single
+    quotes is a quote, as inside a list: what header_text writes reads back exactly, so a description with a quote or a
+    backslash does not gather escapes. A quoted value that does not close, or has text after it, says so."""
+    from pathlib import Path
+
+    import hubproto.frames as frames
+    from hubproto import sopdocs
+
+    monkeypatch.setattr(frames, "yaml", None)
+    data, body = frames.parse_frontmatter(QUOTED_HEADER)
+    assert data == QUOTED_VALUES and body == "body\n"
+    meta = {"type": "frame", "name": "x", "description": 'Says "no" to C:\\x\\y, twice\nand café', "visibility": "internal",
+            "version": "1.0.0", "inherits": ["a"]}
+    frame = frames.load_frame_text(sopdocs.header_text(meta) + "\n# X\n", Path("x.frame.md"))
+    assert frame.description == meta["description"], "header_text and the parser agree: no escapes left in"
+    assert frame.frontmatter == meta
+    for bad, why in (('"abc', "not closed"), ("'abc", "not closed"), ('"a" b', "after the closing quote"),
+                     ("'a' b", "after the closing quote"), (r'"bad \q"', "escape")):
+        with pytest.raises(frames.FrameError, match=why):
+            frames.parse_frontmatter(f"---\nv: {bad}\n---\n")
+
+
+def test_quoted_frontmatter_values_read_as_pyyaml_reads_them(monkeypatch):
+    """With PyYAML installed (CI runs a job with it) the stdlib subset reads quoted values exactly as PyYAML does."""
+    yaml = pytest.importorskip("yaml")
+    import hubproto.frames as frames
+
+    raw = QUOTED_HEADER.split("\n---", 1)[0][3:]
+    assert yaml.safe_load(raw) == QUOTED_VALUES, "the expected values are PyYAML's"
+    monkeypatch.setattr(frames, "yaml", None)
+    assert frames.parse_frontmatter(QUOTED_HEADER)[0] == yaml.safe_load(raw)
