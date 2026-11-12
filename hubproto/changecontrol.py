@@ -321,53 +321,64 @@ def in_force_from(hub, co_ref) -> list[str]:
     """What this change order already brought into force, in words (empty when nothing is: its release has not run,
     or stopped before any step applied anything): its policy release, the revisions it published and the documents it
     retired, its form and workflow layouts, its link-vocabulary and retention versions, its record-type version. Each is
-    found by the change order's number on what is in force or in its history, as the release steps find it."""
+    found by the change order's number on what is in force or in its history, as the release steps find it (a later
+    change order may have released another version since); the policy release also by the release record itself."""
     from . import configdocs, formlayout, recordtypes, workflows
 
     co = _co(hub, co_ref)
     f = co["fields"]
-    n = co["number"]
     out = []
-    if f.get("released_release"):
-        out.append(f"the policy release {f['released_release'][:12]}")
+    frame = eco.frame_released(hub, co)
+    if frame:
+        out.append(f"the policy release {frame[:12]}")
     for c in eco.carried(hub, co):
         d = hub.kernel.get(c["draft"]["locator"])
         if d and d["state"] == "effective":
             out.append(f"{d['number']} published")
     for name, r in eco.retirements(co).items():
         old = hub.kernel.get(r["locator"]) if r.get("locator") else None
-        if old and old["state"] == "obsolete" and f.get("released_release"):
+        if old and old["state"] == "obsolete" and frame:
             out.append(f"{old['number']} retired")
-
-    def mine(entries) -> dict | None:
-        return next((e for e in reversed([e for e in entries if e]) if e.get("released_with") == n), None)
-
     for type_ in sorted(f.get("form_changes") or {}):
-        e = mine([*hub.forms.history(type_), formlayout.active_entry(hub, type_)])
+        e = formlayout._mine(hub, co, type_)
         if e:
             out.append(f"the {type_.replace('-', ' ')} form v{e['version']}")
-    if workflows.changes_of(co):
-        ws = workflows.store(hub)
-        for process in sorted(workflows.changes_of(co)):
-            e = mine([*ws.history(process), ws.layouts().get(process)])
-            if e:
-                out.append(f"the {process} workflow layout v{e['version']}")
+    for process in sorted(workflows.changes_of(co)):
+        e = workflows._mine(hub, co, process)
+        if e:
+            out.append(f"the {process} workflow layout v{e['version']}")
     for doc in sorted({c.get("doc") for c in configdocs.changes_of(co) if c.get("doc") in configdocs.DOCS}):
         e = configdocs.released_by(hub, doc, co)
         if e:
             out.append(f"{configdocs.WORDS[doc]} v{e['version']}")
     if recordtypes.changes_of(co):
-        rs = recordtypes.store(hub)
-        e = mine([*rs.history(), rs.active()])
+        e = recordtypes._mine(hub, co)
         if e:
             out.append(f"record types v{e['version']}")
     return out
 
 
-def in_force_refusal(co: dict, parts: list[str]) -> str:
-    """Why a change order part of which is in force is not sent back to revising: what is in force, and what to do."""
-    return (f"{co['number']} cannot go back to revising: part of it is already in force ({', '.join(parts)}). Retry its release to bring "
-            "the rest into force as signed, or put the rest of the change on a new change order")
+def later_changes(hub, co_ref) -> list[str]:
+    """What the rest of this change order changes that another change order released since it was carried (its forms,
+    workflow layouts, link vocabulary and retention, record types), in words: its release cannot finish, as bringing
+    the rest in would undo that change."""
+    from . import configdocs, formlayout, recordtypes, workflows
+
+    co = _co(hub, co_ref)
+    return [*formlayout.later_changes(hub, co), *workflows.later_changes(hub, co), *configdocs.later_changes(hub, co),
+            *recordtypes.later_changes(hub, co)]
+
+
+def in_force_refusal(hub, co: dict, parts: list[str]) -> str:
+    """Why a change order part of which is in force is not sent back to revising: what is in force, and what to do. When
+    a later change order changed what the rest of it changes, its retry cannot finish either, and the sentence says so."""
+    n = co["number"]
+    head = f"{n} cannot go back to revising: part of it is already in force ({', '.join(parts)})"
+    blocked = later_changes(hub, co)
+    if blocked:
+        return (f"{head}. Its release cannot finish either: {'; '.join(blocked)} changed after {n} carried its changes, and bringing them "
+                "into force now would undo that. Put the rest of the change on a new change order")
+    return f"{head}. Retry its release to bring the rest into force as signed, or put the rest of the change on a new change order"
 
 
 def _refuse_if_in_force(hub, co: dict) -> None:
@@ -377,7 +388,7 @@ def _refuse_if_in_force(hub, co: dict) -> None:
     if co["state"] == "approved":
         parts = in_force_from(hub, co)
         if parts:
-            raise ValueError(in_force_refusal(co, parts))
+            raise ValueError(in_force_refusal(hub, co, parts))
 
 
 def reopen(hub, co_ref, by: str, reason: str) -> dict:
@@ -3629,7 +3640,7 @@ def find_related(hub, co_ref) -> dict:
     flagged = set()
 
     def kept(o: dict) -> None:  # signed, and part of it in force: not sent back (issue #53)
-        out["kept"].append(in_force_refusal(o, in_force_from(hub, o)))
+        out["kept"].append(in_force_refusal(hub, o, in_force_from(hub, o)))
         flagged.add(o["number"])
 
     for o in others:

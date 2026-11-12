@@ -76,16 +76,17 @@ def record_types(hub, co, field="batch"):
     recordtypes.carry(hub, co["number"], [{"op": "add_field", "type": "ncr", "field": field, "spec": "text"}], by="alice")
 
 
-def forms(hub, co, title="The nonconformance"):
-    lay = formlayout.active_layout(hub, "ncr")
+def forms(hub, co, title="The nonconformance", type_="ncr", by="alice"):
+    lay = formlayout.active_layout(hub, type_)
     lay["sections"][0]["title"] = title
-    formlayout.save_draft(hub, "alice", "ncr", lay)
-    formlayout.carry(hub, co["number"], "alice", "ncr")
+    formlayout.save_draft(hub, by, type_, lay)
+    formlayout.carry(hub, co["number"], by, type_)
 
 
-def workflow_layout(hub, co, at=(1200, 600)):
-    workflows.edit(hub, "bob", "nonconformance", {"op": "move", "id": "closed", "at": list(at)})
-    workflows.carry(hub, co["locator"], "bob", "nonconformance")
+def workflow_layout(hub, co, at=(1200, 600), process="nonconformance"):
+    workflows.discard(hub, "bob", process)  # a draft started before a later release is stale: start again
+    workflows.edit(hub, "bob", process, {"op": "move", "id": "closed", "at": list(at)})
+    workflows.carry(hub, co["locator"], "bob", process)
 
 
 workflow_layout.by = "bob"  # a policy owner edits workflows: his change order
@@ -316,3 +317,175 @@ def test_the_policy_release_step_refuses_a_release_in_force_from_other_content_t
     hub.kernel.set_fields(co["locator"], {"signed": sig}, by="hub")
     with pytest.raises(ValueError, match=f"the policy release {digest[:12]} is in force with {co['number']}, {NOT_SIGNED}"):
         eco.activate_frame(hub, co["number"])
+
+
+# ---------------------------------------------------------------- 4. review of #58: a retry never undoes a later change order
+class StopSecondWrite:
+    """Stops the release at its second write of a form or workflow layout, as a full disk would."""
+
+    def __init__(self, monkeypatch, target, name):
+        self.on, self.calls = True, 0
+        real = getattr(target, name)
+
+        def write(store, *a, **k):
+            self.calls += 1
+            if self.on and self.calls == 2:
+                raise OSError(28, "No space left on device")
+            return real(store, *a, **k)
+        monkeypatch.setattr(target, name, write)
+
+
+LAYOUTS = {  # kind: (carry one layout, the two names, a change for a later change order, what is in force, the store write)
+    "form layouts": (lambda hub, co, name, v: forms(hub, co, title=f"Title {v}", type_=name, by=cc.requester(co)), ("capa", "ncr"),
+                     lambda hub, name: formlayout.active_entry(hub, name), "the {} form", (formlayout.FormStore, "set_active")),
+    "workflow layouts": (lambda hub, co, name, v: workflow_layout(hub, co, at=(100 * v, 600), process=name), ("capa", "nonconformance"),
+                         lambda hub, name: workflows.layout_entry(hub, name), "the {} workflow layout", (workflows.WorkflowStore, "set_layout")),
+}
+
+
+def two_layouts_stopped(hub, monkeypatch, kind):
+    """CO-1 carries two layouts; its release stops after the first is written."""
+    carry, names, _, _, (target, write) = LAYOUTS[kind]
+    stopper = StopSecondWrite(monkeypatch, target, write)
+    co1 = new_co(hub, by="bob", title="Two layouts")
+    for name in names:
+        carry(hub, co1, name, 1)
+    co1 = signed(hub, co1)
+    j1 = release_job(hub, co1)
+    assert j1["status"] == "some-errors" and "No space left" in j1["outcome"], steps(j1)
+    stopper.on = False
+    return co1, j1
+
+
+def later(hub, kind, name, v=2):
+    carry = LAYOUTS[kind][0]
+    co2 = new_co(hub, by="bob", title=f"Later {name}")
+    carry(hub, co2, name, v)
+    co2 = signed(hub, co2)
+    assert release_job(hub, co2)["status"] == "success", steps(release_job(hub, co2))
+    return co2
+
+
+@pytest.mark.parametrize("kind", LAYOUTS)
+def test_a_retry_leaves_a_layout_a_later_change_order_released_as_it_is(hub, monkeypatch, kind):
+    """The probe of the review of #58, finding A: CO-1 stops after its first layout; CO-2 releases that layout again;
+    retrying CO-1 used to write CO-1's layout over CO-2's. It is found done in the history and left as CO-2 made it."""
+    co1, j1 = two_layouts_stopped(hub, monkeypatch, kind)
+    first, second = LAYOUTS[kind][1]
+    entry = LAYOUTS[kind][2]
+    co2 = later(hub, kind, first)
+    in_force = entry(hub, first)
+    assert in_force["released_with"] == co2["number"]
+    automation.retry(hub, j1["id"], by="carol")
+    j1 = release_job(hub, co1)
+    assert j1["status"] == "success", steps(j1)
+    assert entry(hub, first) == in_force, f"{co2['number']}'s {first} layout stays in force, as signed"
+    assert entry(hub, second)["released_with"] == co1["number"]
+    step = next(s for s in j1["steps"] if s["name"] == "Apply the form layouts")
+    assert f"is in force now, released with {co2['number']}" in step["detail"], step["detail"]
+
+
+@pytest.mark.parametrize("kind", LAYOUTS)
+def test_a_retry_refuses_a_layout_carried_against_a_version_a_later_change_order_replaced(hub, monkeypatch, kind):
+    co1, j1 = two_layouts_stopped(hub, monkeypatch, kind)
+    first, second = LAYOUTS[kind][1]
+    entry, what = LAYOUTS[kind][2], LAYOUTS[kind][3].format(second)
+    co2 = later(hub, kind, second)
+    in_force = entry(hub, second)
+    with pytest.raises(ValueError) as e:
+        cc.reopen(hub, co1["number"], "bob", "carry it again")
+    assert (f"Its release cannot finish either: {what} (v1 now, released with {co2['number']}) changed after {co1['number']} carried "
+            "its changes") in str(e.value) and "Retry" not in str(e.value), str(e.value)
+    automation.retry(hub, j1["id"], by="carol")
+    j1 = release_job(hub, co1)
+    assert j1["status"] != "success" and (f"{co1['number']}'s release cannot finish: {what} (v1 now, released with {co2['number']}) "
+                                          "changed after") in j1["outcome"] and "new change order" in j1["outcome"], j1["outcome"]
+    assert entry(hub, second) == in_force, "the later change order's layout is never overwritten"
+
+
+def test_a_retry_blocked_by_a_later_record_type_change_says_so_and_names_it(hub, monkeypatch):
+    """The probe of finding B: CO-1 stops before its record types; CO-2 adds the same field; a retry cannot finish."""
+    store_cls = recordtypes.RecordTypeStore
+    real = store_cls.set_active
+    state = {"on": True}
+
+    def full(self, entry):
+        if state["on"]:
+            raise OSError(28, "No space left on device")
+        return real(self, entry)
+    monkeypatch.setattr(store_cls, "set_active", full)
+    co1 = new_co(hub, title="Batch on the form and the record")
+    forms(hub, co1)
+    record_types(hub, co1)
+    co1 = signed(hub, co1)
+    j1 = release_job(hub, co1)
+    assert j1["status"] == "some-errors" and formlayout.active_entry(hub, "ncr")["released_with"] == co1["number"], steps(j1)
+    state["on"] = False
+    co2 = new_co(hub, title="Batch on the record")
+    record_types(hub, co2)
+    co2 = signed(hub, co2)
+    assert release_job(hub, co2)["status"] == "success"
+    with pytest.raises(ValueError, match=rf"Its release cannot finish either: the record types \(v2 now, released with {co2['number']}\)"):
+        cc.reopen(hub, co1["number"], "alice", "drop the field")
+    automation.retry(hub, j1["id"], by="carol")
+    j1 = release_job(hub, co1)
+    assert j1["status"] != "success" and f"the record types (v2 now, released with {co2['number']})" in j1["outcome"], j1["outcome"]
+    assert recordtypes.in_force(hub)["released_with"] == co2["number"]
+
+
+def test_the_requester_is_told_once_while_nothing_changes(hub, stop):
+    a, _ = stopped(hub, stop, links, title="Links first")
+    stop.on = False
+    for i, title in enumerate(("A form", "Another form")):
+        b = new_co(hub, title=title)
+        forms(hub, b, title=f"Form {i}")
+        signed(hub, b)
+    told = [m for m in hub.inbox.for_principal("alice") if m.get("subject") == f"{a['number']} stays approved: part of it is in force"]
+    assert len(told) == 1, [m["body"] for m in told]
+
+
+def test_a_published_revision_counts_as_done_only_when_it_is_the_one_signed(hub, stop):
+    co, _ = stopped(hub, stop, frame)
+    digest = co["fields"]["released_release"]
+    [doc] = eco.publish_revisions(hub, co["number"], digest)
+    sig = json.loads(json.dumps(co["fields"]["signed"]))
+    sig["frozen"]["drafts"]["finance-policy"] = "0" * 64
+    hub.kernel.set_fields(co["locator"], {"signed": sig}, by="hub")
+    with pytest.raises(ValueError, match=f"{doc} \\(published\\) is in force with {co['number']}, {NOT_SIGNED}"):
+        eco.publish_revisions(hub, co["number"], digest)
+
+
+def test_a_revision_approved_already_counts_as_done_only_when_it_is_the_one_signed(hub, stop):
+    co, _ = stopped(hub, stop, frame)
+    assert cc.approve_revisions(hub, co["number"]), "as signed: done"
+    frozen = json.loads(json.dumps(co["fields"]["frozen"]))
+    frozen["drafts"]["finance-policy"] = "0" * 64
+    hub.kernel.set_fields(co["locator"], {"frozen": frozen}, by="hub")
+    with pytest.raises(ValueError, match="changed after .* was sent for approval: it is not what was signed"):
+        cc.approve_revisions(hub, co["number"])
+
+
+def test_a_policy_release_in_force_before_its_marker_was_written_is_found_and_not_released_twice(hub, monkeypatch):
+    """The review of #58, finding E: the process stops between bringing the release in and writing released_release."""
+    real = hub.kernel.set_fields
+    state = {"on": True}
+
+    def died(locator, fields, **kw):
+        if state["on"] and "released_release" in fields:
+            raise OSError(5, "Input/output error")
+        return real(locator, fields, **kw)
+    monkeypatch.setattr(hub.kernel, "set_fields", died)
+    co = new_co(hub, title="Lower the AP cog limit")
+    frame(hub, co)
+    co = signed(hub, co)
+    j = release_job(hub, co)
+    assert j["status"] == "some-errors" and not hub.kernel.get(co["locator"])["fields"].get("released_release"), steps(j)
+    made = hub.releases.current()["digest"]
+    assert hub.releases.current()["released_by"] == f"change-order:{co['number']}"
+    with pytest.raises(ValueError, match=f"{REFUSED} \\(the policy release {made[:12]}"):
+        cc.reopen(hub, co["number"], "alice", "send it back")
+    state["on"] = False
+    n = len(hub.releases.list())
+    automation.retry(hub, j["id"], by="carol")
+    assert release_job(hub, co)["status"] == "success", steps(release_job(hub, co))
+    assert len(hub.releases.list()) == n and hub.kernel.get(co["locator"])["fields"]["released_release"] == made

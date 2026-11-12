@@ -139,6 +139,28 @@ def not_as_signed(co: dict, what: str) -> str:
             "and nothing more of this step comes into force. Put what should change on a new change order")
 
 
+def released_with_co(co: dict, entries) -> dict | None:
+    """The latest of ``entries`` (versions of one thing: its history, then what is in force) this change order brought
+    into force, or None. A later change order may have released another version since: what this one did is found in
+    the history all the same."""
+    return next((e for e in reversed([e for e in entries if e]) if e.get("released_with") == co["number"]), None)
+
+
+def now_in_force(what: str, entry: dict | None) -> str:
+    """``what`` as it is in force now, for a sentence: "the capa form (v2 now, released with CO-2026-0002)"."""
+    entry = entry or {}
+    by = entry.get("released_with")
+    return f"{what} (v{int(entry.get('version') or 0)} now" + (f", released with {by})" if by else ")")
+
+
+def later_change_refusal(co: dict, changed: list[str]) -> str:
+    """The refusal of a release step whose changes were carried against a version no longer in force: another change
+    order released one since. Bringing them in now would undo that change, which this signature never covered."""
+    n = co["number"]
+    return (f"{n}'s release cannot finish: {'; '.join(changed)} changed after {n} carried its changes, and bringing them into force now "
+            "would undo that. Put the rest of the change on a new change order")
+
+
 def signed_frame_digest(co: dict) -> str:
     """The digest of what the change order's signature covers (``signed.frozen`` without when and by whom it was sent):
     recorded when its policy release comes into force (``released_signed``), so that a release that later finds that

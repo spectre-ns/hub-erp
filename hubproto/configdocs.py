@@ -521,13 +521,24 @@ def _pending(hub, co: dict) -> tuple[dict[str, dict], list[dict]]:
     return done, [c for c in changes if c.get("doc") not in done]
 
 
+def later_changes(hub, co: dict) -> list[str]:
+    """The documents with changes this change order has not brought into force whose version in force is no longer the
+    one they were carried against (another change order released one since), in words."""
+    from .closure import now_in_force
+
+    _, todo = _pending(hub, co)
+    return [now_in_force(f"the {WORDS[doc]}", in_force(hub, doc)) for doc in sorted({c.get("doc") for c in todo if c.get("doc") in DOCS})
+            if any(c.get("base_version") != in_force(hub, doc)["version"] for c in todo if c.get("doc") == doc)]
+
+
 def activate(hub, co: dict, digest: str) -> list[str]:
     """The release step (before the record types, which may be kept under a class this change order adds): what the
     approved change order carries comes into force, as the next version of each document it changes. Safe to repeat,
     and to retry after a stop part-way: a document this change order already brought into force is left as it is, and
     only the changes of the others are checked and applied, against what is in force for them. A document counts as
     already in force only when it was made from the changes signed (``closure.check_in_force_as_signed``). Refuses a
-    change order that is not approved, and changes that no longer check (nothing changes then)."""
+    change order that is not approved, changes carried against a version no longer in force (another change order
+    released one since: ``later_changes``), and changes that no longer check (nothing changes then)."""
     from . import closure
 
     changes = changes_of(co)
@@ -543,6 +554,9 @@ def activate(hub, co: dict, digest: str) -> list[str]:
     if not todo:
         return [already[doc] for doc in docs_changed]
     closure.check_co_approved(co, "its link-vocabulary and retention changes")
+    stale = later_changes(hub, co)
+    if stale:  # another change order released a version since these were carried: never undo it
+        raise ValueError(closure.later_change_refusal(co, stale))
     base = ensure(hub)
     after, errors, _ = check(hub, todo, {doc: copy.deepcopy(base[doc]["values"]) for doc in DOCS}, types=_types_for(hub, co))
     if errors:

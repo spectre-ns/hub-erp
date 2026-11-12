@@ -557,12 +557,13 @@ def r_restage(hub, job, memo):
     for r in others:
         held = changecontrol.in_force_from(hub, r) if r["state"] == "approved" else []
         if held:  # signed, and part of it in force: not sent back nor compiled again; its release is retried (issue #53)
-            why = changecontrol.in_force_refusal(r, held)
+            why = changecontrol.in_force_refusal(hub, r, held)
             kept.append(why)
             who = changecontrol.requester(r)
-            if who:
+            if who and r["fields"].get("kept_told") != why:  # told once for each situation, not again on every release
                 hub.inbox.notify(who, kind="automation", subject=f"{r['number']} stays approved: part of it is in force",
                                  body=f"{job['subject_number']} was released after {r['number']} was signed. {why}.", record=r["locator"])
+                hub.kernel.set_fields(r["locator"], {"kept_told": why}, by="hub")
             continue
         try:
             if r["state"] == "approved":  # signed against the release before: it cannot come into force as signed

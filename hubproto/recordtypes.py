@@ -781,6 +781,26 @@ def delta_items(hub, co: dict) -> list[dict]:
     return out
 
 
+def _mine(hub, co: dict) -> dict | None:
+    """The record-type version this change order brought into force (in force now, or in the history)."""
+    from .closure import released_with_co
+
+    s = store(hub)
+    return released_with_co(co, [*s.history(), s.active()])
+
+
+def later_changes(hub, co: dict) -> list[str]:
+    """[the record types in force, in words] when this change order has not brought its record-type changes into force
+    and the version in force is no longer the one they were carried against (another change order released one since)."""
+    from .closure import now_in_force
+
+    changes = changes_of(co)
+    if not changes or _mine(hub, co) is not None:
+        return []
+    now = in_force(hub)
+    return [now_in_force("the record types", now)] if any(c.get("base_version") != now["version"] for c in changes) else []
+
+
 def activate(hub, co: dict, digest: str) -> list[str]:
     """The release step (workstream 1's release automation calls it, after the Frame and the form layouts): the record
     types the approved change order carries come into force, as the next version of the record types in force. Safe to
@@ -793,13 +813,16 @@ def activate(hub, co: dict, digest: str) -> list[str]:
     if not changes:
         return []
     s = store(hub)
-    done = [e for e in s.history() if e.get("released_with") == co["number"]]
+    done = _mine(hub, co)
     if done:  # already in force with this change order: only when made from what is signed (issue #53)
         summaries = [c.get("summary") or describe(c) for c in changes]
-        closure.check_in_force_as_signed(co, "record_types", co["fields"].get("record_type_changes") or [], done[-1],
-                                         f"record types v{done[-1]['version']}", same_content=list(done[-1].get("changes") or []) == summaries)
-        return [f"record types v{done[-1]['version']} (already in force with {co['number']})"]
+        closure.check_in_force_as_signed(co, "record_types", co["fields"].get("record_type_changes") or [], done,
+                                         f"record types v{done['version']}", same_content=list(done.get("changes") or []) == summaries)
+        return [f"record types v{done['version']} (already in force with {co['number']})"]
     closure.check_co_approved(co, "its record-type changes")
+    stale = later_changes(hub, co)
+    if stale:  # another change order released record types since these were carried: never undo it
+        raise ValueError(closure.later_change_refusal(co, stale))
     base = ensure(hub)
     types, errors, _ = check(hub, changes, base["types"], retention=_retention(hub, co))
     if errors:

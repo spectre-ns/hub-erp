@@ -752,8 +752,17 @@ release: it would be signed again with other content while what is in force stay
 refusal names what is in force: "CO-2026-0001 cannot go back to revising: part of it is already in force (link
 vocabulary v2). Retry its release to bring the rest into force as signed, or put the rest of the change on a new change
 order". When another change order is released meanwhile, this one is neither sent back nor compiled again; that
-release's steps say so, and its requester is told ("CO-... stays approved: part of it is in force"). A change order
-whose release stopped before anything came into force can still be sent back.
+release's steps say so, and its requester is told once ("CO-... stays approved: part of it is in force"), and again
+only when what it says changes. A change order whose release stopped before anything came into force can still be sent
+back.
+
+A retry never undoes a later change order. A layout, link-vocabulary or retention version or record-type version the
+change order already brought into force is found in the history and left as it is, even when a later change order has
+released another version since. The rest is brought into force only against the version it was carried against: when a
+later change order released another one, the step stops ("CO-2026-0001's release cannot finish: the capa form (v2 now,
+released with CO-2026-0002) changed after CO-2026-0001 carried its changes, and bringing them into force now would undo
+that. Put the rest of the change on a new change order"), and the refusal to send it back says the same instead of
+"Retry its release".
 
 A step counts what is already in force with its change order as done only when it was made from what is signed: each
 records the digest of the changes it applied, and compares it with the digest the signature keeps. Anything else stops

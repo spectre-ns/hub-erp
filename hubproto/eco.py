@@ -427,6 +427,22 @@ def _utc():
     return __import__("hubproto.release", fromlist=["utcnow"]).utcnow()
 
 
+def frame_released(hub, co: dict) -> str | None:
+    """The digest of the policy release this change order brought into force, or None. Its ``released_release`` field
+    says so, and so does the release itself: one the hub made for the change order (``released_by`` its
+    "change-order:<number>", from its staged proposal), which also covers a process that stopped between bringing the
+    release into force and writing that field."""
+    f = co["fields"]
+    if f.get("released_release"):
+        return f["released_release"]
+    pid = f.get("staged_proposal")
+    if not pid:
+        return None
+    by = f"change-order:{co['number']}"
+    meta = next((m for m in reversed(hub.releases.list()) if m.get("released_by") == by and m.get("proposal_id") == pid), None)
+    return meta["digest"] if meta else None
+
+
 def activate_frame(hub, co_ref: str) -> dict:
     """The compiled Frame comes into force (step 2 of the release automation). Its wording changes and narrowing
     changes are covered by the change order's approval; widenings carry both policy owners' signatures already."""
@@ -441,6 +457,12 @@ def activate_frame(hub, co_ref: str) -> dict:
         if recorded is not None and recorded != signed_frame_digest(co):
             raise ValueError(not_as_signed(co, f"the policy release {digest[:12]}"))
         return hub.releases.get(digest) or {"digest": digest}
+    made = frame_released(hub, co)
+    if made:  # the release came into force and the process stopped before the field was written: record it, never release twice
+        if ((co["fields"].get("signed") or {}).get("frozen") or {}).get("proposal") not in (None, co["fields"].get("staged_proposal")):
+            raise ValueError(not_as_signed(co, f"the policy release {made[:12]}"))
+        hub.kernel.set_fields(co["locator"], {"released_release": made, "released_signed": signed_frame_digest(co)}, by="hub")
+        return hub.releases.get(made)
     if not co["fields"].get("staged_proposal") and not carried(hub, co) and not retirements(co):
         return hub.releases.current()  # it changes forms only: the Frame in force stays
     proposal = hub.proposals.load(co["fields"]["staged_proposal"])

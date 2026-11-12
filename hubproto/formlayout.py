@@ -503,27 +503,54 @@ def carried_reasons(hub, co: dict) -> list[str]:
     return out
 
 
+def _mine(hub, co: dict, type_: str) -> dict | None:
+    """The version of the ``type_`` layout this change order brought into force (in force now, or in its history)."""
+    from .closure import released_with_co
+
+    return released_with_co(co, [*hub.forms.history(type_), active_entry(hub, type_)])
+
+
+def later_changes(hub, co: dict) -> list[str]:
+    """The layouts this change order carries and has not brought into force whose version in force is no longer the
+    one it carried them against (another change order released one since), in words."""
+    from .closure import now_in_force
+
+    out = []
+    for type_, c in sorted((co["fields"].get("form_changes") or {}).items()):
+        now = active_entry(hub, type_) or {}
+        if _mine(hub, co, type_) is None and int(now.get("version") or 0) != int(c.get("base_version") or 0):
+            out.append(now_in_force(f"the {type_.replace('-', ' ')} form", now))
+    return out
+
+
 def activate(hub, co: dict, digest: str) -> list[str]:
     """The release automation's step: each carried layout comes into force (a new version), with its custom fields.
-    Only for an approved change order (hubproto.closure). A layout already in force with this change order (a release
-    that stopped part-way) is left as it is, only when it was made from what is signed
-    (``closure.check_in_force_as_signed``)."""
-    from .closure import check_co_approved, check_in_force_as_signed, part_digest
+    Only for an approved change order (hubproto.closure). A layout this change order already brought into force (a
+    release that stopped part-way; found in the history, as a later change order may have released another version
+    since) is left as it is, only when it was made from what is signed (``closure.check_in_force_as_signed``). A layout
+    carried against a version no longer in force is refused: it would undo the later change order's. Everything is
+    checked before anything comes into force."""
+    from .closure import check_co_approved, check_in_force_as_signed, later_change_refusal, part_digest
     from .rules import sha256_of
 
     carried = co["fields"].get("form_changes") or {}
-    done = []
-    if any(((active_entry(hub, t) or {}).get("released_with") != co["number"]) for t in carried):
+    mine = {type_: _mine(hub, co, type_) for type_ in carried}
+    if any(e is None for e in mine.values()):
         check_co_approved(co, "its form layouts")
-    for type_, c in carried.items():  # every layout already in force is checked before anything comes into force
-        now = active_entry(hub, type_) or {}
-        if now.get("released_with") == co["number"]:
-            check_in_force_as_signed(co, "forms", carried, now, f"the {type_.replace('-', ' ')} form v{now['version']}",
-                                     same_content=sha256_of(now.get("layout")) == sha256_of(c.get("layout")))
+    for type_, c in carried.items():
+        if mine[type_] is not None:
+            check_in_force_as_signed(co, "forms", carried, mine[type_], f"the {type_.replace('-', ' ')} form v{mine[type_]['version']}",
+                                     same_content=sha256_of(mine[type_].get("layout")) == sha256_of(c.get("layout")))
+    stale = later_changes(hub, co)
+    if stale:
+        raise ValueError(later_change_refusal(co, stale))
+    done = []
     for type_, c in carried.items():
         now = active_entry(hub, type_) or {}
-        if now.get("released_with") == co["number"]:
-            done.append(f"{type_} v{now['version']}")
+        if mine[type_] is not None:
+            later = (f" (released with {co['number']}; v{now.get('version')} is in force now, released with {now.get('released_with')})"
+                     if now != mine[type_] else "")
+            done.append(f"{type_} v{mine[type_]['version']}{later}")
             continue
         entry = {"version": int(now.get("version", 0)) + 1, "layout": c["layout"], "released_with": co["number"], "release": digest,
                  "by": c.get("by"), "at": utcnow(), "changes": c.get("changes") or [], "signed_digest": part_digest(carried)}
