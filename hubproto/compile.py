@@ -97,8 +97,12 @@ def merge_questions(questions: list[dict]) -> list[dict]:
     return out
 
 
+ANSWER_FIELDS = ("at", "answer_line", "record_divergence", "category", "answered_as", "items", "picture_answer", "confirmed_reading")
+
+
 def carry_questions(previous: list[dict], current: list[dict], codes=COMPILE_QUESTION_CODES) -> list[dict]:
-    """The questions of a recompile, given the earlier proposal's. A question asked again keeps a person's answer; an open
+    """The questions of a recompile, given the earlier proposal's. A question asked again keeps a person's answer (with
+    what the answer said: ``ANSWER_FIELDS``, and a picture's reading by the committee when it was not read again); an open
     one of ``codes`` that is not asked again is closed ("no longer arises at line n"), and comes back open if it is asked
     again later; questions of other codes, and closed ones, are carried as they were. Idempotent."""
     prev = {q.get("id"): q for q in previous or []}
@@ -107,7 +111,9 @@ def carry_questions(previous: list[dict], current: list[dict], codes=COMPILE_QUE
     for q in current or []:
         old = prev.get(q.get("id"))
         if old and old.get("status") in ("answered", "overridden") and old.get("by") not in (None, "", "hub"):
-            q = {**q, "status": old["status"], "answer": old.get("answer"), "by": old.get("by")}
+            q = {**q, "status": old["status"], "answer": old.get("answer"), "by": old.get("by"), **{k: old[k] for k in ANSWER_FIELDS if k in old}}
+            if old.get("reading") and not q.get("reading"):
+                q["reading"] = old["reading"]
         out.append(q)
     for old in previous or []:
         if old.get("id") in now:

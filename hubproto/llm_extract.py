@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .frames import Frame, load_frame_text
-from .office import is_picture_line
+from .office import PACKAGE_ALT, PICTURE_LINE, READING_LINE, is_picture_line, is_reading_line
 from .rules import CONDITION_VOCABULARY, KINDS, rule_key, validate_rule
 
 PROMPT_VERSION = "3"
@@ -157,9 +157,12 @@ def _json_of(text: str) -> dict:
 
 
 def gateway_call(gateway):
-    """A call through the hub's model gateway (the local models the cogs use, at the model gate)."""
-    def call(model: str, system: str, user: str) -> str:
-        out = gateway.complete(model=model, system=system, user=user, max_tokens=MAX_TOKENS, by="sop-reader")
+    """A call through the hub's model gateway (the local models the cogs use, at the model gate). ``images`` (a picture's
+    bytes and media type, ``model.prepare_images``) go with the words to a model that reads pictures; the gateway refuses
+    a text-only model with a sentence."""
+    def call(model: str, system: str, user: str, images: list[dict] | None = None) -> str:
+        out = gateway.complete(model=model, system=system, user=user, max_tokens=MAX_TOKENS, by="sop-reader",
+                               **({"images": images} if images else {}))
         if out.get("stand_in"):
             raise RuntimeError(f"{model} is not available here (a stand-in answered)")
         return out.get("text") or ""
@@ -191,6 +194,9 @@ def _build_rule(frame: Frame, item: dict, read_by: str, cogs=None) -> tuple[dict
     fields = item.get("fields") or {}
     line = item.get("line")
     quote = str(item.get("quote") or "").strip()
+    reading = READING_LINE.fullmatch((frame.line(line) or "").strip()) if isinstance(line, int) else None
+    if reading and quote == reading.group(2).strip():
+        quote = (frame.line(line) or "").strip()  # a sentence of a picture's reading is cited at its whole line
     if kind not in MODEL_KINDS or not isinstance(fields, dict) or kind not in KINDS:
         return None, {"frame": frame.name, "line": line or 0, "text": quote, "severity": "warning",
                       "note": f"the model returned a {kind!r} rule, which it may not (only {', '.join(MODEL_KINDS)})"}
@@ -255,8 +261,9 @@ def sentence_groups(frame: Frame) -> list[list[int]]:
         if not line:
             prev = ""
             continue
-        own = line.startswith(("#", "|")) or bool(_ITEM.match(raw)) or is_picture_line(line)
-        if groups and prev and not own and not prev.startswith(("#", "|")) and not prev.endswith(_TERMINATORS) and not is_picture_line(prev):
+        own = line.startswith(("#", "|")) or bool(_ITEM.match(raw)) or is_picture_line(line) or is_reading_line(line)
+        if groups and prev and not own and not prev.startswith(("#", "|")) and not prev.endswith(_TERMINATORS) and not is_picture_line(prev) \
+                and not is_reading_line(prev):
             groups[-1].append(n)
         else:
             groups.append([n])
@@ -315,13 +322,26 @@ def unread_rule_questions(frame: Frame, lines: set[int], rules: list[dict], note
     return out
 
 
+NOT_READ_HERE = "no senior cog of the compile-frame committee reads pictures here"
+
+
+def unread_picture_text(text: str, where: str, why: str = NOT_READ_HERE) -> str:
+    """The words of a picture question when nobody read the picture (``why``: why not)."""
+    return (f"The picture {text} ({where}) is not in the SOP's text in force: this revision puts it in or replaces one, or it was in "
+            "the document already and is read for the first time (the release in force was made before the hub read pictures). "
+            f"Nobody has read what it states ({why}): released as it is, it would come into force unread. The committee's chair "
+            "looks at it and decides: it states no rule, it is recorded as a divergence, or the author states in words what it requires.")
+
+
 def picture_questions(frame: Frame, lines: set[int], chair: str = "") -> list[dict]:
-    """A picture on ``lines`` (one put in or replaced, ``office.picture_line``) was read by no one: no reader reads
-    pictures yet, and none is sent to a model. Each is a blocking ``unread-rule`` question, as a sentence nobody read
-    is, for the committee's chair, whatever the section: a person looks at the picture and decides (it states no rule,
-    it is recorded as a divergence, or the author states in words what it requires). An unchanged picture is not on
-    ``lines`` and asks nothing. The question is the picture's, not its line's: its id is the SOP and the picture line,
-    so an answer stays with the picture when lines above it change (the same picture twice is one question)."""
+    """A picture on ``lines`` (one put in or replaced, ``office.picture_line``) is a blocking ``unread-rule`` question, as
+    a sentence nobody read is, for the committee's chair, whatever the section. As asked here nobody read it; the
+    compile-frame committee then reads it (``CommitteeExtractor.read_pictures``: its question carries their reading) and
+    a person confirms the reading, corrects it or says it states nothing, or decides as for any unread sentence (it
+    states no rule, it is recorded as a divergence, or the author states in words what it requires). An unchanged
+    picture is not on ``lines`` and asks nothing. The question is the picture's, not its line's: its id is the SOP and
+    the picture line, so an answer stays with the picture when lines above it change (the same picture twice is one
+    question)."""
     from .compile import question
     from .rules import sha256_of
 
@@ -333,11 +353,7 @@ def picture_questions(frame: Frame, lines: set[int], chair: str = "") -> list[di
     out = []
     for text, ns in at.items():
         where = f"line {ns[0]}" if len(ns) == 1 else "lines " + ", ".join(map(str, ns))
-        q = question(frame.name, ns[0], f"The picture {text} ({where}) is not in the SOP's text in force: this revision puts it "
-                     "in or replaces one, or it was in the document already and is read for the first time (the release in force "
-                     "was made before the hub read pictures). No reader reads pictures yet, so nobody has read what it says: "
-                     "released as it is, it would come into force unread. The committee's chair looks at it and decides: it "
-                     "states no rule, it is recorded as a divergence, or the author states in words what it requires.", raised_by="hub", code="unread-rule", quote=text, blocking=True,
+        q = question(frame.name, ns[0], unread_picture_text(text, where), raised_by="hub", code="unread-rule", quote=text, blocking=True,
                      lines=ns, picture=True, unread_note=True, **({"chair": chair} if chair else {}))
         q["id"] = "q-" + sha256_of({"frame": frame.name, "picture": text})[:12]
         out.append(q)
@@ -603,8 +619,9 @@ class ModelExtractor:
         own = f"\n\nYour perspective (yours alone on the committee):\n{self.perspective}" if self.perspective else ""
         return base + own + f"\nYou are the {self.member} cog, one member of a committee that reads this SOP; read it on your own."
 
-    def _ask(self, path: Path | None, system: str, user: str) -> dict:
-        """One call, cached at ``path`` (keyed by exactly what it is about)."""
+    def _ask(self, path: Path | None, system: str, user: str, images: list[dict] | None = None) -> dict:
+        """One call, cached at ``path`` (keyed by exactly what it is about; for a picture, by its hash). ``images`` go with
+        it (a picture's bytes, for a model that reads pictures)."""
         if path is not None and path.exists():
             try:
                 return json.loads(path.read_text(encoding="utf-8"))
@@ -614,7 +631,7 @@ class ModelExtractor:
             raise LookupError("not read by the model yet: the compile-frame job reads it")
         self.calls += 1
         self.prompts.append(user)
-        data = _json_of(self.call(self.model, system, user))
+        data = _json_of(self.call(self.model, system, user, **({"images": images} if images else {})))
         if path is not None:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(data, indent=1), encoding="utf-8")
@@ -890,7 +907,9 @@ class CommitteeExtractor:
 
     def __init__(self, members: list[tuple[str, str]], quorum: int, cache_dir: Path | None = None, context: dict | None = None,
                  gateway=None, calls: bool = True, call=None, baseline=None, budget: int | None = None,
-                 unavailable: dict[str, str] | None = None, perspectives: dict[str, str] | None = None, chair: str = ""):
+                 unavailable: dict[str, str] | None = None, perspectives: dict[str, str] | None = None, chair: str = "",
+                 pictures=None):
+        self.pictures = pictures  # (SOP name, picture ref) -> [{"data", "media_type"}] (None: not found): what members read
         self.size = len(members)  # every member, with a model here or not: consensus needs each one's reading
         self.chair = chair  # the person who intervenes when a member cannot read (hubproto.groups)
         self.members = [(n, m) for n, m in members if m]
@@ -1025,7 +1044,92 @@ class CommitteeExtractor:
         return agreed, removed, questions, asked_about
 
     def extract(self, frame: Frame):
-        return with_unread_rules(frame, self._extract(frame), self.baseline.get() if self.baseline is not None else None, self.chair)
+        out = with_unread_rules(frame, self._extract(frame), self.baseline.get() if self.baseline is not None else None, self.chair)
+        return self.read_pictures(frame, out)
+
+    def read_pictures(self, frame: Frame, out):
+        """Each picture put in or replaced (its ``unread-rule`` question, ``picture_questions``) read by every member, from
+        its bytes in the SOP's document (``pictures``): what it states, as sentences, steps and rules
+        (``picture_reading.parse``), compared with the other members' readings and with the SOP
+        (``picture_reading.divergences``: each difference is a warning, and a line of the question). The question stays
+        open and blocking until a person answers it. A picture whose confirmed reading already follows it in the text
+        (this change order confirmed it) is not read again; a picture nobody can read keeps its question, saying why."""
+        from . import picture_reading as pr
+
+        open_ = [q for q in out.questions if q.get("picture") and q.get("status", "open") == "open"]
+        if not open_:
+            return out
+        base = (self.baseline.get() if self.baseline is not None else None) or {}
+        known = list(out.rules) + [r for r in base.get("rules") or [] if (r.get("source") or {}).get("frame") != frame.name]
+        for q in open_:
+            m = PICTURE_LINE.fullmatch(str(q.get("quote") or ""))
+            line = int(q.get("line") or 0)
+            where = f"line {line}" if len(q.get("lines") or [line]) == 1 else "lines " + ", ".join(map(str, q["lines"]))
+            confirmed = pr.reading_after(frame, line)
+            if confirmed:  # confirmed (or corrected) on this change order: not read again, but compared with the SOP again
+                at = {n + k for n in (q.get("lines") or [line]) for k in range(1, len(confirmed) + 1)}
+                said = [r for r in out.rules if (r.get("source") or {}).get("frame") == frame.name and (r.get("source") or {}).get("line") in at]
+                names = list(self.context.get("roles") or []) + list(self.context.get("cogs") or [])
+                steps = pr.steps_said(frame, line, confirmed, known, names)  # its words against the Process: section too
+                divs = pr.divergences(frame, line, {"rules": said, **steps}, known)
+                q["confirmed_reading"] = confirmed
+                q["confirmed_divergences"] = divs
+                q["text"] = (f"The picture {q['quote']} ({where}) is not in the SOP's text in force. Its reading, as confirmed on this change "
+                             "order, follows it in the SOP's text: “" + " ".join(confirmed) + "”"
+                             + (". It differs from the prose: " + "; ".join(divs) if divs else "") + ".")
+                for d in divs:
+                    out.notes.append({"frame": frame.name, "line": line, "text": q["quote"], "severity": "warning", "note": f"divergence: {d}"})
+                continue
+            ref = m.group(2) if m else ""
+            why = ""
+            images = None
+            if not m or m.group(1) == PACKAGE_ALT:
+                why = "it is not one picture but the parts of the file that no line places: open the document and look"
+            elif ref.startswith("link:"):
+                why = "it is linked, not held in the document, so the hub has no picture to send"
+            elif self.unavailable or not self.readers:
+                why = "the committee reads by consensus, and " + "; ".join(f"the {n} cog is not available ({w})" for n, w in self.unavailable.items())
+            else:
+                images = self.pictures(frame.name, ref) if self.pictures else None
+                if images is None:
+                    why = "the hub found no picture with this hash in the SOP's documents"
+                elif not images:
+                    why = "it is not of a kind a model is sent (PNG, JPEG, GIF or WebP)"
+            if why:
+                q["text"] = unread_picture_text(q["quote"], where, why)
+                continue
+            readings, failed, pending = [], {}, ""
+            for (name, model), reader in zip(self.members, self.readers):
+                key = pr.cache_key(frame, line, ref, images, model, name, reader.perspective, self.context)
+                try:
+                    data = reader._ask(reader._path(key), reader._system(pr.SYSTEM), pr.prompt(frame, line, self.context), images=images)
+                except LookupError as e:
+                    pending = str(e)
+                    break
+                except Exception as e:  # a member whose model reads text only is refused with a sentence (model.prepare_images)
+                    failed[name] = str(e)[:240] or type(e).__name__
+                    continue
+                readings.append(pr.parse(frame, line, data, name, model, self.context.get("cogs")))
+            if pending:
+                out.notes.append({"frame": frame.name, "line": line, "text": q["quote"], "severity": "info", "note": f"the picture: {pending}"})
+                continue
+            if failed:
+                q["text"] = unread_picture_text(q["quote"], where, "; ".join(f"the {n} cog could not read it: {w}" for n, w in failed.items())
+                                                + "; the committee reads by consensus")
+                continue
+            own = {r["member"]: pr.divergences(frame, line, r, known) for r in readings}
+            divs = list(dict.fromkeys(d for r in readings for d in own[r["member"]]))
+            same = pr.agreed(readings)
+            first = readings[0]
+            procs = {r["name"]: r for r in known if r.get("kind") == "process"}
+            q["reading"] = {"by": [r["member"] for r in readings], "agreed": same, "states_nothing": first["states_nothing"],
+                            "proposed": [] if first["states_nothing"] else list(first["sentences"]), "divergences": divs,
+                            "readings": [{**r, "rules": [{"rule": x, "said": _sentence(x, procs)} for x in r["rules"]],
+                                          "divergences": own[r["member"]]} for r in readings]}
+            q["text"] = pr.describe(q, [r["member"] for r in readings], readings, divs, same)
+            for d in divs:
+                out.notes.append({"frame": frame.name, "line": line, "text": q["quote"], "severity": "warning", "note": f"divergence: {d}"})
+        return out
 
     def _extract(self, frame: Frame):
         from .extract import ConventionExtractor
