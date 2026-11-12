@@ -80,7 +80,7 @@ def test_it_signs_only_after_every_lens_passed_and_files_them_as_one_evidence(hu
     decided = next(e for e in hub.runner.track(state["id"]) if e["type"] in ("gate.decided", "gate.signed") and e.get("by") == "qa-manager")
     assert decided["by"] == "qa-manager" and "3 adversarial reviews passed (compliance, consistency, impact)" in decided["meaning"]
     ev = hub.kernel.get(decided["evidence"])
-    text = ev["fields"].get("text") or ""
+    text = hub.dms.text_of(ev)
     assert all(f"qa-manager, {x} lens: pass" in text for x in ("compliance", "consistency", "impact"))
     assert after["status"] in ("waiting", "completed")
 

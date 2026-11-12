@@ -106,15 +106,55 @@ def test_text_is_extracted_for_text_and_markdown_and_is_searchable(d, hub):
                    filename="notes.txt")
     pdf = d.create(title="scan", doc_class="working", folder=FOLDER, by="alice", content=b"%PDF-1.4 reference weights",
                    filename="scan.pdf")
-    assert md["fields"]["mime"] == "text/markdown" and "Calibration procedure" in md["fields"]["text"]
-    assert txt["fields"]["mime"] == "text/plain" and txt["fields"]["text"] == "Plain text about torque"
-    assert pdf["fields"]["mime"] == "application/pdf" and pdf["fields"]["text"] == ""
+    assert md["fields"]["mime"] == "text/markdown" and "Calibration procedure" in d.text_of(md)
+    assert txt["fields"]["mime"] == "text/plain" and d.text_of(txt) == "Plain text about torque"
+    assert pdf["fields"]["mime"] == "application/pdf" and d.text_of(pdf) == ""
     assert [r["number"] for r in hub.kernel.query(type_="document", text="reference weights")] == [md["number"]]
     assert [r["number"] for r in hub.kernel.query(text="about torque")] == [txt["number"]]
     assert d.versions(md["locator"])[0]["text_excerpt"].startswith("# Calibration procedure")
     d.add_version(md["locator"], b"# Calibration procedure\n\nUse the torque wrench.", by="alice", mime="text/markdown")
     assert [r["number"] for r in hub.kernel.query(text="reference weights")] == [], "search follows the latest version"
     assert [r["number"] for r in hub.kernel.query(text="torque wrench")] == [md["number"]]
+
+
+def test_the_file_is_the_one_source_of_a_documents_words(d, hub):
+    """#22: the record keeps no copy of a document's text. Every reading comes from the file of the version asked for,
+    so search, reviews and the cogs see what the file says; a text field an older record still carries is ignored."""
+    from hubproto.review import gather
+
+    doc = d.create(title="WI-7", doc_class="working", folder=FOLDER, by="alice", content=b"Torque to 2 Nm.", filename="wi-7.txt")
+    assert "text" not in doc["fields"] and d.text_of(doc) == "Torque to 2 Nm."
+    d.add_version(doc["locator"], b"Torque to 3 Nm.", by="alice", filename="wi-7.txt")
+    assert d.text_of(doc["locator"]) == "Torque to 3 Nm." and d.text_of(doc["locator"], version=1) == "Torque to 2 Nm."
+    hub.kernel.set_fields(doc["locator"], {"text": "a stale copy about rivets"}, by="alice")  # as an older record carries it
+    assert hub.kernel.query(type_="document", text="rivets") == [], "the stale copy is not the document's words"
+    assert [r["number"] for r in hub.kernel.query(type_="document", text="3 nm")] == [doc["number"]]
+    assert hub.kernel.query(type_="document", text="2 nm") == [], "an earlier version's words are not the document's"
+    ctx = type("Ctx", (), {"dms": d})()
+    assert gather(ctx, hub.kernel.get(doc["locator"]))["documents"][0]["text"] == "Torque to 3 Nm.", "a reviewer reads the file"
+    assert d.text_of("rec:document:none") == "" and d.text_of(d.create(title="empty", doc_class="working", folder=FOLDER, by="alice")) == ""
+    held = hub.kernel.get(doc["locator"])
+    d.add_version(doc["locator"], b"Torque to 4 Nm.", by="alice", filename="wi-7.txt")
+    assert d.text_of(held) == "Torque to 4 Nm.", "a record the caller held from before is read as it is now"
+    big = b"x" * 30000
+    assert len(d.text_of(d.create(title="long", doc_class="working", folder=FOLDER, by="alice", content=big, filename="long.txt"))) == 30000, \
+        "no cap: the whole file"
+
+
+def test_an_sop_reads_the_same_for_the_reviewing_cog_and_the_compile(released):
+    """#29: an SOP or policy document reads as the compile reads it (sopdocs.frame_text: its header, and its body with a
+    line per picture), so the cog reviewing it, the document page and the compile see the same lines."""
+    from hubproto import sopdocs
+    from hubproto.cogs import RunContext, item_text
+
+    hub = released
+    sopdocs.convert(hub, by="carol")
+    rec = next(x for x in hub.kernel.query(type_="document") if str(x["fields"].get("lineage") or "").startswith(sopdocs.LINEAGE))
+    compiled = sopdocs.frame_text(hub, rec)
+    assert hub.dms.text_of(rec) == compiled and compiled.startswith("---")
+    ctx = RunContext(run_id="t", release="", bundle={}, owner="quality-assistant", kernel=hub.kernel, dms=hub.dms)
+    line = next(x for x in compiled.split("\n---", 1)[1].splitlines() if x.strip() and ">>>" not in x and "<<<" not in x)
+    assert line in item_text(ctx, rec, 10 ** 6), "the reviewing cog reads the compile's lines"
 
 
 # --------------------------------------------------------------------- classes

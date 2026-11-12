@@ -206,7 +206,8 @@ CREATE INDEX IF NOT EXISTS messages_run ON messages(run_id);
         if member and member["type"] == "cog" and (hub is not None or registry is not None):
             if hub is None:  # a bare inbox (tests, tools): answered here and now
                 return self._answer_with(msg, to, registry.get(to), RunContext(run_id="inbox-" + msg["id"], release=release, bundle=bundle,
-                                                                                owner=to, kernel=kernel, runner=runner, inbox=self))
+                                                                                owner=to, kernel=kernel, runner=runner, inbox=self,
+                                                                                dms=getattr(runner, "dms", None)))
             task = hub.queue.submit(to, "message", by=sender, title=subject, record=record, payload={"msg": msg["id"]})
             msg["queued"] = [task]
             if task["status"] == "done" and (task.get("result") or {}).get("replies"):
@@ -227,7 +228,7 @@ CREATE INDEX IF NOT EXISTS messages_run ON messages(run_id);
         meta = hub.releases.current()
         bundle = hub.releases.bundle(meta["digest"]) if meta else {"members": {}}
         ctx = RunContext(run_id="inbox-" + msg["id"], release=meta["digest"] if meta else "", bundle=bundle, owner=cog_id,
-                         kernel=hub.kernel, runner=hub.runner, inbox=self, frames=lambda: hub.released_frames())
+                         kernel=hub.kernel, runner=hub.runner, inbox=self, dms=hub.dms, frames=lambda: hub.released_frames())
         return self._answer_with(msg, cog_id, hub.registry.get(cog_id), ctx)
 
     def _answer_with(self, msg: dict, to: str, cog, ctx) -> dict:

@@ -468,8 +468,9 @@ class PagesMixin:
             f = d["fields"]
             name = f.get("filename") or ""
             ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-            if ext in ("md", "txt") and f.get("text"):
-                thumb = f"<pre aria-hidden='true'>{esc(short(_plain_preview(f['text']), 220))}</pre>"
+            words = self.hub.dms.text_of(d) if ext in ("md", "txt") else ""
+            if words:
+                thumb = f"<pre aria-hidden='true'>{esc(short(_plain_preview(words), 220))}</pre>"
             else:
                 thumb = file_icon(name, label=False)
             page = href("/document/" + quote(d["locator"], safe=":"), user)
@@ -1070,13 +1071,14 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
                                                f'<a href="{href("/download", user, doc=loc, v=v["version"])}">Download version {esc(v["version"])}</a>',
                                                (f'<a href="{href("/compare/" + quote(loc, safe=":"), user, a=v["version"] - 1, b=v["version"])}">what changed</a>'
                                                 if v["version"] > 1 else "")] for v in versions], "No content yet.")
-        if f.get("text"):
+        words = self.hub.dms.text_of(rec)
+        if words:
             if f.get("mime") == "text/markdown" or str(f.get("filename") or "").endswith(".md"):  # a generated document: rendered
                 from .text import markdown_html
 
-                body += "<h2>Text</h2>" + markdown_html(str(f["text"])[:60000], link=lambda path: href(path, user))
+                body += "<h2>Text</h2>" + markdown_html(words[:60000], link=lambda path: href(path, user))
             else:
-                body += f"<h2>Text</h2><pre>{esc(short(f['text'], 20000))}</pre>"
+                body += f"<h2>Text</h2><pre>{esc(short(words, 20000))}</pre>"
         body += self._sop_doc_html(rec)
         body += "<h2 id='checkout'>Check-out and check-in</h2><div class='card'>"
         err = self._form_error(["file", "note"]) if self.route in ("/checkout", "/checkin", "/undo-checkout") else ""

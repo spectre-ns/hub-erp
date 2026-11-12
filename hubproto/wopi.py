@@ -221,17 +221,14 @@ class WopiHost:
         return {"LastModifiedTime": version_stamp(version)}
 
     def index(self, rec: dict, content: bytes, user: str) -> list[dict]:
-        """After a save: the document's text goes on the record (so reviews read it) and a comment written in the
-        editor that mentions someone becomes a message on the item's chatter from the person who saved it."""
+        """After a save (which added the version, so the hub reads the words from the file): the editor's comments go on
+        the record, and a comment that mentions someone becomes a message on the item's chatter from the person who saved it."""
         from . import office
 
         ext = extension_of(rec["fields"].get("filename") or "")
-        text = office.extract_text(content, ext)
         comments = office.extract_comments(content, ext)
         seen = {c.get("digest") for c in (rec["fields"].get("office_comments") or [])}
         fields = {"office_comments": [{k: c.get(k) for k in ("id", "author", "date", "text", "digest", "parent")} for c in comments]}
-        if text:
-            fields["text"] = text
         try:
             self.hub.kernel.set_fields(rec["locator"], fields, by=user)
         except KernelGuardError:

@@ -74,6 +74,8 @@ class Kernel:
     def __init__(self, path: Path, config_dir: Path | None = None):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        # A document's words live in its file, not its fields: the hub sets this to DMS.text_of so query(text=) finds them.
+        self.document_text = None
         # One connection shared by the shell's handler threads; callers serialize writes (the shell holds a lock).
         self.db = sqlite3.connect(str(self.path), check_same_thread=False)
         self.db.execute(
@@ -297,10 +299,18 @@ class Kernel:
                 continue
             if overdue_at and not (rec["due"] and rec["due"] < overdue_at and rec["state"].startswith("awaiting")):
                 continue
-            if needle and needle not in json.dumps(rec["fields"], default=str).lower() and needle not in rec["number"].lower():
+            if needle and needle not in rec["number"].lower() and not self._mentions(rec, needle):
                 continue
             out.append(rec)
         return sorted(out, key=lambda r: r["events"][0])
+
+    def _mentions(self, rec: dict, needle: str) -> bool:
+        """Whether a record's fields, or a document's file, hold the words. A ``text`` field older records carry is a
+        stale copy of a file's words: the file is read instead."""
+        fields = {k: v for k, v in rec["fields"].items() if not (k == "text" and rec["type"] == "document")}
+        if needle in json.dumps(fields, default=str).lower():
+            return True
+        return bool(rec["type"] == "document" and self.document_text and needle in self.document_text(rec).lower())
 
     def links_of(self, ref: str) -> list[dict]:
         rec = self.require(ref)

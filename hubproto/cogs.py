@@ -1109,7 +1109,7 @@ def item_text(ctx: RunContext, rec: dict | None, doc_budget: int) -> str:
     if rec.get("type") == "document":
         head = (f"DOCUMENT {rec['number']}: {f.get('title') or ''} (class {f.get('doc_class') or '-'}; revision {f.get('revision', '')}."
                 f"{f.get('minor', 0)}; state {_state_words(rec['state'])}; owner {f.get('owner') or '-'}; waiting for {waiting})")
-        text = (f.get("text") or "").strip()
+        text = (ctx.dms.text_of(rec) if ctx.dms is not None else "").strip()
         body = (text[:doc_budget] + ("\n[... truncated]" if len(text) > doc_budget else "")) if text else "(no text extracted)"
         parts.append(head + "\n" + untrusted("DOCUMENT TEXT", body))
     else:
@@ -1323,7 +1323,7 @@ class ReviewerCog(Cog):
                 if o["op"] in ("append_rows", "insert_rows") or (o["op"] == "insert" and o.get("lines")):
                     o["rows"] = _office.rows_from_lines(o.get("lines") or [])
         else:
-            paras = {_edits.squash(x) for x in (f.get("text") or "").splitlines() if x.strip()}
+            paras = {_edits.squash(x) for x in (ctx.dms.text_of(rec) if ctx.dms is not None else "").splitlines() if x.strip()}
             for o in ops:  # deleting a whole paragraph's text deletes the paragraph, live and in the file alike
                 if o["op"] == "delete" and _edits.squash(o.get("target") or "") in paras:
                     o["op"] = "delete_paragraph"

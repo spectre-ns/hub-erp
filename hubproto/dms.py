@@ -5,6 +5,11 @@ content-addressed blob store with a version history; the record carries the
 metadata, class, revision and lifecycle state. Documents attach to any record
 by a ``has-document`` link, once stored, however many records refer to them.
 
+The file is the one source of a document's words: nothing keeps a copy of its
+text on the record. ``DMS.text_of`` reads them from the version's file (cached
+by the file's hash, so a cached reading can never be of other content), and
+search, previews, reviews and the cogs all read through it.
+
 Classes: controlled (SOPs, forms, drawings), evidence (signed forms,
 certificates, snapshots), external (received files, immutable), working
 (drafts), template.
@@ -16,6 +21,8 @@ import hashlib
 import os
 import json
 import mimetypes
+import threading
+from collections import OrderedDict
 from datetime import date
 from pathlib import Path
 
@@ -94,7 +101,7 @@ def extract_text(content: bytes, mime: str, filename: str = "") -> str:
     ods, pptx) through the office reader. Production uses Tika and OCR."""
     if any(mime.startswith(t) for t in TEXT_MIMES):
         try:
-            return content.decode("utf-8", errors="replace")[:20000]
+            return content.decode("utf-8", errors="replace")
         except Exception:  # pragma: no cover
             return ""
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
@@ -125,10 +132,84 @@ def next_revision(rev: str | None) -> str:
     return str(int(rev) + 1)
 
 
+class _Reader:
+    """What ``sopdocs.frame_text`` needs of a hub: its documents."""
+
+    def __init__(self, dms: "DMS"):
+        self.dms = dms
+
+
+class _TextCache:
+    """Readings of files, least recently used first, bounded by the characters they hold (not by their number, so a
+    search over every document does not evict each reading before it is used again). One lock: the shell's handler
+    threads and the queue worker share it."""
+
+    def __init__(self, max_chars: int = 64_000_000):
+        self.max_chars = max_chars
+        self.items: OrderedDict[tuple, str] = OrderedDict()
+        self.chars = 0
+        self.lock = threading.Lock()
+
+    def get(self, key: tuple) -> str | None:
+        with self.lock:
+            text = self.items.get(key)
+            if text is not None:
+                self.items.move_to_end(key)
+            return text
+
+    def put(self, key: tuple, text: str) -> str:
+        with self.lock:
+            old = self.items.pop(key, None)
+            self.chars -= len(old) if old is not None else 0
+            self.items[key] = text
+            self.chars += len(text)
+            while self.chars > self.max_chars and len(self.items) > 1:
+                _, gone = self.items.popitem(last=False)
+                self.chars -= len(gone)
+        return text
+
+
 class DMS:
     def __init__(self, kernel: Kernel, blobs: BlobStore):
         self.kernel = kernel
         self.blobs = blobs
+        self._texts = _TextCache()
+
+    # ------------------------------------------------------------------ text
+    def text_of(self, ref: str | dict, version: int | None = None) -> str:
+        """A document's words, read from the file of a version (the latest by default): "" when it has no file, or
+        none a reader takes words from (a PDF, an image). The record keeps no copy, so this is the one reading of a
+        document's text. An SOP or policy document reads as the compile reads it (``sopdocs.frame_text``: its header,
+        and its body with a line per picture), so a reviewing cog, the preview and the compile see the same lines.
+        Cached by the file's hash, mime and name (and an SOP's header), so it is never a reading of other content."""
+        loc = ref.get("locator") if isinstance(ref, dict) else ref
+        rec = self.kernel.get(loc) if loc else None  # always the record as it is now, not a copy the caller held
+        if not rec or rec.get("type") != "document":
+            return ""
+        f = rec["fields"]
+        if version is None and f.get("content_sha"):
+            sha, mime, filename = f["content_sha"], f.get("mime") or "", f.get("filename") or ""
+        else:
+            vs = self.versions(rec["locator"])
+            v = (vs[-1] if vs else None) if version is None else next((x for x in vs if x["version"] == version), None)
+            if v is None:
+                return ""
+            sha, mime, filename = v["sha256"], v.get("mime") or "", v.get("filename") or ""
+        from . import sopdocs
+
+        sop = str(f.get("lineage") or "").startswith(sopdocs.LINEAGE)
+        key = (sha, mime, filename) + ((f.get("frame_header") or json.dumps(f.get("frame_meta") or {}, sort_keys=True),
+                                         f.get("frame_tail") or 1) if sop else ())
+        hit = self._texts.get(key)
+        if hit is not None:
+            return hit
+        try:
+            if sop:
+                return self._texts.put(key, sopdocs.frame_text(_Reader(self), rec, version))
+            content = self.blobs.get(sha)
+        except (OSError, KeyError, ValueError, StopIteration):
+            return ""
+        return self._texts.put(key, extract_text(content, mime, filename))
 
     # ---------------------------------------------------------------- create
     def create(self, *, title: str, doc_class: str, folder: str, by: str, content: bytes | None = None,
@@ -173,7 +254,7 @@ class DMS:
                            {"version": n, "sha256": sha, "filename": filename, "mime": mime, "size": len(content),
                             "note": note, "text_excerpt": text[:2000]}, run_id=run_id, release=release, by=by)
         self.kernel.set_fields(rec["locator"], {"content_sha": sha, "filename": filename, "mime": mime, "size": len(content),
-                                                "text": text, "checked_out_by": None, "minor": int(rec["fields"].get("minor") or 0) + (1 if n > 1 else 0)},
+                                                "checked_out_by": None, "minor": int(rec["fields"].get("minor") or 0) + (1 if n > 1 else 0)},
                                by=by, run_id=run_id, release=release)
         return self.kernel.get(rec["locator"])
 

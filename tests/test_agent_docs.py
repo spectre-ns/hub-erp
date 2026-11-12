@@ -37,7 +37,7 @@ def test_create_a_working_document_with_content_where_the_cog_may(hub):
     assert out["ok"] and out["format"] == "docx" and out["state"] == "open"
     rec = hub.kernel.get(f"rec:document:{out['document']}")
     assert rec["fields"]["doc_class"] == "working" and rec["fields"]["author"] == "quality-assistant"
-    assert "Torque 2 Nm." in rec["fields"]["text"] and "check weekly" in text_of(hub, out["document"])
+    assert "Torque 2 Nm." in hub.dms.text_of(rec) and "check weekly" in text_of(hub, out["document"])
     md = t.execute("create_document", {"title": "Plain notes", "folder": "Policy", "format": "md", "text": "## Plain\nA line."})
     assert md["ok"] and hub.dms.content(f"rec:document:{md['document']}")[0].decode().startswith("## Plain")
     sheet = t.execute("create_document", {"title": "Log", "folder": "Policy", "format": "xlsx", "text": "| Item | Qty |\n| Washer | 12 |"})

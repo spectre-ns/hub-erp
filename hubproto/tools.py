@@ -227,7 +227,8 @@ class RecordTools:
             if words:
                 # Values only, as words: "high" must not match a field named risk_not_high.
                 hay = " ".join([r["number"], r["type"], TYPE_NAMES.get(r["type"]) or "", r["state"].replace("-", " "),
-                                *[_values_text(v) for k, v in r["fields"].items() if k not in SEARCH_SKIP]]).lower()
+                                *[_values_text(v) for k, v in r["fields"].items() if k not in SEARCH_SKIP and not (k == "text" and r["type"] == "document")],
+                                self.hub.dms.text_of(r) if r["type"] == "document" else ""]).lower()
                 tokens = set(re.findall(r"[\w.-]+", hay))
                 if not all(any(t == w.rstrip("s") or t.rstrip("s") == w.rstrip("s") or (len(w) > 3 and t.startswith(w.rstrip("s"))) for t in tokens)
                            for w in words):
@@ -261,7 +262,7 @@ class RecordTools:
             out["run"] = {"process": run["process"], "status": run["status"],
                           "waiting_at": (run.get("pending") or {}).get("title"), "waiting_for": (run.get("pending") or {}).get("assignees")}
         if rec["type"] == "document":
-            out["has_text"] = bool(rec["fields"].get("text"))
+            out["has_text"] = bool(self.hub.dms.text_of(rec).strip())
         return out
 
     def read_document(self, number: str, version: int | None = None, max_chars: int = 6000) -> dict:

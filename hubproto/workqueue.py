@@ -469,7 +469,7 @@ def assigned_work(hub, task: dict, state: dict | None = None) -> dict:
     waiting = (run or {}).get("pending") or {}
     step_mine = bool(run) and hub.runner.is_assigned_work(hub.runner.load(run["id"]), cog)
     f = rec["fields"]
-    what = f.get("description") or f.get("text", "")[:600] or ""
+    what = f.get("description") or (hub.dms.text_of(rec) if rec["type"] == "document" else f.get("text") or "")[:600]
     goal = (f"You are assigned {rec['number']} ({rec['type']}: {f.get('title') or ''}) by {task.get('by') or 'a colleague'}."
             + (f" Their instruction: {p['instruction']}" if p.get("instruction") else "")
             + (f" What the item says: {what}" if what else "")

@@ -144,7 +144,7 @@ def test_it_drafts_a_document_and_never_signs_its_own(shell):
     assert out["ok"] and out["submitted"] and "qa-manager" not in (out["waiting_for"] or [])
     rec = hub.kernel.get(f"rec:document:{out['document']}")
     assert rec["fields"]["author"] == "qa-manager" and rec["fields"]["doc_class"] == "controlled"
-    assert "Supplier audit procedure" in (rec["fields"].get("text") or hub.dms.content(rec["locator"])[0].decode("latin-1"))
+    assert "Supplier audit procedure" in hub.dms.text_of(rec)
     run = hub.runner.run_for_record(rec["locator"])
     assert "segregation of duties" in hub.runner.may_step_in(run, "qa-manager")
     with pytest.raises(RunError):

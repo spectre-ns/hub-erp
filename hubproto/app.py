@@ -63,6 +63,7 @@ class Hub:
 
         self.settings_drafts = SettingsDrafts(state / "settings" / "drafts")
         self.dms = DMS(self.kernel, BlobStore(state / "blobs"))
+        self.kernel.document_text = self.dms.text_of
         self.releases.blobs = self.dms.blobs  # the Frame texts each proposal was compiled from, kept by hash
         self.runner = Runner(state / "runs", self.kernel, self.releases, self.registry, self.inbox, self.dms)
         # Cogs are users who work from a queue: a Gate that pends for a cog, a mention, a message or a task lands in the
