@@ -39,6 +39,28 @@ MAX_CALLS_KEPT = 500  # a long-running hub keeps only the most recent model call
 DEFAULT_MODEL = "stand-in"
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 
+# Claude models think before they answer (on claude-opus-5-5 thinking cannot be switched off), and the thinking counts
+# against the request's max_tokens. A caller's max_tokens is the length of the answer it wants, so every Claude call
+# adds this much room for the thinking (HUBPROTO_ANTHROPIC_THINKING_TOKENS); only the tokens used are billed.
+ANTHROPIC_THINKING_ROOM = 8000
+ANTHROPIC_TIMEOUT = 180  # seconds: room to think as well as to answer, in one non-streamed response
+
+
+def anthropic_budget(answer_tokens: int) -> int:
+    """The max_tokens sent to Claude for an answer of ``answer_tokens``: the answer plus room for the thinking."""
+    raw = os.environ.get("HUBPROTO_ANTHROPIC_THINKING_TOKENS")
+    room = int(raw) if raw not in (None, "") else ANTHROPIC_THINKING_ROOM
+    return max(1, int(answer_tokens)) + max(0, room)
+
+
+class AnswerCutOff(RuntimeError):
+    """Claude stopped at the token limit before it finished: what it wrote is not an answer and is never used as one."""
+
+
+def _anthropic_stopped_short(data: dict, budget: int) -> None:
+    if (data or {}).get("stop_reason") == "max_tokens":
+        raise AnswerCutOff(f"its answer was cut off at the token limit ({budget} tokens, thinking included)")
+
 # ---------------------------------------------------------------- letting go of the hub lock while a model thinks
 _held = threading.local()
 
@@ -644,11 +666,13 @@ class ModelGateway:
         # Pictures are image content blocks before the words of the same turn (the API's advice for a picture and a question).
         content = ([{"type": "image", "source": {"type": "base64", "media_type": i["media_type"], "data": _b64(i["data"])}} for i in images]
                    + [{"type": "text", "text": user}]) if images else user
-        body = json.dumps({"model": model, "max_tokens": max_tokens, "system": system,
+        budget = anthropic_budget(max_tokens)
+        body = json.dumps({"model": model, "max_tokens": budget, "system": system,
                            "messages": turns + [{"role": "user", "content": content}]}).encode("utf-8")
         req = urllib.request.Request(ANTHROPIC_URL, data=body, method="POST", headers={
             "content-type": "application/json", "x-api-key": os.environ["ANTHROPIC_API_KEY"], "anthropic-version": "2023-06-01"})
-        data = _fetch_json(req, 60)
+        data = _fetch_json(req, ANTHROPIC_TIMEOUT)
+        _anthropic_stopped_short(data, budget)
         return "".join(part.get("text", "") for part in data.get("content", []) if part.get("type") == "text")
 
     def _ollama(self, model: str, system: str, user: str, max_tokens: int, history: list[dict] | None = None,
@@ -773,13 +797,15 @@ class ModelGateway:
     def _anthropic_tools(model, system, user, history, tools, run, max_tokens, max_rounds, as_text):
         msgs = [{"role": t["role"], "content": t["content"]} for t in (history or []) if t.get("content")] + [{"role": "user", "content": user}]
         specs = [{"name": t["name"], "description": t["description"], "input_schema": t["parameters"]} for t in tools]
+        budget = anthropic_budget(max_tokens)
         for round_ in range(max_rounds + 1):
-            body = {"model": model, "max_tokens": max_tokens, "system": system, "messages": msgs}
+            body = {"model": model, "max_tokens": budget, "system": system, "messages": msgs}
             if round_ < max_rounds:
                 body["tools"] = specs
             req = urllib.request.Request(ANTHROPIC_URL, data=json.dumps(body).encode("utf-8"), method="POST", headers={
                 "content-type": "application/json", "x-api-key": os.environ["ANTHROPIC_API_KEY"], "anthropic-version": "2023-06-01"})
-            data = _fetch_json(req, 120)
+            data = _fetch_json(req, ANTHROPIC_TIMEOUT)
+            _anthropic_stopped_short(data, budget)  # a cut-off tool call or answer is neither run nor used
             content = data.get("content") or []
             uses = [b for b in content if b.get("type") == "tool_use"]
             if not uses:
