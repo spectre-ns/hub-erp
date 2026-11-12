@@ -918,15 +918,17 @@ Submit it with `hubproto config propose tune.py --as carol [--co CO-...]`, or **
 under **What it carries** on a change order you are preparing. What happens:
 
 1. The hub checks the script first and refuses, naming the line, an import other than json, math, re, datetime,
-   decimal, collections, itertools, functools, statistics, string and typing, or a name of those modules that is not on
-   its list (`typing.sys`, for example); `eval`, `exec`, `compile`, `__import__`, `open`, `getattr`, `setattr`,
-   `delattr`, `globals`, `locals`, `vars`; any `__dunder__` name, attribute or text; a class pattern in `match`; and an
-   annotation written as text ("Line 2: import os is not allowed: ...").
+   decimal, collections, itertools, functools, statistics and string, or a name of those modules that is not on its
+   list (`statistics.sys`, `collections.namedtuple`, for example); `eval`, `exec`, `compile`, `__import__`, `open`,
+   `getattr`, `setattr`, `delattr`, `globals`, `locals`, `vars`, `chr`; any `__dunder__` name or attribute; text that
+   holds two underscores together or begins or ends with one; a class pattern in `match`; and an annotation written as
+   text ("Line 2: import os is not allowed: ..."). Once it runs, anything that evaluates text as code stops it.
 2. It runs once, in the **script worker**: a container of its own with no network, a read-only file system, no
    privileges and nothing of the hub's in it, one run at a time, under limits of time, memory, processor and output.
    Before the script is sent, the run's process is locked down by the kernel (it may read only Python's standard
    library and read and write only its own fresh folder; it cannot start a program, open a connection or reach another
-   process), and the worker checks that itself; a run it cannot lock down is refused. A script that tries more is
+   process, or change a file's mode, owner, times or attributes), and the worker checks that itself; a run it cannot
+   lock down is refused, and so is one on a kernel too old to lock it down fully (Landlock ABI 3, Linux 6.2). A script that tries more is
    stopped, and the change order says what it tried. A development hub without the worker
    (`HUBPROTO_SCRIPT_FALLBACK=1`, set by `hubproto dev serve`) runs it in a local subprocess with the same locks, and the
    change order says **weaker isolation**; every other hub without a worker refuses to run scripts.

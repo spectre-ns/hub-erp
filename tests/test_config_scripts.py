@@ -73,21 +73,32 @@ def new_co(hub, who="alice", title="Tune by script"):
     ("g = getattr", "Line 1: getattr is not allowed"),
     # The review of PR #55 (finding 4): each of these passed the check before.
     ("x = config\ngetattr(x, 'tb_frame')", "Line 2: getattr is not allowed"),
-    ("import typing\nsys = typing.sys", "Line 2: typing.sys is not allowed: a script uses only the names of typing on its list"),
+    ("import typing\nsys = typing.sys", "Line 1: import typing is not allowed"),
+    ("import statistics\nx = statistics.sys", "Line 2: statistics.sys is not allowed: a script uses only the names of statistics on its list"),
     ("import statistics\nstatistics.sys.modules", "Line 2: statistics.sys is not allowed"),
     ("import collections\ncollections._sys.modules", "Line 2: collections._sys is not allowed"),
     ("import collections.abc\ncollections.abc.sys", "Line 2: collections.abc.sys is not allowed"),
-    ("from typing import sys", "Line 1: typing.sys is not allowed"),
-    ("import typing as t\nt.operator.attrgetter('x')(())", "Line 2: typing.operator is not allowed"),
-    ("import typing\nm = typing\nm.sys", "Line 2: typing is a module: use it only as typing.name"),
-    ("import typing\ndef f(x: 'int'): pass\ntyping.get_type_hints(f)", "Line 2: an annotation written as text is not allowed"),
-    ("import typing\ntyping.get_type_hints", "Line 2: typing.get_type_hints is not allowed"),
-    ("import typing\ntyping.ForwardRef('x')", "Line 2: typing.ForwardRef is not allowed"),
+    ("from typing import TypeVar", "Line 1: from typing import ... is not allowed"),
+    ("from statistics import sys", "Line 1: statistics.sys is not allowed"),
+    ("import json as j\nj.decoder.scanstring", "Line 2: json.decoder is not allowed"),
+    ("import json\nm = json\nm.loads", "Line 2: json is a module: use it only as json.name"),
+    ("def f(x: 'int'): pass", "Line 1: an annotation written as text is not allowed"),
+    ("x = config\nx.get_type_hints", "Line 2: .get_type_hints is not allowed: it evaluates text as code"),
+    ("x = config\nx.evaluate_bound(1).evaluate()", "Line 2: .evaluate is not allowed: it evaluates text as code"),
+    ("import collections\ncollections.namedtuple('P', 'a')", "Line 2: collections.namedtuple is not allowed"),
+    # The follow-up review (N1): dunder text built by joining, and the names that evaluate text.
+    ("u = '_' + '_'", "Line 1: the text '_' holds two underscores together, or begins or ends with one"),
+    ("u = 'x_'\nv = u + '_class'", "Line 1: the text 'x_' holds two underscores together, or begins or ends with one"),
+    ("u = '_' * 2", "Line 1: the text '_'"),
+    ("u = ''.join(['_', '_'])", "Line 1: the text '_'"),
+    ("u = f'{1}_'", "Line 1: the text '_'"),
+    ("u = b'_' + b'_'", "Line 1: the text b'_'"),
+    ("u = chr(95) * 2", "Line 1: chr is not allowed"),
     ("x: 'list' = []", "Line 1: an annotation written as text is not allowed"),
     ("match ():\n    case object(__class__=t):\n        pass", "Line 2: a class pattern in match is not allowed"),
     ("match config:\n    case dict(schema=s):\n        pass", "Line 2: a class pattern in match is not allowed"),
-    ("f = lambda: 0\nx = '{0.__globals__}'.format(f)", "Line 2: the text '{0.__globals__}' names a special attribute"),
-    ("from typing import *", "Line 1: from typing import * is not allowed"),
+    ("f = lambda: 0\nx = '{0.__globals__}'.format(f)", "Line 2: the text '{0.__globals__}' holds two underscores together"),
+    ("from json import *", "Line 1: from json import * is not allowed"),
     ("globals()", "Line 1: globals is not allowed"),
     ("locals()", "Line 1: locals is not allowed"),
     ("vars(config)", "Line 1: vars is not allowed"),
@@ -104,11 +115,11 @@ def test_the_allow_list_refuses_with_a_sentence_naming_the_line(source, words):
 
 
 def test_a_plain_script_passes_the_check():
-    ok = ("import json, math, re, datetime, decimal, collections, itertools, functools, statistics, string, typing\n"
-          "from collections import defaultdict, namedtuple\nimport collections.abc\n"
+    ok = ("import json, math, re, datetime, decimal, collections, itertools, functools, statistics, string\n"
+          "from collections import defaultdict, Counter\nimport collections.abc\n"
           "class Row:\n    def __init__(self, v):\n        self.v = v\n"
           "x = config.get('policy')\ny = collections.abc.Mapping\nmatch x:\n    case {'roles': r}:\n        pass\n"
-          "def f(n: int) -> typing.Optional[int]:\n    return n\nresult = config\n")
+          "def f(n: int) -> int:\n    return n\nresult = {'purchase_approval': config.get('x_y')}\n")
     assert scriptcheck.check(ok) == []
 
 
@@ -156,7 +167,7 @@ def test_the_tripwire_allows_the_runs_own_temporary_folder():
 def test_a_script_cannot_import_what_is_off_the_list_even_past_the_check():
     rec = scriptworker.run_local("import os\nresult = {'x': os.name}", SNAP, check=False)
     assert rec["exit"] == "error" and "os is not a module a script may import" in rec["detail"], rec
-    rec = scriptworker.run_local("import typing\nresult = {'x': str(typing.sys)}", SNAP, check=False, tripwire=False)
+    rec = scriptworker.run_local("import statistics\nresult = {'x': str(statistics.sys)}", SNAP, check=False, tripwire=False)
     assert rec["exit"] == "error" and "has no attribute 'sys'" in rec["detail"], "an allowed module is its names only, at run time too"
 
 
@@ -567,7 +578,7 @@ def test_finding_1_the_reviewers_leak_through_a_change_order_records_nothing(hub
         "import typing\nsys = typing.sys\ntry:\n    1 / 0\nexcept ZeroDivisionError:\n    tb = sys.exc_info()[2]\n"
         "getattr(getattr(tb, 'tb_frame'), 'f_back')\nresult = {}\n")
     co = new_co(hub)
-    with pytest.raises(configjson.Refused, match="typing.sys is not allowed"):
+    with pytest.raises(configjson.Refused, match="import typing is not allowed"):
         scripts.propose(hub, leak, by="alice", co_ref=co["number"])
     assert not hub.kernel.get(co["locator"])["fields"].get("config_scripts"), "refused before it ran: nothing to record"
 
@@ -758,3 +769,210 @@ def test_finding_3_the_page_shows_what_the_parent_checked(hub):
     run = hub.kernel.get(co["locator"])["fields"]["config_scripts"][0]
     words = scripts.protection_words(run["protection"])
     assert words.startswith("Checked by the hub before the script was sent: seccomp filter on") and "Landlock ABI" in words, words
+
+
+# ------------------------------------------------------------------ the follow-up review of PR #55 (N1 to N7)
+N1 = """import typing
+u = "_" + "_"
+expr = "[c for c in ()." + u + "class" + u + "." + u + "base" + u + "." + u + "subclasses" + u + "() if c." + u + "name" + u + " == '_wrap_close'][0]." + u + "init" + u + "." + u + "globals" + u
+T = typing.TypeVar("T", bound=expr)
+osg = T.evaluate_bound(1).evaluate()
+os = osg["sys"].modules["os"]
+result = {"reached": sorted(k for k in osg if k in ("system", "execv", "fork", "open"))}
+"""
+N3_SOCKET = N1.replace('result = {"reached"', '''std = [p for p in osg["sys"].path if p.endswith("lib-dynload")][0]
+fd = os.open(std, os.O_RDONLY)
+os.makedirs("/".join(["d"] * 20))
+os.chdir("/".join(["d"] * 20))
+os.chmod("../" * (std.count("/") + 1) + "{target}", 0, dir_fd=fd)
+result = {"reached"''')
+
+
+def test_n1_the_reviewers_typevar_chain_is_refused_over_invoke_with_every_layer_on(tmp_path):
+    sock = tmp_path / "w.sock"
+    server = scriptworker.serve_in_thread(socket_path=str(sock))
+    try:
+        url = f"unix://{sock}"
+        for src in (N1, N3_SOCKET.replace("{target}", str(sock).lstrip("/"))):
+            env = scripts._invoke(url, {"tool": "run-script", "script": src, "snapshot": SNAP}, 60)
+            p = env["payload"]
+            assert p["exit"] == "refused" and "import typing is not allowed" in p["detail"] and "the text '_'" in p["detail"], p["detail"]
+        assert oct(sock.stat().st_mode & 0o777) == "0o666", "the socket is untouched"
+        env = scripts._invoke(url, {"tool": "run-script", "script": "result = {'next': 1}", "snapshot": SNAP}, 60)
+        assert env["payload"]["exit"] == "ok", "and the next run is served"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.parametrize("how", [
+    'g["sys"].modules["typing"].TypeVar("T", bound="1 + 1").evaluate_bound(1).evaluate()',  # the reviewer's N1, past the list
+    'g["__builtins__"]["eval"]("1 + 1")',  # a generic eval reached some other way
+    'g["sys"].modules["collections"].namedtuple("P", "a b")',  # an allowed module's helper that evaluates text
+    'g["sys"].modules["typing"].ForwardRef("1 + 1").evaluate()',
+])
+def test_n1_any_compile_or_exec_once_the_script_runs_ends_it(how):
+    rec = scriptworker.run_local(ESCAPE + f"x = {how}\nresult = {{}}\n", SNAP, check=False)  # the check off, the tripwire on
+    assert rec["exit"] == "tripwire" and rec["tripped"]["event"] in ("compile", "exec"), (rec["exit"], rec["detail"])
+    assert "evaluated text as code" in rec["detail"] and rec["result"] is None
+
+
+def test_n1_an_error_in_a_script_is_still_an_error_not_a_tripwire():
+    rec = scriptworker.run_local("def f():\n    return 1 / 0\nf()", SNAP)
+    assert rec["exit"] == "error" and "ZeroDivisionError" in rec["detail"] and "line 2: return 1 / 0" in rec["stderr"], rec
+
+
+def test_n2_mode_owner_time_xattr_truncate_and_inotify_are_refused_by_the_kernel(tmp_path):
+    secret = tmp_path / ".secret"
+    secret.write_text("the hub's signing secret")
+    secret.chmod(0o600)
+    got = escaped(f"""
+std = [p for p in sys.path if p.endswith("lib-dynload")][0]
+fd = os.open(std, os.O_RDONLY)
+os.makedirs("/".join(["d"] * 20))
+os.chdir("/".join(["d"] * 20))
+up = "../" * (std.count("/") + 1)
+attempt("chmod secret 0644 via dir_fd", lambda: os.chmod(up + {str(secret).lstrip('/')!r}, 0o644, dir_fd=fd))
+attempt("chmod secret", lambda: os.chmod({str(secret)!r}, 0o644))
+attempt("chown", lambda: os.chown({str(secret)!r}, os.getuid(), os.getgid()))
+attempt("utime", lambda: os.utime({str(secret)!r}, (0, 0)))
+attempt("setxattr", lambda: os.setxattr({str(secret)!r}, "user.planted", b"1"))
+attempt("removexattr", lambda: os.removexattr({str(secret)!r}, "user.planted"))
+attempt("truncate", lambda: os.truncate({str(secret)!r}, 0))
+attempt("own file", lambda: os.write(os.open("/".join([".."] * 20) + "/mine", os.O_WRONLY | os.O_CREAT, 0o600), b"ok"))
+attempt("fchmod own", lambda: os.fchmod(os.open("/".join([".."] * 20) + "/mine", os.O_RDONLY), 0o644))
+attempt("ftruncate own", lambda: os.ftruncate(os.open("/".join([".."] * 20) + "/mine", os.O_WRONLY), 0))
+def notify(name):
+    ctypes = sys.modules["importlib"].import_module("ctypes")
+    libc = ctypes.CDLL(None, use_errno=True)
+    r = libc[name](0, 0) if name == "fanotify_init" else libc[name](0)
+    return (r, ctypes.get_errno())
+attempt("inotify_init1", lambda: notify("inotify_init1"))
+attempt("fanotify_init", lambda: notify("fanotify_init"))
+""")
+    for name in ("chmod secret 0644 via dir_fd", "chmod secret", "chown", "utime", "setxattr", "removexattr", "truncate", "fchmod own"):
+        assert got[name] == "refused PermissionError", (name, got[name])
+    assert got["inotify_init1"] == "WORKED (-1, 1)" and got["fanotify_init"] == "WORKED (-1, 1)", got
+    assert got["own file"] == "WORKED 2" and got["ftruncate own"] == "WORKED None", got
+    assert oct(secret.stat().st_mode & 0o777) == "0o600" and secret.read_text() == "the hub's signing secret"
+
+
+def test_n2_the_tripwire_honours_dir_fd():
+    rec = scriptworker.run_local(ESCAPE + """
+std = [p for p in sys.path if p.endswith("lib-dynload")][0]
+fd = os.open(std, os.O_RDONLY)
+os.makedirs("a/b")
+os.chdir("a/b")
+os.chmod("x", 0o644, dir_fd=fd)
+""", SNAP, check=False)
+    assert rec["exit"] == "tripwire" and rec["tripped"]["event"] == "os.chmod" and "relative to a descriptor" in rec["detail"], rec["detail"]
+
+
+@pytest.mark.parametrize("what", ["socket", "directory"])
+def test_n2_a_run_cannot_make_the_socket_unusable_and_the_worker_notices_if_anything_does(tmp_path, what):
+    home = tmp_path / "run"
+    home.mkdir()
+    sock = home / "w.sock"
+    lost = []
+    server = scriptworker.serve_in_thread(socket_path=str(sock), on_lost=lost.append)
+    try:
+        target = sock if what == "socket" else home
+        got = escaped(f'attempt("chmod 000", lambda: os.chmod({str(target)!r}, 0))')
+        assert got["chmod 000"] == "refused PermissionError" and scriptworker.socket_problem(str(sock)) == "" and not lost, got
+        target.chmod(0)  # anything else that does it: the watchdog sees the hub could not connect
+        deadline = time.monotonic() + 5
+        while not lost and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert lost and ("mode 0o0" in lost[0] or "directory is mode 0o0" in lost[0]), lost
+        assert scriptworker.socket_problem(str(sock)) or what == "directory"
+    finally:
+        home.chmod(0o755)
+        server.shutdown()
+        server.server_close()
+    if what == "directory":  # a restart repairs a directory the worker owns, then serves
+        home.chmod(0)
+        again = scriptworker.unix_server(str(sock))
+        try:
+            assert oct(home.stat().st_mode & 0o777) == "0o755" and scriptworker.socket_problem(str(sock)) == ""
+        finally:
+            again.server_close()
+
+
+def test_n2_the_healthcheck_asks_whether_the_hub_could_use_the_socket():
+    image = (ROOT / "docker" / "script-worker" / "Dockerfile").read_text()
+    assert "socket_problem(os.environ['HUBPROTO_SCRIPT_SOCKET'])" in image
+
+
+@pytest.mark.parametrize("cap,ok", [(1, False), (2, False), (3, True)])
+def test_n3_a_landlock_abi_that_does_not_control_truncate_is_refused(cap, ok):
+    rec = scriptworker.run_local("result = {'ran': True}", SNAP, _abi_cap=cap)
+    if ok:
+        assert rec["exit"] == "ok" and rec["protection"]["landlock_abi"] == 3, rec["detail"]
+    else:
+        assert rec["exit"] == "unprotected" and f"Landlock ABI {cap} does not control truncate" in rec["detail"], rec["detail"]
+
+
+def test_n5_a_script_never_runs_as_root(monkeypatch):
+    monkeypatch.setattr(scriptworker.os, "geteuid", lambda: 0)
+    rec = scriptworker.run_local("result = {}", SNAP)
+    assert rec["exit"] == "unprotected" and "a script never runs as root" in rec["detail"]
+    assert "it would run as root" in scriptworker.verify(os.getpid(), {"ready": True, "protection": {}})[1][0]
+
+
+def test_n6_a_forged_tripwire_on_a_finished_run_is_not_shown():
+    rec = scriptworker.run_local(ESCAPE + """
+import json
+struct = sys.modules["struct"]
+frame = json.dumps({"exit": "ok", "detail": "finished", "result": "{}", "tripped": {"event": "x", "args": "y", "why": "z"}}).encode()
+os.write(int(sys.argv[1]), struct.pack(">Q", len(frame)) + frame)
+os._exit(0)
+""", SNAP, check=False, tripwire=False)
+    assert rec["exit"] == "ok" and rec["tripped"] is None, rec
+    clean = scripts._clean_record({**rec, "tripped": {"event": "x", "args": "y", "why": "z"}})
+    assert clean["tripped"] is None, "shown only for a run the tripwire stopped"
+
+
+def test_n7_a_runs_folder_is_removed_even_if_it_was_made_unremovable(tmp_path):
+    top = tmp_path / "script-run-x"
+    (top / "keep" / "deep").mkdir(parents=True)
+    (top / "keep" / "deep" / "f").write_bytes(b"x" * 1000)
+    (top / "keep" / "deep").chmod(0)
+    (top / "keep").chmod(0)
+    top.chmod(0o500)
+    scriptworker.remove_folder(str(top))
+    assert not top.exists()
+    got = escaped('attempt("chmod own folder", lambda: os.chmod(".", 0o500))')
+    assert got["chmod own folder"] == "refused PermissionError", "and a run cannot do it to its own folder now"
+
+
+def test_n7_a_busy_worker_is_read_as_busy_even_while_the_hub_is_still_sending(tmp_path, monkeypatch):
+    import socket as socket_
+
+    monkeypatch.setattr(scriptworker, "MAX_CONNECTIONS", 1)
+    sock = tmp_path / "w.sock"
+    server = scriptworker.serve_in_thread(socket_path=str(sock))
+    held = socket_.socket(socket_.AF_UNIX)
+    try:
+        held.connect(str(sock))
+        time.sleep(0.2)
+        big = "x = 1\n" + "# " + "y" * (4 * 1024 * 1024) + "\nresult = {}"  # more than the socket buffers hold
+        for _ in range(10):
+            with pytest.raises(ValueError, match="as many requests as it serves at once"):
+                scripts._invoke(f"unix://{sock}", {"tool": "run-script", "script": big, "snapshot": SNAP}, 10)
+    finally:
+        held.close()
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_run_waits_for_the_one_before_it_only_so_long(monkeypatch):
+    monkeypatch.setattr(scriptworker, "MAX_WAIT", 0.3)
+    slow = "x = 0\nfor i in range(3 * 10 ** 7):\n    x += 1\nresult = {}"
+    t = threading.Thread(target=scriptworker.run_local, args=(slow, SNAP))
+    t.start()
+    deadline = time.monotonic() + 10
+    while not scriptworker._RUN.locked() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    with pytest.raises(scriptworker.Busy, match="busy for 0.3 seconds"):
+        scriptworker.run_local("result = {}", SNAP)
+    t.join()

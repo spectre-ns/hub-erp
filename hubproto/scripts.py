@@ -48,7 +48,7 @@ ISOLATION = {
 STATUS = {"carried": "carried on the change order", "nothing": "its output says what is in force: nothing carried",
           "refused": "its output was refused: nothing carried", "failed": "it did not finish: nothing carried"}
 TEXT_CAP = 16000
-TIMEOUT_MARGIN = 30.0
+TIMEOUT_MARGIN = 30.0  # plus the run's own time and scriptworker.MAX_WAIT
 
 
 def worker_url() -> str:
@@ -108,10 +108,18 @@ def _invoke(url: str, request: dict, timeout: float) -> dict:
     else:
         raise ValueError(f"HUBPROTO_SCRIPT_WORKER_URL {url!r} is not unix:///path/to/socket or http://host:port")
     body = json.dumps(request).encode("utf-8")
+    status = 0
     try:
-        conn.request("POST", "/invoke", body, {"Content-Type": "application/json", "Content-Length": str(len(body))})
-        resp = conn.getresponse()
-        data = resp.read(configjson.MAX_BYTES * 2 + 1_000_000)
+        try:
+            conn.request("POST", "/invoke", body, {"Content-Type": "application/json", "Content-Length": str(len(body))})
+        except (BrokenPipeError, ConnectionResetError):
+            # The worker answered before taking the whole request (it was busy): read what it said.
+            status, data = _read_early_answer(conn)
+            if not data:
+                raise
+        else:
+            resp = conn.getresponse()
+            status, data = resp.status, resp.read(configjson.MAX_BYTES * 2 + 1_000_000)
     except (OSError, http.client.HTTPException) as e:
         raise ValueError(f"the script worker at {url} cannot be reached ({type(e).__name__}: {e}); the script was not run, "
                          "and a hub with a worker never runs one beside itself instead") from None
@@ -120,7 +128,7 @@ def _invoke(url: str, request: dict, timeout: float) -> dict:
     try:
         env = json.loads(data.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
-        raise ValueError(f"the script worker answered with something that is not JSON (HTTP {resp.status})") from None
+        raise ValueError(f"the script worker answered with something that is not JSON (HTTP {status})") from None
     if not isinstance(env, dict):
         raise ValueError("the script worker's answer is not an envelope")
     if env.get("error"):
@@ -131,6 +139,29 @@ def _invoke(url: str, request: dict, timeout: float) -> dict:
     if not isinstance(env.get("payload"), dict):
         raise ValueError("the script worker's answer has no run record")
     return env
+
+
+def _read_early_answer(conn) -> tuple[int, bytes]:
+    """The HTTP answer a server sent before it read the request (status, body), or (0, b"")."""
+    sock = getattr(conn, "sock", None)
+    if sock is None:
+        return 0, b""
+    raw = b""
+    try:
+        sock.settimeout(2.0)
+        while len(raw) < 1_000_000:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            raw += chunk
+    except OSError:
+        pass
+    head, _, body = raw.partition(b"\r\n\r\n")
+    parts = head.split(b" ", 2)
+    try:
+        return int(parts[1]), body
+    except (IndexError, ValueError):
+        return 0, b""
 
 
 def _text(v, cap: int = TEXT_CAP) -> str:
@@ -152,7 +183,7 @@ def _clean_record(rec: dict) -> dict:
         "exit": reason, "detail": _text(rec.get("detail"), 1000) or scriptworker.REASONS[reason], "result": result,
         "stdout": _text(rec.get("stdout")), "stderr": _text(rec.get("stderr")),
         "stdout_dropped": _count(rec.get("stdout_dropped")), "stderr_dropped": _count(rec.get("stderr_dropped")),
-        "tripped": {k: _text(tripped.get(k), 400) for k in ("event", "args", "why")} if tripped else None,
+        "tripped": {k: _text(tripped.get(k), 400) for k in ("event", "args", "why")} if tripped and reason == "tripwire" else None,
         "protection": _protection(rec.get("protection")), "raw_output": _text(rec.get("raw_output")),
         "worker_version": _text(rec.get("worker_version"), 40),
         "python": _text(rec.get("python"), 40),
@@ -177,7 +208,8 @@ def protected(p: dict) -> bool:
     """The run's process was protected, as its parent checked: seccomp filter, no_new_privs, not dumpable, Landlock,
     limits."""
     return (p.get("seccomp_mode") == 2 and (p.get("seccomp_filters") or 0) >= 1 and p.get("no_new_privs") is True
-            and p.get("dumpable") is False and (p.get("landlock_abi") or 0) >= 1 and p.get("rlimits") is True and not p.get("missing"))
+            and p.get("dumpable") is False and (p.get("landlock_abi") or 0) >= scriptworker.LANDLOCK_MIN_ABI and p.get("rlimits") is True
+            and not p.get("missing"))
 
 
 def protection_words(p: dict) -> str:
@@ -200,7 +232,7 @@ def run(script: str, snapshot: str, limits: dict | None = None) -> dict:
     if where == "container":
         lim = scriptworker.limits_for(limits)
         env = _invoke(worker_url(), {"tool": "run-script", "script": script, "snapshot": snapshot, "limits": lim},
-                      timeout=float(lim["seconds"]) + TIMEOUT_MARGIN)
+                      timeout=float(lim["seconds"]) + scriptworker.MAX_WAIT + TIMEOUT_MARGIN)
         rec = _clean_record(env["payload"])
     else:
         try:

@@ -52,11 +52,14 @@ PATH_EVENTS = {  # event -> the argument positions that are paths the script cha
     "os.link": (0, 1), "os.symlink": (0, 1), "os.truncate": (0,), "os.utime": (0,), "shutil.rmtree": (0,),
     "shutil.copyfile": (1,), "shutil.copytree": (1,), "shutil.move": (0, 1), "os.chflags": (0,), "os.lchmod": (0,),
 }
+# Where an event's dir_fd arguments are (-1 when none was given).
+DIR_FD_AT = {"os.chmod": (2,), "os.chown": (3,), "os.utime": (3,), "os.remove": (1,), "os.rename": (2, 3), "os.rmdir": (1,),
+             "os.mkdir": (2,), "os.link": (2, 3), "os.symlink": (2,)}
 LIST_EVENTS = {"os.listdir", "os.scandir"}
 # Python modules the allowed modules import lazily (on first use, not at import): loaded before the restrictions.
 LAZY = ("_strptime", "traceback", "linecache", "copy", "fractions", "random", "numbers", "operator", "keyword",
         "reprlib", "heapq", "bisect", "contextlib", "enum", "types", "weakref", "abc", "textwrap", "warnings", "_colorize",
-        "tokenize", "token", "codecs", "unicodedata", "locale", "calendar", "encodings.idna", "_pydatetime", "_pydecimal", "_suggestions")
+        "tokenize", "token", "codecs", "unicodedata", "locale", "calendar", "encodings.idna", "_pydatetime", "_pydecimal", "_suggestions", "typing")
 WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
 EXIT_TRIPPED, EXIT_UNPROTECTED = 3, 4
 MAX_FRAME = 64 * 1024 * 1024
@@ -75,7 +78,16 @@ BLOCKED = {
     "mount_setattr": (442, 442), "personality": (135, 92), "kill": (62, 129), "tkill": (200, 130), "tgkill": (234, 131),
     "rt_sigqueueinfo": (129, 138), "rt_tgsigqueueinfo": (297, 240), "pidfd_open": (434, 434),
     "pidfd_send_signal": (424, 424), "pidfd_getfd": (438, 438), "prctl": (157, 167), "seccomp": (317, 277),
+    # Metadata Landlock does not cover (modes, owners, times, extended attributes), truncate by path (Landlock covers it
+    # only from ABI 3), and watching files change (inotify, fanotify): a configuration script needs none of them.
+    "chmod": (90, None), "fchmod": (91, 52), "fchmodat": (268, 53), "fchmodat2": (452, 452), "chown": (92, None),
+    "fchown": (93, 55), "lchown": (94, None), "fchownat": (260, 54), "utime": (132, None), "utimes": (235, None),
+    "futimesat": (261, None), "utimensat": (280, 88), "setxattr": (188, 5), "lsetxattr": (189, 6), "fsetxattr": (190, 7),
+    "removexattr": (197, 14), "lremovexattr": (198, 15), "fremovexattr": (199, 16), "setxattrat": (463, 463),
+    "removexattrat": (466, 466), "truncate": (76, 45), "inotify_init": (253, None), "inotify_init1": (294, 26),
+    "inotify_add_watch": (254, 27), "fanotify_init": (300, 262), "fanotify_mark": (301, 263),
 }
+LANDLOCK_MIN_ABI = 3  # ABI 3 is the first that controls truncate; below it a run is refused (fail closed)
 AUDIT_ARCH = {"x86_64": (0xC000003E, 0), "aarch64": (0xC00000B7, 1)}
 # Landlock (the same numbers on x86_64 and aarch64): landlock_create_ruleset, landlock_add_rule, landlock_restrict_self.
 LL_CREATE, LL_ADD, LL_RESTRICT = 444, 445, 446
@@ -115,7 +127,7 @@ def not_dumpable(dumpable_too: bool = True) -> str:
     return "off"
 
 
-def install_landlock(read_dirs, read_files, write_dirs) -> tuple[int, str]:
+def install_landlock(read_dirs, read_files, write_dirs, cap: int = 0) -> tuple[int, str]:
     """Restrict this process's file access in the kernel: read (and execute) only under ``read_dirs`` and the files
     ``read_files``; everything only under ``write_dirs``; nothing else. Returns (ABI, "installed") or (0, why not)."""
     if sys.platform != "linux":
@@ -131,6 +143,11 @@ def install_landlock(read_dirs, read_files, write_dirs) -> tuple[int, str]:
     abi = libc.syscall(ctypes.c_long(LL_CREATE), None, ctypes.c_size_t(0), ctypes.c_uint32(1))  # LANDLOCK_CREATE_RULESET_VERSION
     if abi < 1:
         return 0, f"unavailable: the kernel has no Landlock (errno {ctypes.get_errno()})"
+    if cap:  # tests only: behave as a kernel of an older ABI would (the rights it knows, and its number)
+        abi = min(abi, cap)
+    if abi < LANDLOCK_MIN_ABI:
+        return abi, (f"refused: Landlock ABI {abi} does not control truncate; a run needs ABI {LANDLOCK_MIN_ABI} or later "
+                     "(Linux 6.2)")
     every = (1 << LL_FS_BITS_BY_ABI.get(abi, 16)) - 1
     # net (ABI 4): BIND_TCP, CONNECT_TCP; scoped (ABI 6): abstract Unix sockets and signals outside the domain.
     attr = RulesetAttr(every, 3 if abi >= 4 else 0, 3 if abi >= 6 else 0)
@@ -263,9 +280,12 @@ def _proxies(names: dict) -> dict:
     return out
 
 
-def _make_hook(tmp: str, roots: tuple, allowed: frozenset, allowed_top: frozenset, ctl: int, excerpts):
-    """The tripwire, built in a scope of its own: no frame the script can reach holds its state."""
+def _make_hook(tmp: str, roots: tuple, allowed: frozenset, allowed_top: frozenset, ctl: int, excerpts, script_code):
+    """The tripwire, built in a scope of its own: no frame the script can reach holds its state. Once installed it
+    allows one exec, the script's own (``script_code``); any other compile or exec ends the run, so text evaluated
+    through any API (``eval``, ``ForwardRef.evaluate``, ``namedtuple``) stops there, whatever the lists miss."""
     tripping = []
+    ran = []
 
     def under(path, bases) -> bool:
         try:
@@ -289,6 +309,11 @@ def _make_hook(tmp: str, roots: tuple, allowed: frozenset, allowed_top: frozense
     def hook(event, args):
         if tripping:
             return
+        if event == "exec" and not ran and args and args[0] is script_code:
+            ran.append(True)  # the script's own exec, the one allowed
+            return
+        if event in ("compile", "exec", "cpython.run_command", "cpython.run_file", "cpython.run_module"):
+            trip(event, args[1:2] if event == "compile" else (), "the script evaluated text as code; a configuration script never does")
         if event in TRIP_EXACT or event.startswith(TRIP_PREFIX):
             trip(event, args, "a configuration script computes; it starts nothing, opens no connection and reaches no internals")
         if event == "import":
@@ -311,6 +336,9 @@ def _make_hook(tmp: str, roots: tuple, allowed: frozenset, allowed_top: frozense
             if path is not None and not isinstance(path, int) and not under(path, (tmp,) + roots):
                 trip(event, args, "a script reads only the configuration it is given")
         elif event in PATH_EVENTS:
+            # A path relative to a dir_fd is resolved from that descriptor, not from the cwd: refuse any dir_fd.
+            if any(i < len(args) and isinstance(args[i], int) and args[i] not in (-1, -100) for i in DIR_FD_AT.get(event, ())):
+                trip(event, args, "a script changes only its own temporary folder, by name, never relative to a descriptor")
             for i in PATH_EVENTS[event]:
                 if i < len(args) and not isinstance(args[i], int) and not under(args[i], (tmp,)):
                     trip(event, args, "a script changes only its own temporary folder")
@@ -318,7 +346,28 @@ def _make_hook(tmp: str, roots: tuple, allowed: frozenset, allowed_top: frozense
     return hook
 
 
-def protect(lim: dict, read_dirs, read_files, tmp: str, skip=(), claim: bool = False) -> dict:
+def _said(e: BaseException) -> str:
+    try:
+        return str(e)
+    except Exception:
+        return "(its message cannot be shown)"
+
+
+def _where(e: BaseException, script: str) -> str:
+    """The script's lines the error passed through, without the traceback module (which compiles source to point at
+    the error, and any compile ends the run)."""
+    src = script.split("\n")
+    out, t = ["Traceback (the script's lines):"], e.__traceback__
+    while t is not None:
+        if t.tb_frame.f_code.co_filename == "<script>":
+            n = t.tb_lineno or 0
+            out.append(f"  line {n}: {src[n - 1].strip() if 0 < n <= len(src) else ''}")
+        t = t.tb_next
+    out.append(f"{type(e).__name__}: {_said(e)}")
+    return "\n".join(out) + "\n"
+
+
+def protect(lim: dict, read_dirs, read_files, tmp: str, skip=(), claim: bool = False, abi_cap: int = 0) -> dict:
     """Every kernel restriction, in order; what each gave. ``skip`` and ``claim`` are for tests only (a layer left out,
     and said to be there anyway), to show the run is refused and the parent's own check catches the claim."""
     import resource
@@ -327,6 +376,8 @@ def protect(lim: dict, read_dirs, read_files, tmp: str, skip=(), claim: bool = F
         resource.setrlimit(which, (int(value), int(value)))
 
     protection = {}
+    if os.geteuid() == 0:
+        protection["user"] = "refused: a script never runs as root"
     try:
         hard(resource.RLIMIT_CORE, 0)
         # CPU: SIGXCPU (which ends the run) at the limit, SIGKILL a second later should the script catch it.
@@ -346,7 +397,7 @@ def protect(lim: dict, read_dirs, read_files, tmp: str, skip=(), claim: bool = F
         protection["dumpable"] = not_dumpable("dumpable" not in skip)
         if "dumpable" in skip and claim:
             protection["dumpable"] = "off"
-        abi, why = install_landlock(read_dirs, read_files, [tmp]) if "landlock" not in skip else ((7 if claim else 0), left_out)
+        abi, why = install_landlock(read_dirs, read_files, [tmp], abi_cap) if "landlock" not in skip else ((7 if claim else 0), left_out)
         protection["landlock"], protection["landlock_abi"] = why, abi
         protection["seccomp"] = install_kernel_filter() if "seccomp" not in skip else left_out
     except (ImportError, OSError) as e:
@@ -359,7 +410,7 @@ def protect(lim: dict, read_dirs, read_files, tmp: str, skip=(), claim: bool = F
 
 def protected(p: dict) -> bool:
     return (p.get("rlimits") == "set" and p.get("dumpable") == "off" and p.get("landlock") == "installed"
-            and p.get("seccomp") == "installed")
+            and p.get("seccomp") == "installed" and "user" not in p)
 
 
 def main() -> None:
@@ -381,7 +432,6 @@ def main() -> None:
         except ImportError:
             pass
     import builtins
-    import traceback
 
     time.localtime()  # the time zone is read now: after Landlock nothing outside the run's folder is
     proxies = _proxies(names)
@@ -389,7 +439,8 @@ def main() -> None:
     read_files = sorted({os.path.realpath(__file__), os.path.realpath(sys.executable)})
     roots = tuple(read_dirs) + tuple(read_files)
 
-    protection = protect(lim, read_dirs, read_files, tmp, skip=tuple(setup.get("test_skip") or ()), claim=bool(setup.get("test_claim")))
+    protection = protect(lim, read_dirs, read_files, tmp, skip=tuple(setup.get("test_skip") or ()), claim=bool(setup.get("test_claim")),
+                         abi_cap=int(setup.get("test_abi_cap") or 0))
     ok = protected(protection)
     write_frame(ctl, {"ready": ok, "protection": protection})
     if not ok:  # fail closed: no script runs in a process that is not protected
@@ -440,7 +491,7 @@ def main() -> None:
     ns = {"__name__": "__script__", "__builtins__": names_, "config": config}
     del config, snapshot_text
     if setup.get("tripwire", True):
-        sys.addaudithook(_make_hook(tmp, roots, allowed, allowed_top, ctl, excerpts))
+        sys.addaudithook(_make_hook(tmp, roots, allowed, allowed_top, ctl, excerpts, code))
     sys.stdout, sys.stderr, sys.stdin = out, err, io.StringIO("")
     try:
         # The one exec of the hub's code base: the script's own, in this child process, which the hub never imports.
@@ -452,12 +503,10 @@ def main() -> None:
         reason, detail = "memory-limit", f"the script ran out of memory (the limit is {lim['memory_bytes'] // (1024 * 1024)} MB)"
     except RecursionError:
         reason, detail = "error", "the script recursed too deeply"
-    except BaseException as e:  # the script's own error: its traceback is what the person reads
+    except BaseException as e:  # the script's own error: where it stopped in the script is what the person reads
         reason = "error"
-        tb = traceback.format_exception(type(e), e, e.__traceback__)
-        lines = [ln for ln in tb if 'File "<script>"' in ln or not ln.startswith("  File ")]
-        detail = f"the script stopped with {type(e).__name__}: {str(e)[:500]}"
-        err.write("".join(lines)[-4000:])
+        detail = f"the script stopped with {type(e).__name__}: {_said(e)[:500]}"
+        err.write(_where(e, script)[-4000:])
     result_text = None
     if reason == "ok":
         if "result" not in ns:

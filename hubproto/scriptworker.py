@@ -40,6 +40,7 @@ import os
 import selectors
 import shutil
 import signal
+import socket
 import struct
 import subprocess
 import sys
@@ -63,6 +64,7 @@ PATH = "/usr/local/bin:/usr/bin:/bin"
 MAX_REQUEST = 40 * 1024 * 1024
 HANDSHAKE_SECONDS = 15.0
 MAX_QUEUED = 4  # runs waiting behind the one running; more are refused as busy
+MAX_WAIT = 60.0  # the longest a run waits for the one before it (the hub waits this, plus the run, plus a margin)
 MAX_CONNECTIONS = 8  # connections the server serves at once (each a thread); more are refused without a thread
 EXIT_TRIPPED, EXIT_UNPROTECTED = 3, 4
 REASONS = {
@@ -113,8 +115,13 @@ def _one_at_a_time():
             raise Busy(f"the script worker is running a script and {MAX_QUEUED} more wait: try again in a minute")
         _waiting += 1
     try:
-        with _RUN:  # each run is bounded by its own timeout, so the wait is too
+        # A run waits at most MAX_WAIT for the one before it: past that whoever asked has stopped waiting too.
+        if not _RUN.acquire(timeout=MAX_WAIT):
+            raise Busy(f"the script worker was busy for {MAX_WAIT:g} seconds with other runs: try again in a minute")
+        try:
             yield
+        finally:
+            _RUN.release()
     finally:
         with _QUEUE:
             _waiting -= 1
@@ -149,7 +156,27 @@ def _status(pid) -> dict:
         return {}
 
 
-def verify(pid: int, hello: dict) -> tuple[dict, list[str]]:
+LANDLOCK_MIN_ABI = 3  # the first ABI that controls truncate (script_sandbox.LANDLOCK_MIN_ABI)
+LIMIT_ROWS = {"cpu_seconds": "Max cpu time", "file_bytes": "Max file size", "open_files": "Max open files",
+              "memory_bytes": "Max address space"}
+
+
+def _limits(pid) -> dict:
+    """/proc/<pid>/limits: row -> (soft, hard) as text."""
+    try:
+        with open(f"/proc/{pid}/limits", encoding="ascii", errors="replace") as fh:
+            rows = fh.read().splitlines()[1:]
+    except OSError:
+        return {}
+    out = {}
+    for row in rows:
+        name, rest = row[:26].strip(), row[26:].split()
+        if len(rest) >= 2:
+            out[name] = (rest[0], rest[1])
+    return out
+
+
+def verify(pid: int, hello: dict, lim: dict | None = None) -> tuple[dict, list[str]]:
     """What the parent sees of the child's protection, and what is missing (empty: protected). ``hello`` is the
     handshake, written before the script was sent; the kernel's own state is read from /proc."""
     said = hello.get("protection") if isinstance(hello.get("protection"), dict) else {}
@@ -164,18 +191,27 @@ def verify(pid: int, hello: dict) -> tuple[dict, list[str]]:
     except OSError:
         seen["dumpable"] = True
     seen["landlock_abi"] = int(said.get("landlock_abi") or 0) if said.get("landlock") == "installed" else 0
-    seen["rlimits"] = said.get("rlimits") == "set"
+    limits = _limits(pid)  # read by the parent, not said by the run
+    want = {row: str(int(lim[k])) for k, row in LIMIT_ROWS.items()} if lim else {}
+    want["Max processes"] = "0"
+    wrong = [row for row, v in want.items() if limits.get(row, ("", ""))[0] != v]
+    seen["rlimits"] = said.get("rlimits") == "set" and not wrong
+    uid = int((it.get("Uid") or "-1").split()[0]) if it.get("Uid") else -1
     missing = []
+    if uid == 0 or os.geteuid() == 0:
+        missing.append("it would run as root: a script never runs as root")
     if seen["seccomp_mode"] != 2 or seen["seccomp_filters"] <= mine:
         missing.append(f"no seccomp filter of its own (Seccomp {seen['seccomp_mode']}, {seen['seccomp_filters']} filters)")
     if not seen["no_new_privs"]:
         missing.append("no_new_privs is not set")
-    if seen["dumpable"] and os.getuid() != 0:
+    if seen["dumpable"]:
         missing.append("it is still dumpable (its /proc entries are its user's)")
     if not seen["landlock_abi"]:
         missing.append(f"no Landlock ruleset ({said.get('landlock') or 'not said'})")
+    elif seen["landlock_abi"] < LANDLOCK_MIN_ABI:
+        missing.append(f"Landlock ABI {seen['landlock_abi']} does not control truncate (ABI {LANDLOCK_MIN_ABI} or later is needed)")
     if not seen["rlimits"]:
-        missing.append(f"no limits ({said.get('rlimits') or 'not said'})")
+        missing.append(f"no limits ({said.get('rlimits') or 'not said'}" + (f"; not as set: {', '.join(wrong)}" if wrong else "") + ")")
     if not hello.get("ready"):
         said_no = [f"{k} {v}" for k, v in said.items() if k != "landlock_abi" and v not in ("set", "off", "installed")]
         missing.append("it did not say it was ready" + (f" ({'; '.join(said_no)[:300]})" if said_no else ""))
@@ -184,18 +220,19 @@ def verify(pid: int, hello: dict) -> tuple[dict, list[str]]:
 
 # ---------------------------------------------------------------- one run
 def run_local(script: str, snapshot: str, limits: dict | None = None, *, check: bool = True, tripwire: bool = True,
-              python: str | None = None, _skip=(), _claim: bool = False) -> dict:
+              python: str | None = None, _skip=(), _claim: bool = False, _abi_cap: int = 0) -> dict:
     """Run one script in a fresh subprocess, after the one before it (``_one_at_a_time``), and return the run record.
     Raises Busy when enough runs wait. ``check=False`` skips the allow-list check and ``tripwire=False`` the audit hook;
     ``_skip`` leaves a kernel layer out (``_claim``: and has the run say it is there): only tests use them, to show that
     the kernel's restrictions hold when the check and the hook are got past, and that a run without them is refused
     (never offered over /invoke)."""
     with _one_at_a_time():
-        return _run_unqueued(script, snapshot, limits, check=check, tripwire=tripwire, python=python, _skip=_skip, _claim=_claim)
+        return _run_unqueued(script, snapshot, limits, check=check, tripwire=tripwire, python=python, _skip=_skip, _claim=_claim,
+                             _abi_cap=_abi_cap)
 
 
 def _run_unqueued(script: str, snapshot: str, limits: dict | None = None, *, check: bool = True, tripwire: bool = True,
-                  python: str | None = None, _skip=(), _claim: bool = False) -> dict:
+                  python: str | None = None, _skip=(), _claim: bool = False, _abi_cap: int = 0) -> dict:
     lim = limits_for(limits)
     record = {"script_sha256": sha256(script), "snapshot_sha256": sha256(snapshot), "limits": lim, "worker_version": VERSION,
               "python": "", "protection": {}, "tripped": None, "result": None, "stdout": "", "stderr": "", "raw_output": "",
@@ -204,9 +241,12 @@ def _run_unqueued(script: str, snapshot: str, limits: dict | None = None, *, che
         refusals = scriptcheck.check(script)
         if refusals:
             return {**record, "exit": "refused", "detail": "; ".join(refusals), "refusals": refusals}
+    if os.geteuid() == 0:  # root is not bound by RLIMIT_NPROC, and the dumpable check tells nothing: never
+        return {**record, "exit": "unprotected", "detail": "the worker runs as root, and a script never runs as root: the script was not run"}
     setup = {"allowed": list(scriptcheck.ALLOWED_IMPORTS), "allowed_submodules": list(scriptcheck.ALLOWED_SUBMODULES),
              "names": {k: list(v) for k, v in scriptcheck.ALLOWED_NAMES.items()}, "limits": lim, "tripwire": bool(tripwire),
-             **({"test_skip": list(_skip), "test_claim": bool(_claim)} if _skip else {})}
+             **({"test_skip": list(_skip), "test_claim": bool(_claim)} if _skip else {}),
+             **({"test_abi_cap": int(_abi_cap)} if _abi_cap else {})}
     exe = python or sys.executable
     record["python"] = f"{sys.version_info.major}.{sys.version_info.minor}" if exe == sys.executable else exe
     started = time.monotonic()
@@ -227,7 +267,7 @@ def _run_unqueued(script: str, snapshot: str, limits: dict | None = None, *, che
         except (BrokenPipeError, OSError):
             pass
         hello, why = out.first_frame(HANDSHAKE_SECONDS)
-        seen, missing = verify(proc.pid, hello or {}) if hello is not None else ({}, [why or "it sent no handshake"])
+        seen, missing = verify(proc.pid, hello or {}, lim) if hello is not None else ({}, [why or "it sent no handshake"])
         record["protection"] = {**seen, "checked_by": "", "missing": missing}
         if missing:
             _kill(proc)
@@ -245,12 +285,33 @@ def _run_unqueued(script: str, snapshot: str, limits: dict | None = None, *, che
         if proc is not None and proc.poll() is None:
             _kill(proc)
             proc.wait()
-        shutil.rmtree(tmp, ignore_errors=True)
+        remove_folder(tmp)
         try:
             os.close(ctl_r)
         except OSError:
             pass
     return _conclude(record, proc, out, stopped, lim)
+
+
+def remove_folder(top: str) -> None:
+    """Remove a run's folder whatever the run did to it: give every directory in it back its owner's rights first
+    (the parent is not under the run's filter), then remove it."""
+    def fix(d: str) -> None:
+        try:
+            os.chmod(d, 0o700)
+            with os.scandir(d) as it:
+                entries = list(it)
+        except OSError:
+            return
+        for e in entries:
+            try:
+                if e.is_dir(follow_symlinks=False):
+                    fix(e.path)
+            except OSError:
+                pass
+
+    fix(top)
+    shutil.rmtree(top, ignore_errors=True)
 
 
 def _conclude(record: dict, proc, out: "_Collector", stopped: str, lim: dict) -> dict:
@@ -278,9 +339,11 @@ def _conclude(record: dict, proc, out: "_Collector", stopped: str, lim: dict) ->
         a = answers[0]  # written in the run's process: the script's own claims about itself
         reason = str(a.get("exit") or "crashed")
         detail = str(a.get("detail") or "")
-        for k in ("result", "stdout", "stderr", "stdout_dropped", "stderr_dropped", "tripped"):
+        for k in ("result", "stdout", "stderr", "stdout_dropped", "stderr_dropped"):
             if k in a:
                 record[k] = a[k]
+        if code == EXIT_TRIPPED and isinstance(a.get("tripped"), dict):  # a tripwire stop is shown only when it happened
+            record["tripped"] = a["tripped"]
         if code == EXIT_TRIPPED:  # only the tripwire exits 3
             reason, detail = "tripwire", detail or "the run was stopped by the tripwire"
         elif reason in ("tripwire", "unprotected", "refused", "timeout", "cpu-limit", "output-limit"):
@@ -453,6 +516,23 @@ def _busy_bytes() -> bytes:
             + b"\r\nConnection: close\r\n\r\n" + body)
 
 
+def _answer_busy(request) -> None:
+    """Answer busy, then take in what the client is still sending (bounded, briefly) before closing, so it reads the
+    answer instead of a broken pipe."""
+    try:
+        request.sendall(_busy_bytes())
+        request.shutdown(socket.SHUT_WR)
+        request.settimeout(0.5)
+        taken, end = 0, time.monotonic() + 1.0
+        while taken < 4 * 1024 * 1024 and time.monotonic() < end:
+            chunk = request.recv(65536)
+            if not chunk:
+                break
+            taken += len(chunk)
+    except OSError:
+        pass
+
+
 class _Bounded:
     """At most MAX_CONNECTIONS requests served at once; past that, a busy answer from the accepting thread itself."""
 
@@ -466,10 +546,7 @@ class _Bounded:
             if not full:
                 self._active += 1
         if full:
-            try:
-                request.sendall(_busy_bytes())
-            except OSError:
-                pass
+            _answer_busy(request)
             self.shutdown_request(request)
             return
         super().process_request(request, client_address)
@@ -500,14 +577,49 @@ class TcpServer(_Bounded, ThreadingHTTPServer):
         super().__init__(*a, **k)
 
 
+SOCKET_MODE, DIR_MODE = 0o666, 0o755
+
+
 def unix_server(path: str) -> UnixServer:
-    """Listen on a Unix socket at ``path`` (any stale one removed), connectable by the hub's user."""
+    """Listen on a Unix socket at ``path`` (any stale one removed), connectable by the hub's user. Its directory, when
+    the worker owns it, is given back its mode first (whatever left it unusable, a restart repairs it)."""
     p = Path(path)
+    try:
+        if p.parent.stat().st_uid == os.geteuid():
+            os.chmod(p.parent, DIR_MODE)
+    except OSError:
+        pass
     if p.exists() or p.is_symlink():
         p.unlink()
     server = UnixServer(str(p), Handler)
-    os.chmod(p, 0o666)
+    os.chmod(p, SOCKET_MODE)
     return server
+
+
+def socket_problem(path: str, ident=None) -> str:
+    """Why the hub could not use the socket at ``path`` ('' when it could): gone, replaced, not a socket, not the
+    worker's, not mode 0666, or its directory not searchable by others. (The healthcheck asks this too.)"""
+    import stat as st_
+
+    try:
+        d = os.stat(os.path.dirname(path) or ".")
+    except OSError:
+        return f"the socket's directory {os.path.dirname(path)} is gone"
+    if st_.S_IMODE(d.st_mode) & 0o005 != 0o005:
+        return f"the socket's directory is mode {oct(st_.S_IMODE(d.st_mode))}: the hub cannot reach the socket"
+    try:
+        s = os.lstat(path)
+    except OSError:
+        return f"the socket {path} is gone"
+    if ident is not None and (s.st_dev, s.st_ino) != ident:
+        return f"the socket {path} was replaced"
+    if not st_.S_ISSOCK(s.st_mode):
+        return f"{path} is not a socket"
+    if s.st_uid != os.geteuid():
+        return f"the socket {path} is not the worker's (uid {s.st_uid})"
+    if st_.S_IMODE(s.st_mode) != SOCKET_MODE:
+        return f"the socket {path} is mode {oct(st_.S_IMODE(s.st_mode))}, not {oct(SOCKET_MODE)}: the hub cannot connect"
+    return ""
 
 
 def watch_socket(path: str, on_lost, every: float = 1.0) -> threading.Thread:
@@ -520,12 +632,9 @@ def watch_socket(path: str, on_lost, every: float = 1.0) -> threading.Thread:
     def loop():
         while True:
             time.sleep(every)
-            try:
-                now = os.lstat(path)
-                if (now.st_dev, now.st_ino) != ident:
-                    return on_lost(f"the socket {path} was replaced")
-            except OSError:
-                return on_lost(f"the socket {path} is gone")
+            why = socket_problem(path, ident)
+            if why:
+                return on_lost(why)
 
     t = threading.Thread(target=loop, daemon=True)
     t.start()

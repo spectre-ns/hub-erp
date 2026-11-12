@@ -11,29 +11,32 @@ order. The run enforces the same names again (``ALLOWED_NAMES``: an imported mod
 Refused:
 
 * ``import`` of anything but ``ALLOWED_IMPORTS`` (and a relative import); a name of an allowed module that is not in
-  its list (``typing.sys``, ``statistics.sys``, ``collections._sys``, ``typing.operator``, ``typing.get_type_hints``:
-  the lists name only plain computing helpers); a module used other than as ``module.name``;
+  its list (``statistics.sys``, ``collections._sys``, ``collections.namedtuple``: the lists name only plain computing
+  helpers); a module used other than as ``module.name``; ``typing`` (its ``TypeVar``, ``ForwardRef`` and
+  ``get_type_hints`` evaluate text);
 * ``eval``, ``exec``, ``compile``, ``__import__``, ``open``, ``getattr``, ``setattr``, ``delattr``, ``globals``,
   ``locals``, ``vars``, ``breakpoint``, ``input``, named anywhere (called or not);
-* any dunder name or attribute (``__class__``, ``__subclasses__``, ``__globals__``, ``__builtins__``, ...), and text
-  that names one (``"{0.__globals__}"``);
+* any dunder name or attribute (``__class__``, ``__subclasses__``, ``__globals__``, ``__builtins__``, ...), text that
+  holds ``__`` or begins or ends with ``_`` (joined, ``"_" + "_"`` spells one), and ``chr``;
 * the introspection attributes that reach frames and code (``gi_frame``, ``f_globals``, ``tb_frame``, ``mro``, ...);
 * a class pattern in ``match`` (``case object(__class__=t)`` reads attributes by a name), and an annotation written as
-  text (``typing`` would evaluate it).
+  text (it can be evaluated);
+* the names that evaluate text (``evaluate``, ``evaluate_bound``, ``ForwardRef``, ``TypeVar``, ``get_type_hints``).
 """
 
 from __future__ import annotations
 
 import ast
-import re
 
 ALLOWED_IMPORTS = ("json", "math", "re", "datetime", "decimal", "collections", "itertools", "functools", "statistics",
-                   "string", "typing")
+                   "string")
 # A submodule of an allowed module that a script may name in an import.
 ALLOWED_SUBMODULES = ("collections.abc",)
 # The names a script may use of each module (and of collections.abc, reached as collections.abc). Nothing else: no
-# module a module imports (sys, os, operator), no helper that evaluates text (typing.get_type_hints, ForwardRef), no
-# string.Formatter (get_field reaches attributes by a name in a string).
+# module a module imports (sys, os, operator), nothing that evaluates text (typing is not allowed at all: TypeVar's
+# evaluate_bound, ForwardRef and get_type_hints run eval; collections.namedtuple builds its class with eval), no
+# string.Formatter (get_field reaches attributes by a name in a string). The run also ends at any compile or exec
+# once the script has started (the tripwire), so anything this list misses that evaluates text stops there.
 ALLOWED_NAMES = {
     "json": ("JSONDecodeError", "JSONDecoder", "JSONEncoder", "dump", "dumps", "load", "loads"),
     "math": ("acos", "acosh", "asin", "asinh", "atan", "atan2", "atanh", "cbrt", "ceil", "comb", "copysign", "cos", "cosh",
@@ -49,8 +52,7 @@ ALLOWED_NAMES = {
                 "DivisionImpossible", "DivisionUndefined", "FloatOperation", "Inexact", "InvalidContext", "InvalidOperation",
                 "Overflow", "ROUND_05UP", "ROUND_CEILING", "ROUND_DOWN", "ROUND_FLOOR", "ROUND_HALF_DOWN", "ROUND_HALF_EVEN",
                 "ROUND_HALF_UP", "ROUND_UP", "Rounded", "Subnormal", "Underflow", "getcontext", "localcontext"),
-    "collections": ("ChainMap", "Counter", "OrderedDict", "UserDict", "UserList", "UserString", "abc", "defaultdict", "deque",
-                    "namedtuple"),
+    "collections": ("ChainMap", "Counter", "OrderedDict", "UserDict", "UserList", "UserString", "abc", "defaultdict", "deque"),
     "collections.abc": ("Callable", "Collection", "Container", "Generator", "Hashable", "ItemsView", "Iterable", "Iterator",
                         "KeysView", "Mapping", "MappingView", "MutableMapping", "MutableSequence", "MutableSet", "Reversible",
                         "Sequence", "Set", "Sized", "ValuesView"),
@@ -63,11 +65,6 @@ ALLOWED_NAMES = {
                    "pstdev", "pvariance", "quantiles", "stdev", "variance"),
     "string": ("Template", "ascii_letters", "ascii_lowercase", "ascii_uppercase", "capwords", "digits", "hexdigits",
                "octdigits", "printable", "punctuation", "whitespace"),
-    "typing": ("AbstractSet", "Any", "Callable", "ClassVar", "Collection", "Container", "Counter", "DefaultDict", "Deque",
-               "Dict", "Final", "FrozenSet", "Generator", "Generic", "Hashable", "ItemsView", "Iterable", "Iterator",
-               "KeysView", "List", "Literal", "Mapping", "MappingView", "MutableMapping", "MutableSequence", "MutableSet",
-               "NamedTuple", "NoReturn", "Optional", "OrderedDict", "Protocol", "Reversible", "Sequence", "Set", "Sized",
-               "Tuple", "Type", "TypeAlias", "TypeVar", "TypedDict", "Union", "ValuesView", "cast", "final", "overload"),
 }
 FORBIDDEN_NAMES = {
     "eval": "it runs text as code", "exec": "it runs text as code", "compile": "it makes code from text",
@@ -76,12 +73,14 @@ FORBIDDEN_NAMES = {
     "delattr": "it deletes an attribute by a name: write del x.name",
     "globals": "it reaches the script's namespace by name", "locals": "it reaches the script's namespace by name",
     "vars": "it reaches an object's namespace by name", "breakpoint": "it starts a debugger", "input": "a script asks nobody anything",
+    "chr": "it builds text from numbers, which can spell a special name: write the text",
 }
 INTROSPECTION = {
     "mro", "gi_frame", "gi_code", "gi_yieldfrom", "cr_frame", "cr_code", "cr_await", "ag_frame", "ag_code", "f_globals",
     "f_locals", "f_builtins", "f_back", "f_code", "tb_frame", "tb_next", "co_code", "get_field", "Formatter",
 }
-DUNDER_TEXT = re.compile(r"__\w+__")
+EVALUATES = {"evaluate", "evaluate_bound", "evaluate_constraints", "evaluate_default", "_evaluate", "TypeVar", "ForwardRef",
+             "get_type_hints", "namedtuple"}
 MAX_CHARS = 200_000
 MAX_LINES = 5_000
 
@@ -131,7 +130,7 @@ def check(text: str) -> list[str]:
     as_value = {id(n.value) for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
 
     def module_of(node) -> str | None:
-        """The allowed module an expression is (``typing``, ``collections.abc``), or None."""
+        """The allowed module an expression is (``json``, ``collections.abc``), or None."""
         if isinstance(node, ast.Name):
             return modules.get(node.id)
         if isinstance(node, ast.Attribute):
@@ -165,6 +164,8 @@ def check(text: str) -> list[str]:
                 out.append(f"{at}: {node.id} is a special name: a script does not reach Python's internals")
             elif node.id in INTROSPECTION:
                 out.append(f"{at}: {node.id} is not allowed: it reaches attributes by a name in a string")
+            elif node.id in EVALUATES:
+                out.append(f"{at}: {node.id} is not allowed: it evaluates text as code")
             elif node.id in modules and (id(node) not in as_value or not isinstance(node.ctx, ast.Load)):
                 out.append(f"{at}: {node.id} is a module: use it only as {node.id}.name (a name of its list), never as a value")
         elif isinstance(node, ast.Attribute):
@@ -175,10 +176,13 @@ def check(text: str) -> list[str]:
                 out.append(f"{at}: .{node.attr} is a special attribute: a script does not reach Python's internals")
             elif node.attr in INTROSPECTION:
                 out.append(f"{at}: .{node.attr} is not allowed: it reaches frames, code or attributes by name")
+            elif node.attr in EVALUATES:
+                out.append(f"{at}: .{node.attr} is not allowed: it evaluates text as code")
             elif base is not None and f"{base}.{node.attr}" in ALLOWED_NAMES and id(node) not in as_value:
                 out.append(f"{at}: {base}.{node.attr} is a module: use it only as {base}.{node.attr}.name, never as a value")
-        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and DUNDER_TEXT.search(node.value):
-            out.append(f"{at}: the text {node.value[:40]!r} names a special attribute: a script does not reach Python's internals")
+        elif isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)) and _underscored(node.value):
+            out.append(f"{at}: the text {node.value[:40]!r} holds two underscores together, or begins or ends with one: joined, "
+                       "it can spell a special name (__class__); write names without them")
         elif isinstance(node, ast.MatchClass):
             out.append(f"{at}: a class pattern in match is not allowed: it reads attributes by name (match on values, lists "
                        "or dictionaries instead)")
@@ -194,8 +198,14 @@ def check(text: str) -> list[str]:
                 out.append(f"{at}: {', '.join(bad)} is a special name: a script does not reach Python's internals")
         for ann in _annotations(node):
             if any(isinstance(n, ast.Constant) and isinstance(n.value, str) for n in ast.walk(ann)):
-                out.append(f"Line {ann.lineno}: an annotation written as text is not allowed: typing would evaluate it as code")
+                out.append(f"Line {ann.lineno}: an annotation written as text is not allowed: it can be evaluated as code")
     return list(dict.fromkeys(sorted(out, key=_line_of)))
+
+
+def _underscored(v) -> bool:
+    """Text that names a dunder, or could make one joined to other text: it holds "__", or begins or ends with "_"."""
+    u = "_" if isinstance(v, str) else b"_"
+    return (u + u) in v or v.startswith(u) or v.endswith(u)
 
 
 def _annotations(node) -> list:
