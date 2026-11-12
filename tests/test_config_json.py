@@ -138,7 +138,7 @@ def test_an_export_proposed_unchanged_changes_nothing(hub, tmp_path):
     path.write_text(configjson.dumps(configjson.export(hub)))
     rc, text = run_cli(hub.root, "config", "propose", str(path), "--as", "bob")
     assert rc == 0 and "c.json says what is in force: nothing to propose" in text and cos(hub) == []
-    partial = {"schema": configjson.SCHEMA, "release": exported(hub)["release"]}
+    partial = {k: exported(hub)[k] for k in ("schema", "hub", "release", "versions")}
     assert configjson.propose(hub, partial, by="bob")["changed"] is False, "a part left out is left as it is"
 
 
@@ -339,8 +339,8 @@ def _no_class(doc, hub):
 
 
 @pytest.mark.parametrize("edit,words", [
-    (_stale, "the document was exported from release 000000000000, and policy version 1 is in force now: export again"),
-    (_rt_version, "the record types changed since the document was exported (version 7 then, 1 now): export again"),
+    (_stale, "the document was exported from release 000000000000, and policy version 1 is in force now: export this hub's"),
+    (_rt_version, "the record types changed since the document was exported (version 7 then, 1 now): export this hub's"),
     (_unknown_part, "the document has no part scripts"),
     (_unknown_section, "policy has no section budgets"),
     (_unknown_field, "a threshold has no field owner"),
@@ -371,7 +371,7 @@ def test_what_cannot_be_carried_is_refused_with_a_sentence_and_nothing_is_carrie
 
 
 def test_not_a_configuration_document_is_refused(hub, tmp_path):
-    for text, words in (("{not json", "the file is not JSON"), ("[1, 2]", "its top level is an object"), ('{"a": NaN}', "the file is not JSON")):
+    for text, words in (("{not json", "the file is not JSON"), ("[1, 2]", "its top level is an object"), ('{"a": NaN}', "NaN is not a number the hub reads")):
         with pytest.raises(configjson.Refused, match=words):
             configjson.loads(text)
     with pytest.raises(configjson.Refused, match="not a hub configuration document"):
@@ -382,7 +382,7 @@ def test_not_a_configuration_document_is_refused(hub, tmp_path):
         configjson.propose(hub, exported(hub), by="qa-manager")
     (tmp_path / "bad.json").write_text("{not json")
     rc, out = run_cli(hub.root, "config", "propose", str(tmp_path / "bad.json"), "--as", "bob")
-    assert rc == 2 and "bad.json: the file is not JSON" in out
+    assert rc == 1 and "bad.json was not proposed; nothing was carried" in out and "the file is not JSON" in out
     doc = exported(hub)
     doc["links"].pop("concerns")
     (tmp_path / "refused.json").write_text(json.dumps(doc))
@@ -574,3 +574,157 @@ def test_status_still_reports_the_audit_clauses_file_which_is_not_under_change_c
     path.write_text(json.dumps(data))
     rc, out = run_cli(hub.root, "status", "--check")
     assert rc == 1 and "config/standard-clauses.json differs from what the release in force, v1 (" in out and "it is used as it is" in out
+
+
+# ------------------------------------------------------------------ review of #43: findings 1 to 6
+def _released_link_co(hub, monkeypatch=None, stop_second_write=False):
+    """A change order adding a relation and a retention class, approved and released (optionally with the second
+    document's write stopped, as a full disk or a killed process would)."""
+    co = hub.kernel.create("change-order", "Quality/Changes", {"title": "Calibration", "description": "a relation and a class",
+                                                               "requested_by": "alice"}, by="alice")
+    doc = exported(hub)
+    doc["links"]["inspires"] = "inspired-by"
+    doc["retention"]["clinical"] = {"years": 15, "evidence": ["release_digest", "decisions", "documents"]}
+    configjson.propose(hub, doc, by="alice", co_ref=co["number"])
+    if stop_second_write:
+        real = configdocs.DocStore.set_active
+        calls = []
+
+        def flaky(self, entry):
+            calls.append(self.root.name)
+            if len(calls) == 2:
+                raise OSError(28, "No space left on device")
+            return real(self, entry)
+        monkeypatch.setattr(configdocs.DocStore, "set_active", flaky)
+    return release_co(hub, hub.kernel.get(co["locator"]))
+
+
+def test_finding_1_a_release_stopped_between_the_two_writes_completes_when_retried(hub, monkeypatch):
+    from hubproto import automation
+
+    _released_link_co(hub, monkeypatch, stop_second_write=True)  # signed; the release job stops at the step
+    co = next(r for r in cos(hub) if r["fields"]["title"] == "Calibration")
+    [job] = [j for j in hub.automation.of(co["locator"]) if j["automation"] == "release-change-order"]
+    step = next(s for s in job["steps"] if s["name"] == "Apply the link and retention changes")
+    assert step["status"] == "failed" and configdocs.in_force(hub, "links")["version"] == 2 and configdocs.in_force(hub, "retention")["version"] == 1
+    monkeypatch.undo()
+    automation.retry(hub, job["id"], by="carol")
+    job = hub.automation.load(job["id"])
+    assert job["status"] == "success", [(s["name"], s["status"], s["detail"]) for s in job["steps"]]
+    step = next(s for s in job["steps"] if s["name"] == "Apply the link and retention changes")
+    assert "link vocabulary v2 (already in force with" in step["detail"] and "retention classes v2:" in step["detail"]
+    assert hub.kernel.link_vocab["inspires"] == "inspired-by" and hub.kernel.retention["clinical"]["years"] == 15
+    assert configdocs.carried_reasons(hub, hub.kernel.get(co["locator"])) == [], "nothing it already did reads as stale"
+
+
+@pytest.mark.parametrize("drop", [("versions",), ("links", "forms")])
+def test_finding_2_an_old_export_without_its_versions_cannot_undo_what_was_released(hub, drop):
+    old = exported(hub)
+    lay = formlayout.active_layout(hub, "ncr")
+    lay["sections"][0]["title"] = "The nonconformance"
+    formlayout.save_draft(hub, "alice", "ncr", lay)
+    co = hub.kernel.create("change-order", "Quality/Changes", {"title": "Rel", "description": "x", "requested_by": "alice"}, by="alice")
+    formlayout.carry(hub, co["number"], "alice", "ncr")
+    configdocs.carry(hub, co["number"], [{"doc": "links", "op": "set", "key": "inspires", "value": "inspired-by"}], by="alice")
+    release_co(hub, hub.kernel.get(co["locator"]))
+    assert hub.releases.current()["digest"] == old["release"]["digest"], "no new policy release: only the versions say it is old"
+    old["retention"]["standard"]["years"] = 2
+    if drop == ("versions",):
+        del old["versions"]
+    else:
+        for k in drop:  # just the parts that changed since: the others still match
+            del old["versions"][k]
+    with pytest.raises(configjson.Refused) as e:
+        configjson.propose(hub, old, by="bob")
+    assert any(("versions" in r and "missing" in r) or "say which versions" in r or "changed since the document was exported" in r
+               for r in e.value.reasons), e.value.reasons
+    assert "inspires" in hub.kernel.link_vocab and formlayout.active_layout(hub, "ncr")["sections"][0]["title"] == "The nonconformance"
+    assert not [r for r in cos(hub) if r["fields"]["title"] != "Rel"], "nothing carried"
+
+
+@pytest.mark.parametrize("name,words", [
+    ("cаrol", "U+0430 CYRILLIC SMALL LETTER A, which only looks like a letter"),
+    ("carol​", "an invisible character (U+200B ZERO WIDTH SPACE)"),
+    ("carol‮", "a direction control (U+202E RIGHT-TO-LEFT OVERRIDE)"),
+    ("ｃarol", "U+FF43 FULLWIDTH LATIN SMALL LETTER C"),
+    ("Carol Smith", "is not a name: lowercase letters, digits and hyphens"),
+])
+def test_finding_3_look_alike_names_are_refused_as_settings_never_writes_them(hub, name, words):
+    doc = exported(hub)
+    doc["policy"]["members"].append({"principal": name, "principal_type": "person", "roles": ["policy-owner", "staff"]})
+    with pytest.raises(configjson.Refused) as e:
+        configjson.propose(hub, doc, by="bob")
+    assert any("policy.members.principal" in r and words in r for r in e.value.reasons), e.value.reasons
+    assert cos(hub) == []
+
+
+def test_finding_3_roles_groups_folders_cogs_and_text_are_held_to_it_too(hub):
+    doc = exported(hub)
+    doc["policy"]["roles"].append({"name": "аuditor"})
+    doc["policy"]["groups"].append({"name": "board", "members": ["carol‍"], "roles": []})
+    doc["policy"]["folders"].append({"path": "Quality/Cаlibration"})  # Latin and Cyrillic in one folder name
+    doc["policy"]["folders"].append({"path": "Quality/ﬁles"})  # a ligature: not in its normal form
+    entry(doc, "cogs", name="ap-reviewer")["about"] = "Reviews bills ‮slib sweiveR"
+    entry(doc, "permissions", subject="role:controller", action="read", resource="folder:Finance")["subject"] = "role:cоntroller"
+    with pytest.raises(configjson.Refused) as e:
+        configjson.propose(hub, doc, by="bob")
+    text = " | ".join(e.value.reasons)
+    for words in ("policy.roles.name", "policy.groups.members[0]", "mixes letters of CYRILLIC and LATIN", "not in its normal form (NFKC",
+                  "policy.cogs.about holds a direction control", "policy.permissions.subject"):
+        assert words in text, (words, e.value.reasons)
+
+
+@pytest.mark.parametrize("text,words", [
+    ('{"schema": "hub-erp/config/1", "x": 1e400}', "1e400 is not a number the hub reads"),
+    ('{"schema": "hub-erp/config/1", "x": -Infinity}', "-Infinity is not a number the hub reads"),
+    ('{"schema": "hub-erp/config/1", "x": NaN}', "NaN is not a number the hub reads"),
+    ('{"x": 123456789012345678901234567890}', "is not a number the hub reads"),
+    ("[" * 100000 + "]" * 100000, "nests objects and lists 100000 deep"),
+    ('{"a": ' * 50 + "1" + "}" * 50, ""),  # 50 deep parses; the checks then refuse it as a document
+])
+def test_finding_4_bad_numbers_and_deep_nesting_are_refused_with_a_sentence(hub, tmp_path, text, words):
+    path = tmp_path / "bad.json"
+    path.write_text(text)
+    rc, out = run_cli(hub.root, "config", "propose", str(path), "--as", "bob")
+    assert rc == 1 and "bad.json was not proposed; nothing was carried" in out and words in out and "Traceback" not in out, out[-600:]
+
+
+def test_finding_4_a_number_out_of_range_in_an_entry_is_refused_not_a_traceback(hub):
+    doc = exported(hub)
+    entry(doc, "thresholds", name="purchase-approval-threshold")["value"] = float("inf")  # a script handing a dict, not text
+    doc["policy"]["due_dates"][0]["days"] = 1e300
+    with pytest.raises(configjson.Refused) as e:
+        configjson.propose(hub, doc, by="bob")
+    assert sum("is not a number the hub reads" in r for r in e.value.reasons) == 2, e.value.reasons
+
+
+def test_finding_5_a_key_given_twice_is_refused_naming_it(hub, tmp_path):
+    with pytest.raises(configjson.Refused, match="the key 'schema' is given twice in one object"):
+        configjson.loads('{"schema": "x", "schema": "hub-erp/config/1"}')
+    text = configjson.dumps(configjson.export(hub)).replace('"links": {', '"links": {"inspires": "inspired-by", "inspires": "x", ', 1)
+    (tmp_path / "dup.json").write_text(text)
+    rc, out = run_cli(hub.root, "config", "propose", str(tmp_path / "dup.json"), "--as", "bob")
+    assert rc == 1 and "the key 'inspires' is given twice" in out and cos(hub) == []
+
+
+def test_finding_6_an_export_from_another_hub_is_refused_and_a_restored_hub_keeps_its_identity(hub, twin, tmp_path):
+    doc = exported(twin)
+    assert doc["release"]["digest"] == exported(hub)["release"]["digest"] and doc["versions"] == exported(hub)["versions"], "twins agree on that"
+    assert doc["hub"]["id"] != exported(hub)["hub"]["id"] and len(doc["hub"]["id"]) == 32
+    assert (hub.root / "state" / ".secret").read_text().strip() not in configjson.dumps(configjson.export(hub)), "never the secret"
+    doc["links"]["inspires"] = "inspired-by"
+    with pytest.raises(configjson.Refused, match="the document was exported from another hub"):
+        configjson.propose(hub, doc, by="bob")
+    del doc["hub"]
+    with pytest.raises(configjson.Refused, match=r"say which hub the document was exported from \(hub.id\)"):
+        configjson.propose(hub, doc, by="bob")
+    # A backup restored elsewhere is the same hub: its exports still propose.
+    mine = exported(hub)
+    mine["links"]["inspires"] = "inspired-by"
+    assert run_cli(hub.root, "backup", str(tmp_path / "bk"))[0] == 0
+    target = tmp_path / "restored"
+    shutil.copytree(hub.root / "frames", target / "frames")
+    assert run_cli(target, "restore", str(tmp_path / "bk"))[0] == 0
+    moved = Hub(target)
+    assert configjson.hub_id(moved) == mine["hub"]["id"]
+    assert configjson.propose(moved, mine, by="bob")["changed"]

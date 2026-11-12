@@ -53,8 +53,11 @@ def cmd_propose(args) -> int:
             fail(f"{e}; `hubproto records --type change-order` lists them", 2)
     try:
         doc = configjson.loads(raw)
-    except configjson.Refused as e:  # not JSON: a mistake in the command
-        fail(f"{path.name}: {e}", 2)
+    except configjson.Refused as e:  # not a document the hub reads: refused, with the sentence
+        print(f"error: {path.name} was not proposed; nothing was carried:", file=sys.stderr)
+        for r in e.reasons:
+            print(f"  - {clean(r)}", file=sys.stderr)
+        return 1
     try:
         out = configjson.propose(hub, doc, by=args.as_user, co_ref=co["locator"] if co else None, reason=args.reason or "", name=path.name)
     except configjson.Refused as e:

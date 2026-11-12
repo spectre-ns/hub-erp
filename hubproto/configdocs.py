@@ -472,7 +472,7 @@ def uncarry(hub, co_ref: str, change_id: str, *, by: str) -> None:
 
 def carried_reasons(hub, co: dict) -> list[str]:
     """Why the changes a change order carries cannot be released as they stand (empty when they can)."""
-    changes = changes_of(co)
+    _, changes = _pending(hub, co)  # what it already brought into force (a release that stopped part-way) is not stale
     if not changes:
         return []
     _, errors, _ = check(hub, changes, types=_types_for(hub, co))
@@ -504,30 +504,50 @@ def delta_items(hub, co: dict) -> list[dict]:
     return out
 
 
+def released_by(hub, doc: str, co: dict) -> dict | None:
+    """The version of ``doc`` this change order brought into force, if it did (the one in force, or one in its history):
+    a release that stopped part-way sees what it already did."""
+    active = store(hub, doc).active() or {}
+    if active.get("released_with") == co["number"]:
+        return active
+    done = [e for e in store(hub, doc).history() if e.get("released_with") == co["number"]]
+    return done[-1] if done else None
+
+
+def _pending(hub, co: dict) -> tuple[dict[str, dict], list[dict]]:
+    """({doc: the version this change order already brought into force}, the changes of the documents it has not yet)."""
+    changes = changes_of(co)
+    done = {doc: e for doc in sorted({c.get("doc") for c in changes if c.get("doc") in DOCS}) if (e := released_by(hub, doc, co))}
+    return done, [c for c in changes if c.get("doc") not in done]
+
+
 def activate(hub, co: dict, digest: str) -> list[str]:
     """The release step (before the record types, which may be kept under a class this change order adds): what the
-    approved change order carries comes into force, as the next version of each document it changes. Safe to repeat.
-    Refuses a change order that is not approved, and changes that no longer check (nothing changes then)."""
+    approved change order carries comes into force, as the next version of each document it changes. Safe to repeat,
+    and to retry after a stop part-way: a document this change order already brought into force is left as it is, and
+    only the changes of the others are checked and applied, against what is in force for them. Refuses a change order
+    that is not approved, and changes that no longer check (nothing changes then)."""
     from . import closure
 
     changes = changes_of(co)
     if not changes:
         return []
     docs_changed = sorted({c.get("doc") for c in changes if c.get("doc") in DOCS})
-    done = {doc: [e for e in store(hub, doc).history() if e.get("released_with") == co["number"]] for doc in docs_changed}
-    if all(done[doc] for doc in docs_changed):
-        return [f"{WORDS[doc]} v{done[doc][-1]['version']} (already in force with {co['number']})" for doc in docs_changed]
+    done, todo = _pending(hub, co)
+    already = {doc: f"{WORDS[doc]} v{done[doc]['version']} (already in force with {co['number']})" for doc in done}
+    if not todo:
+        return [already[doc] for doc in docs_changed]
     closure.check_co_approved(co, "its link-vocabulary and retention changes")
     base = ensure(hub)
-    after, errors, _ = check(hub, changes, {doc: copy.deepcopy(base[doc]["values"]) for doc in DOCS}, types=_types_for(hub, co))
+    after, errors, _ = check(hub, todo, {doc: copy.deepcopy(base[doc]["values"]) for doc in DOCS}, types=_types_for(hub, co))
     if errors:
         raise ValueError(f"{co['number']}'s link-vocabulary and retention changes cannot come into force: " + "; ".join(errors))
     out = []
     for doc in docs_changed:
-        if done[doc]:
-            out.append(f"{WORDS[doc]} v{done[doc][-1]['version']} (already in force with {co['number']})")
+        if doc in done:
+            out.append(already[doc])
             continue
-        mine = [c.get("summary") or describe(c) for c in changes if c.get("doc") == doc]
+        mine = [c.get("summary") or describe(c) for c in todo if c.get("doc") == doc]
         entry = {"version": int(base[doc]["version"]) + 1, "values": after[doc], "digest": sha256_of(after[doc]),
                  "file_sha": base[doc].get("file_sha"), "source": f"released with {co['number']}", "release": digest,
                  "released_with": co["number"], "by": f"change-order:{co['number']}", "at": utcnow(), "changes": mine}
@@ -538,11 +558,10 @@ def activate(hub, co: dict, digest: str) -> list[str]:
 
 
 def release_problems(hub, co: dict) -> list[str]:
-    """What would stop this part of the release, checked before anything comes into force."""
-    if not changes_of(co):
+    """What would stop this part of the release, checked before anything comes into force (what this change order already
+    brought into force is not checked again)."""
+    _, todo = _pending(hub, co)
+    if not todo:
         return []
-    if all(any(e.get("released_with") == co["number"] for e in store(hub, doc).history()) for doc in
-           {c.get("doc") for c in changes_of(co) if c.get("doc") in DOCS}):
-        return []
-    _, errors, _ = check(hub, changes_of(co), types=_types_for(hub, co))
+    _, errors, _ = check(hub, todo, types=_types_for(hub, co))
     return [f"links and retention: {e}" for e in errors]

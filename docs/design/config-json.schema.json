@@ -4,10 +4,16 @@
   "title": "hub-erp configuration document (hub-erp/config/1)",
   "description": "Everything in force on a hub, as `hubproto config export` and GET /api/config write it, and as `hubproto config propose` and a change order's upload read it (hubproto.configjson). Written with sorted keys and a stable order of every list, so one configuration is always the same bytes. On propose, a part or policy section left out is left as it is; one that is given says the whole of it. See docs/design/config-json.md.",
   "type": "object",
-  "required": ["schema", "release"],
+  "required": ["schema", "hub", "release", "versions"],
   "additionalProperties": false,
   "properties": {
     "schema": {"const": "hub-erp/config/1", "description": "The format and its version. A later, incompatible format gets another number."},
+    "hub": {
+      "type": "object",
+      "description": "The hub the document was exported from. Propose refuses a document from another hub. The id is a one-way HMAC of the hub's signing secret (state/.secret): it never reveals the secret, and a hub restored from its backup keeps it.",
+      "required": ["id"],
+      "properties": {"id": {"type": "string", "pattern": "^[0-9a-f]{32}$"}}
+    },
     "release": {
       "type": "object",
       "description": "The policy release the document was taken from. Propose refuses a document taken from another release than the one in force (it would undo what was released since).",
@@ -20,7 +26,8 @@
     },
     "versions": {
       "type": "object",
-      "description": "The versions in force of what a change order may change without a new policy release. When given, propose refuses a document whose versions are not those in force.",
+      "description": "The versions in force of what a change order may change without a new policy release (a change order that carries only these makes no new release). Required, with every key: propose refuses a document whose versions are missing or not those in force, so an old document (or a script's output) cannot undo what was released since.",
+      "required": ["record_types", "links", "retention", "forms"],
       "properties": {
         "record_types": {"type": "integer"},
         "links": {"type": "integer"},

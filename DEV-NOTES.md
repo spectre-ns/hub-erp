@@ -93,7 +93,8 @@ what in your final report and work around it meanwhile.
 * `config export [--out FILE]` writes everything in force as one JSON document (sorted keys, stable order; `GET
   /api/config` gives the same bytes to a member who may read `Policy`). `config propose FILE.json --as PERSON [--co CO]`
   puts what an edited export changes on a change order (the person's settings change order by default): exit 0 carried
-  or nothing to carry, 1 refused (every reason printed, nothing carried), 2 not JSON or no such file. The format is
+  or nothing to carry, 1 refused (every reason printed, nothing carried; not JSON, a repeated key, a number that is not
+  finite, a look-alike name, a document from another hub or with stale or missing versions included), 2 no such file. The format is
   docs/design/config-json.md (and its JSON Schema, config-json.schema.json).
 * Once the SOPs are documents a configuration change outside a change order is refused by the hub
   (`closure.ChangeOrderRequired`, a `CompileError`): the verbs exit 1 with a sentence ending "Configuration changes only

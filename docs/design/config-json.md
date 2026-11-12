@@ -21,6 +21,7 @@ configuration are the same bytes, so a diff of two exports is a diff of two conf
 ```json
 {
   "schema": "hub-erp/config/1",
+  "hub": {"id": "<32 hex: a one-way HMAC of the hub's signing secret>"},
   "release": {"digest": "<sha256 of the release in force>", "version": 3, "effective_from": "2026-11-12T09:00:00+00:00"},
   "versions": {"record_types": 2, "links": 1, "retention": 1, "forms": {"ncr": 1}},
   "policy": {
@@ -40,8 +41,9 @@ configuration are the same bytes, so a diff of two exports is a diff of two conf
 | Part | What it holds | How a change reaches a change order |
 |---|---|---|
 | `schema` | `hub-erp/config/1` | must be exactly this |
-| `release` | the release the document was taken from | propose refuses a document taken from a release no longer in force: it would undo what was released since. Export again |
-| `versions` | the versions in force of what changes without a new release | when given, each must be the one in force (a record-type, form, link or retention change released since) |
+| `hub` | `{id}`: the hub the document was exported from | required; propose refuses a document from another hub (two hubs built from the same Frames have the same release digest) |
+| `release` | the release the document was taken from | required; propose refuses a document taken from a release no longer in force: it would undo what was released since. Export again |
+| `versions` | the versions in force of what changes without a new release: `record_types`, `links`, `retention`, `forms` (type -> released layout version) | required, every key: each must be the one in force. A change order carrying only these makes no new release, so without them an old document (or a script's output) could undo what was released since |
 | `policy` | the rules of the release, one section per kind (below) | **direct changes**, as Settings records them (`changecontrol.rule_changes`, `add_direct_change`): the review round's qa-manager cog writes the SOP prose for each and checks it reads back, so the SOP stays the single source of truth |
 | `record_types` | type -> definition, as `config/record-types.json` writes one (no `x_` custom fields: they are the forms') | `recordtypes.carry`: only non-destructive changes (new types, fields, enum options, states, required fields, retention, sensitivity, defaults, system and decision fields, archiving) |
 | `forms` | type -> its layout in force (the base layout until one is released) | a layout that differs is saved as the person's draft and carried (`formlayout.save_draft`, `carry`), as the forms editor does |
@@ -82,7 +84,7 @@ carry, and a short list of optional ones in `configjson.OPTIONAL`); a process is
 
 | Where | What |
 |---|---|
-| `hubproto config propose FILE.json --as PERSON [--co CO] [--reason TEXT]` | exit 0 carried (or nothing to carry), 1 refused (every reason printed; nothing carried), 2 a mistake in the command (no file, not JSON, unknown change order) |
+| `hubproto config propose FILE.json --as PERSON [--co CO] [--reason TEXT]` | exit 0 carried (or nothing to carry), 1 refused, whatever is wrong with the document, not JSON included (every reason printed; nothing carried), 2 a mistake in the command (no such file, unknown change order) |
 | A change order's page, *What it carries*: *Propose a configuration file (JSON)* | for whoever may change what it carries (its requester or a document controller), while it is being prepared |
 
 Without `--co` the changes go where Settings puts them: the person's open settings change order, started when they
@@ -98,7 +100,17 @@ have none. A person proposes, never a cog.
   not removed this way", "concerns is never removed: the hub's own steps link records with it", "policy.responsibilities
   differs from what is in force: the Roles and responsibilities rows are each SOP's table: revise the SOP on a change
   order to change them".
-* **Data, never code.** Only JSON values (no `NaN`, no control characters in strings, bounded nesting) are read.
+* **Data, never code.** Only JSON values are read, and only these: at most 16 MB, nested at most 64 deep (counted before
+  parsing; 24 within one entry), no key given twice in one object ("the key 'schema' is given twice in one object"),
+  finite numbers of at most 10^15 (`1e400`, `NaN` and `Infinity` are refused), no control characters in strings. A
+  shape the checks did not foresee is still a sentence, never a traceback.
+* **Names as Settings writes them.** In what a document adds or changes, member, role, group, committee, cog, persona and
+  limit names, and the names in a permission's subject, an approver, a route's assignee, a confirmer or a
+  countersigner, are lowercase letters, digits and hyphens (Settings' `_slug`); a record's field (`field:requested_by`)
+  as record types write fields. A look-alike is refused naming the character ("U+0430 CYRILLIC SMALL LETTER A, which
+  only looks like a letter of a name"), as are a zero-width character and a direction control. A folder path is in
+  its normal form (NFKC), each folder name in one script, with no invisible characters; no text the document adds
+  holds one.
 * **Same guards.** Widenings, the panel, reviews, the two-owner rule, segregation of duties, validation evidence and the
   signature are the change order's, exactly as for the same edit made on screen.
 
@@ -115,3 +127,13 @@ differs is reported by `status --check` and not used.
 Refused: removing a relation a record link uses or one the hub's own steps link with (the shipped file lists it);
 removing `standard`, a class a record type is kept under, or one records are labelled with. Keeping a class for fewer
 years is a warning shown with the change.
+
+## Moving a hub, and its identity
+
+The hub's identity (`hub.id`) is a one-way HMAC of its signing secret, `state/.secret`: it says which hub a document
+came from without revealing the secret. A backup holds `.secret`, so a hub restored from its backup (on the same machine
+or another) is the same hub: its earlier exports still propose there, as long as nothing was released since. A new hub
+built from the same Frames has a secret, and so an identity, of its own: an export from one is refused on the other
+("the document was exported from another hub"). To carry a configuration from one hub to another, export the target,
+make the edit there, and propose that. If an operator replaces `state/.secret` (which also voids the signatures it made),
+earlier exports are refused: export again.
