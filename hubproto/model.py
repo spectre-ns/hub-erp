@@ -5,10 +5,17 @@ model when a key is configured and otherwise answers with a deterministic stand-
 same way with or without a model. Every call is recorded (model, prompt digest, response digest, timing) so a
 Track can say which model drafted what. Models draft and answer; they never sign: Gate decisions stay with the
 approval-criteria sentences.
+
+A call may carry pictures (``images``: bytes and a media type each) for a model that reads them
+(``supports_images``): the hosted Anthropic API as image content blocks, Ollama in the message's ``images`` field.
+Asking a model that reads text only is refused with a sentence (``ImagesNotSupported``), never sent without the
+pictures. What is recorded of a call names each picture by its sha256, never its bytes.
 """
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import re
@@ -173,6 +180,94 @@ class ModelUnavailable(Exception):
     """A cog's model is not reachable: the cog is not available (a cog is bundled with its model; nothing stands in)."""
 
 
+class ImagesNotSupported(ModelUnavailable):
+    """The call carries pictures and the model reads text only: the call is refused, never sent without them."""
+
+
+# ---------------------------------------------------------------- pictures in a call
+IMAGE_TYPES = ("image/png", "image/jpeg", "image/gif", "image/webp")  # what both the Anthropic API and Ollama take
+MAX_IMAGE_BYTES = 5 * 1024 * 1024  # one picture, as the Anthropic API limits it; the hub sends nothing larger
+MAX_IMAGES = 20  # pictures in one call
+# Ollama models that read pictures, by family, for an Ollama that does not report a model's capabilities (before 0.6.4)
+# and for a development hub where the stand-in answers in place of an Ollama model.
+VISION_FAMILIES = ("llava", "bakllava", "llama3.2-vision", "llama4", "qwen2.5vl", "qwen2.5-vl", "qwen3-vl", "gemma3", "minicpm-v",
+                   "moondream", "granite3.2-vision", "mistral-small3.1", "mistral-small3.2", "llava-llama3", "llava-phi3")
+_CAPS: dict[str, list[str] | None] = {}
+
+
+def _ollama_capabilities(name: str) -> list[str] | None:
+    """What Ollama says the model can do (``/api/show``: "completion", "vision", "tools", ...); None when it does not say."""
+    if name not in _CAPS:
+        caps = None
+        try:
+            req = urllib.request.Request(ollama_url() + "/api/show", data=json.dumps({"model": name}).encode("utf-8"), method="POST",
+                                         headers={"content-type": "application/json"})
+            with urllib.request.urlopen(req, timeout=4) as r:
+                got = json.load(r).get("capabilities")
+            caps = [str(c) for c in got] if isinstance(got, list) else None
+        except Exception:
+            caps = None
+        _CAPS[name] = caps
+    return _CAPS[name]
+
+
+def supports_images(model: str) -> bool:
+    """Whether a profile's model reads pictures. It is a fact about the model, not a policy: every Claude model the hub
+    offers does; an Ollama model does when Ollama reports the "vision" capability for it (or, when Ollama does not say,
+    when it is of a family that does, ``VISION_FAMILIES``); the development stand-in takes pictures and names them."""
+    model = model or DEFAULT_MODEL
+    if model == DEFAULT_MODEL:
+        return True
+    if model.startswith("claude"):
+        return True
+    name = served_name(model)
+    if backend_for(model) == "ollama":
+        caps = _ollama_capabilities(name)
+        if caps is not None:
+            return "vision" in caps
+    base = name.split(":", 1)[0].lower().rsplit("/", 1)[-1]
+    return base in VISION_FAMILIES
+
+
+def image_refusal(model: str) -> str:
+    """The sentence a refused picture call says."""
+    return (f"{model or DEFAULT_MODEL} reads text only, so it cannot be asked to read a picture: give this work to a cog whose model "
+            "reads pictures (a Claude model, or an Ollama model with vision)")
+
+
+def prepare_images(model: str, images) -> list[dict]:
+    """The pictures of a call, checked: each {"data": bytes, "media_type": one of IMAGE_TYPES}, not empty and not larger
+    than MAX_IMAGE_BYTES, for a model that reads pictures. Returns them with their sha256; raises ImagesNotSupported for a
+    text-only model and ValueError (a sentence) for a picture that cannot be sent."""
+    out = []
+    for i, img in enumerate(images or [], start=1):
+        data = img.get("data") if isinstance(img, dict) else None
+        kind = str((img or {}).get("media_type") or "").lower() if isinstance(img, dict) else ""
+        if not isinstance(data, (bytes, bytearray)) or not data:
+            raise ValueError(f"picture {i} of the call holds no bytes")
+        if kind not in IMAGE_TYPES:
+            raise ValueError(f"picture {i} is {kind or 'of no known type'}; a model is sent only {', '.join(IMAGE_TYPES)}")
+        if len(data) > MAX_IMAGE_BYTES:
+            raise ValueError(f"picture {i} is {len(data):,} bytes; a model is sent pictures of at most {MAX_IMAGE_BYTES:,} bytes")
+        out.append({"data": bytes(data), "media_type": kind, "sha256": hashlib.sha256(data).hexdigest()})
+    if len(out) > MAX_IMAGES:
+        raise ValueError(f"a call carries at most {MAX_IMAGES} pictures, not {len(out)}")
+    if out and not supports_images(model):
+        raise ImagesNotSupported(image_refusal(model))
+    return out
+
+
+def _b64(data: bytes) -> str:
+    return base64.b64encode(data).decode("ascii")
+
+
+def prompt_digest(system: str, user: str, images: list[dict] | None = None) -> str:
+    """The digest of what a call asked: its words and, when it carried pictures, each picture's sha256 (never its bytes).
+    A call without pictures has the digest it always had."""
+    shas = [i.get("sha256") or hashlib.sha256(i["data"]).hexdigest() for i in images or []]
+    return sha256_of({"system": system, "user": user, **({"images": shas} if shas else {})})[:16]
+
+
 def stand_in_allowed() -> bool:
     """Development and tests only: a deterministic stand-in answers for any model. Never in a real hub."""
     return (os.environ.get("HUBPROTO_ALLOW_STAND_IN") or "").lower() in ("1", "true", "yes", "on")
@@ -328,24 +423,28 @@ class ModelGateway:
     def available(self, model: str) -> bool:
         return backend_for(model) != "stand-in"
 
-    def complete(self, *, model: str, system: str, user: str, max_tokens: int = 1200, by: str = "", history: list[dict] | None = None) -> dict:
-        """Returns {"text", "model", "backend", "stand_in", "prompt_digest", "response_digest", "ms", "at"}."""
+    def complete(self, *, model: str, system: str, user: str, max_tokens: int = 1200, by: str = "", history: list[dict] | None = None,
+                 images: list[dict] | None = None) -> dict:
+        """Returns {"text", "model", "backend", "stand_in", "prompt_digest", "response_digest", "ms", "at"} (and "images":
+        [{"sha256", "media_type", "bytes"}] when the call carried pictures). ``images``: [{"data": bytes, "media_type"}],
+        sent with ``user`` to a model that reads pictures (``prepare_images``); a text-only model is refused."""
         t0 = time.monotonic()
         model = model or DEFAULT_MODEL
         backend = backend_for(model)
         if backend == "none":
             raise ModelUnavailable(resolve_model(model)["note"])
+        imgs = prepare_images(model, images) if images else []  # refused before anything is sent, never dropped
         try:
             if backend == "anthropic":
-                text = self._anthropic(model, system, user, max_tokens, history)
+                text = self._anthropic(model, system, user, max_tokens, history, imgs)
             elif backend == "ollama":
-                text = self._ollama(model, system, user, max_tokens, history)
+                text = self._ollama(model, system, user, max_tokens, history, imgs)
             else:
-                text = self._stand_in(system, user)
+                text = self._stand_in(system, user, imgs)
         except Exception as e:
             if not stand_in_allowed():
                 raise ModelUnavailable(f"{model} did not answer: {e}") from None
-            text = f"[{backend} model {model} did not answer: {e}]\n" + self._stand_in(system, user)
+            text = f"[{backend} model {model} did not answer: {e}]\n" + self._stand_in(system, user, imgs)
             backend = "stand-in"
         text = strip_thinking(text)
         stand_in = backend == "stand-in"
@@ -353,28 +452,36 @@ class ModelGateway:
         self._last_usage = None
         out = {"text": text, "model": model, "served_model": (usage or {}).get("served_model") or (model if backend == "anthropic" else "stand-in"),
                "backend": backend, "stand_in": stand_in, "by": by, "at": utcnow(), "prompt_chars": len(system) + len(user), "usage": usage,
-               "prompt_digest": sha256_of({"system": system, "user": user})[:16], "response_digest": sha256_of(text)[:16],
+               "prompt_digest": prompt_digest(system, user, imgs), "response_digest": sha256_of(text)[:16],
                "ms": int((time.monotonic() - t0) * 1000)}
+        if imgs:  # each picture by its hash: its bytes are never recorded
+            out["images"] = [{"sha256": i["sha256"], "media_type": i["media_type"], "bytes": len(i["data"])} for i in imgs]
         self.calls.append(out)
         u = usage or {}
         sys.stdout.write(f"model call by={by or '-'} model={model} served_by={out['served_model']} backend={backend} prompt_chars={out['prompt_chars']}"
                          + (f" prompt_tokens={u.get('prompt_tokens')} output_tokens={u.get('output_tokens')} done={u.get('done_reason')}" if u else "")
+                         + (f" images={','.join(i['sha256'][:12] for i in imgs)}" if imgs else "")
                          + f" ms={out['ms']}\n")
         sys.stdout.flush()
         return out
 
     @staticmethod
-    def _anthropic(model: str, system: str, user: str, max_tokens: int, history: list[dict] | None = None) -> str:
+    def _anthropic(model: str, system: str, user: str, max_tokens: int, history: list[dict] | None = None, images: list[dict] | None = None) -> str:
         turns = [{"role": t["role"], "content": t["content"]} for t in (history or []) if t.get("content")]
+        # Pictures are image content blocks before the words of the same turn (the API's advice for a picture and a question).
+        content = ([{"type": "image", "source": {"type": "base64", "media_type": i["media_type"], "data": _b64(i["data"])}} for i in images]
+                   + [{"type": "text", "text": user}]) if images else user
         body = json.dumps({"model": model, "max_tokens": max_tokens, "system": system,
-                           "messages": turns + [{"role": "user", "content": user}]}).encode("utf-8")
+                           "messages": turns + [{"role": "user", "content": content}]}).encode("utf-8")
         req = urllib.request.Request(ANTHROPIC_URL, data=body, method="POST", headers={
             "content-type": "application/json", "x-api-key": os.environ["ANTHROPIC_API_KEY"], "anthropic-version": "2023-06-01"})
         data = _fetch_json(req, 60)
         return "".join(part.get("text", "") for part in data.get("content", []) if part.get("type") == "text")
 
-    def _ollama(self, model: str, system: str, user: str, max_tokens: int, history: list[dict] | None = None) -> str:
-        """A local model through Ollama's chat API (``ollama/<name>`` or any name when HUBPROTO_OLLAMA_URL is set)."""
+    def _ollama(self, model: str, system: str, user: str, max_tokens: int, history: list[dict] | None = None,
+                images: list[dict] | None = None) -> str:
+        """A local model through Ollama's chat API (``ollama/<name>`` or any name when HUBPROTO_OLLAMA_URL is set); pictures go
+        in the user message's ``images`` field, base64."""
         name = served_name(model)
         ceiling = prompt_budget_chars(model, max_tokens)  # what fits in the model's window with room to answer
         if len(system) + len(user) > ceiling:
@@ -384,7 +491,7 @@ class ModelGateway:
                    "options": {"num_predict": max_tokens, "num_ctx": num_ctx_for(model)},
                    "messages": [{"role": "system", "content": system}]
                                + [{"role": t["role"], "content": t["content"]} for t in (history or []) if t.get("content")]
-                               + [{"role": "user", "content": user}]}
+                               + [{"role": "user", "content": user, **({"images": [_b64(i["data"]) for i in images]} if images else {})}]}
         if not os.environ.get("HUBPROTO_MODEL_THINK"):
             payload["think"] = False  # a thinking model otherwise spends its budget before it answers
         data = None
@@ -532,10 +639,13 @@ class ModelGateway:
         return "\n".join(lines)
 
     @staticmethod
-    def _stand_in(system: str, user: str) -> str:
-        """Deterministic words for a run without a model: a review that walks the SOP headings it was given."""
+    def _stand_in(system: str, user: str, images: list[dict] | None = None) -> str:
+        """Deterministic words for a run without a model: a review that walks the SOP headings it was given. Pictures it
+        was given are named by their hash (it reads none)."""
         heads = [line[3:].strip() for line in system.splitlines() if line.startswith("## ")][:6]
         lines = ["Stand-in review (no model configured):"]
+        for i in images or []:
+            lines.append(f"- picture sha256:{i['sha256']} ({i['media_type']}, {len(i['data'])} bytes): given; the stand-in reads no picture.")
         for h in heads:
             lines.append(f"- {h}: checked against the item; no finding.")
         findings = user.split("FINDINGS:", 1)[1].split("\n\n", 1)[0].strip() if "FINDINGS:" in user else ""

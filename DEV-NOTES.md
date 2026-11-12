@@ -359,6 +359,16 @@ From any status except done to Cancelled ("Cancel"): the quality manager.
 * **The compile-frame committee** is defined on the `senior-cogs` group (cogs bundled with `claude-opus-5-5`, change
   control 11.1); `hub.compile_committee()` gives its members with their models, those unavailable (hosted models off, no
   key) and its chair; an unavailable member is a `member-unavailable` question naming the chair, never skipped.
+* **Pictures** (issue #31, `hubproto.picture_reading`): the committee's members read each picture put in or replaced
+  (`CommitteeExtractor.read_pictures`, the picture's bytes from `sopdocs.picture_images`); the reading, its
+  divergences from the prose and the `Process:` section, and each member's answer are on the picture's `unread-rule`
+  question. The chair answers with `answer_question(..., picture="confirm" | "correct" | "nothing", reading_text=)`;
+  the confirmed reading is the CO's `picture_readings` and, from the next compile, lines of the Frame text right after
+  the picture (`> Picture sha256:<12 hex>: <sentence>`), in force with the release and kept by an unchanged picture.
+* **Pictures in a model call**: `gateway.complete(..., images=[{"data", "media_type"}])` for a model that reads them
+  (`model.supports_images`: Claude models; an Ollama model whose `/api/show` reports "vision", else by family,
+  `VISION_FAMILIES`); a text-only model raises `ImagesNotSupported` with a sentence. The call's record and
+  `prompt_digest` name each picture by its sha256. Fakes: `call(model, system, user, images=None)`.
 
 ## Record types (`config/record-types.json`)
 

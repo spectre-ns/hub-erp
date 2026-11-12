@@ -312,6 +312,7 @@ def stage(hub, co_ref: str, drafts: dict[str, str] | None = None, extractor=None
     """Compile the Frame the change order's approved revisions make (or the given ``drafts``: {SOP name: locator}),
     against the release in force, and stage it on the change order as its proposal (replacing the one staged before).
     The compile-frame automation does this when a revision is approved."""
+    from . import picture_reading
     from .compile import CompileError, blocking_findings
 
     co = _co(hub, co_ref)
@@ -319,14 +320,16 @@ def stage(hub, co_ref: str, drafts: dict[str, str] | None = None, extractor=None
         drafts = {**{n: d["locator"] for n, d in approved_of(hub, co).items()}, **{n: None for n in retirements(co)}}
     old = co["fields"].get("staged_proposal")
     shas = {n: (str((hub.kernel.get(loc) or {}).get("fields", {}).get("content_sha") or "") if loc else "retired") for n, loc in sorted(drafts.items())}
+    readings = picture_reading.confirmed_of(co)  # the pictures' readings a person confirmed: compiled into the drafts' text
     fields: dict = {"staged_from": shas, "staged_base": (hub.releases.current() or {}).get("digest"), "staged_errors": [],
+                    "staged_readings": picture_reading.digest(readings),
                     "staged_at": __import__("hubproto.release", fromlist=["utcnow"]).utcnow()}
     if not drafts:
         fields.update({"staged_proposal": None, "staged_number": None, "staged_changes": 0, "staged_widenings": 0})
     else:
         try:
             with carried_record_types(hub, co):  # a CO may carry a new record type and the process that uses it
-                p = hub.compile(sop_drafts=drafts, save=True, extractor=extractor)
+                p = hub.compile(sop_drafts=drafts, save=True, extractor=extractor, picture_readings=readings)
             p["eco"] = co["number"]
             p["source"] = "eco"
             if old and old != p["id"]:  # the questions of the compile staged before (on any release) carry, or close
@@ -364,8 +367,10 @@ def preview(hub, co_ref: str) -> dict | None:
     drafts = drafts_of(hub, co)
     if not drafts:
         return None
+    from . import picture_reading
+
     try:
-        p = hub.compile(sop_drafts=drafts, save=False)
+        p = hub.compile(sop_drafts=drafts, save=False, picture_readings=picture_reading.confirmed_of(co))
     except CompileError as e:
         return {"changes": [], "errors": [str(e)], "preview": True}
     p["errors"] = [f"{f['detail']} ({f['frame']} line {f['line']})" for f in blocking_findings(p)]

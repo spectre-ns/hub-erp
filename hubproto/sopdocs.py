@@ -85,6 +85,8 @@ def to_docx(body: str, pictures: dict[str, dict] | None = None) -> bytes:
             continue
         m = re.match(r"^(#{1,6}) (.*)$", line)
         pic = office.PICTURE_LINE.fullmatch(line)
+        if office.is_reading_line(line):
+            continue  # a picture's confirmed reading is the hub's (picture_reading), never words of the document
         if m:
             level = min(len(m.group(1)), 3) if len(m.group(1)) <= 3 else len(m.group(1))
             paras.append(f'<w:p><w:pPr><w:pStyle w:val="Heading{level}"/></w:pPr><w:r><w:t xml:space="preserve">{escape(m.group(2), quote=False)}</w:t></w:r></w:p>')
@@ -247,16 +249,69 @@ def frame_text(hub, rec: dict, version: int | None = None, pictures: bool = True
 
 
 def in_force_text(hub, rec: dict, released: dict[str, str] | None) -> str:
-    """The Frame text of a document in force that no change order carries. Read as the hub reads documents now, unless
-    the only difference from the release in force (``released``: {name: text}) is what the hub reads now that it did
-    not when that release was made (its pictures' lines): then the release's text stands, so a new reading never
-    changes an SOP no change order carries. The pictures come in with the next revision of the SOP (its draft is read
-    in full, and a picture in it is a question for a person)."""
-    text = frame_text(hub, rec)
+    """The Frame text of a document in force that no change order carries. Read as the hub reads documents now, with the
+    confirmed readings of its pictures in force (``picture_reading.with_readings``), unless the only difference from the
+    release in force (``released``: {name: text}) is what the hub reads now that it did not when that release was made
+    (its pictures' lines): then the release's text stands, so a new reading never changes an SOP no change order
+    carries. The pictures come in with the next revision of the SOP (its draft is read in full, and a picture in it is a
+    question for a person)."""
+    from .picture_reading import readings_in, with_readings
+
     old = (released or {}).get(rec["fields"].get("sop_name"))
+    text = with_readings(frame_text(hub, rec), readings_in(old or ""))
     if old is not None and text != old and frame_text(hub, rec, pictures=False) == old:
         return old
     return text
+
+
+def draft_text(hub, rec: dict, released: dict[str, str] | None, readings: dict[str, list[str]] | None = None) -> str:
+    """The Frame text of a draft a change order carries: the document's text, with the reading in force of each picture
+    it keeps (an unchanged picture keeps its confirmed reading and asks nothing) and the readings this change order
+    confirmed (``readings``: {picture ref: sentences}) after their pictures."""
+    from .picture_reading import readings_in, with_readings
+
+    old = (released or {}).get(rec["fields"].get("sop_name")) or ""
+    return with_readings(frame_text(hub, rec), {**readings_in(old), **(readings or {})})
+
+
+def picture_images(hub, name: str, ref: str) -> list[dict] | None:
+    """The images of the picture ``ref`` ("sha256:<hex>") of the SOP ``name``, from its documents (the drafts and the one in
+    force), as a model is sent them: [{"data", "media_type"}], only the kinds a model takes (``model.IMAGE_TYPES``, known by
+    their bytes, not their name). [] when the picture is there but none of its images can be sent; None when no document
+    of the SOP holds it (the document's own picture reader names it ``ref``, from the same bytes)."""
+    for d in of_lineage(hub.kernel, name):
+        try:
+            content, v = hub.dms.content(d["locator"])
+        except Exception:
+            continue
+        ext = (v.get("filename") or "x.docx").rsplit(".", 1)[-1].lower()
+        try:
+            pic = pictures_of(content, ext).get(ref)
+        except Exception:
+            continue
+        if pic is None:
+            continue
+        images = []
+        for m in pic.get("members") or []:
+            data = m.get("data")
+            kind = image_type(data) if data else None
+            if kind:
+                images.append({"data": data, "media_type": kind})
+        return images
+    return None
+
+
+def image_type(data: bytes) -> str | None:
+    """The media type of a picture a model can be sent, from its first bytes (PNG, JPEG, GIF, WebP); None otherwise."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
 
 
 def _released_texts(hub) -> dict[str, str]:
@@ -348,7 +403,7 @@ def source_texts(hub, drafts: dict[str, str] | None = None) -> dict[str, str]:
             continue
         rec = hub.kernel.get(drafts[name]) if name in drafts else in_force(hub.kernel, name)
         if rec is not None:
-            out[name] = frame_text(hub, rec) if name in drafts else in_force_text(hub, rec, released)
+            out[name] = draft_text(hub, rec, released) if name in drafts else in_force_text(hub, rec, released)
     return out
 
 
@@ -414,11 +469,12 @@ def released_store(hub, digest: str | None = None):
     return _store_of(hub, frames)
 
 
-def document_store(hub, drafts: dict[str, str | None] | None = None):
+def document_store(hub, drafts: dict[str, str | None] | None = None, readings: dict[str, dict[str, list[str]]] | None = None):
     """The Frames a compile reads once the SOPs are documents: one per document in force, each read from it, with the
     drafts a change order carries in place of theirs (``eco.drafts_of``: {name: draft locator}; a draft of an SOP with no
     document in force, ``eco.add_new_sop``, adds that Frame; a name with None, ``eco.retire_sop``, takes it out).
-    Never the disk listing."""
+    Never the disk listing. ``readings`` ({name: {picture ref: sentences}}): the pictures' readings the change order
+    confirmed, after their pictures in its drafts' text (``draft_text``)."""
     drafts = dict(drafts or {})
     bom = {f["name"]: f for f in (hub.releases.current() or {}).get("frames") or []}
     frames = {}
@@ -431,9 +487,10 @@ def document_store(hub, drafts: dict[str, str | None] | None = None):
         rec = hub.kernel.get(drafts[name]) if name in drafts else in_force(hub.kernel, name)
         if rec is None:
             continue
-        if released is None and name not in drafts:
+        if released is None:
             released = _released_texts(hub)
-        frames[name] = (frame_text(hub, rec) if name in drafts else in_force_text(hub, rec, released), _relpath(hub, name, rec, bom))
+        text = draft_text(hub, rec, released, (readings or {}).get(name)) if name in drafts else in_force_text(hub, rec, released)
+        frames[name] = (text, _relpath(hub, name, rec, bom))
     return _store_of(hub, frames)
 
 

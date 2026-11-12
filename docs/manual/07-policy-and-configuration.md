@@ -142,6 +142,15 @@ cog profiles on the **senior-cogs** group (the senior-organization and senior-qa
   chair, carol, intervenes. Make its model available here, or change the committee or the cog's model through a change
   order." Nothing is read that round, and no junior cog reads in its place.
 * **A changed rule-like sentence nobody read** is a blocking `unread-rule` question, also when no model reads prose.
+* **A picture put in or replaced** (a line `![description](sha256:…)` of the SOP's text) is a blocking `unread-rule`
+  question too. Each senior cog reads the picture itself, with a model that reads pictures (a Claude model; an Ollama
+  model only with vision), and the question says what they read it to state and where that differs from the prose or
+  the `Process:` section. The chair answers: **Confirm the committee's reading**, **Correct it** (the reading, one
+  sentence a line), or **The picture states nothing**. A confirmed reading becomes part of the SOP's text at the next
+  review round, one line per sentence right after the picture (`> Picture sha256:…: …`), and is released with it; an
+  unchanged picture keeps its reading in later revisions and asks nothing. Where nobody could read the picture (hosted
+  models off, a senior cog on a text-only model, a linked picture), the question says why, and the chair decides as for
+  any unread sentence.
 
 The seniors' model is hosted, so the committee reads only where an administrator has switched hosted models on
 (`HUBPROTO_HOSTED_MODELS=on` with an `ANTHROPIC_API_KEY`, chapter 8.4; the IT SOP, 7.16). With hosted models off, which

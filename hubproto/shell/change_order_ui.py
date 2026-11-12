@@ -1180,14 +1180,38 @@ class ChangeOrderMixin:
                 if q.get("code") == "unread-rule":
                     div += (f"<label class='check'><input type='checkbox' name='category' value='procedure'{' checked' if self._co_cv('/co-answer', fid, 'category') else ''}> "
                             "It is a procedure: people follow it; the hub does not enforce it (not a divergence)</label>")
+                if q.get("picture"):
+                    div = self._co_picture_answer(q, fid) + div
+                need = "" if q.get("picture") else " <b aria-hidden='true'>*</b>"
                 inner = (f"<input type='hidden' name='qid' value='{esc(q['id'])}'>{div}<div class='fields'>"
-                         f"<label class='f'><span>Your answer <b aria-hidden='true'>*</b></span><textarea name='answer' rows='2' required>{esc(self._co_cv('/co-answer', fid, 'answer'))}</textarea></label>"
+                         f"<label class='f'><span>Your answer{need}</span><textarea name='answer' rows='2'{'' if q.get('picture') else ' required'}>{esc(self._co_cv('/co-answer', fid, 'answer'))}</textarea></label>"
                          f"<label class='f'><span>The line of the prose that says it</span><input name='line' inputmode='numeric' size='6' value='{esc(self._co_cv('/co-answer', fid, 'line'))}'></label></div>"
                          f"<div class='actions'><button class='secondary'>{icon('check')}Mark answered</button></div>")
                 body += details("Answer it", self._co_form("/co-answer", co, fid, inner, label=f"Answer: {short(q.get('text') or '', 60)}"),
                                 open_=bool(self.err and self.route == "/co-answer" and self.vals.get("form") == fid))
             out += body + "</div></li>"
         return out + "</ul></section>"
+
+    def _co_picture_answer(self, q: dict, fid: str) -> str:
+        """A picture question's own answers (issue #31): confirm the compile-frame committee's reading, correct it, or say
+        the picture states nothing. The reading confirmed is part of the SOP's text from the next review round on."""
+        reading = q.get("reading") or {}
+        chosen = self._co_cv("/co-answer", fid, "picture")
+        text = self._co_cv("/co-answer", fid, "reading_text") or "\n".join(reading.get("proposed") or [])
+
+        def opt(value: str, words: str) -> str:
+            return (f"<label class='check'><input type='radio' name='picture' value='{value}'{' checked' if chosen == value else ''}> "
+                    f"{words}</label>")
+        out = "<fieldset><legend>What the picture states</legend>"
+        if reading.get("divergences"):
+            out += "<p class='why' style='margin:0'>It differs from the prose: " + esc("; ".join(reading["divergences"])) + ".</p>"
+        if reading:
+            out += opt("confirm", "Confirm the committee's reading" + (" (it states nothing)" if reading.get("states_nothing") else
+                                                                       ": it becomes part of the SOP's text, after the picture"))
+        out += opt("correct", "Correct it: the reading below becomes part of the SOP's text, after the picture")
+        out += opt("nothing", "The picture states nothing (a photo, a logo, a label)")
+        return (out + f"<label class='f'><span>The reading, one sentence a line</span><textarea name='reading_text' rows='4'>{esc(text)}</textarea></label>"
+                "</fieldset>")
 
     def _co_unavailable_card(self, ctx: dict, unav: list[dict]) -> str:
         """The compile-frame committee's member-unavailable questions as one card: who could not read what, why, who can
@@ -2075,11 +2099,13 @@ class ChangeOrderMixin:
             except ValueError:
                 raise ShellError("The line is a number (the line of the SOP that answers it).", field="line") from None
         answer = self._f("answer")
-        if not answer:
+        picture = self._f("picture") or None
+        if not answer and not picture:
             raise ShellError("Say what the answer is (and, best, which line of the prose says it).", field="answer")
         try:
             cc.answer_question(self.hub, co["locator"], self._f("qid"), answer, self.user, line=line,
-                               record_divergence=bool(self._f("record_divergence")), category=self._f("category") or None)
+                               record_divergence=bool(self._f("record_divergence")), category=self._f("category") or None,
+                               picture=picture, reading_text=self._f("reading_text") or "")
         except ValueError as e:
             raise self._co_refused(e) from None
         self._co_done(co, "The question is marked answered.", "co-questions")

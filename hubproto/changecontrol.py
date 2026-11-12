@@ -685,8 +685,11 @@ def compile_delta(hub, co_ref, *, extractor=None, n: int | None = None) -> dict:
     prev = _proposal(hub, co)
     drafts = eco.drafts_of(hub, co)
     f = co["fields"]
+    from . import picture_reading  # a reading a person confirmed since the last compile is compiled into the text
+
     same = (prev is not None and prev.get("status") == "open" and f.get("staged_base") == _digest(hub)
             and (f.get("staged_from") or {}) == _shas(hub, drafts) and not f.get("staged_errors")
+            and (f.get("staged_readings") or "") == picture_reading.digest(picture_reading.confirmed_of(co))
             and (bool(drafts) or prev.get("extractor") == "none"))
     recompiled = not same
     if same:
@@ -2063,7 +2066,7 @@ def committee_answerer(hub, co_ref, q: dict, by: str, p: dict | None = None) -> 
 
 
 def answer_question(hub, co_ref, qid: str, answer: str, by: str, line: int | None = None, record_divergence: bool = False,
-                    category: str | None = None) -> dict:
+                    category: str | None = None, picture: str | None = None, reading_text: str = "") -> dict:
     """Mark a question answered, with the answer (and, best, the line of the prose that answers it). The next compile
     also closes a compiler question that no longer arises. A committee question (``COMMITTEE_CODES``) is answered by a
     person (``committee_answerer``: its chair or a system administrator; with no person as either in the release in
@@ -2071,8 +2074,19 @@ def answer_question(hub, co_ref, qid: str, answer: str, by: str, line: int | Non
     (a committee question): the line stays unenforced and the release records it as a divergence, with the answer as its
     meaning. ``category="procedure"`` (an ``unread-rule`` question): the sentence is a procedure people follow and the
     hub does not enforce it; not a divergence, an accepted warning like any answer. Other questions: the requester, a
-    document controller or a contributor answers."""
+    document controller or a contributor answers.
+
+    ``picture`` (a picture's question, issue #31): "confirm" the compile-frame committee's reading of it, "correct" it
+    (``reading_text``: the reading, one sentence a line) or say it states "nothing". The reading confirmed is recorded on
+    the change order (``picture_readings``) and is part of the SOP's text from the next compile on (the next review
+    round), after the picture's line (``hubproto.picture_reading``); the signed answer holds it."""
+    from . import picture_reading
+
     co = sync(hub, co_ref)
+    if picture is not None and picture not in picture_reading.ANSWERS:
+        raise ValueError(f"a picture's question is answered with {', '.join(picture_reading.ANSWERS)}")
+    if not (answer or "").strip() and picture:
+        answer = picture_reading.ANSWERS[picture]
     if not (answer or "").strip():
         raise ValueError("say what the answer is (and, best, which line of the prose says it)")
     if category is not None and category not in ANSWER_CATEGORIES:
@@ -2092,6 +2106,17 @@ def answer_question(hub, co_ref, qid: str, answer: str, by: str, line: int | Non
     concerned: list[str] = []
     if category and (q is None or q.get("code") != "unread-rule"):
         raise ValueError("only an unread-rule question (prose that reads like a rule and configures nothing) is answered as a procedure")
+    reading: list[str] | None = None
+    if picture is not None:
+        if q is None or not q.get("picture"):
+            raise ValueError("only a picture's question is answered with the picture's reading")
+        reading = picture_reading.answer_lines(q, picture, reading_text)
+        if reading and stage_of(co) not in EDITABLE:
+            raise ValueError(f"{co['number']} is {stage_of(co)}: a picture's reading becomes part of the SOP's text, so confirm it "
+                             "while the change order is being revised")
+        upd.update({"picture_answer": picture, "confirmed_reading": reading})
+        if reading:
+            upd["answer"] = meaning = f"{meaning} The picture's reading: “{' '.join(reading)}”"
     if committee_q:
         # The compile committee could not read (a member was unavailable) or did not agree: a person intervenes.
         why, as_, concerned = committee_answerer(hub, co, q, by, p)
@@ -2108,6 +2133,13 @@ def answer_question(hub, co_ref, qid: str, answer: str, by: str, line: int | Non
         q.update(upd)
         _record(hub, co, "question_answered", {**_signed(hub, co, by=by, verdict="answer", meaning=meaning, step=qid,
                                                          payload=_hash(q.get("text")), at=now), "question": qid}, by)
+        if reading is not None:  # the change order holds the reading a person confirmed; the next compile puts it in the text
+            ref = picture_reading.PICTURE_LINE.fullmatch(str(q.get("quote") or "")).group(2)
+            kept = {f: dict(v or {}) for f, v in (co["fields"].get("picture_readings") or {}).items()}
+            kept.setdefault(q.get("frame") or "", {})[ref] = {
+                "lines": reading, "answer": picture, "by": by, "at": now, "question": qid,
+                "read_by": list((q.get("reading") or {}).get("by") or []), "proposed": list((q.get("reading") or {}).get("proposed") or [])}
+            co = _set(hub, co, by=by, picture_readings=kept)
         if committee_q:  # the intervention is an accepted warning on the change order (and on each item it concerns)
             for item, key in [(None, f"co|question|{qid}")] + [(cid, f"{cid}|question|{qid}") for cid in concerned]:
                 p.setdefault("acceptances", {})[key] = {"by": by, "meaning": meaning, "at": now}
@@ -2497,7 +2529,7 @@ def send_reasons(hub, co_ref) -> list[str]:
     the release in force and compiles; no "baseline changed" flag waits for another round; every change request it
     implements is approved and not flagged; its forms are valid. Unresolved findings and questions do not stop it:
     they become warnings at approval."""
-    from . import formlayout
+    from . import formlayout, picture_reading
 
     co = _co(hub, co_ref)
     if co["state"] == "approved" and not co["fields"].get("released_release"):
@@ -2541,6 +2573,9 @@ def send_reasons(hub, co_ref) -> list[str]:
             reasons.append("the delta is not compiled (or its compile was replaced): request review again")
         elif p is not None and (f.get("staged_base") != _digest(hub) or (f.get("staged_from") or {}) != _shas(hub, drafts)):
             reasons.append("the delta was compiled against a release no longer in force: it is being compiled again (or request review again)")
+        elif p is not None and (f.get("staged_readings") or "") != picture_reading.digest(picture_reading.confirmed_of(co)):
+            reasons.append("a picture's reading was confirmed after the last compile: request review again, so it is compiled into "
+                           "the SOP's text and read with it")
     for d in carried:
         run = hub.runner.run_for_record(d["draft"]["locator"])
         if run and run["status"] in ("submitted", "running", "waiting"):

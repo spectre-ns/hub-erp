@@ -635,6 +635,24 @@ DOCX_PICTURE_NAMESPACES = {
 }
 
 
+# A picture's reading (issue #31): what the compile-frame committee read a picture to state, as a person confirmed it, is
+# part of the Frame text in force, one line per sentence right after the picture's line, keyed by the picture's hash. The
+# hub writes these lines (``picture_reading.with_readings``); a document never holds one: words typed like one read with
+# a backslash in front (``escape_text_line``), as words typed like a picture line do.
+READING_LINE = re.compile(r"> Picture sha256:([0-9a-f]{12}): (\S.*)")
+_LOOKS_LIKE_READING = re.compile(r"^(\s*)(\\*> Picture sha256:[0-9a-f]{12}: \S.*?)(\s*)$")
+
+
+def reading_line(ref: str, sentence: str) -> str:
+    """The Frame line for one sentence of the reading of the picture ``ref`` ("sha256:<hex>")."""
+    return f"> Picture sha256:{ref.split(':', 1)[-1][:12]}: {' '.join(str(sentence).split())}"
+
+
+def is_reading_line(line: str) -> bool:
+    """True for a Frame line that is a sentence of a picture's confirmed reading (``reading_line``)."""
+    return bool(READING_LINE.fullmatch((line or "").strip()))
+
+
 def is_picture_line(line: str) -> bool:
     """True for a Frame line that stands for a picture in the document (``picture_line``)."""
     return bool(PICTURE_LINE.fullmatch((line or "").strip()))
@@ -646,14 +664,15 @@ def picture_line(alt: str, ref: str) -> str:
 
 
 def escape_text_line(text: str) -> str:
-    """A paragraph whose words are written like a picture line reads with a backslash in front, so typed text never reads
-    as a picture (and a picture the document does not hold never hides behind it). ``unescape_text_line`` undoes it."""
-    m = _LOOKS_LIKE_PICTURE.match(text)
+    """A paragraph whose words are written like a picture line, or like a picture's reading line, reads with a backslash
+    in front, so typed text never reads as a picture or as a confirmed reading (and a picture the document does not hold
+    never hides behind it). ``unescape_text_line`` undoes it."""
+    m = _LOOKS_LIKE_PICTURE.match(text) or _LOOKS_LIKE_READING.match(text)
     return f"{m.group(1)}\\{m.group(2)}{m.group(3)}" if m else text
 
 
 def unescape_text_line(line: str) -> str:
-    m = _LOOKS_LIKE_PICTURE.match(line)
+    m = _LOOKS_LIKE_PICTURE.match(line) or _LOOKS_LIKE_READING.match(line)
     return f"{m.group(1)}{m.group(2)[1:]}{m.group(3)}" if m and m.group(2).startswith("\\") else line
 
 
