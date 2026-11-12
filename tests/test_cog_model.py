@@ -75,7 +75,7 @@ def test_a_cog_profile_is_its_identity(released):
     p = released.compile(save=False)
     ap = next(r for r in p["rules"] if r["kind"] == "cog" and r["name"] == "ap-reviewer")
     assert {k for k in ap if k != "source"} == {"kind", "name", "about", "model", "persona", "prompt_from", "references"}
-    assert ap["persona"] == "reviewer" and ap["model"] == "ollama/qwen3:14b" and ap["about"].startswith("Matches supplier bills")
+    assert ap["persona"] == "reviewer" and ap["model"] == "ollama/gemma4:12b-it-qat" and ap["about"].startswith("Matches supplier bills")
     prof = bundle(released)["cogs"]["ap-reviewer"]
     assert prof["prompt"].startswith("You are the ap-reviewer cog, a member of the organization. What you do: Matches supplier bills")
     rules, notes = extract("## Cog: helper\nAbout: Helps.\nModel: ollama/qwen3:14b\nPersona: persona-executor\nDuty: Do things.\nPrompt: Be good.\nand kind.\n",
@@ -249,7 +249,7 @@ def test_the_it_and_management_cogs_and_the_it_sop(released):
     b = bundle(released)
     assert b["members"]["it-admin"]["roles"] == ["system-administrator"] and b["members"]["management"]["roles"] == ["management-reviewer"]
     assert "system-administrator" in b["members"]["bob"]["roles"] and b["members"]["organization"]["roles"] == ["policy-reader"]
-    assert b["cogs"]["it-admin"]["model"] == b["cogs"]["management"]["model"] == "ollama/qwen3:14b"
+    assert b["cogs"]["it-admin"]["model"] == b["cogs"]["management"]["model"] == "ollama/gemma4:12b-it-qat"
     assert b["cogs"]["it-admin"]["persona"] == "executor" and b["cogs"]["management"]["persona"] == "advisor"
     assert b["scopes"]["it"]["compiles"] == ["it-sop"]
     for cog in ("it-admin", "management"):

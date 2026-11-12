@@ -32,7 +32,7 @@ Frames had a volume (they were in the checkout) is moved with `docs/rollout/fram
 
 **How to start the hub with Docker** (an administrator)
 
-1. Make sure Ollama runs on the host with the cogs' model (`ollama pull qwen3:14b`; see 8.4).
+1. Make sure Ollama runs on the host with the cogs' model (`ollama pull gemma4:12b-it-qat`; see 8.4).
 2. In the repository, run `docker compose up --build`.
 3. On the first start the container (docker/entrypoint.sh): creates the state (`hubproto init`), installs the ISO 9001
    profile (`hubproto seed iso9001`; its SOPs are the same as the repository's), compiles and releases the first
@@ -107,12 +107,14 @@ it is set (hubproto/workqueue.py, `CogWorker`).
 
 ## 8.4 Models (Ollama) and a cog's model
 
-Each cog is bundled with the model its profile names. Nine of the eleven cogs use `ollama/qwen3:14b`, served by
-Ollama at `HUBPROTO_OLLAMA_URL`; the two senior cogs, the compile-frame committee, use `claude-opus-5-5`, a hosted
-model (chapter 6.12). Hosted models are off unless `HUBPROTO_HOSTED_MODELS=on` and an Anthropic key is passed, and the
-compose file passes neither (its comment says where to add them). A cog whose model the hub cannot reach is not
-available, and nothing stands in for it (hubproto/model.py, `backend_for`). The prompt each cog gets is sized to its
-model's context window (qwen3:14b: 40,960 tokens).
+Each cog is bundled with the model its profile names. Nine of the eleven cogs use `ollama/gemma4:12b-it-qat` (Gemma 4
+12B, quantization-aware; it reads pictures), served by Ollama at `HUBPROTO_OLLAMA_URL`; the two senior cogs, the
+compile-frame committee, use `claude-opus-5-5`, a hosted model (chapter 6.12). Hosted models are off unless
+`HUBPROTO_HOSTED_MODELS=on` and an Anthropic key is passed, and the compose file passes neither (its comment says
+where to add them). A cog whose model the hub cannot reach is not available, and nothing stands in for it
+(hubproto/model.py, `backend_for`). The prompt each cog gets is sized to its model's context window as Ollama reports
+it, capped at 65,536 tokens unless `HUBPROTO_MODEL_CTX_MAX` or `HUBPROTO_MODEL_CTX` says otherwise (hubproto/model.py,
+`num_ctx_for`).
 
 So on the default installation **no model reads SOP prose**: the juniors do not read in the seniors' place, a change
 order's compile reads only the sentence shapes, and every changed rule-like sentence the grammar cannot read becomes a

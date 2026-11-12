@@ -17,7 +17,7 @@ def test_profiles_compile_into_the_release_and_change_as_a_widening(released):
     b = bundle_of(released)
     prof = b["cogs"]["ap-reviewer"]
     company = ["org-model", "quality-manual", "tasks-sop"]  # the company scope every member follows
-    assert prof["model"] == "ollama/qwen3:14b" and "Matches supplier bills" in prof["about"] and prof["follows"] == company + ["finance-policy"]
+    assert prof["model"] == "ollama/gemma4:12b-it-qat" and "Matches supplier bills" in prof["about"] and prof["follows"] == company + ["finance-policy"]
     assert prof["persona"] == "reviewer" and prof["stance"] == "reviewer", "its behaviour comes from its persona"
     assert "You are the ap-reviewer cog" in prof["prompt"] and "say plainly what does not match" in prof["prompt"]
     assert {"ncr-sop", "capa-sop", "training-sop", "design-control-sop"} <= set(b["cogs"]["quality-assistant"]["follows"])
@@ -324,4 +324,4 @@ def test_a_cog_whose_model_is_not_available_is_not_used(released, monkeypatch):
     assert any(m["kind"] == "mention" and "ap-reviewer is not available" in m["subject"] for m in hub.inbox.for_principal("alice"))
     # The compiler warns that the cogs' models cannot be reached here.
     p = hub.compile(save=False)
-    assert any(f["guard"] == "model" and "ap-reviewer is bundled with ollama/qwen3:14b" in f["detail"] for f in p["findings"])
+    assert any(f["guard"] == "model" and "ap-reviewer is bundled with ollama/gemma4:12b-it-qat" in f["detail"] for f in p["findings"])

@@ -154,6 +154,37 @@ its own process, and a test may run on any worker in any order, so:
 To check a suite for order dependence, run it reversed per file (a plugin with `items.reverse()` and
 `--dist loadfile`) and each test on its own.
 
+### The local-inference suite (`tests_inference/`)
+
+The main suite never calls a model. `tests_inference/` does nothing else: it runs the cogs on the models the Frames
+name (`frames/company/cogs.frame.md`; the junior cogs on `ollama/gemma4:12b-it-qat`), served by a real Ollama, and
+checks what a real model does to the hub: an answer that does not parse, format drift, refusals, a cog that ignores its
+tools, slowness.
+
+```bash
+python -m pytest tests_inference -v                  # HUBPROTO_OLLAMA_URL, default http://localhost:11434
+python -m pytest tests_inference -v -m "not slow"    # without the committee reading (about a minute less)
+HUBPROTO_INFERENCE_SHOW=1 python -m pytest tests_inference   # print every answer, passing tests too
+```
+
+* **When:** after any change to the prompts (`cogs.cog_context`, `review.py`, `llm_extract.py`, the personas), the
+  model gateway (`model.py`), the cog profiles, or the models the Frames name. GitHub CI does not run it (no GPU); run
+  it by hand before such a PR and put the result (passed, failed, timings) in the PR.
+* **Never collected from the root:** `pyproject.toml` has `testpaths = ["tests"]`, so `python -m pytest` runs only
+  `tests/`. Its own `conftest.py` clears `HUBPROTO_ALLOW_STAND_IN` (no stand-in answers for a model that fails),
+  `HUBPROTO_HOSTED_MODELS` and `ANTHROPIC_API_KEY` (no hosted model, no cost), and does not import `tests/conftest.py`.
+* **A missing model skips, never fails:** each test calls `need(model)`, which skips with the sentence to act on
+  (start Ollama, or `ollama pull <model>`).
+* **Properties, not words:** a review ends with a verdict line the hub reads, an error quotes a procedure, a cog
+  decides or hands back with a reason, a picture of a red square is read as one, a sentence nobody read is a blocking
+  question. Each test's model calls together stay inside a bound (`timed()`, 240 s unless the test says more; one call
+  times out at `HUBPROTO_MODEL_TIMEOUT`, 300 s here).
+* **A failure prints the model's raw output** (every call the test made, its timing and token counts), so it reads as a
+  finding about the model. A model that answers badly is reported, not tuned away; a hub bug it exposes gets a
+  stand-in test in `tests/` (AGENTS.md rule 6).
+* On this machine's shared 8 GB GPU the suite takes two to three minutes; the first call loads the model (about a
+  minute).
+
 ## The model in one paragraph
 
 Frames (Markdown + YAML frontmatter) hold policy prose. `hub.compile()`
@@ -221,7 +252,7 @@ Only inside these sections: `## Roles`, `## Members`, `## Groups`, `## Folders`,
 ## Duties           Every day|week|month the quality-assistant cog finds nonconformances that ... .   (a cog's standing goal)
 ## Committee: design-review   Group: design-reviewers   Chair: bob (a person, required)   Purpose: <what it decides>
                     (decides by consensus; "Members:" and "Agree: n of m" of earlier texts are still read: Agree is not used)
-## Cog: ap-reviewer About: <one paragraph: what it does>   Model: ollama/qwen3:14b   Persona: reviewer
+## Cog: ap-reviewer About: <one paragraph: what it does>   Model: ollama/gemma4:12b-it-qat   Persona: reviewer
                     [Prompt from: DOC-n (its job from a pinned document)   References: DOC-n, ...]
 ## Persona: reviewer  Tone: formal|informal   Stance: reviewer|executor|author|advisor   Lenses: compliance, consistency, impact
                     Reviews: 3 adversarial passes   Escalates: when ...   Behaviour: <the behaviour prompt, may run on>

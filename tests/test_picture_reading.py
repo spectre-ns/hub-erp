@@ -115,6 +115,29 @@ def test_a_text_only_model_is_refused_with_a_sentence_never_sent_without_the_pic
         gw.complete(model="ollama/llava:13b", system=SYSTEM, user=USER, images=[{"data": b"", "media_type": "image/png"}])
 
 
+def test_the_junior_cogs_gemma4_reads_pictures_where_ollama_says_so_and_on_the_stand_in(monkeypatch):
+    """The junior cogs' model (cog-profiles: ollama/gemma4:12b-it-qat, issue #46) reads pictures. Every gemma4 size reads
+    them, so the family table lets the development stand-in take them in its place; a real Ollama is still asked, and
+    what it says decides: the family never stands in for its answer."""
+    from pathlib import Path
+
+    from hubproto.extract import ConventionExtractor
+    from hubproto.frames import load_frame
+
+    frame = load_frame(Path(__file__).resolve().parent.parent / "frames" / "company" / "cogs.frame.md")
+    juniors = {r["name"]: r["model"] for r in ConventionExtractor().extract(frame).rules if r["kind"] == "cog" and not r["model"].startswith("claude")}
+    assert juniors and set(juniors.values()) == {"ollama/gemma4:12b-it-qat"}, juniors
+    assert model.supports_images("ollama/gemma4:12b-it-qat"), "no Ollama here: the stand-in answers for a family that reads pictures"
+    out = model.ModelGateway().complete(model="ollama/gemma4:12b-it-qat", system=SYSTEM, user=USER, images=[png()])
+    assert out["stand_in"] and out["images"][0]["media_type"] == "image/png"
+    monkeypatch.setenv("HUBPROTO_OLLAMA_URL", "http://127.0.0.1:9")
+    monkeypatch.setattr(model, "_ollama_capabilities", lambda name: {"gemma4:12b-it-qat": ["completion", "vision", "tools", "thinking"]}.get(name, ["completion"]))
+    assert model.supports_images("ollama/gemma4:12b-it-qat"), "Ollama reports vision for it"
+    assert not model.supports_images("ollama/gemma4:custom-text"), "Ollama says no vision: the family does not stand in for its answer"
+    monkeypatch.setattr(model, "_ollama_capabilities", lambda name: None)
+    assert "Ollama does not say whether ollama/gemma4:12b-it-qat reads pictures" in model.images_refused("ollama/gemma4:12b-it-qat")
+
+
 def test_the_anthropic_api_gets_image_blocks_and_ollama_its_images_field(monkeypatch):
     sent = []
 

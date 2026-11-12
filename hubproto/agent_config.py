@@ -113,7 +113,7 @@ def propose_cog_model(tools, a: dict) -> dict:
     if (tools.bundle.get("members") or {}).get(cog, {}).get("type") != "cog" or profile is None:
         return {"error": f"{cog!r} is not a cog with a profile in the policy in force"}
     if not model:
-        return {"error": "name the model (e.g. ollama/qwen3:14b)"}
+        return {"error": "name the model (e.g. ollama/gemma4:12b-it-qat)"}
     if model == (profile.get("model") or ""):
         return {"error": f"{cog} already uses {model}"}
     res = resolve_model(model)

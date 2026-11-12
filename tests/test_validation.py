@@ -147,16 +147,16 @@ def test_every_cog_decision_review_and_draft_keeps_what_produced_it(released):
     env = hub.registry.get("quality-assistant").invoke("review-document", {"record": loc, "question": "ok?"},
                                                      tools(hub, "quality-assistant", "carol")._ctx(hub.kernel.get(loc)))
     review = [e["data"] for e in hub.kernel.events(loc) if e["type"] == "cog.worked" and e["data"]["kind"] == "review"]
-    assert review and review[-1]["model"] == "ollama/qwen3:14b" and review[-1]["stand_in"] is True and env["payload"]["provenance"]["cog"] == "quality-assistant"
+    assert review and review[-1]["model"] == "ollama/gemma4:12b-it-qat" and review[-1]["stand_in"] is True and env["payload"]["provenance"]["cog"] == "quality-assistant"
     t = tools(hub, "qa-manager", "carol")
     out = t.execute("draft_document", {"title": "Torque WI", "text": "# Torque WI\n1. Torque to 2 Nm."})
     doc = hub.kernel.get(out["document"])
     drafted = [e["data"] for e in hub.kernel.events(doc["locator"]) if e["type"] == "cog.worked"]
-    assert drafted and drafted[-1]["kind"] == "draft" and drafted[-1]["persona"] == "author" and drafted[-1]["model"] == "ollama/qwen3:14b"
+    assert drafted and drafted[-1]["kind"] == "draft" and drafted[-1]["persona"] == "author" and drafted[-1]["model"] == "ollama/gemma4:12b-it-qat"
     from hubproto.shell.text import event_sentence
 
     line = event_sentence(next(e for e in hub.kernel.events(doc["locator"]) if e["type"] == "cog.worked"))
-    assert "wrote it" in line and "model ollama/qwen3:14b" in line and "persona author 2.0.0" in line and "trained by release v1" in line
+    assert "wrote it" in line and "model ollama/gemma4:12b-it-qat" in line and "persona author 2.0.0" in line and "trained by release v1" in line
 
 
 # ---------------------------------------------------------------- look tools and read rights (governance M4)
