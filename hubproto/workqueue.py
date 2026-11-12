@@ -454,6 +454,12 @@ def execute(hub, task: dict) -> dict:
     raise ValueError(f"unknown kind of cog task {kind!r}")
 
 
+AUDIT_WORK = ("You are its auditor and the step is yours: Record the findings. Run audit_checks for the processes in scope, take "
+              "sample_records of each and read them against the SOP (read_sop_section); record each finding with record_finding (the "
+              "clause, what was expected, what was found, the evidence exactly as the tools gave it, the grade, and ncr or capa where "
+              "action is needed); draft_audit_report; then submit_findings. If you cannot, hand_back with why.")
+
+
 def assigned_work(hub, task: dict, state: dict | None = None) -> dict:
     """A cog works an item it was assigned, the way a person picks up an assignment: it reads the item and the
     instruction, acts within its autonomy (comments, reviews, drafts, its turn at a Gate it may sign), and reports
@@ -474,7 +480,8 @@ def assigned_work(hub, task: dict, state: dict | None = None) -> dict:
             + (f" Their instruction: {p['instruction']}" if p.get("instruction") else "")
             + (f" What the item says: {what}" if what else "")
             + f" It is {state_words(rec['state'])}" + (f", waiting for {', '.join(waiting.get('assignees') or [])} at {waiting.get('title')}" if waiting else "") + "."
-            + (" The step is assigned to you: do the work, then call complete_step with what you did, or hand_back with why you cannot."
+            + ((" " + AUDIT_WORK if rec["type"] == "audit" and waiting.get("checkpoint") == "record-the-findings" else
+                " The step is assigned to you: do the work, then call complete_step with what you did, or hand_back with why you cannot.")
                if step_mine else
                " Do what is asked within your autonomy. If it waits at an approval you may sign, use take_turn. Comment on the item with what you did.")
             + " Finish with a summary.")

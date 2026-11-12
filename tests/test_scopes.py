@@ -44,7 +44,7 @@ def test_scopes_layer_and_the_sops_that_name_a_cog_decide_what_it_follows(shell)
     im = sc.impact(b, ["finance-policy"])
     assert {p["name"] for p in im["readers"]} >= {"ap-reviewer", "finance-clerk", "controller"}
     persona = sc.dependents(b, "persona-reviewer")
-    assert persona["persona"] == "reviewer" and set(persona["behave"]) == {"ap-reviewer", "doc-reviewer", "quality-assistant"}
+    assert persona["persona"] == "reviewer" and set(persona["behave"]) == {"ap-reviewer", "auditor", "doc-reviewer", "quality-assistant"}
 
 
 def test_the_release_names_each_frames_source(shell):

@@ -582,6 +582,19 @@ What you may do: {mode}. Budget: at most {actions} actions and {rounds} steps.
 - You work for {for_whom}: you see what they may see, and you write only to the people this work concerns."""
 
 
+def run_budget(bundle: dict, cog: str, max_actions: int | None = None, max_rounds: int | None = None) -> dict:
+    """How much one run may do: what the caller asks, else HUBPROTO_AGENT_ACTIONS / HUBPROTO_AGENT_ROUNDS (5 actions, 10
+    model rounds). A cog in the internal auditor's seat is auditing: its runs get the audit budget (``audit.audit_budget``:
+    larger, bounded by a ceiling the environment cannot lift), since an audit records a finding per action."""
+    from .audit import audit_budget, is_audit_run
+
+    if is_audit_run(bundle, cog):
+        b = audit_budget()
+        return {"actions": int(max_actions or b["actions"]), "rounds": int(max_rounds or b["rounds"]), "max_tokens": b["max_tokens"]}
+    return {"actions": int(max_actions or os.environ.get("HUBPROTO_AGENT_ACTIONS") or 5),
+            "rounds": int(max_rounds or os.environ.get("HUBPROTO_AGENT_ROUNDS") or 10), "max_tokens": 900}
+
+
 class Agent:
     def __init__(self, hub, cog: str):
         self.hub = hub
@@ -609,8 +622,8 @@ class Agent:
             raise ValueError(why)
         prof = (bundle.get("cogs") or {}).get(self.cog) or {}
         mode = "derived"
-        actions = int(max_actions or os.environ.get("HUBPROTO_AGENT_ACTIONS") or 5)
-        rounds = int(max_rounds or os.environ.get("HUBPROTO_AGENT_ROUNDS") or 10)
+        budget = run_budget(bundle, self.cog, max_actions, max_rounds)
+        actions, rounds = budget["actions"], budget["rounds"]
         run_id = run_id or uuid.uuid4().hex[:10]
         self.store.append(run_id, {"type": "started", "cog": self.cog, "goal": goal, "by": by, "trigger": trigger, "mode": mode,
                                    "budget": {"actions": actions, "rounds": rounds}, "release": meta["digest"] if meta else ""})
@@ -618,15 +631,21 @@ class Agent:
         from .cogs import cog_context
 
         specs = look_specs() + act_specs(mode)
+        from .agent_audit import AUDIT_TOOLS
+        from .audit import is_audit_run
+
+        if not is_audit_run(bundle, self.cog):  # the audit tools are an internal auditor's: other cogs are not offered them
+            specs = [s for s in specs if s["name"] not in AUDIT_TOOLS]
         rules = AGENT_RULES.format(cog=self.cog, goal=goal, mode=MODE_WORDS[mode], actions=actions, rounds=rounds,
                                    for_whom=tools.for_whom or "yourself (a standing duty)")
         system = cog_context(tools._ctx(None), None, tools_now=specs, extra=[("YOUR TASK", rules)])
         return {"run": run_id, "tools": tools, "system": system, "specs": specs, "model": prof.get("model") or "stand-in", "mode": mode,
-                "goal": goal, "by": by, "rounds": rounds}
+                "goal": goal, "by": by, "rounds": rounds, "max_tokens": budget["max_tokens"]}
 
     def think(self, prep: dict, call_tool=None) -> dict:
         """Slow, unlocked: the model plans and calls tools; ``call_tool`` (locked by the caller) runs each one."""
-        return self.hub.model.complete_with_tools(model=prep["model"], system=prep["system"], user=prep["goal"], by=self.cog, max_tokens=900,
+        return self.hub.model.complete_with_tools(model=prep["model"], system=prep["system"], user=prep["goal"], by=self.cog,
+                                                  max_tokens=prep.get("max_tokens") or 900,
                                                   tools=prep["specs"], call_tool=call_tool or prep["tools"].execute, max_rounds=prep["rounds"])
 
     def conclude(self, prep: dict, out: dict) -> dict:
@@ -763,11 +782,15 @@ def run_duties(hub, cog: str | None = None, today: str | None = None) -> list[di
     """Take up every duty not yet done today; each is an agent run triggered by the duty, on behalf of the cog itself."""
     out = []
     for name, duty in due_duties(hub, cog, today):
-        res = Agent(hub, name).run(duty, by=name, trigger="duty")
+        try:
+            res = Agent(hub, name).run(duty, by=name, trigger="duty")
+        except ValueError as e:  # not available (its model cannot be reached) or runs are off: it stays due, nothing stands in
+            out.append({"cog": name, "duty": duty, "run": None, "status": "unavailable", "summary": str(e), "actions": 0})
+            continue
         mark_duty(hub, name, duty, today)
         out.append({"cog": name, "duty": duty, **{k: res[k] for k in ("run", "status", "summary", "actions")}})
     return out
 
 
 # The further tool groups register themselves on import.
-from . import agent_records, agent_docs, agent_config, agent_inventory  # noqa: E402,F401
+from . import agent_records, agent_docs, agent_config, agent_inventory, agent_audit  # noqa: E402,F401

@@ -55,6 +55,9 @@ def pending_title(step: dict) -> str:
 
 
 PRE_DECISION_HOOKS: dict = {}  # record type -> fn(kernel, record, verdict); raise KernelGuardError to block
+# record type -> fn(kernel, the record as the decision would leave it, verdict): checked before the decision's fields are
+# set, so fields a guard refuses never reach the record (raise KernelGuardError to refuse them)
+DECISION_FIELD_GUARDS: dict = {}
 POST_DECISION_HOOKS: dict = {}  # record type -> fn(kernel, record, verdict); runs after the decision took effect
 
 
@@ -1162,8 +1165,13 @@ class Runner:
             people = [who] if who and bundle["members"].get(who) else []
             if people and bundle["members"][who]["type"] == "cog" and name != "assignee":
                 # Only a task's assignee may be a cog: a cog named in requested_by, owner or reporter would sign a
-                # step with no approval criteria, chosen by whoever filled the field.
-                return skip(f"{who} is a cog: a cog cannot be named in {name} to take this step (only a task's assignee may be a cog)")
+                # step with no approval criteria, chosen by whoever filled the field. The auditor is the other work
+                # field (the step is recording the findings, not approving them): a cog there must hold the step's own
+                # role and its permission, as a person auditor does, so naming a cog gives it nothing it does not have.
+                role = (step.get("gate") or {}).get("role") or next((s.get("role") for s in state["manifest"]["steps"] if s["id"] == step["id"]), "")
+                why = self.work_cog_refused(bundle, state, who, name, role)
+                if why:
+                    return skip(why)
         else:
             people = [p for p in principals_for(bundle, assignee) if bundle["members"][p]["type"] == "person"]
             if not people:
@@ -1179,6 +1187,25 @@ class Runner:
         if not allowed_people:
             return skip("; ".join(dropped) or "no eligible person holds this route")
         return allowed_people
+
+    def work_cog_refused(self, bundle: dict, state: dict, cog: str, field: str, role: str) -> str:
+        """Why this cog, named in a field, may not take the step as its work (empty when it may): only a work field
+        (``WORK_ROUTES``) other than the assignee's, and only a cog that holds the step's role, may approve the object
+        there, follows the SOP and is available."""
+        if f"field:{field}" not in self.WORK_ROUTES:
+            return f"{cog} is a cog: a cog cannot be named in {field} to take this step (only a task's assignee may be a cog)"
+        if not role or role not in authz.roles_of(bundle, cog):
+            return f"{cog} is a cog that does not hold the {(role or 'step').replace('-', ' ')} role, so it cannot be the {field} here"
+        allowed = authz.check(bundle, cog, "approve", state["manifest"]["object"], state["manifest"]["folder"])
+        if not allowed["allowed"]:
+            return allowed["why"]
+        why = self.cog_follows(bundle, cog, state["process"])
+        if why:
+            return why
+        from .model import cog_availability
+
+        ok, why = cog_availability(bundle, cog)
+        return "" if ok else why
 
     @staticmethod
     def cog_follows(bundle: dict, cog_name: str, process: str) -> str:
@@ -1978,19 +2005,25 @@ class Runner:
         self._save(state)
         return self.cog_decide(run_id, cog_name)
 
+    # The fields whose holder a step routed to is given the work itself (the assignee does the task, the auditor records
+    # the findings), not an approval: a cog routed there does the work and completes the step, within what the Gate takes.
+    WORK_ROUTES = ("field:assignee", "field:auditor")
+
     @staticmethod
     def is_assigned_work(state: dict, cog_name: str) -> bool:
         """The item waits for the cog because it was assigned the step (a field or a name), not routed to it to approve."""
         pending = state.get("pending") or {}
         return (state["status"] == "waiting" and cog_name in (pending.get("assignees") or [])
-                and pending.get("route") == "field:assignee" and not pending.get("stepped_in_from"))
+                and pending.get("route") in Runner.WORK_ROUTES and not pending.get("stepped_in_from"))
 
-    def cog_complete(self, run_id: str, cog_name: str, summary: str) -> dict:
-        """A cog finishes a step it was assigned (complete the task, do the work): its summary is the signature's meaning."""
+    def cog_complete(self, run_id: str, cog_name: str, summary: str, fields: dict | None = None) -> dict:
+        """A cog finishes a step it was assigned (complete the task, do the work): its summary is the signature's meaning;
+        ``fields`` are what its work produced (the auditor's findings), only those the Gate takes."""
         state = self.load(run_id)
         if not self.is_assigned_work(state, cog_name):
             raise RunError(f"run {run_id} is not waiting for {cog_name} to do assigned work")
-        return self.decide(run_id, cog_name, "approve", meaning=f"completed: {summary.strip() or 'done'}", payload_digest=self.seen_digest(state))
+        return self.decide(run_id, cog_name, "approve", meaning=f"completed: {summary.strip() or 'done'}", payload_digest=self.seen_digest(state),
+                           fields=fields or None)
 
     def hand_back(self, run_id: str, cog_name: str, reason: str) -> dict:
         """A cog gives assigned work back: the step now waits for the person who filed the item, with the cog's reason."""
@@ -2006,6 +2039,10 @@ class Runner:
             rec = self.kernel.get(state["record"]) if state.get("record") else None
             by = (rec or {}).get("created_by")
             to = by if (bundle["members"].get(by) or {}).get("type") == "person" else None
+        if to is None:
+            # A cog filed it (an audit the auditor cog planned): a person in the step's own seat takes it.
+            role = (pending.get("gate") or {}).get("role") or next((s.get("role") for s in state["manifest"]["steps"] if s["id"] == pending.get("step")), "")
+            to = next((p for p in principals_for(bundle, f"role:{role}") if (bundle["members"].get(p) or {}).get("type") == "person"), None) if role else None
         if to is None:
             raise RunError("there is no person to hand it back to")
         track = Track(self._dir(state["id"]))
@@ -2461,6 +2498,12 @@ class Runner:
         rec = self.kernel.get(state["record"]) if state.get("record") else None
         if verdict == "reject" and not option.get("fields"):
             fields = None  # a rejection changes nothing on the record; its reason is the meaning
+        guard = DECISION_FIELD_GUARDS.get(rec["type"]) if rec is not None else None
+        if guard is not None:
+            try:
+                guard(self.kernel, {**rec, "fields": {**rec["fields"], **(fields or {})}}, verdict)
+            except KernelGuardError as e:
+                raise RunError(str(e)) from None
         if fields and rec is not None:
             permitted = set(self.allowed_decision_fields(state, option["id"]))
             refused = sorted(k for k in fields if k not in permitted)

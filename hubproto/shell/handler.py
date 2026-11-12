@@ -267,7 +267,7 @@ class BaseHandler(BaseHTTPRequestHandler):
                  "/upload": self.post_upload, "/checkout": self.post_checkout, "/checkin": self.post_checkin, "/link": self.post_link,
                  "/snapshot": self.post_snapshot, "/hold": self.post_hold, "/resubmit": self.post_resubmit, "/retry": self.post_retry,
                  "/cancel": self.post_cancel, "/undo-checkout": self.post_undo_checkout, "/bulk-hold": self.post_bulk_hold}
-        return posts.get(r) or self.inventory_route(method, r)
+        return posts.get(r) or self.inventory_route(method, r) or self.audit_route(method, r)
 
     def _read_raw(self) -> bytes:
         """A raw request body (the editor's saves), bounded like an upload."""

@@ -789,6 +789,7 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
         if rec["type"] == "change-order":
             body += self._eco_panel(rec)
         body += self._inventory_panel(rec)  # stock, suppliers and the stock actions (inventory_ui)
+        body += self._audit_panel(rec)  # an audit's findings and the quality manager's verdicts (audit_ui)
         tabs = [("details", "Details", "form"), ("documents", "Documents", "paperclip"), ("links", "Links", "link")] + \
                ([("reviews", "Reviews", "eye")] if reviews else []) + [("history", "History", "activity"), ("workflow", "Workflow and decisions", "workflow")]
         body += '<nav class="tabs" role="tablist" aria-label="Sections">' + "".join(

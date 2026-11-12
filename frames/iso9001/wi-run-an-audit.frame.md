@@ -3,7 +3,7 @@ type: frame [0.2]
 name: wi-run-an-audit
 description: "Work instruction for internal auditors: plan an audit, use the generated checklist, record findings."
 visibility: internal
-version: "0.1.1"
+version: "0.2.0"
 scope: department
 maintainer: carol
 inherits: org-model
@@ -26,12 +26,19 @@ For: internal auditors and the quality manager.
    ask for the record that shows the step was done by the role the SOP
    names, and look at the run's Track.
 4. Decide **approve** with the `findings` field set: one entry per finding
-   with the clause, the statement, the evidence and the severity (observation,
-   minor, major). An audit cannot move on without findings (an empty list is
-   a valid finding set when nothing was found).
-5. The quality manager receives "Accept the findings", sets the `summary`
-   and approves; the record closes and is rendered to the audit report. Raise
-   a nonconformance for each major finding and link it to the audit.
+   with the clause, what was expected, what was found, the evidence (record
+   numbers and Track entries) and the grade (major, minor, observation,
+   opportunity), and ncr or capa where action is needed. An audit cannot
+   move on without findings (an empty list is a valid finding set when
+   nothing was found), and a finding whose evidence does not exist is refused.
+5. The quality manager receives "Accept the findings": on the audit's page
+   they accept or reject each finding (a rejection says why), set the
+   `summary` and sign once. Each accepted finding that needs action is raised
+   as a nonconformance or a CAPA and linked to the audit; the record closes
+   and is rendered to the audit report.
+6. The auditor cog does the same each month for the next process in the
+   programme, and drafts the report on the audit; a person sends the report
+   through document control.
 
 ## Roles and responsibilities
 | Role | Responsibilities |
