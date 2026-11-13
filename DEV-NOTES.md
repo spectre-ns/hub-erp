@@ -18,7 +18,7 @@ for pytest-xdist, a development-only dependency; without `-n auto` the suite run
 | `hubproto/authz.py` | permission check with folder inheritance; deny wins; returns the sentence | core |
 | `hubproto/routing.py` | routing candidates, approval criteria, thresholds, SLAs | core |
 | `hubproto/kernel.py` | generic record system + ledger command on an event store | core |
-| `hubproto/dms.py` | blob store, document versions, classes, check-out, snapshots, intake | core |
+| `hubproto/dms.py` | blob store, document versions, classes, check-out, snapshots, intake; a document's words (`text_of`, read from the file, never kept on the record; an SOP as the compile reads it) and the paragraphs an edit is checked against (`edit_text`) | core |
 | `hubproto/runner.py` | Op runner = workflow engine walking process graphs; derived Gates and options, grants, Track, tick (SLA escalation), following the release in force, state maps | core |
 | `hubproto/process_graph.py` | processes as graphs (change control 10.1): compile numbered steps and graph sentences into one shape, read it (options, verdicts, globals), write it back as sentences, the earlier shape's view | core |
 | `hubproto/cogs.py` | Cog catalog (code cogs, context stand-ins, reviewer cogs) | core |

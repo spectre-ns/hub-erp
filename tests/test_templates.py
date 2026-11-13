@@ -77,7 +77,7 @@ def test_importing_again_changes_nothing_and_a_changed_source_updates_the_draft(
     assert changed["action"] == "updated" and changed["number"] == line(first, "deviation.md")["number"]
     assert len(hub.kernel.query(type_="document")) == count, "never a duplicate"
     rec = doc(hub, changed["number"])
-    assert len(hub.dms.versions(rec["locator"])) == 2 and "{{approved_by}}" in rec["fields"]["text"]
+    assert len(hub.dms.versions(rec["locator"])) == 2 and "{{approved_by}}" in hub.dms.text_of(rec)
 
 
 def test_a_template_is_approved_into_force_and_then_read_only(hub):

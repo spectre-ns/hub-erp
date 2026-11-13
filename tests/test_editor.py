@@ -194,7 +194,7 @@ def test_a_comment_in_the_document_that_mentions_a_cog_reaches_the_chatter_and_i
     status, body, _ = wopi_call(shell, f"/wopi/files/{number}/contents", token, "POST", saved, {"X-WOPI-Override": "PUT"})
     assert status == 200
     rec = hub.kernel.get(loc)
-    assert "Inspection plan for the sensor board." in rec["fields"]["text"], "reviews can read the document"
+    assert "Inspection plan for the sensor board." in hub.dms.text_of(rec), "reviews can read the document"
     assert rec["fields"]["office_comments"][0]["text"].startswith("@quality-assistant") and rec["fields"]["office_comments"][0]["author"] == "carol"
     chatter = hub.inbox.on_record(loc)
     kinds = [(m["kind"], m["from"]) for m in chatter]
@@ -480,8 +480,8 @@ def test_sheets_store_numbers_and_formulas_and_the_prompt_states_the_writing_int
     bundle = released.releases.bundle(released.releases.current()["digest"])
     doc = released.dms.create(title="Log", doc_class="working", folder="Quality/Controlled Documents", by="carol", content=content,
                               filename="log.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", doc_type="document")
-    ctx = RunContext(run_id="t", release="", bundle=bundle, owner="quality-assistant", kernel=released.kernel, frames=lambda: released.frames,
-                     extras={"cog_profile": bundle["cogs"]["quality-assistant"]})
+    ctx = RunContext(run_id="t", release="", bundle=bundle, owner="quality-assistant", kernel=released.kernel, dms=released.dms,
+                     frames=lambda: released.frames, extras={"cog_profile": bundle["cogs"]["quality-assistant"]})
     rec = released.kernel.get(doc["locator"])
     assert "OUTPUT FORMAT for a change to this spreadsheet" in cog_context(ctx, rec, task="edit") and "@@ delete rows" in cog_context(ctx, rec, task="edit")
     rec["fields"]["filename"] = "wi.docx"
@@ -561,11 +561,11 @@ def test_every_version_of_an_office_file_updates_the_text_the_cogs_read(shell):
     content = office.insert_paragraphs(content, "docx", ["# Torque spec", "Torque the M4 screws to 2 Nm."], "start")
     doc = hub.dms.create(title="Torque spec 2", doc_class="working", folder="Quality/Controlled Documents", by="carol", content=content,
                          filename="torque2.docx", mime=mime, doc_type="document")
-    assert "Torque the M4 screws to 2 Nm." in hub.kernel.get(doc["locator"])["fields"]["text"], "created through the DMS, not the editor"
+    assert "Torque the M4 screws to 2 Nm." in hub.dms.text_of(doc["locator"]), "created through the DMS, not the editor"
     newer = office.insert_paragraphs(content, "docx", ["Record the value on the traveller."], "end")
     hub.dms.checkout(doc["locator"], by="carol")
     hub.dms.checkin(doc["locator"], newer, by="carol", filename="torque2.docx", mime=mime)
-    assert "traveller" in hub.kernel.get(doc["locator"])["fields"]["text"], "a manual check-in too"
+    assert "traveller" in hub.dms.text_of(doc["locator"]), "a manual check-in too"
 
 
 def test_a_document_goes_back_to_the_start(shell):

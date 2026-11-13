@@ -63,6 +63,7 @@ class Hub:
 
         self.settings_drafts = SettingsDrafts(state / "settings" / "drafts")
         self.dms = DMS(self.kernel, BlobStore(state / "blobs"))
+        self.kernel.document_text = self.dms.text_of
         self.releases.blobs = self.dms.blobs  # the Frame texts each proposal was compiled from, kept by hash
         self.runner = Runner(state / "runs", self.kernel, self.releases, self.registry, self.inbox, self.dms)
         # Cogs are users who work from a queue: a Gate that pends for a cog, a mention, a message or a task lands in the
@@ -485,16 +486,13 @@ class Hub:
                 "sha256": v.get("sha256") or "", "filename": v.get("filename") or ""}
 
     def pinned_text(self, pin: dict | None, limit: int = 20000) -> str:
-        """The text of a document exactly as a release pinned it."""
+        """The text of a document exactly as a release pinned it, read as every reader reads it (``DMS.text_of``)."""
         if not pin:
             return ""
-        from .dms import extract_text
-
         try:
-            content, v = self.dms.content(pin["locator"], pin.get("version"))
+            return self.dms.text_of(pin["locator"], pin.get("version"))[:limit]
         except Exception:
             return ""
-        return extract_text(content, v.get("mime") or "", v.get("filename") or "")[:limit]
 
     def frame_document(self, name: str, create: bool = True, by: str = "hub") -> dict | None:
         """The controlled document that carries a Frame's text: created on first use, versioned on every release. It is

@@ -582,6 +582,8 @@ class Runner:
         scoped = ScopedKernel(self.kernel, cog_id=cog.id, reaches=cog.reaches, run_id=state["id"],
                               record=state.get("record"), grant=state.get("grant"))
         dms = DMS(scoped, self.dms.blobs) if self.dms is not None else None
+        if dms is not None:
+            dms._texts = self.dms._texts  # readings are keyed by file hash: one cache serves every run
         return RunContext(run_id=state["id"], release=state["release"], bundle=bundle, owner=state["owner"],
                           kernel=scoped, grant=state.get("grant"), runner=self, inbox=self.inbox,
                           record=state.get("record"), dms=dms,
