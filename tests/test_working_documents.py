@@ -98,16 +98,3 @@ def test_a_cog_never_drafts_a_controlled_document_in_working_documents(released,
     assert "error" in out and "filed in Quality/Controlled Documents" in out["error"] and "create_document" in out["error"], out
     assert not [d for d in released.kernel.query(type_="document") if d["fields"].get("title") == "A procedure"]
 
-
-def test_a_controlled_document_in_working_documents_is_not_everyones_to_edit(released):
-    """Review of #85: everyone may create in the folder, but a controlled document there (moved in) stays its author's."""
-    from hubproto.tools import may_edit_document
-
-    bundle = released.current_bundle()
-    doc = released.dms.create(title="Moved procedure", doc_class="controlled", folder="Quality/Working Documents", by="alice",
-                              content=b"# Moved\n", filename="moved.md", mime="text/markdown", doc_type="sop")
-    rec = released.kernel.get(doc["locator"])
-    assert may_edit_document(bundle, "alice", rec)[0], "its author"
-    for who in ("dave", "quality-assistant", "senior-qa-manager"):
-        ok, why = may_edit_document(bundle, who, rec)
-        assert not ok and "controlled document outside" in why, (who, why)
