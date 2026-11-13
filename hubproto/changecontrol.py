@@ -1902,6 +1902,14 @@ def brief(hub, co_ref, n: int, who: str) -> dict:
         lines += [f"- [{x.get('severity')}] {(x.get('about') or {}).get('item') or 'general'}: {x.get('text')}" for x in earlier]
     for e in f.get("staged_errors") or []:
         lines.append(f"The compile reports: {e}")
+    if any(c.get("op") != "text" and (_effective(c) or {}).get("kind") == "cog" for c in (p or {}).get("changes") or []):
+        # A reviewer of a cog-profile change checks the model against what this installation has (the list_models tool's
+        # listing, read by the hub here, as the review asks the model no tools).
+        from .model import installed_models, installed_models_text
+
+        lines.append("This change order changes a cog profile. The models this installation has now (the hub's listing, as the "
+                     "list_models tool gives it; a profile names a model as written here):")
+        lines.append(installed_models_text(installed_models(_bundle(hub))))
     return {"items": items, "gone": gone, "earlier": earlier, "since": last[0] if last else None, "text": "\n".join(lines)}
 
 
