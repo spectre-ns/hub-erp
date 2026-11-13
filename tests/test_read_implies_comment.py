@@ -164,3 +164,101 @@ def test_the_chatter_takes_a_readers_comment_and_refuses_a_denied_one(shell):
     assert [m["body"] for m in hub.inbox.on_record(rec["locator"])] == ["Looks fine."], "the denied comment was not posted"
     page = plain(main_of(get(shell, back, **{"as": "alice"})[1]))
     assert "You may not comment on " + rec["number"] in page, "the chatter says why instead of offering a form"
+
+
+# ---------------------------------------------------------------- "when a person confirms" binds cogs, not people
+STAFF_CONFIRM = ("Staff may comment on anything in Quality.\n",
+                 "Staff may comment on anything in Quality when a document controller confirms.\n")
+
+
+@pytest.fixture
+def staff_confirm(hub):
+    """The example company, but staff comment in Quality only when a document controller confirms: a sentence whose
+    subject is a role held by people (carol, dave) and by cogs (quality-assistant, qa-manager)."""
+    edit_frame(hub, "org-model", *STAFF_CONFIRM)
+    release_all(hub)
+    return hub
+
+
+def test_a_confirm_first_sentence_on_a_role_does_not_stop_its_people_commenting(staff_confirm):
+    hub = staff_confirm
+    b = bundle(hub)
+    assert any(r["effect"] == "propose" and r["subject"] == "role:staff" and r["action"] == "comment" for r in b["permissions"]), \
+        "the release has the role-level confirm-first sentence"
+    assert authz.check(b, "carol", "read", "nonconformance", "Quality/Nonconformances")["allowed"]
+    d = authz.check(b, "carol", "comment", "nonconformance", "Quality/Nonconformances")
+    assert d["allowed"] and d.get("implied") == "read", "a confirm-first sentence binds cogs only: " + d["why"]
+    # A cog holding the role still proposes: the sentence is its rail.
+    a = authz.autonomy(b, "quality-assistant", "comment", "nonconformance", "Quality/Nonconformances")
+    assert a["mode"] == "propose" and a["confirmer"] == "document-controller", a
+    # A cog the sentence does not name, working for carol, is not refused because of her.
+    ncr = hub.kernel.create("ncr", "Quality/Nonconformances", {"title": "Bent bracket", "description": "x"}, by="carol")
+    out = tools(hub, "auditor", requester="carol").execute("comment", {"number": ncr["number"], "text": "Seen it."})
+    assert out.get("ok"), out
+    # And carol's chatter post goes through.
+    server = serve_in_thread(hub, "127.0.0.1", 0)
+    try:
+        shell = {"hub": hub, "base": f"http://127.0.0.1:{server.server_address[1]}"}
+        back = f"/record/{ncr['locator']}"
+        res = post(shell, "/msg", {"as": "carol", "record": ncr["locator"], "to": "bob", "subject": "About it", "body": "Scrap it.", "return": back})
+        assert res[0] == 200, plain(res[2])[-400:]
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert "Scrap it." in [m["body"] for m in hub.inbox.on_record(ncr["locator"])]
+
+
+# ---------------------------------------------------------------- cogs link records they may read
+def links_between(hub, a, b):
+    return [l for l in hub.kernel.links_of(a["locator"]) if l["target"] == b["locator"]]
+
+
+def test_a_cog_links_records_it_may_read_and_the_link_shows_on_both(released):
+    hub = released
+    task = hub.kernel.create("task", "Tasks", {"title": "Chase the late calibration"}, by="carol")
+    ncr = hub.kernel.create("ncr", "Quality/Nonconformances", {"title": "Gauge out of calibration", "description": "x"}, by="carol")
+    b = bundle(hub)
+    assert not [r for r in authz.permissions_of(b, "auditor") if r["action"] == "comment" and r["resource"] == "folder:Tasks"], \
+        "no sentence lets the auditor comment in Tasks: reading decides"
+    out = tools(hub, "auditor", requester="carol").execute("link_records", {"number": task["number"], "rel": "concerns", "target": ncr["number"]})
+    assert out.get("ok"), out
+    assert [l["label"] for l in links_between(hub, task, ncr)] == ["concerns"]
+    assert [l["label"] for l in links_between(hub, ncr, task)] == ["concerned-by"], "the link shows on the other record too"
+
+
+@pytest.mark.parametrize("rel", ["carries", "supersedes", "has-document", "split-from"])
+def test_a_cog_never_makes_a_link_the_hubs_own_steps_make(released, rel):
+    """carries decides what a change order releases; supersedes onto a journal stops its reversal; has-document widens
+    what a process may change; the stock lot's history is the inventory's own."""
+    hub = released
+    co = hub.kernel.create("change-order", "Quality/Changes", {"title": "Tidy the index", "description": "x"}, by="carol")
+    doc = hub.kernel.create("document", "Quality/Working Documents", {"title": "Notes", "doc_class": "working"}, by="carol")
+    t = tools(hub, "auditor", requester="carol")
+    assert t.may_read(co["folder"]) and t.may_read(doc["folder"]), "the auditor may read both records"
+    out = t.execute("link_records", {"number": co["number"], "rel": rel, "target": doc["number"]})
+    assert out.get("error", "").startswith(f"{rel} links are made by the hub's own steps ("), out
+    assert "use concerns or references to relate these records" in out["error"]
+    assert links_between(hub, co, doc) == [] and t.actions == 0 and t.proposed == [], "nothing is written, proposed or spent"
+
+
+def test_a_cog_may_not_link_to_a_record_it_may_not_read(released):
+    hub = released
+    task = hub.kernel.create("task", "Tasks", {"title": "Accrual follow-up"}, by="carol")
+    bill = hub.kernel.create("task", "Finance", {"title": "Accrual check"}, by="alice")
+    t = tools(hub, "quality-assistant", requester="carol")
+    assert not t.may_read("Finance")
+    out = t.execute("link_records", {"number": task["number"], "rel": "references", "target": bill["number"]})
+    assert out.get("error") == f"no record {bill['number']!r} that quality-assistant may read", out
+    assert links_between(hub, task, bill) == []
+
+
+def test_the_link_tool_names_only_the_relations_a_cog_may_use(released):
+    from hubproto.agent import EXTRA_ACTS
+    from hubproto.configdocs import HUB_RELATIONS
+
+    spec = EXTRA_ACTS["link_records"][0]
+    assert "concerns" in spec["description"] and "references" in spec["description"]
+    assert not [r for r in HUB_RELATIONS if r in spec["description"]], spec["description"]
+    task = released.kernel.create("task", "Tasks", {"title": "x"}, by="carol")
+    out = tools(released, "auditor", requester="carol").execute("link_records", {"number": task["number"], "rel": "loves", "target": task["number"]})
+    assert "concerns" in out["error"] and not [r for r in HUB_RELATIONS if r in out["error"].split(": ", 1)[1].split(", ")], out

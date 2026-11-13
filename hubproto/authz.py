@@ -18,8 +18,9 @@ Whoever may read a record may comment on it (issue #89): ``comment`` is allowed
 wherever ``read`` is, for people and cogs alike, unless a sentence about
 commenting reaches the member there: a deny ("X may not comment on ...")
 refuses, and a "when a person confirms" sentence makes a cog propose (and is no
-allow for ``check``). Such a decision says so (``implied``) and cites the read
-sentence it comes from.
+allow for ``check``). Such a sentence binds cogs only: for a person, even one
+holding the role it names, reading still decides. Such a decision says so
+(``implied``) and cites the read sentence it comes from.
 """
 
 from __future__ import annotations
@@ -101,7 +102,9 @@ def check(bundle: dict, principal: str, action: str, obj: str, folder: str) -> d
     if allows:
         r = allows[0]
         return {"allowed": True, "rule": r, "why": f"allowed by {r['source']['frame']} line {r['source']['line']} ({r['source'].get('path') or r['source']['frame']}): {r['source']['text']}{through(r)}"}
-    if action == "comment" and not rules:  # no sentence about commenting reaches it here: reading decides
+    # "When a person confirms" binds cogs only: for a person it is no sentence about commenting at all.
+    binding = rules if (member(bundle, principal) or {}).get("type") == "cog" else applicable
+    if action == "comment" and not binding:  # no sentence about commenting reaches it here: reading decides
         implied = _implied_comment(bundle, principal, obj, folder)
         if implied:
             return implied

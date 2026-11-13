@@ -47,6 +47,26 @@ NAME = re.compile(r"^[a-z][a-z0-9-]{1,40}$")
 EVIDENCE = ("release_digest", "manifest_digest", "decisions", "grants", "cog_versions", "inputs_digest", "guard_findings", "documents")
 MAX_YEARS = 100
 
+# Relations the hub's own steps make, and that its code reads to decide what to do: never made by a cog's link_records
+# (PR #90 review). A cog links records it may read with the others (concerns, references, caused, affects, ...): those
+# only relate records, and nothing the hub does turns on them. Each says, in words, what makes it.
+HUB_RELATIONS = {
+    "carries": "a change order's drafts, which its release brings into force",
+    "implements": "a change order's change requests",
+    "supersedes": "a document's next revision, or a journal's reversal",
+    "has-document": "a document attached to an item, which the item's process may then change",
+    "fulfils": "the purchase orders and designs that meet a requirement",
+    "settles": "the journal posted against a bill",
+    "trains-on": "the training a new revision assigns",
+    "defined-by": "a part's design, read from CAD",
+    "defines": "a part's design, read from CAD",
+    "realized-by": "a part's components, read from CAD",
+    "split-from": "a stock lot's history",
+    "merged-into": "a stock lot's history",
+    "quarantined-by": "a stock lot's history",
+    "received-in": "a stock lot's history",
+}
+
 
 # ---------------------------------------------------------------- storage
 class DocStore:
