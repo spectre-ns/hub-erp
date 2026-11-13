@@ -18,8 +18,8 @@ A **Frame** is the text of one SOP, work instruction or policy as the hub compil
 scope, maintainer, what it inherits, the ISO clauses it covers) and Markdown text (hubproto/frames.py). Once the SOPs
 are documents (7.8), which a new hub does at its first release, the Frame is compiled from the controlled document in
 force, not from a file. The example company has an organization model, the cog profiles, the scopes, four personas, a
-finance policy, a purchasing policy, an inventory policy, a design-control SOP, the ISO 9001 quality manual, twelve ISO
-9001 SOPs (the IT SOP among them), and eight work instructions: 32 Frames in the release. A 33rd, the reference guide on
+finance policy, a purchasing policy, an inventory policy, a design-control SOP, the ISO 9001 quality manual, thirteen ISO
+9001 SOPs (the IT SOP and the working-documents SOP among them), and eight work instructions: 33 Frames in the release. A 34th, the reference guide on
 writing Frames, is read by people and is in no release (checked by running the code).
 
 <!-- figure: c07-frame -->

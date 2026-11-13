@@ -101,10 +101,10 @@ def test_a_new_cog_is_proposed_with_its_identity_and_a_persona_that_exists(relea
 def test_what_a_cog_follows_is_derived_from_the_roles_and_responsibilities_tables(released):
     b = bundle(released)
     company = ["org-model", "quality-manual", "tasks-sop"]
-    assert b["cogs"]["ap-reviewer"]["follows"] == company + ["finance-policy"]
-    assert b["cogs"]["doc-reviewer"]["follows"] == company + ["document-control-sop", "wi-review-a-document"]
-    assert b["cogs"]["it-admin"]["follows"] == company + ["change-control-sop", "it-sop"]
-    assert b["cogs"]["management"]["follows"] == company + ["change-control-sop", "it-sop", "management-review-sop"]
+    assert b["cogs"]["ap-reviewer"]["follows"] == company + ["finance-policy", "working-documents-sop"]
+    assert b["cogs"]["doc-reviewer"]["follows"] == company + ["document-control-sop", "wi-review-a-document", "working-documents-sop"]
+    assert b["cogs"]["it-admin"]["follows"] == company + ["change-control-sop", "it-sop", "working-documents-sop"]
+    assert b["cogs"]["management"]["follows"] == company + ["change-control-sop", "it-sop", "management-review-sop", "working-documents-sop"]
     why = b["cogs"]["purchasing-assistant"]["follows_why"]
     assert "cog:purchasing-assistant" in why["design-control-sop"], "the swarm step names it"
     assert "role:stock-reviewer" in why["inventory-policy"] and why["org-model"][0] == "company" and why["quality-manual"] == ["company", "role:staff"]

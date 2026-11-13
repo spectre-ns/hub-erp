@@ -3,7 +3,7 @@ type: frame [0.2]
 name: org-model
 description: Roles, members (people and cogs) and folders of Example Instruments Ltd.
 visibility: internal
-version: "1.8.1"
+version: "1.9.0"
 scope: company
 maintainer: operations
 ---
@@ -70,6 +70,7 @@ reads no SOP into rules and owns no process but the audit.
 - Finance/Payables
 - Quality
 - Quality/Controlled Documents
+- Quality/Working Documents
 - Quality/Training
 - Quality/Nonconformances
 - Quality/CAPA

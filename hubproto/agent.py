@@ -550,7 +550,11 @@ class AgentTools(RecordTools):
         title = str(a.get("title") or "").strip()
         if not title:
             return {"error": "a document needs a title"}
-        folder = str(a.get("folder") or "Quality/Controlled Documents")
+        controlled = ((self.bundle.get("ops") or {}).get("document-control") or {}).get("folder") or "Quality/Controlled Documents"
+        folder = str(a.get("folder") or controlled)
+        if folder != controlled:  # a controlled draft starts only where document control files it (issue #74)
+            return {"error": f"a draft of a controlled document is filed in {controlled}, under document control; for a working "
+                             f"document (a plan, notes, an analysis, a report) use create_document in {folder}"}
         allowed = self.both_may("create", "document", folder)
         if not allowed["allowed"]:
             return {"error": allowed["why"]}

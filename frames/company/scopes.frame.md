@@ -3,7 +3,7 @@ type: frame [0.2]
 name: scopes
 description: "The scoping Frames: which SOP and policy Frames each scope compiles, at which level, and what it layers on."
 visibility: internal
-version: "1.2.0"
+version: "1.3.0"
 scope: company
 maintainer: carol
 inherits: org-model
@@ -32,7 +32,7 @@ Compiles: scopes, cog-profiles
 ## Scope: quality
 Level: department
 Layers on: company
-Compiles: document-control-sop, change-control-sop, ncr-sop, capa-sop, complaint-sop, audit-sop, calibration-sop, supplier-sop, training-sop, management-review-sop, wi-review-a-document, wi-raise-a-change-request, wi-file-a-nonconformance, wi-disposition-stock, wi-acknowledge-training, wi-run-an-audit, wi-record-management-review, wi-respond-to-a-cog-escalation
+Compiles: document-control-sop, working-documents-sop, change-control-sop, ncr-sop, capa-sop, complaint-sop, audit-sop, calibration-sop, supplier-sop, training-sop, management-review-sop, wi-review-a-document, wi-raise-a-change-request, wi-file-a-nonconformance, wi-disposition-stock, wi-acknowledge-training, wi-run-an-audit, wi-record-management-review, wi-respond-to-a-cog-escalation
 
 ## Scope: finance
 Level: department
