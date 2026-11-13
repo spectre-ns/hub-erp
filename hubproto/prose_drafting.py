@@ -235,7 +235,7 @@ def graph_lines(rule: dict, *, heading: bool = True) -> list[str]:
     type, then its statuses and transitions as the sentences the compiler reads back (``process_graph.to_sentences``).
     Accepts the process rule or the workflow (10.1) shape of the workflow editor (actions named by step id)."""
     from .process_graph import to_sentences
-    from .settings import plural
+    from .settings import links_produced_sentence, plural
 
     name = rule.get("name") or rule.get("process")
     lines = [f"## Process: {name}"] if heading else []
@@ -245,6 +245,8 @@ def graph_lines(rule: dict, *, heading: bool = True) -> list[str]:
         lines.append(f"{plural(what).capitalize()} are filed in {folder}.")
     if rule.get("record_type"):
         lines.append(f"The record type is {rule['record_type']}.")
+    if rule.get("links_produced"):
+        lines.append(links_produced_sentence({**rule, "name": name}))
     cogs = {a: _cog_of_step(a, t) for t in rule.get("transitions") or [] for a in t.get("actions") or [] if isinstance(a, str)}
     return lines + to_sentences(rule, cogs, ids=False)  # no ids in the prose: a renamed element keeps its id in workflow_ids
 

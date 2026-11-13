@@ -73,6 +73,11 @@ STEP_TOOLS = {"take_turn", "complete_step", "hand_back"}
 WORDS_TOOLS = {"comment", "message"}
 # Tools whose result is text the cog wrote: the document keeps what produced it (hubproto.cogs.provenance).
 DRAFT_TOOLS = {"draft_document", "edit_document", "create_document", "apply_document_ops"}
+# Writes that are not the work's products: its own step, words to people, reviews (filed as evidence on what was
+# reviewed), and assigning or linking records (they relate records; they do not make or change them). Every other write
+# that went through notes the records it created or changed (the tool event's "records"): completing an item whose
+# process says "Completing the <item> links it to what its work produced." links them (runner._link_produced).
+NOT_PRODUCTS = STEP_TOOLS | WORDS_TOOLS | {"review_document", "assign", "link_records"}
 
 # More tools plug in here (hubproto/agent_*.py): register(spec, fn, write=..., intent=...). fn(tools: AgentTools, args) -> dict.
 # A write tool counts against the run's budget and is decided per call from the SOPs (``intent`` says what it would do: an
@@ -366,6 +371,7 @@ class AgentTools(RecordTools):
         args = args if isinstance(args, dict) else {}
         write = name in WRITE_TOOLS or name in EXTRA_ACTS
         decision = None
+        produced: list[str] = []
         if name == "finish":
             if self.finished_summary is None:
                 self.finished_summary = str(args.get("summary") or "").strip() or "finished"
@@ -388,9 +394,13 @@ class AgentTools(RecordTools):
                                              f"confirms it before it happens ({decision['why']})"}
         elif write:
             self.actions += 1
+            before = self.hub.kernel.last_seq()
             res = self.act(name, args)
             if name in DRAFT_TOOLS and "error" not in res:
                 self._record_draft(name, args, res)
+            if "error" not in res and name not in NOT_PRODUCTS:
+                # What this action created or changed: the work a task's completion links to (runner._link_produced).
+                produced = self.hub.kernel.written_since(before, by=self.cog)
             if "error" in res and decision.get("rule") is None and name not in STEP_TOOLS and "describe what should be done" not in str(res["error"]):
                 # No SOP sentence gave it this; the tool's own rule refused it too: it reports instead of acting.
                 res = {**res, "error": f"{res['error']}; describe what should be done instead, and who may do it"}
@@ -404,6 +414,8 @@ class AgentTools(RecordTools):
         ev = {"type": "tool", "tool": name, "arguments": args, "write": write, "ok": "error" not in res, "result": as_text(res, 1500)}
         if decision is not None:
             ev["decided"] = {"mode": decision["mode"], "why": decision["why"][:300], "intent": decision.get("intent")}
+        if produced:
+            ev["records"] = produced
         self.store.append(self.run_id, ev)
         return res
 
@@ -640,8 +652,9 @@ class Agent:
         return (bundle.get("cogs") or {}).get(self.cog) or {}
 
     def prepare(self, goal: str, *, by: str, trigger: str = "task", max_actions: int | None = None, max_rounds: int | None = None,
-                run_id: str | None = None) -> dict:
-        """Fast, under the lock: who, what, the system prompt and the tool runner for one run."""
+                run_id: str | None = None, about: str = "") -> dict:
+        """Fast, under the lock: who, what, the system prompt and the tool runner for one run. ``about``: the item the
+        run works on (assigned work), so the item's completion finds what the run produced (runner._link_produced)."""
         meta = self.hub.releases.current()
         bundle = self.hub.releases.bundle(meta["digest"]) if meta else {"members": {}}
         if (bundle.get("members") or {}).get(self.cog, {}).get("type") != "cog":
@@ -659,7 +672,8 @@ class Agent:
         actions, rounds = budget["actions"], budget["rounds"]
         run_id = run_id or uuid.uuid4().hex[:10]
         self.store.append(run_id, {"type": "started", "cog": self.cog, "goal": goal, "by": by, "trigger": trigger, "mode": mode,
-                                   "budget": {"actions": actions, "rounds": rounds}, "release": meta["digest"] if meta else ""})
+                                   "budget": {"actions": actions, "rounds": rounds}, "release": meta["digest"] if meta else "",
+                                   **({"about": about} if about else {})})
         tools = AgentTools(self.hub, self.cog, run_id, mode, actions, self.store, requester=by, goal=goal)
         from .cogs import cog_context
 

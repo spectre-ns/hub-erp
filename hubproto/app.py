@@ -267,7 +267,7 @@ class Hub:
 
         from .guards import consistency_guard, drift_guard, schema_guard
 
-        findings = schema_guard(rules) + consistency_guard(rules, self.registry.ids(), self.kernel.types)
+        findings = schema_guard(rules) + consistency_guard(rules, self.registry.ids(), self.kernel.types, self.kernel.link_vocab)
         old_rules = self.releases.rules(base) if base else []
         changes = drift_guard(old_rules, rules)
         for c in changes:
@@ -382,7 +382,7 @@ class Hub:
         store = frames.with_overrides(texts, added=added) if texts else frames
         proposal = compile_proposal(store, scopes or default_scopes(store), self.registry.ids(), self.releases,
                                     extractor=extractor or self.extractor(), now=now,
-                                    record_types=self.kernel.types, config_digests=self.kernel.config_digests,
+                                    record_types=self.kernel.types, config_digests=self.kernel.config_digests, link_vocab=self.kernel.link_vocab,
                                     resolve_document=self.resolve_document, resolve_reference=self._reference_resolver(sop_drafts))
         proposal["overrides"] = {n: {"text": t, "draft": docs.get(n), "path": store.get(n).relpath} for n, t in texts.items()}
         from .runner import state_map_questions  # statuses this change removes while items are in them (change control 5.2)

@@ -202,7 +202,8 @@ def collapse_moves(changes: list[dict]) -> tuple[list[dict], list[dict]]:
 
 def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], releases: ReleaseStore,
                      extractor=None, now: str | None = None, record_types: dict | None = None,
-                     config_digests: dict | None = None, resolve_document=None, resolve_reference=None) -> dict:
+                     config_digests: dict | None = None, resolve_document=None, resolve_reference=None,
+                     link_vocab: dict | None = None) -> dict:
     """``resolve_reference`` resolves a citation of a document in the prose ({"document", "revision", ...}) to
     ``hubproto.references.resolve``'s answer; without it the citations are read and recorded but not checked."""
     extractor = extractor or ConventionExtractor()
@@ -284,7 +285,7 @@ def compile_proposal(store: FrameStore, scopes: list[str], cog_ids: set[str], re
         findings += reference_guard(references, resolve_reference)
     findings += schema_guard(rules)
     findings += grounding_guard(rules, store.frames)
-    findings += consistency_guard(rules, cog_ids, record_types)
+    findings += consistency_guard(rules, cog_ids, record_types, link_vocab)
     from .guards import scope_guard
 
     findings += scope_guard(rules, set(store.frames), {n: f.scope for n, f in store.frames.items()})

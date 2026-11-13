@@ -77,6 +77,10 @@ _PROCESS_TERMINAL = re.compile(r"^Closes as (?P<state>[a-z][a-z-]*)\.$")
 _PROCESS_FILES_BY_TYPE = re.compile(r"^(?P<what>[A-Z][a-z]+(?: [a-z]+)*) are filed in (?P<folder>[A-Z][\w /-]+?)\.$")
 _PROCESS_TYPE = re.compile(r"^The record type is (?P<t>[a-z][a-z-]*)\.$")
 _PROCESS_REJECT = re.compile(r"^Rejections return to (?P<title>[A-Z][^.]+?)\.$")
+# "Completing the task links it to what its work produced.": when a run of the process completes (and when a cog hands
+# it back), the hub links the item with `produces` to every record the work on it created or changed
+# (runner._link_produced). Traceability only: it gives nobody any authority.
+_PROCESS_LINKS = re.compile(r"^Completing (?:the|an?) (?P<what>[a-z][a-z -]*?) links it to what its work produced\.$")
 _CRITERIA = re.compile(
     r"^The (?P<cog>[a-z][\w-]*) cog may approve (?P<process>[a-z0-9-]+) (?P<object>[a-z][a-z -]*?)"
     r"(?: under (?P<amount>[\d,]+(?:\.\d+)?) (?P<cur>[A-Z]{3})(?: or the same in (?P<also>[A-Z]{3}(?:(?:, | or | and )[A-Z]{3})*))?)?"
@@ -617,6 +621,17 @@ class ConventionExtractor:
                 for note in _close_graph(process):
                     out.notes.append({"frame": frame.name, "line": process["source"]["line"], "text": process["source"]["text"],
                                       "severity": "error", "note": note})
+                links = process.pop("_links", None)
+                if links is not None:
+                    what, ln, text = links
+                    names = {process.get("object") or "", process.get("record_type") or "", process["name"]} - {""}
+                    if what in names:
+                        process["links_produced"] = True
+                    else:
+                        out.notes.append({"frame": frame.name, "line": ln, "text": text, "severity": "unread",
+                                          "note": f"this process completes {' or '.join(sorted(names))}, not '{what}'; "
+                                                  f"write 'Completing the {process.get('object') or process['name']} "
+                                                  "links it to what its work produced.'"})
                 out.rules.append(process)
                 process = None
 
@@ -841,6 +856,15 @@ class ConventionExtractor:
                 m = _PROCESS_REJECT.match(line)
                 if m:
                     process["reject_to"] = slug(m.group("title"))
+                    continue
+                m = _PROCESS_LINKS.match(line)
+                if m:
+                    process["_links"] = (m.group("what").strip(), n, line)
+                    continue
+                if line.startswith("Completing ") or "what its work produced" in line:
+                    out.notes.append({"frame": frame.name, "line": n, "text": line, "severity": "unread",
+                                      "note": "the hub reads 'Completing the <item> links it to what its work produced.'; "
+                                              "it does not read this sentence"})
                     continue
                 graph = _graph_statement(process, line, n, src)
                 if graph is not None:

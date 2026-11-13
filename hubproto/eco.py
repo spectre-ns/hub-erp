@@ -14,6 +14,7 @@ revisions it carries. ``frame_reasons`` and ``check_approval`` here answer with 
 
 from __future__ import annotations
 
+import copy
 import hashlib
 
 from . import authz, sopdocs
@@ -289,28 +290,42 @@ def compiled_from(hub, co: dict) -> dict[str, str]:
 class carried_record_types:
     """While the change order's delta is compiled, the record types it carries are the ones in force (so a CO can carry a
     new record type together with the process that uses it): the record types in force with its record-type changes
-    applied (hubproto.recordtypes.check). Restored afterwards; the release activates them for good."""
+    applied (hubproto.recordtypes.check). So is the link vocabulary it carries (a CO may add the produces relation with
+    the sentence that links with it): the vocabulary in force with its link-vocabulary changes applied
+    (hubproto.configdocs.check). Restored afterwards; the release activates them for good."""
 
     def __init__(self, hub, co: dict):
-        self.hub, self.co, self.saved = hub, co, None
+        self.hub, self.co, self.saved, self.saved_links = hub, co, None, None
 
     def __enter__(self):
-        changes = list(self.co["fields"].get("record_type_changes") or [])
-        if not changes:
-            return self
-        try:
-            from . import recordtypes
-        except ImportError:
-            return self
         k = self.hub.kernel
-        types, _, _ = recordtypes.check(self.hub, changes, k.types, retention=recordtypes._retention(self.hub, self.co))
-        self.saved = (k.types_hook, k._types)
-        k.types_hook, k._types = None, types
+        vocab = None
+        links = [c for c in self.co["fields"].get("config_changes") or [] if c.get("doc") == "links"]
+        if links:
+            from . import configdocs
+
+            vocab = copy.deepcopy(k.link_vocab)
+            for c in links:  # each as configdocs.check applies it: one it refuses changes nothing
+                e, _ = configdocs.check_one(self.hub, {"links": vocab, "retention": {}}, c, {})
+                if not e:
+                    vocab = configdocs.apply_one({"links": vocab, "retention": {}}, c)["links"]
+        changes = list(self.co["fields"].get("record_type_changes") or [])
+        if changes:
+            from . import recordtypes
+
+            types, _, _ = recordtypes.check(self.hub, changes, k.types, retention=recordtypes._retention(self.hub, self.co))
+            self.saved = (k.types_hook, k._types)
+            k.types_hook, k._types = None, types
+        if vocab is not None:  # last: nothing after it can fail and leave it swapped
+            self.saved_links = (k.config_hook, k._link_vocab)
+            k.config_hook, k._link_vocab = None, vocab
         return self
 
     def __exit__(self, *exc):
         if self.saved is not None:
             self.hub.kernel.types_hook, self.hub.kernel._types = self.saved
+        if self.saved_links is not None:
+            self.hub.kernel.config_hook, self.hub.kernel._link_vocab = self.saved_links
         return False
 
 

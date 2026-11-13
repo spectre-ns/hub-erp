@@ -851,9 +851,114 @@ class Runner:
             self._fail(state, track, "complete", f"cannot close as {terminal}: {e}")
             return False
 
+    # ------------------------------------------------------------ what the work produced
+    def links_produced(self, state: dict) -> bool:
+        """The process says "Completing the <item> links it to what its work produced." in the release the run is under."""
+        try:
+            proc = (self.releases.bundle(state["release"]).get("processes") or {}).get(state["process"]) or {}
+        except Exception:  # a release that cannot be read links nothing
+            return False
+        return bool(proc.get("links_produced"))
+
+    def cog_products(self, record: str) -> list[tuple[str, str]]:
+        """(record, cog) for every record a cog's work on ``record`` created or changed: the cog runs it was assigned
+        (its queue tasks on the item; agent run ``q<task>``, started about it), each write that went through and noted
+        the records it wrote (``agent.AgentTools.execute``). In the order written; no model, only the runs' records."""
+        if self.queue is None:
+            return []
+        from .agent import AgentStore
+
+        store = AgentStore(self.state_dir / "agents")
+        out: list[tuple[str, str]] = []
+        for task in self.queue.list(record=record, limit=500):
+            events = store.load(f"q{task['id']}")
+            start = events[0] if events else {}
+            if start.get("type") != "started" or start.get("about") != record:
+                continue
+            for ev in events:
+                if ev.get("type") == "tool" and ev.get("write") and ev.get("ok") and (ev.get("decided") or {}).get("mode") != "propose":
+                    out += [(loc, start.get("cog") or task.get("cog") or "") for loc in ev.get("records") or []]
+        return out
+
+    def _link_produced(self, state: dict, track: Track, when: str) -> list[str]:
+        """Under "Completing the <item> links it to what its work produced.": link the item with ``produces`` to every
+        record its work created or changed, as far as it went (``when``: "completed" or "handed back"). The work is what
+        the cogs assigned to it wrote (``cog_products``) and the records the people who completed it named
+        (``decide(produced=...)``). Never the item itself, never evidence (reviews, test evidence); a record linked
+        already is not linked again. The hub links them (no model), and the Track says what it linked and why.
+
+        Linking never stops the completion or the hand-back it follows (PR #93 review): each record is linked on its own,
+        and one that cannot be linked (the link vocabulary in force has no ``produces``, say) is left out, carried on
+        past, and recorded on the Track as ``record.produced_not_linked`` with why, in words; the item's history shows it."""
+        if not state.get("record") or not self.links_produced(state):
+            return []
+        item = self.kernel.get(state["record"])
+        if item is None:
+            return []
+        have = {l["target"] for l in item.get("links") or [] if l["rel"] == "produces"}
+        try:
+            found = self.cog_products(item["locator"])
+        except Exception as e:  # what the cogs wrote cannot be read: what the people named is still linked
+            found = []
+            track.append({"type": "record.produced_not_linked", "run_id": state["id"], "record": item["locator"], "by": "hub",
+                          "when": when, "not_linked": [], "reason": f"what the cogs' work on it produced could not be read ({e})"})
+        found += [(p["record"], p["by"]) for p in state.get("produced") or []]
+        linked: list[dict] = []
+        missed: list[dict] = []
+        for ref, who in found:
+            rec = self.kernel.get(ref)
+            if rec is None or rec["locator"] == item["locator"] or rec["locator"] in have:
+                continue
+            if rec["type"] == "document" and (rec.get("fields") or {}).get("doc_class") == "evidence":
+                continue
+            try:
+                self.kernel.link(item["locator"], "produces", rec["locator"], by="hub", run_id=state["id"], release=state["release"])
+            except Exception as e:  # never the completion's undoing: say what was not linked, and why
+                if rec["locator"] not in {m["record"] for m in missed}:
+                    missed.append({"record": rec["locator"], "number": rec["number"], "by": who, "why": self._why_not_linked(e)})
+                continue
+            have.add(rec["locator"])
+            linked.append({"record": rec["locator"], "number": rec["number"], "by": who})
+        if linked:
+            track.append({"type": "record.produced_linked", "run_id": state["id"], "record": item["locator"], "by": "hub",
+                          "when": when, "links": linked})
+        if missed:
+            reasons = list(dict.fromkeys(m["why"] for m in missed))
+            track.append({"type": "record.produced_not_linked", "run_id": state["id"], "record": item["locator"], "by": "hub",
+                          "when": when, "not_linked": missed, "reason": "; ".join(reasons)})
+        return [x["record"] for x in linked]
+
+    @staticmethod
+    def _why_not_linked(e: Exception) -> str:
+        if isinstance(e, KernelGuardError) and e.guard == "link-vocabulary":
+            return ("the link vocabulary in force has no produces relation; a policy owner adds it (produces, inverse "
+                    "produced-by) on a change order, then links these records on the item")
+        return str(getattr(e, "detail", "") or e) or type(e).__name__
+
+    def _named_products(self, state: dict, bundle: dict, by: str, refs: list[str]) -> list[dict]:
+        """The records a person names as what their work on the item produced, checked: the process links them, each
+        exists and they may read it, none is the item itself. Raises RunError saying which one is wrong."""
+        if not self.links_produced(state):
+            raise RunError(f"the {state['process']} process does not link an item to what its work produced; "
+                           "complete it without naming records, or link them on the item")
+        out: list[dict] = []
+        for ref in refs:
+            ref = str(ref or "").strip()
+            if not ref:
+                continue
+            rec = self.kernel.get(ref)
+            if rec is None or not authz.check(bundle, by, "read", "*", rec["folder"])["allowed"]:
+                raise RunError(f"there is no record {ref} that {by} may read; name the records your work produced by their numbers")
+            if rec["locator"] == state.get("record"):
+                raise RunError(f"{rec['number']} is the item itself; name the records your work on it produced")
+            if rec["locator"] not in {p["record"] for p in out}:
+                out.append({"record": rec["locator"], "by": by})
+        return out
+
     def _complete(self, state: dict, track: Track, target: str | None = None) -> None:
         if state.get("record") and not self._close_record(state, track, target):
             return
+        self._link_produced(state, track, "completed")  # after the signatures: what they signed is unchanged
         rec = self.kernel.get(state["record"]) if state.get("record") else None
         track.append({"type": "run.completed", "run_id": state["id"], "record": state.get("record"),
                       "state": rec["state"] if rec else (target or state["workflow"]["terminal"]),
@@ -2109,6 +2214,7 @@ class Runner:
         self._save(state)
         if state.get("record"):
             self.kernel.assign(state["record"], people, by=cog_name, run_id=state["id"], release=state["release"])
+        self._link_produced(state, track, "handed back")  # what the cog produced so far stays traceable from the item
         self._notify(people, kind="handed-back", subject=f"{cog_name} handed back {pending.get('title', 'the item')}: {state.get('record') or state['process']}",
                      body=reason, run_id=state["id"])
         return self.load(run_id)
@@ -2478,9 +2584,11 @@ class Runner:
 
     def decide(self, run_id: str, by: str, verdict: str | None, meaning: str = "", payload_digest: str | None = None,
                fields: dict | None = None, delegating_rule=None, countersign: str | None = None, evidence: str | None = None,
-               transition: str | None = None) -> dict:
+               transition: str | None = None, produced: list[str] | None = None) -> dict:
         """A signed decision at the Gate the item waits at. ``verdict`` approve or reject takes the forward or the
-        rejection transition; ``transition`` names any option instead (``choose`` does the same by id)."""
+        rejection transition; ``transition`` names any option instead (``choose`` does the same by id). ``produced``:
+        the records (numbers) the person's work on the item produced, when its process links them on completion
+        (``_link_produced``); each must be one they may read, and never the item itself."""
         state, pending = self._load_waiting(run_id, by, "decision", transition=transition)
         by = authz.principal_name(by)
         cm = pending.get("committee")
@@ -2553,6 +2661,7 @@ class Runner:
         if not meaning.strip():
             raise RunError("a signature needs its meaning: say in a few words what you are confirming "
                            "(for example 'invoice matches the order and goods were received')")
+        named = self._named_products(state, bundle, by, produced) if produced and verdict == "approve" else []
         step = self._gate_step(state, pending)
         track = Track(self._dir(state["id"]))
         rec = self.kernel.get(state["record"]) if state.get("record") else None
@@ -2604,6 +2713,11 @@ class Runner:
                          subject=f"{pending.get('title', 'Approval')} on {state.get('record') or state['process']}: {verdict}d automatically by {by}",
                          body=f"The {by} cog {verdict}d this under the approval criteria in {rule.get('frame')} line {rule.get('line')}. "
                               f"{meaning.strip()}. No person reviewed it; the criteria and the reasons are on the run page.", run_id=state["id"])
+        if named:  # linked when the item completes (``_complete``), after this signature
+            have = {p["record"] for p in state.get("produced") or []}
+            state["produced"] = list(state.get("produced") or []) + [p for p in named if p["record"] not in have]
+            track.append({"type": "record.produced_named", "run_id": state["id"], "step": step["id"], "by": by,
+                          "records": [p["record"] for p in named]})
         self._record_decision(state, step, track, by=by, by_type=by_type, verdict=verdict,
                               meaning=meaning.strip(), payload_digest=pending["payload_digest"], meaning_given=True,
                               delegating_rule=delegating_rule, option=option)

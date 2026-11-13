@@ -160,6 +160,20 @@ class Kernel:
         )
         return int(cur.lastrowid)
 
+    def last_seq(self) -> int:
+        """The sequence number of the last event written (0 before the first)."""
+        return int(self.db.execute("SELECT COALESCE(MAX(seq), 0) FROM events").fetchone()[0])
+
+    def written_since(self, seq: int, *, by: str) -> list[str]:
+        """The records ``by`` wrote an event on after event ``seq``, in the order first written: what one of its actions
+        created or changed (``agent.AgentTools.execute`` notes it, ``runner._link_produced`` links it)."""
+        out: list[str] = []
+        for (ag,) in self.db.execute("SELECT aggregate FROM events WHERE seq > ? AND by = ? AND aggregate LIKE 'rec:%' "
+                                     "ORDER BY seq", (int(seq), by)):
+            if ag not in out:
+                out.append(ag)
+        return out
+
     def verify_chain(self) -> list[str]:
         """Problems with the event chain (empty when every chained event is intact and in order)."""
         problems, prev, unchained = [], "", 0
