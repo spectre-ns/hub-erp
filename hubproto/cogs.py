@@ -1308,10 +1308,17 @@ class ReviewerCog(Cog):
             # The model answered in words (a refusal, a question, a reason): that is its reply, and nothing is written
             # into the document (issue #68). Model output is data: only operations it wrote are applied.
             said = (text or "").strip()
+            if unknown:  # it wrote operations, none of them readable: say plainly that nothing was changed
+                said = ("I made no change: I could not read the operations I wrote"
+                        + (" (" + "; ".join(u["text"] for u in unknown[:3]) + ")" if unknown else "") + ".")
+            if len(said) > 4000:
+                said = said[:3999].rstrip() + "…"
             return self.ok("edit-document", {"ops": [], "kind": "sheet" if sheet else "text", "model": model, "stand_in": False,
-                                             "reply": said[:4000], "explanation": "I made no change" + (": " + said if said else ".")})
+                                             "reply": said, "explanation": "I made no change" + (": " + said[:400] if said else "."),
+                                             "provenance": provenance(ctx.bundle or {}, self.id, release=ctx.release,
+                                                                      releases=getattr(ctx.runner, "releases", None), model=model, stand_in=False)})
         if stand_in:
-            # Without a model (or an answer we can read): the old behaviour, a short header written at the start.
+            # Without a model: the stand-in's short header written at the start (development hubs and tests).
             title = f.get("title") or rec["number"]
             lines = ([f"| {title} | per " + (", ".join(sorted(sops)) or "the quality procedures") + " |"] if sheet else
                      [f"# {title}", f"Document {rec['number']}, revision {f.get('revision', 'A')}.{f.get('minor', 0)}; owner {f.get('owner') or '-'}; "

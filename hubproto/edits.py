@@ -127,7 +127,6 @@ def parse_ops(text: str) -> list[dict]:
     (issue #68): an answer with no '@@' at all, a refusal or a question in words, has no operations and changes
     nothing."""
     ops: list[dict] = []
-    loose: list[str] = []
     cur: dict | None = None
     for raw in (text or "").splitlines():
         line = raw.rstrip()
@@ -169,8 +168,6 @@ def parse_ops(text: str) -> list[dict]:
             cur["lines"].append(line)
         elif cur is not None and cur["op"] == "replace" and cur.get("with") is None and line.strip():
             cur["with"] = _unquote(line.strip())  # the new text on the line after '@@ replace:'
-        elif cur is None:
-            loose.append(line)
     for op in ops:
         if "lines" in op:
             while op["lines"] and not op["lines"][-1].strip():

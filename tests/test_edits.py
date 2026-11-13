@@ -298,6 +298,17 @@ def test_a_cog_that_answers_an_edit_request_in_words_changes_nothing_and_its_wor
     assert not hub.inbox.find(reply["id"]).get("edit"), "no edit waits to be made, live or in the file"
 
 
+def test_operations_the_hub_cannot_read_change_nothing_and_the_reply_says_so(shell, monkeypatch):
+    hub = shell["hub"]
+    doc = _doc(hub, title="Unreadable operations")
+    before, v_before = hub.dms.content(doc["locator"])
+    monkeypatch.setattr(hub, "model", FakeModel("@@ replce: shall\n@@ wiht: must"))
+    hub.send("carol", "carol", "Comment", "@quality-assistant please change shall to must", record=doc["locator"])
+    assert hub.dms.content(doc["locator"]) == (before, v_before) or hub.dms.content(doc["locator"])[1]["version"] == v_before["version"]
+    [reply] = [m for m in hub.inbox.on_record(doc["locator"]) if m["from"] == "quality-assistant"]
+    assert reply["body"].startswith("I made no change: I could not read the operations I wrote") and not hub.inbox.find(reply["id"]).get("edit")
+
+
 def test_after_a_live_edit_the_hub_finishes_what_did_not_take(shell, monkeypatch):
     hub = shell["hub"]
     doc = _doc(hub, title="Live target")
