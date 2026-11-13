@@ -27,13 +27,16 @@ def waiting_for_carol(hub, co):
     return state
 
 
-def test_the_quality_manager_rejects_a_change_order_she_prepared_and_cannot_approve_it(hub):
+def test_the_quality_manager_rejects_a_change_order_she_prepared_and_cannot_approve_it(hub, monkeypatch):
     co = carols_change_order(hub, "carol's own change")
     assert "carol" in cc.contributors(hub, co["number"])
     state = waiting_for_carol(hub, co)
     assert "contributor" in hub.runner.excluded(hub.current_bundle(), state)["carol"], "she still never approves it alone"
-    with pytest.raises(RunError):
-        gate(hub, co, who="carol", verdict="approve")
+    with monkeypatch.context() as m:  # as if every item were decided and every warning accepted: only her signature is left
+        m.setattr(hub.runner, "change_order_blocks", lambda state: [])
+        with pytest.raises(RunError, match="carol cannot decide it"):
+            gate(hub, co, who="carol", verdict="approve")
+    assert "carol" not in hub.runner.excluded(hub.current_bundle(), state, makers=False), "only maker rules kept her off"
     run = gate(hub, co, who="carol", verdict="reject", meaning="Rejected: controllers keep reading Finance.")
     assert run["status"] != "waiting"
     co = cc.sync(hub, co["number"])
@@ -49,7 +52,25 @@ def test_only_a_person_who_made_the_change_order_is_let_reject_it(hub):
     state = waiting_for_carol(hub, co)
     runner = hub.runner
     assert runner.maker_may_reject(state, "carol", "person", "reject"), "the preparer"
-    assert runner.maker_may_reject(state, "alice", "person", "reject"), "the revision's author"
+    assert runner.maker_may_reject(state, "alice", "person", "reject"), "a revision's author is a contributor too"
+    assert state["pending"]["assignees"] == ["carol"], "though the routing never gives an author the Gate"
     assert not runner.maker_may_reject(state, "carol", "person", "approve"), "approving keeps every rule"
     assert not runner.maker_may_reject(state, "dave", "person", "reject"), "someone who made nothing gains nothing"
     assert not runner.maker_may_reject(state, "qa-manager", "cog", "reject"), "a cog never decides a change order"
+
+
+def test_a_maker_rejecting_is_still_held_to_every_other_exclusion(hub, monkeypatch):
+    """Only the rules about who made it are set aside: a Gate's own "not" (whoever decided another step) or another
+    segregation-of-duties sentence still keeps a maker from rejecting, as it keeps anyone else."""
+    co = carols_change_order(hub, "another exclusion")
+    waiting_for_carol(hub, co)
+    real = hub.runner.excluded
+
+    def excluded(bundle, state, route="role:", gate_not=None, signing=True, makers=True):
+        out = real(bundle, state, route, gate_not=gate_not, signing=signing, makers=makers)
+        out.setdefault("carol", "segregation of duties: they decided technical review on this item")
+        return out
+
+    monkeypatch.setattr(hub.runner, "excluded", excluded)
+    with pytest.raises(RunError, match="they decided technical review on this item; carol cannot decide it"):
+        gate(hub, co, who="carol", verdict="reject", meaning="Rejected.")

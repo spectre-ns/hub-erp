@@ -45,6 +45,9 @@ LIVE_STATUSES = ("submitted", "running", "waiting", "completed")
 OPEN_RUN = ("submitted", "running", "waiting")
 # Words in a segregation-of-duties sentence that name the deciding side, not a person to keep out.
 DECIDER_WORDS = {"approver", "reviewer", "verifier", "decider", "signer", "countersigner"}
+# Who made a change order, as segregation-of-duties sentences and a Gate's "not" name them: set aside only when one of
+# them rejects it (``Runner.maker_may_reject``).
+CO_MAKER_ROLES = {"contributor", "author", "requester", "preparer", "owner"}
 SOD_FIELDS = {**{k: v for k, v in {"assignee": "assignee", "owner": "owner", "author": "author", "requester": "requested_by",
                                     "auditor": "auditor", "chair": "chair", "evaluator": "evaluator", "reporter": "reported_by"}.items()},
               "designer": "designer", "preparer": "owner", "filer": "filed_by", "captured-by": "captured_by", "raiser": "raised_by"}
@@ -864,7 +867,8 @@ class Runner:
     def _sod_applies(self, bundle: dict, state: dict) -> bool:
         return any(s["object"] == state["manifest"]["object"] and not s.get("rule") for s in bundle["sod"])
 
-    def excluded(self, bundle: dict, state: dict, route: str = "role:", gate_not: list | None = None, signing: bool = True) -> dict[str, str]:
+    def excluded(self, bundle: dict, state: dict, route: str = "role:", gate_not: list | None = None, signing: bool = True,
+                 makers: bool = True) -> dict[str, str]:
         """Who may not decide this item, and why. Every process keeps its preparer (who filed it, the run's owner)
         from approving it on a route to a role or a cog; a segregation sentence also keeps out everyone it names on
         the record (the reporter, the author, the requester...). A step the SOP routes to a named field (the
@@ -883,14 +887,17 @@ class Runner:
                 pass
         named_route = str(route or "").startswith(("field:", "person:"))
         rules = [r for r in bundle.get("sod") or [] if r["object"] == state["manifest"]["object"] and not r.get("rule")]
-        if not named_route or rules:
+        # makers=False (a change order's maker rejecting it, ``maker_may_reject``): leave out only the rules that keep
+        # whoever made it from deciding it; every other exclusion stands.
+        skip = set() if makers or not self.is_change_order(state) else CO_MAKER_ROLES
+        if (not named_route or rules) and not skip:
             out[owner] = "segregation of duties: they prepared this item"
             created = (rec or {}).get("created_by")
             if created and not child and created not in ("hub", "system", "seed") and created not in out:
                 out[created] = "segregation of duties: they filed this item"
         for r in rules:
             for role in r.get("roles") or []:
-                if role in DECIDER_WORDS:
+                if role in DECIDER_WORDS or role in skip:
                     continue
                 field = SOD_FIELDS.get(role) or role.replace("-", "_")
                 vals = f.get(field)
@@ -898,11 +905,13 @@ class Runner:
                     if v and isinstance(v, str):
                         out.setdefault(authz.principal_name(v), f"segregation of duties: they are the {role.replace('-', ' ')} of this item "
                                                                 f"({r.get('source', {}).get('text', 'policy')})")
-        if self.is_change_order(state):
+        if self.is_change_order(state) and not skip:
             self._change_order_signers(state, out, owner, rec, signing=signing)
         # The gate's own exclusions ("the quality manager decides, not the author"; not whoever decided another step).
         nots = gate_not if gate_not is not None else (((state.get("pending") or {}).get("gate") or {}).get("not") or [])
         for n in nots:
+            if n in skip:
+                continue
             if n in SOD_FIELDS or n in FIELD_ROLES:
                 v = owner if n in ("owner", "preparer") else f.get(SOD_FIELDS.get(n) or FIELD_ROLES.get(n) or n)
                 for x in v if isinstance(v, list) else [v]:
@@ -951,23 +960,18 @@ class Runner:
         return sorted({authz.principal_name(x) for x in out if x})
 
     def maker_may_reject(self, state: dict, by: str, by_type: str, verdict: str) -> bool:
-        """Whether ``by`` may reject a change order although segregation of duties keeps them from approving it: whoever
-        prepared it, contributed to it or wrote a revision it carries. A rejection approves nothing and puts nothing in
-        force (the change order goes back to revising), so it is never an approval of their own change (issue #63).
-        Approving keeps every rule: a maker is never its only approver, and an author never approves it."""
+        """Whether ``by`` is a person who made this change order (prepared it, filed it or contributed to it) rejecting
+        it: then the rules that keep its makers from deciding it are set aside for that rejection (``decide`` checks
+        every other exclusion again with ``excluded(makers=False)``). A rejection approves nothing and puts nothing in
+        force, so it is never an approval of their own change (issue #63). Approving keeps every rule: a maker is never
+        its only approver. (A revision's author is a contributor too, but is never routed the Gate at all: the routing
+        leaves them off it, ``_change_order_signers``.)"""
         if verdict != "reject" or by_type != "person" or not self.is_change_order(state):
             return False
         rec = self.kernel.get(state["record"]) if state.get("record") else None
         makers = set(self.contributors(state)) | {authz.principal_name(state["owner"])}
         if rec and rec.get("created_by"):
             makers.add(authz.principal_name(rec["created_by"]))
-        if getattr(self, "hub", None) is not None:
-            try:
-                from . import changecontrol
-
-                makers |= {authz.principal_name(a) for a in changecontrol.revision_authors(self.hub, state["record"])}
-            except Exception:  # the change-control module cannot read it: the makers recorded on the run stand
-                pass
         return authz.principal_name(by) in makers
 
     def _change_order_signers(self, state: dict, out: dict, owner: str, rec: dict | None, signing: bool = True) -> None:
@@ -2524,10 +2528,13 @@ class Runner:
                 raise RunError(f"segregation of duties: {by} may not countersign this item")
         own = next((o for o in pending.get("options") or [] if o["id"] == option["id"] and o.get("assignees") is not None), None)
         if own is not None and by not in (pending.get("assignees") or []):
-            excluded = self.excluded(bundle, state, own.get("route") or "role:", gate_not=own.get("not") or [])
+            exclusions = lambda **kw: self.excluded(bundle, state, own.get("route") or "role:", gate_not=own.get("not") or [], **kw)
         else:
-            excluded = self.excluded(bundle, state, pending.get("route") or "role:")
-        if by in excluded and not self.maker_may_reject(state, by, by_type, verdict):
+            exclusions = lambda **kw: self.excluded(bundle, state, pending.get("route") or "role:", **kw)
+        excluded = exclusions()
+        if by in excluded and self.maker_may_reject(state, by, by_type, verdict):
+            excluded = exclusions(makers=False)  # a maker rejecting: only the rules about making it are set aside
+        if by in excluded:
             raise RunError(f"{excluded[by]}; {by} cannot decide it")
         if by_type == "cog" and verdict == "approve" and not delegating_rule and not self.is_assigned_work(state, by):
             raise RunError(f"{by} signs only within its approval criteria, and none covers this step")
