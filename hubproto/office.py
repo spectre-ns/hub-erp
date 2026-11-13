@@ -71,8 +71,9 @@ def _own_text(el, paragraph_tags: tuple, text_tag: str | None = None) -> str:
     return "".join(out)
 
 
-def extract_text(content: bytes, extension: str, limit: int = 20000) -> str:
-    """Plain text of the document body, paragraph per line; empty when the format is not one we read."""
+def extract_text(content: bytes, extension: str, limit: int | None = 20000) -> str:
+    """Plain text of the document body, paragraph per line; empty when the format is not one we read. ``limit=None``:
+    the whole text."""
     ext = (extension or "").lower()
     if ext in ("txt", "md", "csv"):
         return content.decode("utf-8", "replace")[:limit]

@@ -116,7 +116,7 @@ def extract_text(content: bytes, mime: str, filename: str = "") -> str:
         if zip_too_big(content):
             return ""
         try:
-            return office.extract_text(content, ext)
+            return office.extract_text(content, ext, limit=None)  # the whole document: a reading is never cut short
         except Exception:
             return ""
     return ""
@@ -210,6 +210,29 @@ class DMS:
         except (OSError, KeyError, ValueError, StopIteration):
             return ""
         return self._texts.put(key, extract_text(content, mime, filename))
+
+    def edit_text(self, ref: str | dict, version: int | None = None) -> str:
+        """A document's paragraphs as the edit operations find and check them (``edits.applied_text``: a paragraph per
+        line, a heading or a table cell as its words alone, no SOP header): what an edit a cog asks for is compared with,
+        before and after. Not what people and cogs read (``text_of`` reads an SOP as the compile does, with '#' headings
+        and '|' rows, which an edit never matches). "" when there is no file."""
+        from .edits import applied_text
+
+        loc = ref.get("locator") if isinstance(ref, dict) else ref
+        rec = self.kernel.get(loc) if loc else None
+        if not rec or rec.get("type") != "document":
+            return ""
+        try:
+            content, v = self.content(rec["locator"], version)
+        except (OSError, KeyError, ValueError, StopIteration, KernelGuardError):
+            return ""
+        name = v.get("filename") or rec["fields"].get("filename") or ""
+        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        key = ("edit", v["sha256"], ext)
+        hit = self._texts.get(key)
+        if hit is not None:
+            return hit
+        return self._texts.put(key, applied_text(content, ext))
 
     # ---------------------------------------------------------------- create
     def create(self, *, title: str, doc_class: str, folder: str, by: str, content: bytes | None = None,

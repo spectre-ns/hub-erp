@@ -486,16 +486,13 @@ class Hub:
                 "sha256": v.get("sha256") or "", "filename": v.get("filename") or ""}
 
     def pinned_text(self, pin: dict | None, limit: int = 20000) -> str:
-        """The text of a document exactly as a release pinned it."""
+        """The text of a document exactly as a release pinned it, read as every reader reads it (``DMS.text_of``)."""
         if not pin:
             return ""
-        from .dms import extract_text
-
         try:
-            content, v = self.dms.content(pin["locator"], pin.get("version"))
+            return self.dms.text_of(pin["locator"], pin.get("version"))[:limit]
         except Exception:
             return ""
-        return extract_text(content, v.get("mime") or "", v.get("filename") or "")[:limit]
 
     def frame_document(self, name: str, create: bool = True, by: str = "hub") -> dict | None:
         """The controlled document that carries a Frame's text: created on first use, versioned on every release. It is

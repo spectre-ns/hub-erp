@@ -7,7 +7,7 @@ from __future__ import annotations
 import difflib
 import re
 
-from . import authz, edits, office, wopi
+from . import authz, edits, wopi
 from .agent import intent_new_document, intent_on_document, register
 
 DOC_EXTS = ("docx", "md", "xlsx", "odt", "ods")
@@ -124,10 +124,10 @@ def document_versions(tools, a: dict) -> dict:
             if isinstance(cmp, str):
                 cmp = [int(x) for x in re.findall(r"\d+", cmp)]
             v1, v2 = int(cmp[0]), int(cmp[1])
-            texts = []
-            for v in (v1, v2):
-                c, meta = hub.dms.content(rec["locator"], v)
-                texts.append(office.extract_text(c, _ext(rec, meta), limit=200000).splitlines())
+            if not {v1, v2} <= {v["version"] for v in vs}:
+                raise ValueError("no such version")
+            # Each version read as the document page and the compile read it (DMS.text_of): an SOP's pictures too.
+            texts = [hub.dms.text_of(rec, v).splitlines() for v in (v1, v2)]
         except (StopIteration, IndexError, ValueError, TypeError):
             return {**out, "error": "compare takes two existing version numbers, e.g. [1, 3]"}
         diff = "\n".join(difflib.unified_diff(texts[0], texts[1], f"version {v1}", f"version {v2}", lineterm="", n=1))

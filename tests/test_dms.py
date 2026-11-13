@@ -157,6 +157,77 @@ def test_an_sop_reads_the_same_for_the_reviewing_cog_and_the_compile(released):
     assert line in item_text(ctx, rec, 10 ** 6), "the reviewing cog reads the compile's lines"
 
 
+def test_no_writer_puts_a_copy_of_a_documents_words_on_its_record(released):
+    """Review of #36: applying a cog's replies and filing a review put a text field on the document again. Neither does;
+    a text field an older document carries is never passed on (a cog step's payload, list views); and the classifier
+    reads the document's words from its file."""
+    from hubproto import wopi
+    from hubproto.cogs import Cog, DocumentClassifier, RunContext
+    from hubproto.kernel import Kernel
+    from hubproto.review import file_review
+    from test_review_agent_reliability import _doc_with_pending_edit
+
+    hub = released
+    loc, _ = _doc_with_pending_edit(hub, "No copy plan")
+    assert wopi.WopiHost(hub).apply_replies(hub.kernel.get(loc), "alice")
+    assert "text" not in hub.kernel.get(loc)["fields"] and "twice a year" in hub.dms.text_of(loc), "the words are in the file only"
+    ctx = RunContext(run_id="t-review", release="", bundle={}, owner="quality-assistant", kernel=hub.kernel, dms=hub.dms)
+    said = {"cog": "quality-assistant", "verdict": "pass", "model": "stand-in", "stand_in": True, "sops": [], "findings": [], "summary": "Fine."}
+    filed = file_review(ctx, hub.kernel.get(loc), [said], by="quality-assistant")
+    assert filed and "text" not in filed["fields"] and "Overall: pass" in hub.dms.text_of(filed), "a review is evidence in its file"
+
+    scan = hub.dms.create(title="scan 0001", doc_class="working", folder=FOLDER, by="alice", content=b"INVOICE 4471 from Acme Ltd",
+                          filename="scan-0001.txt")
+    hub.kernel.set_fields(scan["locator"], {"text": "a stale copy about rivets"}, by="alice")  # as an older record carries it
+    held = RunContext(run_id="t-classify", release="", bundle={}, owner="document-classifier", kernel=hub.kernel, dms=hub.dms,
+                      record=scan["locator"])
+    assert "text" not in Kernel.flat(hub.kernel.get(scan["locator"])), "list views show no stale copy"
+    assert "text" not in Cog._prior({}, held), "a cog step's payload carries no stale copy"
+    out = DocumentClassifier().task_run({}, held)
+    assert out["payload"]["doc_type"] == "invoice" and "text" not in out["payload"], "the classifier reads the file's words"
+
+
+def test_an_office_file_reads_in_full(d, hub):
+    """Review of #36: a .docx was still read only to its first 20,000 characters, so search missed its end."""
+    from hubproto import office, wopi
+
+    blank, _ = wopi.blank_document("docx")
+    lines = [f"Paragraph {i}: torque the fasteners to the value on the drawing, then mark them." for i in range(600)] + \
+            ["The closing paragraph names the rivet gauge."]
+    doc = d.create(title="long docx", doc_class="working", folder=FOLDER, by="alice", content=office.insert_paragraphs(blank, "docx", lines, "replace"),
+                   filename="long.docx")
+    text = d.text_of(doc)
+    assert len(text) > 40000 and text.rstrip().endswith("The closing paragraph names the rivet gauge."), len(text)
+    assert [r["number"] for r in hub.kernel.query(type_="document", text="rivet gauge")] == [doc["number"]]
+
+
+def test_an_sops_pictures_read_the_same_for_every_reader(released):
+    """Review of #36: the reviewing cog, the cog's read_document tool, the version compare and the compile read an SOP
+    document the same way, its picture lines included (they read it through DMS.text_of)."""
+    from hubproto import agent_docs, office, sopdocs
+    from hubproto.cogs import RunContext, item_text
+    from hubproto.tools import RecordTools
+    from test_sop_pictures import ANCHOR, BASE, DOCX, PNG, word_picture
+
+    hub = released
+    plain = sopdocs.to_docx(BASE)
+    doc = hub.dms.create(title="Pictured SOP", doc_class="working", folder=FOLDER, by="carol", content=plain, filename="pictured-sop.docx",
+                         mime=DOCX, fields={"lineage": sopdocs.LINEAGE + "pictured-sop", "frame_header": "---\nname: pictured-sop\nversion: 1\n---"})
+    hub.dms.add_version(doc["locator"], word_picture(plain, ANCHOR, PNG), by="carol", filename="pictured-sop.docx", mime=DOCX)
+    rec = hub.kernel.get(doc["locator"])
+    compiled = sopdocs.frame_text(hub, rec)
+    [pic] = [x for x in compiled.splitlines() if office.is_picture_line(x)]
+    assert hub.dms.text_of(rec) == compiled, "the document's text is the compile's"
+    ctx = RunContext(run_id="t", release="", bundle={}, owner="quality-assistant", kernel=hub.kernel, dms=hub.dms)
+    assert pic in item_text(ctx, rec, 10 ** 6), "the reviewing cog sees the picture"
+    tools = RecordTools(hub, "carol")
+    assert pic in tools.read_document(rec["number"])["text"], "the cog's read_document tool sees the picture"
+    assert pic not in tools.read_document(rec["number"], version=1)["text"], "an earlier version reads as it was"
+    diff = agent_docs.document_versions(tools, {"number": rec["number"], "compare": [1, 2]})["diff"]
+    assert "+" + pic in diff.splitlines(), "the version compare shows the picture that was added"
+    assert "error" in agent_docs.document_versions(tools, {"number": rec["number"], "compare": [1, 9]})
+
+
 # --------------------------------------------------------------------- classes
 
 def test_unknown_class_is_refused(d):

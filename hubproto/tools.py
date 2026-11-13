@@ -269,13 +269,11 @@ class RecordTools:
         rec = self._find(number)
         if rec is None or rec["type"] != "document":
             return {"error": f"no document {number!r} that you may read"}
-        from .dms import extract_text
-
         try:
-            content, v = self.hub.dms.content(rec["locator"], int(version) if version else None)
+            _, v = self.hub.dms.content(rec["locator"], int(version) if version else None)
         except Exception as e:
             return {"error": str(e)}
-        text = extract_text(content, v.get("mime") or "", v.get("filename") or "")
+        text = self.hub.dms.text_of(rec, v["version"])  # as the document page and the compile read it
         cap = max(500, min(int(max_chars or 6000), 20000))
         out = {"number": rec["number"], "title": rec["fields"].get("title"), "version": v.get("version"), "filename": v.get("filename"),
                "text": text[:cap], "truncated": len(text) > cap}

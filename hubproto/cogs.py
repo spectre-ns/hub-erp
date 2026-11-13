@@ -148,7 +148,8 @@ class Cog:
             for k, v in rec["fields"].items():
                 # The record is the system of record: its fields win over whatever an earlier step's payload
                 # carried (a retry after a fix, a value a person set at a Gate); the payload only adds keys.
-                if v not in (None, ""):
+                # A ``text`` field an older document carries is a stale copy of its file's words: never passed on.
+                if v not in (None, "") and not (k == "text" and rec["type"] == "document"):
                     prior[k] = v
         # Fields a person supplied at a Gate win over anything an earlier step computed.
         for k, v in (ctx.extras.get("decision_fields") or {}).items():
@@ -749,7 +750,9 @@ class DocumentClassifier(Cog):
     def task_run(self, input: dict, ctx: RunContext) -> dict:
         rec = self._prior(input, ctx)
         name = (rec.get("filename") or rec.get("title") or "").lower()
-        text = (rec.get("text") or "").lower()
+        doc = ctx.rec()  # a document's words are read from its file, never from a field
+        is_doc = bool(doc) and doc["type"] == "document"
+        text = ((ctx.dms.text_of(doc) if ctx.dms is not None else "") if is_doc else str(rec.get("text") or "")).lower()
         if "invoice" in name or "invoice" in text:
             kind = "invoice"
         elif any(w in name for w in ("drawing", ".dwg", ".step")):
@@ -766,16 +769,14 @@ class DocumentClassifier(Cog):
 # ---------------------------------------------------------------- reviewer cogs (team members)
 
 def pinned_text(ctx: RunContext, pin: dict | None, limit: int = 20000) -> str:
-    """The text of a document at the version a release pinned (a cog's prompt or reference)."""
+    """The text of a document at the version a release pinned (a cog's prompt or reference), read as every reader reads
+    it (``DMS.text_of``)."""
     if not pin or ctx.dms is None:
         return ""
-    from .dms import extract_text
-
     try:
-        content, v = ctx.dms.content(pin["locator"], pin.get("version"))
+        return ctx.dms.text_of(pin["locator"], pin.get("version"))[:limit].strip()
     except Exception:
         return ""
-    return extract_text(content, v.get("mime") or "", v.get("filename") or "")[:limit].strip()
 
 
 def governing_process(ctx: RunContext, rec: dict | None) -> str:
@@ -1336,7 +1337,8 @@ class ReviewerCog(Cog):
                 if o["op"] in ("append_rows", "insert_rows") or (o["op"] == "insert" and o.get("lines")):
                     o["rows"] = _office.rows_from_lines(o.get("lines") or [])
         else:
-            paras = {_edits.squash(x) for x in (ctx.dms.text_of(rec) if ctx.dms is not None else "").splitlines() if x.strip()}
+            # The paragraphs as the edit operations read them (an SOP's heading is its words, not its '# ' Frame line).
+            paras = {_edits.squash(x) for x in (ctx.dms.edit_text(rec) if ctx.dms is not None else "").splitlines() if x.strip()}
             for o in ops:  # deleting a whole paragraph's text deletes the paragraph, live and in the file alike
                 if o["op"] == "delete" and _edits.squash(o.get("target") or "") in paras:
                     o["op"] = "delete_paragraph"

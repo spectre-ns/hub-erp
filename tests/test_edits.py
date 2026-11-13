@@ -406,3 +406,60 @@ def test_a_new_docx_carries_heading_styles():
     styles = z.read("word/styles.xml").decode()
     assert 'w:styleId="Heading1"' in styles and 'w:styleId="Heading3"' in styles and 'w:styleId="TableGrid"' in styles
     assert "styles.xml" in z.read("word/_rels/document.xml.rels").decode() and "/word/styles.xml" in z.read("[Content_Types].xml").decode()
+
+
+# ---------------------------------------------------------------- an SOP draft (review of #36, finding 1)
+def _sop_draft(hub, title):
+    """A document of an SOP's lineage with its Frame header, as an SOP draft on a change order is (eco keeps both): it
+    reads as the compile reads it ('## Scope', '| Audit report | QA |'), while an edit finds a heading by its words."""
+    from hubproto import sopdocs
+
+    doc = _doc(hub, title=title)
+    hub.kernel.set_fields(doc["locator"], {"lineage": sopdocs.LINEAGE + "supplier-audit",
+                                           "frame_header": "---\nname: supplier-audit\nversion: 1\n---"}, by="carol")
+    rec = hub.kernel.get(doc["locator"])
+    assert "## Scope" in hub.dms.text_of(rec).splitlines(), "the compile's reading marks the heading"
+    return rec
+
+
+def _paragraphs(content: bytes) -> list[str]:
+    """Every paragraph of a .docx body, empty ones too, as its words."""
+    return [b.text for b in edits.TextDoc(content, "docx").blocks if b.kind in ("h", "p")]
+
+
+def test_deleting_an_sop_drafts_heading_by_its_words_deletes_the_heading_paragraph(released, monkeypatch):
+    """The words of a whole paragraph are its paragraph: deleting them leaves no empty heading behind, in an SOP draft too,
+    whose text reads its headings as '#' lines."""
+    hub = released
+    rec = _sop_draft(hub, "SOP heading to delete")
+    before = _paragraphs(hub.dms.content(rec["locator"])[0])
+    monkeypatch.setattr(hub, "model", FakeModel("@@ delete: Scope"))
+    hub.send("carol", "carol", "Comment", "@quality-assistant please delete the Scope heading", record=rec["locator"])
+    [reply] = [m for m in hub.inbox.on_record(rec["locator"]) if m["from"] == "quality-assistant"]
+    assert hub.inbox.find(reply["id"])["edit"]["ops"][0]["op"] == "delete_paragraph", "a whole heading's words are its paragraph"
+    after = _paragraphs(hub.dms.content(rec["locator"])[0])
+    assert "Scope" not in after and "" not in after and len(after) == len(before) - 1, after
+
+
+def test_a_misplaced_insert_in_an_sop_draft_never_takes_out_its_own_heading(released, monkeypatch):
+    """A cog asked to insert '## Scope' at the start of an SOP draft; the live seat put it at the end. The hub moves the
+    insert, and takes out only what the insert added: the SOP's own Scope heading stays above its paragraph."""
+    hub = released
+    rec = _sop_draft(hub, "SOP misplaced insert")
+    loc = rec["locator"]
+    hub.dms.checkout(loc, by="carol", via="editor")  # carol is in the editor: the seat edits live
+    monkeypatch.setattr(hub, "model", FakeModel("@@ insert at start\n## Scope\nApplies to every supplier."))
+    hub.send("carol", "carol", "Comment", "@quality-assistant please add a Scope section at the start", record=loc)
+    [reply] = [m for m in hub.inbox.on_record(loc) if m["from"] == "quality-assistant"]
+    assert hub.inbox.find(reply["id"])["edit"]["ops"][0]["op"] == "insert"
+    # Live, the seat put the lines at the end; the session saved that.
+    content, _ = hub.dms.content(loc)
+    wrong, _ = edits.apply_ops(content, "docx", ops("@@ insert at end\n## Scope\nApplies to every supplier."))
+    hub.dms.add_version(loc, wrong, by="carol", filename="SOP misplaced insert.docx", mime=wopi.EDITABLE_EXTENSIONS["docx"], note="saved in the editor")
+    out = wopi.WopiHost(hub).verify_edit(hub.kernel.get(loc), reply["id"], "carol")
+    assert out["fixed"] == 1 and not out["failed"], out
+    paras = [p for p in _paragraphs(hub.dms.content(loc)[0]) if p.strip()]
+    at = paras.index("All suppliers shall be audited.")
+    assert paras[at - 1] == "Scope", f"the SOP's own Scope heading was taken out: {paras}"
+    assert paras.count("Applies to every supplier.") == 1 and paras.index("Applies to every supplier.") < paras.index("Supplier audit"), paras
+    hub.dms.undo_checkout(loc, by="carol")

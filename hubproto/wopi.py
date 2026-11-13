@@ -372,8 +372,9 @@ class WopiHost:
             extra = {"edit_report": reports[m["id"]], "body": m["_body"]} if m["id"] in reports else {}
             self.hub.inbox.mark(m["id"], applied_in=version.get("version"), **extra)
         comments = office.extract_comments(content, ext)
-        self.hub.kernel.set_fields(rec["locator"], {"office_comments": [{k: c.get(k) for k in ("id", "author", "date", "text", "digest", "parent")} for c in comments],
-                                                    "text": office.extract_text(content, ext)}, by=by)
+        # The comments go on the record; the words stay in the file (DMS.text_of reads them), never a copy on the record.
+        self.hub.kernel.set_fields(rec["locator"], {"office_comments": [{k: c.get(k) for k in ("id", "author", "date", "text", "digest", "parent")} for c in comments]},
+                                   by=by)
         return applied
 
     def verify_edit(self, rec: dict, msg_id: str, by: str) -> dict:

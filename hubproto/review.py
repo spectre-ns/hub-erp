@@ -233,7 +233,7 @@ def file_review(ctx, record: dict, reviews: list[dict], question: str = "", by: 
         return ctx.dms.create(provenance={"task": task, "effect": key} if key else None, title=f"Review of {record['number']} by {who}", doc_class="evidence", folder=record["folder"], by=by or who,
                               content=text.encode("utf-8"), filename=f"review-{record['number']}-{date.today().isoformat()}.md",
                               mime="text/markdown", doc_type="review", attach_to=record["locator"], run_id=ctx.run_id, release=ctx.release,
-                              fields={"text": text, "verdict": "pass" if all(r["verdict"] == "pass" for r in reviews) else "fail",
+                              fields={"verdict": "pass" if all(r["verdict"] == "pass" for r in reviews) else "fail",
                                       "reviewers": [r["cog"] for r in reviews], **(fields or {})})
     except Exception:
         return None

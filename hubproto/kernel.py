@@ -352,8 +352,10 @@ class Kernel:
 
     @staticmethod
     def flat(rec: dict) -> dict:
-        """Fields merged to the top level, for list views and older callers."""
-        out = {**rec["fields"], "id": rec["number"], "kind": rec["type"], "type": rec["type"], "state": rec["state"],
+        """Fields merged to the top level, for list views and older callers. A ``text`` field an older document carries
+        is a stale copy of its file's words: left out."""
+        fields = {k: v for k, v in rec["fields"].items() if not (k == "text" and rec["type"] == "document")}
+        out = {**fields, "id": rec["number"], "kind": rec["type"], "type": rec["type"], "state": rec["state"],
                "folder": rec["folder"], "run_id": rec["run_id"], "release": rec["release"], "events": rec["events"],
                "locator": rec["locator"], "last_event": rec.get("last_event", ""), "assignees": rec["assignees"],
                "due": rec["due"], "labels": rec["labels"]}

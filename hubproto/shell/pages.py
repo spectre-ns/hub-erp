@@ -1129,8 +1129,6 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
 
     def page_compare(self):
         """/compare/<document>?a=<version>&b=<version>: what changed between two versions, as text."""
-        from .. import office
-        from ..wopi import extension_of
         from .policy_docs import diff_html
 
         user = self.user
@@ -1151,12 +1149,8 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
         if a not in nums or b not in nums:
             raise ShellError(f"{rec['number']} has versions {min(nums)} to {max(nums)}.", 404)
 
-        def text_of(n: int) -> str:
-            content, v = self.hub.dms.content(rec["locator"], n)
-            ext = extension_of(v.get("filename") or rec["fields"].get("filename") or "")
-            if ext in ("md", "txt", "csv"):
-                return content.decode("utf-8", "replace")
-            return office.extract_text(content, ext, limit=200000)
+        def text_of(n: int) -> str:  # each version read as the document page reads it (an SOP as the compile does)
+            return self.hub.dms.text_of(rec, n)
         va, vb = nums[a], nums[b]
         body = (f"<h1>{esc(rec['number'])}: what changed from version {a} to {b}</h1>"
                 f"<p class='why'>Version {a}: {esc(va.get('by'))} on {esc(when(va.get('at')))} ({esc(va.get('note') or '-')}). "
