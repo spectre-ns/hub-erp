@@ -19,8 +19,11 @@ anyone who may start one there may edit it, so it can be worked on together.
 A working document is not a controlled document: it is not approved, released
 or trained on, and nobody works to it as to a procedure. A document that must
 be controlled (a procedure, a work instruction, a form) still starts in
-Quality/Controlled Documents under the document-control SOP. A cog writes
-here only where the person it works for may too.
+Quality/Controlled Documents under the document-control SOP; a cog never
+drafts one here. A cog working for a person writes here only what that person
+may read. A cog on its own duties (the auditor's audits, a standing review) may
+write here anything it may read itself, and everyone reads this folder: that is
+accepted, and each document keeps the cog, its model and the run that wrote it.
 
 ## Permissions
 Staff may create documents in Quality/Working Documents.
@@ -31,5 +34,5 @@ The cogs group may read Quality/Working Documents.
 ## Roles and responsibilities
 | Role | Responsibilities |
 |---|---|
-| Staff | Starts, edits and reads working documents in Quality/Working Documents; starts a document that must be controlled in Quality/Controlled Documents instead. |
-| the cogs group | Writes plans, notes, analyses and reports for its tasks as working documents, where the person it works for may too; never as controlled documents. |
+| Staff | Starts, edits and reads working documents in Quality/Working Documents; asks an author or a document controller for a document that must be controlled. |
+| the cogs group | Writes plans, notes, analyses and reports as working documents, for its tasks and duties; never drafts a controlled document here. |

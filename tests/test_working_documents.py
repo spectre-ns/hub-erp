@@ -87,3 +87,27 @@ def test_a_cog_working_for_someone_who_may_not_create_there_is_refused(hub, tmp_
     out = t.execute("create_document", {"title": "Not for erin", "folder": FOLDER})
     assert "erin, for whom you work, may not" in str(out.get("error")), out
     assert tools(hub, "senior-qa-manager", "bob", tmp_path).both_may("create", "document", FOLDER)["allowed"]
+
+
+def test_a_cog_never_drafts_a_controlled_document_in_working_documents(released, tmp_path):
+    """Review of #85: draft_document files a controlled SOP draft; it goes only where document control files it."""
+    from hubproto.agent import AgentStore, AgentTools
+
+    t = AgentTools(released, "senior-qa-manager", "run-draft", "act", 5, AgentStore(tmp_path), requester="bob")
+    out = t._draft_document({"title": "A procedure", "folder": "Quality/Working Documents", "text": "Step one."})
+    assert "error" in out and "filed in Quality/Controlled Documents" in out["error"] and "create_document" in out["error"], out
+    assert not [d for d in released.kernel.query(type_="document") if d["fields"].get("title") == "A procedure"]
+
+
+def test_a_controlled_document_in_working_documents_is_not_everyones_to_edit(released):
+    """Review of #85: everyone may create in the folder, but a controlled document there (moved in) stays its author's."""
+    from hubproto.tools import may_edit_document
+
+    bundle = released.current_bundle()
+    doc = released.dms.create(title="Moved procedure", doc_class="controlled", folder="Quality/Working Documents", by="alice",
+                              content=b"# Moved\n", filename="moved.md", mime="text/markdown", doc_type="sop")
+    rec = released.kernel.get(doc["locator"])
+    assert may_edit_document(bundle, "alice", rec)[0], "its author"
+    for who in ("dave", "quality-assistant", "senior-qa-manager"):
+        ok, why = may_edit_document(bundle, who, rec)
+        assert not ok and "controlled document outside" in why, (who, why)

@@ -84,6 +84,12 @@ def may_edit_document(bundle: dict, who: str, rec: dict) -> tuple[bool, str]:
         return False, f"{number} is {f.get('owner')}'s draft of a policy; only its author or a policy owner changes it"
     if who in (f.get("author"), f.get("owner")) or who == rec.get("created_by") or "document-controller" in roles:
         return True, ""
+    controlled_home = ((bundle.get("ops") or {}).get("document-control") or {}).get("folder") or "Quality/Controlled Documents"
+    if f.get("doc_class") == "controlled" and (rec.get("folder") or "") != controlled_home:
+        # A controlled document moved out of document control's folder (into working documents, say) is not everyone's
+        # to edit because everyone may create there: only its author, owner, filer or a document controller (issue #74).
+        return False, (f"{number} is a controlled document outside {controlled_home}; only its author "
+                       f"({f.get('author') or f.get('owner') or '-'}) or a document controller changes it")
     for action in ("update", "create"):
         if authz.check(bundle, who, action, "document", rec.get("folder") or "")["allowed"]:
             return True, ""
