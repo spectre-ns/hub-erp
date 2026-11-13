@@ -256,6 +256,17 @@ def _cells(t: str) -> list[str]:
     return [c.strip() for c in t.strip().strip("|").split("|")]
 
 
+def _quoted_kind(target: str) -> dict:
+    """The kind of block a target quoted with line markup is: a heading ('## Records') or a list item ('- Records',
+    '1. Check'), which is a paragraph; nothing for other markup."""
+    t = target.strip()
+    if _HEADING.match(t):
+        return {"kind": "h"}
+    if _LINE_MARK.match(t) and not _is_row(t):
+        return {"kind": "p"}
+    return {}
+
+
 def unmark_ops(ops: list[dict], text: str) -> list[dict]:
     """Operations whose targets quote the markup a document was read with ('## Scope', '| Audit report | QA |', '- item':
     an SOP read as the compile reads it) made to find what they mean in ``text``, the document's paragraphs as the
@@ -263,8 +274,9 @@ def unmark_ops(ops: list[dict], text: str) -> list[dict]:
     is left alone (a Markdown file holds its own '#' lines), and so is one whose meaning is not certain:
     - a heading, list item or paragraph to find (insert after/before, a section, a paragraph or section operation): its words;
     - '@@ delete:' of a table row, heading or list item: that row, or the paragraph whose words are exactly its words
-      (``delete_paragraph`` with ``exact``: never one that only starts with or holds them, never a table cell); when no
-      paragraph is, the operation fails visibly;
+      (``delete_paragraph`` with ``exact``: never one that only starts with or holds them, never a table cell), a heading
+      only among headings and a list item only among paragraphs (``kind``); when no paragraph is, the operation fails
+      visibly;
     - '@@ replace:' of a heading: that heading's paragraph, still a heading of its level;
     - '@@ replace:' of a table row with a row: each cell that changed, when its old words occur once in the document
       (a replace changes every occurrence) and no new value holds another changed cell's old words, else the operation
@@ -295,7 +307,9 @@ def unmark_ops(ops: list[dict], text: str) -> list[dict]:
         words = plain_line(target)
         # A paragraph found from quoted markup is found by its words exactly (a heading 'Records' is not '## Record',
         # and a table cell is not a paragraph): a quote that finds none fails visibly instead of changing other text.
-        exact = {} if _is_row(target) else {"exact": True}
+        # It is found among its own kind: a quoted heading among headings, a quoted list item among paragraphs ('## Records'
+        # is not the bullet 'Records', nor '- Records' the heading).
+        exact = {} if _is_row(target) else {"exact": True, **_quoted_kind(target)}
         if o in ("replace_paragraph", "delete_paragraph"):
             out.append({**op, "target": words, **exact})
         elif o in ("replace_section", "delete_section"):
@@ -307,10 +321,10 @@ def unmark_ops(ops: list[dict], text: str) -> list[dict]:
             head = _HEADING.match(target.strip())
             if head:
                 if not plain_line(new):
-                    out.append({"op": "delete_paragraph", "target": words, "exact": True})
+                    out.append({"op": "delete_paragraph", "target": words, "exact": True, "kind": "h"})
                 else:
                     line = new.strip() if _HEADING.match(new.strip()) else f"{head.group(1)} {plain_line(new)}"
-                    out.append({"op": "replace_paragraph", "target": words, "lines": [line], "exact": True})
+                    out.append({"op": "replace_paragraph", "target": words, "lines": [line], "exact": True, "kind": "h"})
             elif _is_row(target):
                 old_cells = _cells(target)
                 new_cells = _cells(new) if _is_row(new) else []
@@ -595,7 +609,12 @@ class TextDoc:
         cands = [i for i in range(lo, hi) if self.blocks[i].kind in kinds]
         tests = [lambda t: t == want]
         if exact:  # the words alone: a list item's '- ', '• ' or '1. ' is not its words, nor is a closing full stop
-            tests.append(lambda t: squash(plain_line(t)).rstrip(".:;!?") == squash(plain_line(want)).rstrip(".:;!?"))
+            # ``target`` is already its words ('2. Keep records' quoted as '- 2. Keep records' keeps its '2. '), and a
+            # target of punctuation alone is no words at all (it would be an empty line's)
+            words = want.rstrip(".:;!?")
+            if not words:
+                return None
+            tests.append(lambda t: squash(plain_line(t)).rstrip(".:;!?") == words)
         else:
             tests += [lambda t: t.startswith(want), lambda t: want in t]
         for test in tests:
@@ -920,7 +939,8 @@ def _apply_text(doc: TextDoc, op: dict) -> tuple[bool, str]:
             return False, f"could not find “{_short(target)}”{where if within else ''}"
         return True, (f"removed it ({n} place(s){where})" if repl == "" else f"replaced {n} occurrence(s){where}")
     if o in ("delete_paragraph", "replace_paragraph"):
-        i = doc.find_block(op["target"], exact=bool(op.get("exact")))
+        kinds = (op["kind"],) if op.get("kind") in ("p", "h") else ("p", "h")
+        i = doc.find_block(op["target"], kinds=kinds, exact=bool(op.get("exact")))
         if i is None:
             if o == "delete_paragraph" and not op.get("exact"):
                 c = doc.find_inside(op["target"])

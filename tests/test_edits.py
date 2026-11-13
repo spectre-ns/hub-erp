@@ -589,6 +589,57 @@ def test_a_quoted_heading_or_item_deletes_only_the_paragraph_that_is_exactly_its
     assert "Records" not in [ln.strip("# ").strip() for ln in text_of(new, ext).splitlines()], "the heading, and only it"
 
 
+def _quoted(content: bytes, ext: str, src: str):
+    q = edits.unmark_ops(ops(src), edits.applied_text(content, ext))
+    new, report = edits.apply_ops(content, ext, q)
+    return q, new, report
+
+
+@pytest.mark.parametrize("ext", ["docx", "odt"])
+def test_a_quoted_heading_changes_a_heading_never_a_list_item_with_its_words(ext):
+    """Review of #36: a quoted heading was matched against every paragraph, so '## Records' found the bullet
+    '• Records' (its mark forgiven) before the heading: a replace turned the bullet into a heading, a delete deleted it."""
+    content = make(ext, ["# T", "## Record keeping", "- Records", "- Other"])
+    before = text_of(content, ext)
+    for src in ("@@ replace: ## Records\n@@ with: ## Archive", "@@ delete: ## Records"):
+        q, new, report = _quoted(content, ext, src)
+        assert not report[0]["ok"] and (new is None or text_of(new, ext) == before), (src, q, report)
+
+
+@pytest.mark.parametrize("ext", ["docx", "odt", "md"])
+def test_a_quoted_list_item_deletes_the_item_never_a_heading_with_its_words(ext):
+    """Review of #36: '- Records' deleted the heading 'Records', the first block whose words were the item's."""
+    for item in ("- Records", "* Records"):
+        content = make(ext, ["# T", "## Records", "Keep.", "## Training", item])
+        q, new, report = _quoted(content, ext, "@@ delete: - Records")
+        assert report[0]["ok"], (item, q, report)
+        after = [ln.strip("#•*- ").strip() for ln in text_of(new, ext).splitlines()]
+        assert after.count("Records") == 1 and after.index("Records") < after.index("Keep."), (item, after)
+
+
+@pytest.mark.parametrize("ext", ["docx", "odt", "md"])
+def test_a_quoted_item_whose_words_start_with_a_number_is_not_a_paragraph_without_it(ext):
+    """Review of #36: the quote's mark was removed twice, so '- 2. Keep records' deleted the paragraph 'Keep records.'
+    and left the item '2. Keep records'."""
+    content = make(ext, ["# T", "Keep records.", "- 2. Keep records"])
+    q, new, report = _quoted(content, ext, "@@ delete: - 2. Keep records")
+    assert report[0]["ok"], (q, report)
+    after = [ln.strip("•- ").strip() for ln in text_of(new, ext).splitlines()]
+    assert "Keep records." in after and "2. Keep records" not in after, after
+
+
+@pytest.mark.parametrize("ext", ["docx", "odt", "md"])
+def test_a_quoted_item_that_is_only_punctuation_finds_nothing(ext):
+    """Review of #36: '- .' lost its full stop to the forgiven closing punctuation and matched an empty line, deleting a
+    Markdown '---' or a blank paragraph."""
+    content = make(ext, ["# T", "Keep.", "---", "", "Done."])
+    before = text_of(content, ext)
+    q, new, report = _quoted(content, ext, "@@ delete: - .")
+    assert not report[0]["ok"] and (new is None or new == content or text_of(new, ext) == before), (q, report)
+    if new is not None and ext == "md":
+        assert new == content, new
+
+
 def test_a_table_row_quoted_with_its_pipes_is_the_row_deleted():
     ext = "docx"
     content = make(ext)
