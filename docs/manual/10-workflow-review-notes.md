@@ -458,7 +458,8 @@ review script again). It no longer crashes the release.
 
 **V13. What the pages say does not always match.** Advisory findings are labelled "blocking finding" on the delta and in
 the I accept boxes (seen running). **What this does to each cog** leaves out a cog joining a group. The Gate card says
-"Reject closes it as rejected; nothing more can be done with it", but a rejected change order goes back to revising. The
+"Reject closes it as rejected; nothing more can be done with it", but a rejected change order went back to revising (now
+it closes, issue #65). The
 record page's old states table shows "role held by nobody" for a committee gate, and a "Returned" state the graph does
 not have. The run history shows "run release changed" and "run moved" in fallback words. The new-cog form records a
 cog whose name, roles or persona do not exist. A senior cog's profile blames the key when the switch is off (C8).

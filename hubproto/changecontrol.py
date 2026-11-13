@@ -37,7 +37,7 @@ person can act on when a step is refused. The API the shell builds its pages on:
 
 Reading
     stage_of(co)                                        the stage of a CO record
-    sync(hub, co)                                       the CO, after noticing a rejected approval (back to revising)
+    sync(hub, co)                                       the CO, after noticing a rejected approval (closed)
     overview(hub, co)                                   everything a CO page shows, in one dict
     delta(hub, co)                                      the delta items (origin, warnings with acceptances, state, stale)
     co_warnings(hub, co)                                warnings on the CO as a whole (kept divergences, general findings)
@@ -87,6 +87,7 @@ from .rules import rule_key, sha256_of, validate_rule
 
 STAGES = ("preparing", "in-review", "revising", "awaiting-approval", "approved", "released")
 EDITABLE = ("preparing", "in-review", "revising")
+CLOSED = ("rejected", "cancelled")  # a change order closed without a release: nothing more is done with it (issue #65)
 CHANGE_CONTROL_SOP = "change-control-sop"
 REVIEW_SECTION = "review of changes"
 PANEL_COG = "quality-assistant"
@@ -278,6 +279,8 @@ def stage_of(co: dict) -> str:
         return "released"
     if st == "approved":
         return "approved"
+    if st in CLOSED:
+        return st
     s = co["fields"].get("stage")
     if s in STAGES:
         return s
@@ -288,21 +291,38 @@ def stage_of(co: dict) -> str:
 
 def sync(hub, co_ref) -> dict:
     """The change order, after noticing what happened to it outside this module: an approval Gate that was rejected
-    sends it back to revising (the record is open again, the rejection kept in ``rejected``); anything it carries that
-    changed after it was sent for approval (a revision, a direct, form, record-type or workflow change, the state map)
-    sends it back to revising too, its decisions void (``_back_to_revising``)."""
+    closes it (issue #65: it stays rejected, the rejection kept in ``rejected``, its drafts withdrawn, and nothing more is
+    done with it); one that an earlier rejection sent back to revising, with no review requested since, closes the same
+    way. Anything it carries that changed after it was sent for approval (a revision, a direct, form, record-type or
+    workflow change, the state map) sends it back to revising, its decisions void (``_back_to_revising``)."""
     co = _co(hub, co_ref)
-    eco.withdraw_cancelled_drafts(hub, co)
-    if co["state"] == "rejected":
+    if co["state"] == "open" and _reopened_by_rejection(hub, co):
+        hub.kernel.transition(co["locator"], "rejected", by="hub",
+                              reason="its approval was rejected; a rejected change order is closed, not revised")
+        co = _co(hub, co["locator"])
+    if co["state"] == "rejected" and not (co["fields"].get("rejected") or {}).get("closed"):
         dec = next((d for d in reversed(co.get("decisions") or []) if d.get("verdict") == "reject"), {})
-        hub.kernel.transition(co["locator"], "open", by="hub", reason="its approval was rejected: back to revising")
-        _hold_drafts(hub, co, False)
-        co = _set(hub, co, stage="revising", frozen=None, rejected={"by": dec.get("by"), "meaning": dec.get("meaning"), "at": dec.get("at")})
-    elif stage_of(co) == "awaiting-approval" and co["fields"].get("frozen"):
+        was = co["fields"].get("rejected") or {}
+        co = _set(hub, co, frozen=None, rejected={"by": dec.get("by") or was.get("by"), "meaning": dec.get("meaning") or was.get("meaning"),
+                                                  "at": dec.get("at") or was.get("at"), "closed": True})
+    eco.withdraw_cancelled_drafts(hub, co)
+    if stage_of(co) == "awaiting-approval" and co["fields"].get("frozen"):
         changed = changed_since_sent(hub, co)
         if changed:
             co = _back_to_revising(hub, co, "changed after it was sent for approval: " + ", ".join(changed))
     return co
+
+
+def _reopened_by_rejection(hub, co: dict) -> bool:
+    """A change order an earlier rejection sent back to revising (before issue #65): its process ended rejected, it
+    has not been sent again, and no review round was requested after the rejection (so nobody is reworking it)."""
+    rej = co["fields"].get("rejected") or {}
+    if not rej or rej.get("closed") or stage_of(co) != "revising":
+        return False
+    run = hub.runner.run_for_record(co["locator"])
+    if not run or run.get("status") != "rejected":
+        return False
+    return not any((r.get("requested_at") or r.get("at") or "") > (rej.get("at") or "") for r in rounds(co))
 
 
 def on_approved(hub, co_ref) -> dict:

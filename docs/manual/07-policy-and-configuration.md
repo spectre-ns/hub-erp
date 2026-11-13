@@ -383,8 +383,10 @@ one marked, and a **Next:** line saying what to do.
 | approved | **Approved**: release under way | Approved |
 | released | **Released**: in force | Released |
 
-A rejected Gate sends the change order back to revising ("*name* rejected its approval: ... It is back to revising"). A
-Gate nobody can take leaves it in state Failed, back at revising.
+A rejected Gate closes the change order: it stays **Rejected**, with who rejected it, why and when, and nothing more is
+done with it ("Rejected. *name* rejected its approval: ... It is closed"). The revisions it carried are withdrawn, so
+another change order can revise those SOPs; to try again, prepare a new change order (hubproto/changecontrol.py,
+`sync`). A Gate nobody can take leaves it in state Failed, back at revising.
 
 <!-- figure: c07-co-stage -->
 
@@ -569,8 +571,8 @@ valid and answers every removed status that has items; and the IT SOP's validati
 * These rules are about approving. Whoever prepared a change order or contributed to it may still **reject** it at a
   person's Gate routed to them, with a reason (hubproto/runner.py, `maker_may_reject`); every other exclusion still
   holds for them (a Gate's own "not", another segregation-of-duties sentence). A rejection approves nothing and puts
-  nothing in force: in the change-order process it goes back to revising, where its requester changes it or cancels it
-  (a workflow of your own may send it elsewhere on its rejection). The author of a revision is never routed the Gate,
+  nothing in force: in the change-order process it closes the change order as rejected (a workflow of your own may
+  send it elsewhere on its rejection). The author of a revision is never routed the Gate,
   and a committee's Gate keeps its own rules.
 * A contributor does not review it, and a reviewer with results is not removed.
 * A person signs, never a cog: a cog may review a change order and say what it found, never approve it, and a rule

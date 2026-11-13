@@ -31,14 +31,15 @@ def _co(hub, ref: str) -> dict:
     return rec
 
 
-def carried(hub, co: dict) -> list[dict]:
-    """The SOP drafts a change order carries: [{"name", "draft", "in_force"}]."""
+def carried(hub, co: dict, withdrawn: bool = False) -> list[dict]:
+    """The SOP drafts a change order carries: [{"name", "draft", "in_force"}]. ``withdrawn``: also the drafts withdrawn
+    with it (a closed change order's page names them)."""
     out = []
     for link in hub.kernel.links_of(co["locator"]):
         if link["rel"] != CARRIES or link["direction"] != "out":
             continue
         d = hub.kernel.get(link["target"])
-        if d is not None and d["state"] == "withdrawn":
+        if d is not None and d["state"] == "withdrawn" and not withdrawn:
             continue
         if d is None:
             continue
@@ -174,15 +175,16 @@ def finished(co: dict) -> bool:
 
 
 def withdraw_cancelled_drafts(hub, co: dict) -> list[str]:
-    """A cancelled change order's revisions are withdrawn: no other change order can carry them, and an open draft of an
-    SOP stops anyone starting another revision of it. Their versions and history stay. Returns their numbers."""
-    if co.get("state") != "cancelled":
+    """A cancelled or rejected change order's revisions are withdrawn: it is closed, no other change order can carry
+    them, and an open draft of an SOP stops anyone starting another revision of it. Their versions and history stay.
+    Returns their numbers."""
+    if co.get("state") not in ("cancelled", "rejected"):
         return []
     out = []
     for c in carried(hub, co):
         d = c["draft"]
         if d["state"] in ("draft", "open", "held", "returned"):
-            hub.kernel.transition(d["locator"], "withdrawn", by="hub", reason=f"withdrawn with {co['number']}, which was cancelled")
+            hub.kernel.transition(d["locator"], "withdrawn", by="hub", reason=f"withdrawn with {co['number']}, which was {co['state']}")
             out.append(d["number"])
     return out
 
@@ -230,8 +232,12 @@ def add_sop(hub, co_ref: str, name: str, *, by: str, author: str | None = None) 
         if d["state"] in ("draft", "open", "held"):
             other = next((lk["target"] for lk in hub.kernel.links_of(d["locator"]) if lk["rel"] == CARRIES and lk["direction"] == "in"), None)
             o = hub.kernel.get(other) if other else None
-            if o is not None and d["number"] in withdraw_cancelled_drafts(hub, o):
-                continue  # the revision of a cancelled change order: withdrawn, it no longer stops a new one
+            if o is not None and o["type"] == "change-order":
+                from . import changecontrol
+
+                o = changecontrol.sync(hub, o["locator"])  # a rejected one closes here if nothing noticed it yet
+            if o is not None and (d["number"] in withdraw_cancelled_drafts(hub, o) or hub.kernel.get(d["locator"])["state"] == "withdrawn"):
+                continue  # the revision of a cancelled or rejected change order: withdrawn, it no longer stops a new one
             raise ValueError(f"{current['number']} is already being revised ({d['number']}" + (f", on {o['number']})" if o else ")"))
     content, v = hub.dms.content(current["locator"])
     f = current["fields"]
