@@ -537,14 +537,29 @@ def test_swapping_two_cells_of_a_quoted_row_is_not_rewritten_into_replaces_that_
                     {"op": "replace", "target": "QA", "with": "Quality"}], fine
 
 
-def test_a_quoted_heading_or_item_that_is_not_a_whole_paragraph_deletes_only_its_words():
-    """Review of #36: '- suppliers yearly' deleted the paragraph 'Audit suppliers yearly.', and '## Record' the heading
-    'Records'. Only a whole paragraph's words become that paragraph."""
-    text = "Records\nAudit suppliers yearly.\nScope"
-    assert edits.unmark_ops(ops("@@ delete: - suppliers yearly"), text) == [{"op": "delete", "target": "suppliers yearly"}]
-    assert edits.unmark_ops(ops("@@ delete: ## Record"), text) == [{"op": "delete", "target": "Record"}]
-    assert edits.unmark_ops(ops("@@ delete: ## Scope"), text) == [{"op": "delete_paragraph", "target": "Scope"}]
-    assert edits.unmark_ops(ops("@@ delete: - Audit suppliers yearly."), text) == [{"op": "delete_paragraph", "target": "Audit suppliers yearly."}]
+@pytest.mark.parametrize("ext", ["docx", "odt", "md"])
+def test_a_quoted_heading_or_item_deletes_only_the_paragraph_that_is_exactly_its_words(ext):
+    """Reviews of #36: '- suppliers yearly' deleted the paragraph 'Audit suppliers yearly.'; '## Record' deleted the
+    heading 'Records', or every 'Record' in the document, or (beside a 'Record' table cell) still the heading. A quoted
+    heading or item is the paragraph whose words are exactly its own, a closing full stop forgiven; else nothing changes
+    and the operation says so."""
+    content = make(ext, LINES + ["Record retention is set by policy."])
+    before = text_of(content, ext)
+    reading = edits.applied_text(content, ext)
+    for quoted in ("- suppliers yearly", "## Record"):
+        q = edits.unmark_ops(ops(f"@@ delete: {quoted}"), reading)
+        new, report = edits.apply_ops(content, ext, q)
+        assert not report[0]["ok"] and (new is None or text_of(new, ext) == before), (quoted, q, report)
+    q = edits.unmark_ops(ops("@@ delete: - Audit suppliers yearly"), reading)  # no full stop, as a model may quote it
+    new, report = edits.apply_ops(content, ext, q)
+    assert report[0]["ok"], (q, report)
+    after = [ln.strip("# ").strip() for ln in text_of(new, ext).splitlines()]
+    assert "Audit suppliers yearly." not in after and "." not in after, "the paragraph, with its full stop"
+    assert {"Records", "Record retention is set by policy.", "Keep records for 3 years."} <= set(after), "nothing else touched"
+    q = edits.unmark_ops(ops("@@ delete: ## Records"), reading)
+    new, report = edits.apply_ops(content, ext, q)
+    assert report[0]["ok"] and "Keep records for 3 years." in text_of(new, ext), (q, report)
+    assert "Records" not in [ln.strip("# ").strip() for ln in text_of(new, ext).splitlines()], "the heading, and only it"
 
 
 def test_a_table_row_quoted_with_its_pipes_is_the_row_deleted():

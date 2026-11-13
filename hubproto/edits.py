@@ -262,21 +262,25 @@ def unmark_ops(ops: list[dict], text: str) -> list[dict]:
     operations match them (``applied_text``: a heading or a table cell as its words). A target ``text`` holds as written
     is left alone (a Markdown file holds its own '#' lines), and so is one whose meaning is not certain:
     - a heading, list item or paragraph to find (insert after/before, a section, a paragraph or section operation): its words;
-    - '@@ delete:' of a table row, or of a heading or list item whose words are a whole paragraph: that row or paragraph
-      (``delete_paragraph``); otherwise the words only;
+    - '@@ delete:' of a table row, heading or list item: that row, or the paragraph whose words are exactly its words
+      (``delete_paragraph`` with ``exact``: never one that only starts with or holds them, never a table cell); when no
+      paragraph is, the operation fails visibly;
     - '@@ replace:' of a heading: that heading's paragraph, still a heading of its level;
     - '@@ replace:' of a table row with a row: each cell that changed, when its old words occur once in the document
       (a replace changes every occurrence) and no new value holds another changed cell's old words, else the operation
       stays as written and fails visibly;
     - any other replace: its words for its words."""
     have = squash(text)
-    paras = {squash(x) for x in text.splitlines() if x.strip()}
+    lines = {squash(x) for x in text.splitlines()}
 
     def marked(v) -> bool:
+        """Quoted with markup ``text`` does not hold as written. A quoted line ('## Record') is held only as a whole line:
+        a Markdown file's '## Records' does not hold the heading '## Record'."""
         if not isinstance(v, str) or not v.strip():
             return False
         p = plain_line(v)
-        return bool(p) and squash(p) != squash(v) and squash(v) not in have
+        held = squash(v) in lines if _LINE_MARK.match(v.strip()) else squash(v) in have
+        return bool(p) and squash(p) != squash(v) and not held
 
     out: list[dict] = []
     for op in ops:
@@ -289,21 +293,24 @@ def unmark_ops(ops: list[dict], text: str) -> list[dict]:
             out.append(op)
             continue
         words = plain_line(target)
-        if o in ("replace_paragraph", "delete_paragraph", "replace_section", "delete_section"):
+        # A paragraph found from quoted markup is found by its words exactly (a heading 'Records' is not '## Record',
+        # and a table cell is not a paragraph): a quote that finds none fails visibly instead of changing other text.
+        exact = {} if _is_row(target) else {"exact": True}
+        if o in ("replace_paragraph", "delete_paragraph"):
+            out.append({**op, "target": words, **exact})
+        elif o in ("replace_section", "delete_section"):
             out.append({**op, "target": words})
-        elif o == "delete":  # a quoted row, or a heading or list item that is a whole paragraph, is that paragraph;
-            # '**shall**', or '## Record' where the heading is 'Records', is only the words
-            whole = _is_row(target) or (_LINE_MARK.match(target.strip()) and squash(words) in paras)
-            out.append({"op": "delete_paragraph", "target": words} if whole else {**op, "target": words})
+        elif o == "delete":  # a quoted row, heading or list item is that row or paragraph; '**shall**' is the word
+            out.append({"op": "delete_paragraph", "target": words, **exact} if _LINE_MARK.match(target.strip()) else {**op, "target": words})
         elif o == "replace" and op.get("with") is not None:
             new = op["with"]
             head = _HEADING.match(target.strip())
             if head:
                 if not plain_line(new):
-                    out.append({"op": "delete_paragraph", "target": words})
+                    out.append({"op": "delete_paragraph", "target": words, "exact": True})
                 else:
                     line = new.strip() if _HEADING.match(new.strip()) else f"{head.group(1)} {plain_line(new)}"
-                    out.append({"op": "replace_paragraph", "target": words, "lines": [line]})
+                    out.append({"op": "replace_paragraph", "target": words, "lines": [line], "exact": True})
             elif _is_row(target):
                 old_cells = _cells(target)
                 new_cells = _cells(new) if _is_row(new) else []
@@ -577,13 +584,21 @@ class TextDoc:
         self._attach(self._markers([removed]), i + 1)
         return "table row" if b.kind == "tbl" else "list item"
 
-    def find_block(self, target: str, kinds=("p", "h")) -> int | None:
+    def find_block(self, target: str, kinds=("p", "h"), exact: bool = False) -> int | None:
+        """The first paragraph or heading whose words are ``target``'s, else (unless ``exact``) one that starts with them,
+        else one that holds them. ``exact`` still forgives a paragraph's closing punctuation ('Audit suppliers yearly'
+        is the paragraph 'Audit suppliers yearly.')."""
         want = squash(target)
         if not want:
             return None
         lo, hi = self.content_range()
         cands = [i for i in range(lo, hi) if self.blocks[i].kind in kinds]
-        for test in (lambda t: t == want, lambda t: t.startswith(want), lambda t: want in t):
+        tests = [lambda t: t == want]
+        if exact:
+            tests.append(lambda t: t.rstrip(".:;!?") == want.rstrip(".:;!?"))
+        else:
+            tests += [lambda t: t.startswith(want), lambda t: want in t]
+        for test in tests:
             for i in cands:
                 if test(squash(self.blocks[i].text)):
                     return i
@@ -905,9 +920,9 @@ def _apply_text(doc: TextDoc, op: dict) -> tuple[bool, str]:
             return False, f"could not find “{_short(target)}”{where if within else ''}"
         return True, (f"removed it ({n} place(s){where})" if repl == "" else f"replaced {n} occurrence(s){where}")
     if o in ("delete_paragraph", "replace_paragraph"):
-        i = doc.find_block(op["target"])
+        i = doc.find_block(op["target"], exact=bool(op.get("exact")))
         if i is None:
-            if o == "delete_paragraph":
+            if o == "delete_paragraph" and not op.get("exact"):
                 c = doc.find_inside(op["target"])
                 if c is not None:
                     why = _protected([doc.blocks[c]])
