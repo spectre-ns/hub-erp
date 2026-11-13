@@ -194,7 +194,7 @@ class DMS:
             v = (vs[-1] if vs else None) if version is None else next((x for x in vs if x["version"] == version), None)
             if v is None:
                 return ""
-            sha, mime, filename = v["sha256"], v.get("mime") or "", v.get("filename") or ""
+            sha, mime, filename, version = v["sha256"], v.get("mime") or "", v.get("filename") or "", v["version"]
         from . import sopdocs
 
         sop = str(f.get("lineage") or "").startswith(sopdocs.LINEAGE)
@@ -205,6 +205,15 @@ class DMS:
             return hit
         try:
             if sop:
+                if version is None:
+                    # The version that holds the hash in the key, never whichever is latest when the file is opened: a
+                    # version saved meanwhile is not read (and cached) under this one's hash.
+                    vs = self.versions(rec["locator"])
+                    v = (next((x for x in reversed(vs) if x["sha256"] == sha and (x.get("filename") or "") == filename), None)
+                         or next((x for x in reversed(vs) if x["sha256"] == sha), None))
+                    if v is None:
+                        return ""
+                    version = v["version"]
                 return self._texts.put(key, sopdocs.frame_text(_Reader(self), rec, version))
             content = self.blobs.get(sha)
         except (OSError, KeyError, ValueError, StopIteration):
@@ -214,8 +223,9 @@ class DMS:
     def edit_text(self, ref: str | dict, version: int | None = None) -> str:
         """A document's paragraphs as the edit operations find and check them (``edits.applied_text``: a paragraph per
         line, a heading or a table cell as its words alone, no SOP header): what an edit a cog asks for is compared with,
-        before and after. Not what people and cogs read (``text_of`` reads an SOP as the compile does, with '#' headings
-        and '|' rows, which an edit never matches). "" when there is no file."""
+        before and after, and what the cog asked to make it is shown (``cogs.item_text``). Not what people and reviewing
+        cogs read (``text_of`` reads an SOP as the compile does, with '#' headings and '|' rows, which an edit never
+        matches). "" when there is no file."""
         from .edits import applied_text
 
         loc = ref.get("locator") if isinstance(ref, dict) else ref

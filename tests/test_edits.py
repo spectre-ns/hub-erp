@@ -463,3 +463,73 @@ def test_a_misplaced_insert_in_an_sop_draft_never_takes_out_its_own_heading(rele
     assert paras[at - 1] == "Scope", f"the SOP's own Scope heading was taken out: {paras}"
     assert paras.count("Applies to every supplier.") == 1 and paras.index("Applies to every supplier.") < paras.index("Supplier audit"), paras
     hub.dms.undo_checkout(loc, by="carol")
+
+
+# ---------------------------------------------------------------- an SOP draft's lines, quoted (review of #36, finding 1)
+SOP_QUOTES = ("@@ replace: | Audit report | QA |\n@@ with: | Audit report | Quality |\n"
+              "@@ insert after: ## Scope\nApplies to every supplier.\n"
+              "@@ append to section: ## Records\nKeep the audit plan too.\n"
+              "@@ delete: ## Purpose")
+
+
+def _reply_report(hub, rec) -> list[dict]:
+    [reply] = [m for m in hub.inbox.on_record(rec["locator"]) if m["from"] == "quality-assistant"]
+    return hub.inbox.find(reply["id"]).get("edit_report") or []
+
+
+def test_a_cog_editing_an_sop_draft_is_shown_the_lines_its_operations_find(released, monkeypatch):
+    """The edit task reads an SOP draft as its operations match it: a heading or a table cell as its words, no Frame
+    header, so a line the cog copies is one its operations find (the review, the page and the compile keep the Frame
+    reading)."""
+    hub = released
+    rec = _sop_draft(hub, "SOP shown to an editing cog")
+    fake = FakeModel("@@ replace: QA\n@@ with: Quality")
+    monkeypatch.setattr(hub, "model", fake)
+    hub.send("carol", "carol", "Comment", "@quality-assistant please make the audit report's owner Quality", record=rec["locator"])
+    shown = fake.calls[0]["system"].split("== THE ITEM ==", 1)[1].split("== REFERENCE", 1)[0]
+    for markup in ("## Scope", "| Audit report | QA |", "name: supplier-audit"):
+        assert markup not in shown, f"the edit task is shown {markup!r}, which no operation finds"
+    assert {"Scope", "Audit report", "QA"} <= {x.strip() for x in shown.splitlines()}, shown
+    assert [r["ok"] for r in _reply_report(hub, rec)] == [True]
+
+
+def test_an_sop_drafts_lines_quoted_with_their_frame_markup_are_found(released, monkeypatch):
+    """A cog that quotes an SOP's lines as the compile reads them ('## Records', '| Audit report | QA |') changes what
+    it meant: the heading, the section, the row's cell; nothing fails with "Could not"."""
+    hub = released
+    rec = _sop_draft(hub, "SOP quoted with its markup")
+    monkeypatch.setattr(hub, "model", FakeModel(SOP_QUOTES))
+    hub.send("carol", "carol", "Comment", "@quality-assistant please change the Scope and Records sections and delete the Purpose heading", record=rec["locator"])
+    report = _reply_report(hub, rec)
+    assert report and all(r["ok"] for r in report), report
+    paras = [p for p in _paragraphs(hub.dms.content(rec["locator"])[0]) if p.strip()]
+    assert "Purpose" not in paras and paras[paras.index("Scope") + 1] == "Applies to every supplier.", paras
+    t = text_of(hub.dms.content(rec["locator"])[0], "docx")
+    assert "Quality" in t.splitlines() and "QA" not in t.splitlines() and "Keep the audit plan too." in t, t
+
+    other = _sop_draft(hub, "SOP section quoted with its markup")
+    monkeypatch.setattr(hub, "model", FakeModel("@@ delete section: ## Records"))
+    hub.send("carol", "carol", "Comment", "@quality-assistant please delete the Records section", record=other["locator"])
+    assert [r["ok"] for r in _reply_report(hub, other)] == [True]
+    t = text_of(hub.dms.content(other["locator"])[0], "docx")
+    assert "Records" not in t and "Audit report" not in t and "Scope" in t, t
+
+
+def test_quoted_markup_is_left_alone_where_the_document_holds_it_or_the_meaning_is_not_certain():
+    md = "## Scope\nSee QA.\n| Record | Owner |\n|---|---|\n| Audit report | QA |\n"
+    assert edits.unmark_ops(ops("@@ insert after: ## Scope\nx"), md)[0]["after"] == "## Scope", "a Markdown file holds its '#' lines"
+    docx = "Scope\nSee QA.\nRecord\nOwner\nAudit report\nQA"
+    row = ops("@@ replace: | Audit report | QA |\n@@ with: | Audit report | Quality |")
+    assert edits.unmark_ops(row, docx) == row, "'QA' occurs twice: a replace of it would change both"
+    assert edits.unmark_ops(ops("@@ delete: **See** QA."), docx) == [{"op": "delete", "target": "See QA."}]
+
+
+def test_a_table_row_quoted_with_its_pipes_is_the_row_deleted():
+    ext = "docx"
+    content = make(ext)
+    quoted = edits.unmark_ops(ops("@@ delete: | Audit report | QA |"), edits.applied_text(content, ext))
+    assert quoted == [{"op": "delete_paragraph", "target": "Audit report QA"}]
+    new, report = edits.apply_ops(content, ext, quoted)
+    assert report[0]["ok"] and report[0]["detail"].startswith("deleted the table row"), report
+    lines = text_of(new, ext).splitlines()
+    assert "Audit report" not in lines and "QA" not in lines and "Record" in lines and "Owner" in lines, lines

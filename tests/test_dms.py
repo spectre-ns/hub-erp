@@ -157,6 +157,27 @@ def test_an_sop_reads_the_same_for_the_reviewing_cog_and_the_compile(released):
     assert line in item_text(ctx, rec, 10 ** 6), "the reviewing cog reads the compile's lines"
 
 
+def test_a_version_saved_while_an_sop_is_read_is_not_cached_as_the_one_before(d, monkeypatch):
+    """The reading cached under a version's hash is that version's: a save landing while an SOP is being read (the
+    editor, a cog's edit) does not put the new words under the old hash (review of #36, finding 2)."""
+    from hubproto import sopdocs
+
+    doc = working(d, content=b"## Scope\nThe first words.\n", title="SOP read during a save")
+    d.kernel.set_fields(doc["locator"], {"lineage": sopdocs.LINEAGE + "race-sop", "frame_header": "---\nname: race-sop\n---"}, by="alice")
+    original, saved = sopdocs.frame_text, []
+
+    def save_meanwhile(hub, rec, version=None, pictures=True):
+        if not saved:
+            saved.append(d.add_version(doc["locator"], b"## Scope\nThe second words.\n", by="alice", filename="draft.txt"))
+        return original(hub, rec, version, pictures)
+
+    monkeypatch.setattr(sopdocs, "frame_text", save_meanwhile)
+    assert "The first words." in d.text_of(doc["locator"]), "read as the version the record named when the read began"
+    monkeypatch.setattr(sopdocs, "frame_text", original)
+    assert "The first words." in d.text_of(doc["locator"], 1), "version 1 is cached as version 1's words"
+    assert "The second words." in d.text_of(doc["locator"]) and "The second words." in d.text_of(doc["locator"], 2)
+
+
 def test_no_writer_puts_a_copy_of_a_documents_words_on_its_record(released):
     """Review of #36: applying a cog's replies and filing a review put a text field on the document again. Neither does;
     a text field an older document carries is never passed on (a cog step's payload, list views); and the classifier

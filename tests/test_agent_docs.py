@@ -134,3 +134,30 @@ def test_the_cog_is_told_about_these_tools(hub):
     text = cog_context(ctx, None)
     for name in ("create_document", "apply_document_ops", "document_versions", "read_procedure", "search_procedures"):
         assert f"- {name}: " in text, name
+
+
+def test_an_agent_quoting_an_sop_draft_as_read_document_shows_it_changes_what_it_meant(hub):
+    """read_document shows an SOP as the compile reads it ('## Scope', '| Audit report | QA |', its header); the
+    operations the agent writes from those lines find the heading, the section and the row's cell (review of #36)."""
+    from test_edits import LINES, SOP_QUOTES
+    from hubproto import sopdocs
+
+    t = tools(hub)
+
+    def sop_draft(title):  # an SOP's lineage and Frame header, as a draft on a change order has; in a folder the cog edits
+        made = t.execute("create_document", {"title": title, "folder": "Policy", "text": "\n".join(LINES)})
+        loc = f"rec:document:{made['document']}"
+        hub.kernel.set_fields(loc, {"lineage": sopdocs.LINEAGE + "supplier-audit", "frame_header": "---\nname: supplier-audit\nversion: 1\n---"},
+                              by="carol")
+        return hub.kernel.get(loc)
+
+    rec = sop_draft("Agent SOP draft")
+    read = t.execute("read_document", {"number": rec["number"]})
+    assert "## Scope" in read["text"] and "| Audit report | QA |" in read["text"] and "not in the file" in read["note"]
+    out = t.execute("apply_document_ops", {"number": rec["number"], "ops": SOP_QUOTES})
+    assert out.get("ok") and all(c["ok"] for c in out["changes"]), out
+    lines = [x for x in text_of(hub, rec["number"]).splitlines() if x.strip()]
+    assert "Purpose" not in lines and lines[lines.index("Scope") + 1] == "Applies to every supplier." and "Quality" in lines, lines
+    gone = sop_draft("Agent SOP draft, Records")
+    out = t.execute("apply_document_ops", {"number": gone["number"], "ops": "@@ delete section: ## Records"})
+    assert out.get("ok") and "Records" not in text_of(hub, gone["number"]), out

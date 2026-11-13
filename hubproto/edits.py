@@ -243,6 +243,79 @@ def plain_line(line: str) -> str:
     return t.replace("**", "").replace("*", "").strip()
 
 
+_HEADING = re.compile(r"^(#{1,6})\s+\S")
+_LINE_MARK = re.compile(r"^(#{1,6}\s|\|.*\|$|[-*•]\s|\d+[.)]\s)")
+
+
+def _is_row(t: str) -> bool:
+    t = t.strip()
+    return len(t) > 1 and t.startswith("|") and t.endswith("|")
+
+
+def _cells(t: str) -> list[str]:
+    return [c.strip() for c in t.strip().strip("|").split("|")]
+
+
+def unmark_ops(ops: list[dict], text: str) -> list[dict]:
+    """Operations whose targets quote the markup a document was read with ('## Scope', '| Audit report | QA |', '- item':
+    an SOP read as the compile reads it) made to find what they mean in ``text``, the document's paragraphs as the
+    operations match them (``applied_text``: a heading or a table cell as its words). A target ``text`` holds as written
+    is left alone (a Markdown file holds its own '#' lines), and so is one whose meaning is not certain:
+    - a heading, list item or paragraph to find (insert after/before, a section, a paragraph or section operation): its words;
+    - '@@ delete:' of a heading, table row or list item: that paragraph, row or item (``delete_paragraph``);
+    - '@@ replace:' of a heading: that heading's paragraph, still a heading of its level;
+    - '@@ replace:' of a table row with a row: each cell that changed, when its old words occur once in the document
+      (a replace changes every occurrence), else the operation stays as written and fails visibly;
+    - any other replace: its words for its words."""
+    have = squash(text)
+
+    def marked(v) -> bool:
+        if not isinstance(v, str) or not v.strip():
+            return False
+        p = plain_line(v)
+        return bool(p) and squash(p) != squash(v) and squash(v) not in have
+
+    out: list[dict] = []
+    for op in ops:
+        op = dict(op)
+        for key in ("after", "before", "section_end", "section"):
+            if marked(op.get(key)):
+                op[key] = plain_line(op[key])
+        o, target = op["op"], op.get("target")
+        if not marked(target):
+            out.append(op)
+            continue
+        words = plain_line(target)
+        if o in ("replace_paragraph", "delete_paragraph", "replace_section", "delete_section"):
+            out.append({**op, "target": words})
+        elif o == "delete":  # a quoted heading, row or list item is that paragraph; '**shall**' is the word
+            out.append({"op": "delete_paragraph", "target": words} if _LINE_MARK.match(target.strip()) else {**op, "target": words})
+        elif o == "replace" and op.get("with") is not None:
+            new = op["with"]
+            head = _HEADING.match(target.strip())
+            if head:
+                if not plain_line(new):
+                    out.append({"op": "delete_paragraph", "target": words})
+                else:
+                    line = new.strip() if _HEADING.match(new.strip()) else f"{head.group(1)} {plain_line(new)}"
+                    out.append({"op": "replace_paragraph", "target": words, "lines": [line]})
+            elif _is_row(target):
+                old_cells = _cells(target)
+                new_cells = _cells(new) if _is_row(new) else []
+                pairs = [(a, b) for a, b in zip(old_cells, new_cells) if squash(a) != squash(b)]
+                if (len(new_cells) == len(old_cells) and pairs
+                        and all(a.strip() and have.count(squash(a)) == 1 for a, _ in pairs)):
+                    out += [{"op": "replace", "target": a, "with": b, **({"section": op["section"]} if op.get("section") else {})}
+                            for a, b in pairs]
+                else:
+                    out.append(op)
+            else:
+                out.append({**op, "target": words, "with": plain_line(new) if new.strip() else new})
+        else:
+            out.append(op)
+    return out
+
+
 def _find(full: str, target: str, start: int = 0) -> tuple[int, int] | None:
     """Exact first, then case/quote-folded (both keep offsets)."""
     if not target:
@@ -462,7 +535,9 @@ class TextDoc:
         want = squash(target)
         lo, hi = self.content_range()
         for i in range(lo, hi):
-            if self.blocks[i].kind in ("tbl", "list", "other") and want and want in squash(self.blocks[i].text):
+            t = self.blocks[i].text
+            # A table row's text is its cells: "Audit report QA" (its words) or "Audit report | QA".
+            if self.blocks[i].kind in ("tbl", "list", "other") and want and (want in squash(t) or want in squash(t.replace(" | ", " "))):
                 return i
         return None
 
@@ -477,8 +552,14 @@ class TextDoc:
         inner = b.raw[open_end:close_start]
         want = squash(target)
         spans = [(a, e) for a, e, name in _top_spans(inner) if name == child]
-        texts = [(a, e, squash(_docx_text(inner[a:e]) if self.ext == "docx" else _odt_text(inner[a:e]))) for a, e in spans]
-        hit = next((x for x in texts if x[2] == want), None) or next((x for x in texts if want in x[2]), None)
+        cell = r"<w:tc\b.*?</w:tc>" if self.ext == "docx" else r"<table:table-cell\b.*?</table:table-cell>"
+        read = _docx_text if self.ext == "docx" else _odt_text
+
+        def words(raw: str) -> list[str]:  # the row's text run together, and its cells' words a space apart
+            cells = re.findall(cell, raw, re.S) if b.kind == "tbl" else []
+            return [squash(read(raw))] + ([squash(" ".join(read(c) for c in cells))] if cells else [])
+        texts = [(a, e, words(inner[a:e])) for a, e in spans]
+        hit = next((x for x in texts if want in x[2]), None) or next((x for x in texts if any(want in t for t in x[2])), None)
         if hit is None:
             return None
         a, e, _ = hit

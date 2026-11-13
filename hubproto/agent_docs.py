@@ -88,6 +88,8 @@ def apply_document_ops(tools, a: dict) -> dict:
                 "unknown": [o.get("text") for o in unknown]}
     content, latest = hub.dms.content(rec["locator"])
     ext = _ext(rec, latest)
+    if not edits.is_sheet(ext):  # a target quoted as read_document shows an SOP ('## Scope', '| Audit report | QA |') finds its words
+        ops = edits.unmark_ops(ops, edits.applied_text(content, ext))
     new, report = edits.apply_ops(content, ext, ops)
     report += [{"op": edits.describe(o), "ok": False, "detail": "not an operation I know"} for o in unknown]
     if new is None:

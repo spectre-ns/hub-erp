@@ -277,6 +277,12 @@ class RecordTools:
         cap = max(500, min(int(max_chars or 6000), 20000))
         out = {"number": rec["number"], "title": rec["fields"].get("title"), "version": v.get("version"), "filename": v.get("filename"),
                "text": text[:cap], "truncated": len(text) > cap}
+        from .sopdocs import LINEAGE
+
+        if str(rec["fields"].get("lineage") or "").startswith(LINEAGE):
+            out["note"] = ("This SOP reads as the compile reads it. The lines between the first two '---' lines are its header, kept on the "
+                           "record and not in the file. In the file a heading or a table cell is its words alone: apply_document_ops "
+                           "quotes 'Scope', not '## Scope', and changes a cell with '@@ replace: QA' then '@@ with: Quality'.")
         comments = rec["fields"].get("office_comments") or []
         if comments:
             out["comments"] = [{"id": c.get("id"), "author": c.get("author"), "text": c.get("text"), "reply_to": c.get("parent")} for c in comments[:30]]
