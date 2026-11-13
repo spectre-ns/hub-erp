@@ -108,6 +108,67 @@ def check_co_approved(co: dict, what: str) -> None:
         raise refusal(f"{co['number']} is {co['state'].replace('-', ' ')}: {what} come(s) into force only once it is approved")
 
 
+# ---------------------------------------------------------------- "already done" means what was signed (issue #53)
+def part_digest(obj) -> str:
+    """The digest of one part of what a change order carries (its link-vocabulary and retention changes, its record-type,
+    form or workflow changes), taken as ``hubproto.changecontrol.content_digest`` takes it, so that it compares with
+    the digest its signature keeps (``signed.frozen``). A release step records it on what it brings into force."""
+    from .rules import sha256_of
+
+    return sha256_of(obj)[:16]
+
+
+def check_in_force_as_signed(co: dict, key: str, carried, entry: dict, what: str, same_content: bool) -> None:
+    """A release step found ``what`` (e.g. "link vocabulary v2") already in force with this change order, from a
+    release that stopped part-way. It counts as done only when it was made from what is signed: the digest recorded on
+    it (``signed_digest``) is the digest of what the change order carries now (``carried``) and of what its signature
+    covers (``signed.frozen[key]``). Something brought into force before that digest was recorded is compared by its
+    content instead (``same_content``). Anything else is refused with a sentence, and never marked done."""
+    now = part_digest(carried)
+    signed = ((co["fields"].get("signed") or {}).get("frozen") or {}).get(key)
+    recorded = entry.get("signed_digest")
+    ok = (recorded == now and signed in (None, recorded)) if recorded is not None else (same_content and signed in (None, now))
+    if not ok:
+        raise ValueError(not_as_signed(co, what))
+
+
+def not_as_signed(co: dict, what: str) -> str:
+    """The refusal of a release step that finds ``what`` in force with this change order, made from other changes than
+    the ones signed."""
+    return (f"{what} is in force with {co['number']}, but it was made from other changes than the ones signed: it does not count as done, "
+            "and nothing more of this step comes into force. Put what should change on a new change order")
+
+
+def released_with_co(co: dict, entries) -> dict | None:
+    """The latest of ``entries`` (versions of one thing: its history, then what is in force) this change order brought
+    into force, or None. A later change order may have released another version since: what this one did is found in
+    the history all the same."""
+    return next((e for e in reversed([e for e in entries if e]) if e.get("released_with") == co["number"]), None)
+
+
+def now_in_force(what: str, entry: dict | None) -> str:
+    """``what`` as it is in force now, for a sentence: "the capa form (v2 now, released with CO-2026-0002)"."""
+    entry = entry or {}
+    by = entry.get("released_with")
+    return f"{what} (v{int(entry.get('version') or 0)} now" + (f", released with {by})" if by else ")")
+
+
+def later_change_refusal(co: dict, changed: list[str]) -> str:
+    """The refusal of a release step whose changes were carried against a version no longer in force: another change
+    order released one since. Bringing them in now would undo that change, which this signature never covered."""
+    n = co["number"]
+    return (f"{n}'s release cannot finish: {'; '.join(changed)} changed after {n} carried its changes, and bringing them into force now "
+            "would undo that. Put the rest of the change on a new change order")
+
+
+def signed_frame_digest(co: dict) -> str:
+    """The digest of what the change order's signature covers (``signed.frozen`` without when and by whom it was sent):
+    recorded when its policy release comes into force (``released_signed``), so that a release that later finds that
+    policy release in force with it can tell whether it was made from what is signed now."""
+    frozen = (co["fields"].get("signed") or {}).get("frozen") or {}
+    return part_digest({k: v for k, v in frozen.items() if k not in ("at", "by")})
+
+
 def frame_draft_refusal(name: str, doc: dict | None) -> ChangeOrderRequired:
     src = doc["number"] if doc else "its SOP document"
     return refusal(f"The {name} Frame is compiled from {src}: revise that document on a change order")

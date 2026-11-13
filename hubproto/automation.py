@@ -419,7 +419,10 @@ def r_frame(hub, job, memo):
 
     co = hub.kernel.get(job["subject"])
     applied = changecontrol.apply_delta(hub, job["subject"])
-    meta = eco.activate_frame(hub, job["subject"])
+    try:
+        meta = eco.activate_frame(hub, job["subject"])
+    except ValueError as e:  # its policy release is in force, made from other content than the one signed (issue #53)
+        raise StepError(str(e)) from None
     if not co["fields"].get("staged_proposal") and not eco.carried(hub, co) and not eco.retirements(co):
         return f"no Frame change: release {meta['digest'][:12]} stays in force", {"release": meta["digest"]}
     rec = changecontrol.record_release(hub, job["subject"], meta["digest"])
@@ -452,7 +455,10 @@ def r_state_maps(hub, job, memo):
 def r_publish(hub, job, memo):
     from . import eco
 
-    done = eco.publish_revisions(hub, job["subject"], memo["release"])
+    try:
+        done = eco.publish_revisions(hub, job["subject"], memo["release"])
+    except ValueError as e:
+        raise StepError(str(e)) from None
     return ("published " + ", ".join(done)) if done else "no revision to publish", {"published": done}
 
 
@@ -461,8 +467,11 @@ def r_forms(hub, job, memo):
 
     from . import workflows
 
-    done = formlayout.activate(hub, hub.kernel.get(job["subject"]), memo["release"])
-    done += workflows.activate(hub, hub.kernel.get(job["subject"]), memo["release"])  # workflow layouts, like form layouts
+    try:
+        done = formlayout.activate(hub, hub.kernel.get(job["subject"]), memo["release"])
+        done += workflows.activate(hub, hub.kernel.get(job["subject"]), memo["release"])  # workflow layouts, like form layouts
+    except ValueError as e:
+        raise StepError(str(e)) from None
     return ("in force: " + ", ".join(done)) if done else "no form change", {}
 
 
@@ -513,7 +522,9 @@ def r_related(hub, job, memo):
     parts = [f"{x['number']} ({'by definition' if x['kind'] == 'definition' else 'by meaning'})" for x in found["cos"]]
     parts += [f"{x['number']} flagged ({x['cog']})" for x in found["crs"]]
     errors = found.get("errors") or []
-    return ((("sent back: " + ", ".join(parts)) if parts else "no related change")
+    kept = found.get("kept") or []
+    return ((("sent back: " + ", ".join(parts)) if parts else "no related change" if not kept else "none sent back")
+            + (f"; not sent back: {'; '.join(kept)}" if kept else "")
             + (f"; could not look for related changes by meaning: {'; '.join(errors)}" if errors else "")), {}
 
 
@@ -542,8 +553,18 @@ def r_restage(hub, job, memo):
     from . import changecontrol
 
     others = changecontrol.open_change_orders(hub, exclude=job["subject"])
-    started, problems = [], []
+    started, problems, kept = [], [], []
     for r in others:
+        held = changecontrol.in_force_from(hub, r) if r["state"] == "approved" else []
+        if held:  # signed, and part of it in force: not sent back nor compiled again; its release is retried (issue #53)
+            why = changecontrol.in_force_refusal(hub, r, held)
+            kept.append(why)
+            who = changecontrol.requester(r)
+            if who and r["fields"].get("kept_told") != why:  # told once for each situation, not again on every release
+                hub.inbox.notify(who, kind="automation", subject=f"{r['number']} stays approved: part of it is in force",
+                                 body=f"{job['subject_number']} was released after {r['number']} was signed. {why}.", record=r["locator"])
+                hub.kernel.set_fields(r["locator"], {"kept_told": why}, by="hub")
+            continue
         try:
             if r["state"] == "approved":  # signed against the release before: it cannot come into force as signed
                 r = changecontrol._back_to_revising(hub, r, f"{job['subject_number']} was released before it: it is compiled again against "
@@ -552,8 +573,8 @@ def r_restage(hub, job, memo):
             started.append(f"{r['number']} ({j['status']})")
         except Exception as e:  # one change order that cannot be restaged does not stop the others, nor the release
             problems.append(f"{r['number']}: {e}")
-    return ((f"compiling again: {', '.join(started)}" if started else "no other open change order")
-            + (f"; not restaged: {'; '.join(problems)}" if problems else "")), {}
+    return ((f"compiling again: {', '.join(started)}" if started else "no other open change order" if not kept else "none compiled again")
+            + (f"; not restaged: {'; '.join(problems + kept)}" if problems or kept else "")), {}
 
 
 def r_tell(hub, job, memo):

@@ -477,28 +477,64 @@ def delta_items(hub, co: dict) -> list[dict]:
     return out
 
 
+def _mine(hub, co: dict, process: str) -> dict | None:
+    """The version of the process's layout this change order brought into force (in force now, or in its history)."""
+    from .closure import released_with_co
+
+    s = store(hub)
+    return released_with_co(co, [*s.history(process), s.layouts().get(process)])
+
+
+def later_changes(hub, co: dict) -> list[str]:
+    """The workflow layouts this change order carries and has not brought into force whose version in force is no longer
+    the one it carried them against (another change order released one since), in words."""
+    from .closure import now_in_force
+
+    out = []
+    for process, c in sorted(changes_of(co).items()):
+        now = layout_entry(hub, process) or {}
+        if _mine(hub, co, process) is None and int(now.get("version") or 0) != int((c.get("base") or {}).get("layout_version") or 0):
+            out.append(now_in_force(f"the {process} workflow layout", now))
+    return out
+
+
 def activate(hub, co: dict, digest: str) -> list[str]:
     """The release step (with the form layouts): each carried layout comes into force as the next version of that
-    process's layout. Safe to repeat; refuses a change order that is not approved (hubproto.closure). The graph itself
-    comes into force with the release (its direct change, compiled from the SOP); this says whether the release now
-    has the graph that was carried. Returns what it did."""
+    process's layout. Safe to repeat: a layout this change order already brought into force (found in the history, as a
+    later change order may have released another version since) counts as done only when it was made from what is
+    signed (``closure.check_in_force_as_signed``); a layout carried against a version no longer in force is refused, as
+    it would undo the later one. Refuses a change order that is not approved (hubproto.closure). The graph itself comes
+    into force with the release (its direct change, compiled from the SOP); this says whether the release now has the
+    graph that was carried. Returns what it did."""
     carried = changes_of(co)
     if not carried:
         return []
-    s = store(hub)
-    if any((s.layouts().get(p) or {}).get("released_with") != co["number"] for p in carried):
-        from .closure import check_co_approved
+    from .closure import check_co_approved, check_in_force_as_signed, later_change_refusal, part_digest
+    from .rules import sha256_of
 
+    s = store(hub)
+    mine = {process: _mine(hub, co, process) for process in carried}
+    if any(e is None for e in mine.values()):
         check_co_approved(co, "its workflow changes")
+    signed_part = co["fields"].get("workflow_changes") or {}
+    for process, c in sorted(carried.items()):  # a layout already in force with it counts only when made from what is signed (#53)
+        if mine[process] is not None:
+            check_in_force_as_signed(co, "workflows", signed_part, mine[process], f"the {process} workflow layout v{mine[process]['version']}",
+                                     same_content=sha256_of(mine[process].get("layout")) == sha256_of(c.get("layout")))
+    stale = later_changes(hub, co)
+    if stale:
+        raise ValueError(later_change_refusal(co, stale))
     done = []
     _, bundle = bundle_in_force(hub)
     for process, c in sorted(carried.items()):
         now = s.layouts().get(process) or {}
-        if now.get("released_with") == co["number"]:
-            done.append(f"{process} layout v{now['version']}")
+        if mine[process] is not None:
+            later = (f" (released with {co['number']}; v{now.get('version')} is in force now, released with {now.get('released_with')})"
+                     if now != mine[process] else "")
+            done.append(f"{process} layout v{mine[process]['version']}{later}")
             continue
         entry = {"version": int(now.get("version") or 0) + 1, "layout": c["layout"], "released_with": co["number"], "release": digest,
-                 "by": c.get("by"), "at": utcnow(), "changes": [i["text"] for i in c.get("delta") or []]}
+                 "by": c.get("by"), "at": utcnow(), "changes": [i["text"] for i in c.get("delta") or []], "signed_digest": part_digest(signed_part)}
         s.set_layout(process, entry)
         done.append(f"{process} layout v{entry['version']}")
         if not c.get("layout_only"):

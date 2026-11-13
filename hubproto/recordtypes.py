@@ -781,10 +781,36 @@ def delta_items(hub, co: dict) -> list[dict]:
     return out
 
 
+def _mine(hub, co: dict) -> dict | None:
+    """The record-type version this change order brought into force (in force now, or in the history)."""
+    from .closure import released_with_co
+
+    s = store(hub)
+    return released_with_co(co, [*s.history(), s.active()])
+
+
+def later_changes(hub, co: dict) -> list[str]:
+    """[the record types in force, in words] when this change order's record-type changes, not yet in force, no longer
+    check against the record types in force because another change order released a version since they were carried
+    (both add the same field, say). Record-type changes are operations checked again at release, so a later version
+    alone stops nothing: only a real clash does."""
+    from .closure import now_in_force
+
+    changes = changes_of(co)
+    if not changes or _mine(hub, co) is not None:
+        return []
+    now = in_force(hub)
+    if all(c.get("base_version") == now["version"] for c in changes):
+        return []
+    _, errors, _ = check(hub, changes, now["types"], retention=_retention(hub, co))
+    return [now_in_force("the record types", now)] if errors else []
+
+
 def activate(hub, co: dict, digest: str) -> list[str]:
     """The release step (workstream 1's release automation calls it, after the Frame and the form layouts): the record
     types the approved change order carries come into force, as the next version of the record types in force. Safe to
-    repeat (a change order already in force returns what it did). Refuses a change order that is not approved, and
+    repeat (a change order already in force returns what it did, when what is in force was made from the changes signed:
+    ``closure.check_in_force_as_signed``). Refuses a change order that is not approved, and
     changes that no longer check against the record types in force (nothing changes then). Returns what it did."""
     from . import closure
 
@@ -792,14 +818,20 @@ def activate(hub, co: dict, digest: str) -> list[str]:
     if not changes:
         return []
     s = store(hub)
-    done = [e for e in s.history() if e.get("released_with") == co["number"]]
-    if done:
-        return [f"record types v{done[-1]['version']} (already in force with {co['number']})"]
+    done = _mine(hub, co)
+    if done:  # already in force with this change order: only when made from what is signed (issue #53)
+        summaries = [c.get("summary") or describe(c) for c in changes]
+        closure.check_in_force_as_signed(co, "record_types", co["fields"].get("record_type_changes") or [], done,
+                                         f"record types v{done['version']}", same_content=list(done.get("changes") or []) == summaries)
+        return [f"record types v{done['version']} (already in force with {co['number']})"]
     closure.check_co_approved(co, "its record-type changes")
     base = ensure(hub)
     types, errors, _ = check(hub, changes, base["types"], retention=_retention(hub, co))
     if errors:
-        raise ValueError(f"{co['number']}'s record-type changes cannot come into force: " + "; ".join(errors))
+        later = "; ".join(later_changes(hub, co))  # a clash with a change order released since: name it, and say what to do
+        raise ValueError(f"{co['number']}'s record-type changes cannot come into force: " + "; ".join(errors)
+                         + (f". {later[:1].upper() + later[1:]} changed after {co['number']} carried them: put the rest of the change on a new "
+                            "change order" if later else ""))
     now_sha = file_sha(hub)
     # The file is adopted (no longer drift) only when what it says is then wholly in force: a difference a change order
     # cannot carry keeps it reported (status --check), never hidden.
@@ -810,7 +842,8 @@ def activate(hub, co: dict, digest: str) -> list[str]:
     entry = {"version": int(base["version"]) + 1, "types": types, "digest": sha256_of(types),
              "file_sha": adopted or base.get("file_sha"), "source": f"released with {co['number']}", "release": digest,
              "released_with": co["number"], "by": f"change-order:{co['number']}", "at": utcnow(),
-             "changes": [c.get("summary") or describe(c) for c in changes]}
+             "changes": [c.get("summary") or describe(c) for c in changes],
+             "signed_digest": closure.part_digest(co["fields"].get("record_type_changes") or [])}
     s.set_active(entry)
     install(hub)
     return [f"record types v{entry['version']}: " + "; ".join(entry["changes"])]
