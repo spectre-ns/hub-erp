@@ -594,8 +594,8 @@ class TextDoc:
         lo, hi = self.content_range()
         cands = [i for i in range(lo, hi) if self.blocks[i].kind in kinds]
         tests = [lambda t: t == want]
-        if exact:
-            tests.append(lambda t: t.rstrip(".:;!?") == want.rstrip(".:;!?"))
+        if exact:  # the words alone: a list item's '- ', '• ' or '1. ' is not its words, nor is a closing full stop
+            tests.append(lambda t: squash(plain_line(t)).rstrip(".:;!?") == squash(plain_line(want)).rstrip(".:;!?"))
         else:
             tests += [lambda t: t.startswith(want), lambda t: want in t]
         for test in tests:

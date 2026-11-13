@@ -538,6 +538,33 @@ def test_swapping_two_cells_of_a_quoted_row_is_not_rewritten_into_replaces_that_
 
 
 @pytest.mark.parametrize("ext", ["docx", "odt", "md"])
+def test_a_quoted_list_item_deletes_the_item(ext):
+    """Review of #36: an exact match compared a list item's text with its mark ('- ', '• ', '1. '), so a quoted item,
+    with or without its full stop, was never found."""
+    content = make(ext, LINES + ["- Keep reports for review.", "1. Check the list"])
+    reading = edits.applied_text(content, ext)
+    for quoted, gone in (("- Keep reports for review", "Keep reports for review"), ("1. Check the list", "Check the list")):
+        q = edits.unmark_ops(ops(f"@@ delete: {quoted}"), reading)
+        new, report = edits.apply_ops(content, ext, q)
+        assert report[0]["ok"], (quoted, q, report)
+        after = text_of(new, ext)
+        assert gone not in after and "Audit suppliers yearly." in after and "Keep records for 3 years." in after, after
+
+
+def test_a_quoted_item_in_an_sop_drafts_bullet_list_is_deleted():
+    """The same through a real SOP draft: a bullet list as sopdocs writes it into a .docx."""
+    from hubproto import sopdocs
+    frame = "---\nname: t-sop\n---\n# T SOP\n\n## Records\n- Audit suppliers yearly.\n- Keep reports.\n"
+    content = sopdocs.to_docx(frame)
+    reading = edits.applied_text(content, "docx")
+    q = edits.unmark_ops(ops("@@ delete: - Audit suppliers yearly"), reading)
+    new, report = edits.apply_ops(content, "docx", q)
+    assert report[0]["ok"], (q, report)
+    after = text_of(new, "docx")
+    assert "Audit suppliers yearly" not in after and "Keep reports." in after, after
+
+
+@pytest.mark.parametrize("ext", ["docx", "odt", "md"])
 def test_a_quoted_heading_or_item_deletes_only_the_paragraph_that_is_exactly_its_words(ext):
     """Reviews of #36: '- suppliers yearly' deleted the paragraph 'Audit suppliers yearly.'; '## Record' deleted the
     heading 'Records', or every 'Record' in the document, or (beside a 'Record' table cell) still the heading. A quoted
