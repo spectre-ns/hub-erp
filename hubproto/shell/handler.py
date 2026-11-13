@@ -624,6 +624,12 @@ class BaseHandler(BaseHTTPRequestHandler):
     def _can_read(self, folder: str) -> dict:
         return authz.check(self._need_release(), self.user, "read", "*", folder)
 
+    def _can_comment(self, rec: dict) -> dict:
+        """May the user comment on (post in the chatter of) this item? Whoever may read it may, unless a sentence about
+        commenting there says otherwise (``authz.check``)."""
+        td = self.hub.kernel.types.get(rec.get("type")) or {}
+        return authz.check(self._need_release(), self.user, "comment", td.get("object") or rec.get("type") or "*", rec["folder"])
+
     def _require_read(self, folder: str) -> dict:
         d = self._can_read(folder)
         if not d["allowed"]:

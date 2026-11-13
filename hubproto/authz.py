@@ -13,6 +13,14 @@ permission (or its step) lets it, proposes where an SOP says a person confirms
 ("The stores cog may move stock items in Inventory/Stock when a storekeeper
 confirms."), and otherwise only reads. A proposing permission is never an
 allow for ``check``: it is the cog's own rail, applied by the agent harness.
+
+Whoever may read a record may comment on it (issue #89): ``comment`` is allowed
+wherever ``read`` is, for people and cogs alike, unless a sentence about
+commenting reaches the member there: a deny ("X may not comment on ...")
+refuses, and a "when a person confirms" sentence makes a cog propose (and is no
+allow for ``check``). Such a sentence binds cogs only: for a person, even one
+holding the role it names, reading still decides. Such a decision says so
+(``implied``) and cites the read sentence it comes from.
 """
 
 from __future__ import annotations
@@ -84,7 +92,8 @@ def check(bundle: dict, principal: str, action: str, obj: str, folder: str) -> d
     roles = roles_of(bundle, principal)
     if not roles:
         return {"allowed": False, "rule": None, "why": f"{principal} is not a member of the organization"}
-    applicable = [r for r in _applicable(bundle, principal, roles, action, obj, folder) if r.get("effect") != "propose"]
+    rules = _applicable(bundle, principal, roles, action, obj, folder)
+    applicable = [r for r in rules if r.get("effect") != "propose"]
     denies = [r for r in applicable if r["effect"] == "deny"]
     allows = [r for r in applicable if r["effect"] == "allow"]
     if denies:
@@ -93,9 +102,47 @@ def check(bundle: dict, principal: str, action: str, obj: str, folder: str) -> d
     if allows:
         r = allows[0]
         return {"allowed": True, "rule": r, "why": f"allowed by {r['source']['frame']} line {r['source']['line']} ({r['source'].get('path') or r['source']['frame']}): {r['source']['text']}{through(r)}"}
+    # "When a person confirms" binds cogs only: for a person it is no sentence about commenting at all.
+    binding = rules if (member(bundle, principal) or {}).get("type") == "cog" else applicable
+    if action == "comment" and not binding:  # no sentence about commenting reaches it here: reading decides
+        implied = _implied_comment(bundle, principal, obj, folder)
+        if implied:
+            return implied
     groups = sorted(groups_of(bundle, principal))
     return {"allowed": False, "rule": None,
             "why": f"no rule in the release lets any of {sorted(roles)}" + (f" (or the groups {groups})" if groups else "") + f" {action} {obj} in {folder}"}
+
+
+IMPLIED = "whoever may read a record may comment on it"
+
+
+def _implied_comment(bundle: dict, principal: str, obj: str, folder: str) -> dict | None:
+    """The allow to comment that reading gives, citing the read sentence; None where the member may not read.
+    ``folder`` is already the folder whose rules apply."""
+    read = check(bundle, principal, "read", obj, folder)
+    if not read["allowed"]:
+        return None
+    return {"allowed": True, "rule": read["rule"], "implied": "read",
+            "why": f"allowed because {principal_name(principal)} {implied_why(read['rule'])}"}
+
+
+def implied_why(rule: dict) -> str:
+    """Where an implied right to comment comes from, in words: 'may read Tasks (tasks-sop line 28: "The cogs group may
+    read Tasks.", through the cogs group): whoever may read a record may comment on it'."""
+    s = rule.get("source") or {}
+    via = through(rule).strip()[1:-1]  # " (through the x group)" -> "through the x group"
+    return (f"may read {str(rule.get('resource') or '').partition(':')[2]} ({s.get('frame')} line {s.get('line')}: "
+            f"“{s.get('text')}”{', ' + via if via else ''}): {IMPLIED}")
+
+
+def implied_comments(bundle: dict, principal: str) -> list[dict]:
+    """The rights to comment a member has by reading: one per read sentence that reaches it, shaped like a
+    ``permissions_of`` entry with ``implied_by`` (the read rule). Where a sentence about commenting in the same folder
+    reaches it (an allow, a deny or a "when a person confirms"), that sentence is listed and decides, so none is added."""
+    mine = permissions_of(bundle, principal)
+    said = {r.get("resource") for r in mine if r.get("action") == "comment"}
+    return [{**r, "action": "comment", "implied_by": r} for r in mine
+            if r.get("action") == "read" and r.get("effect") == "allow" and r.get("resource") not in said]
 
 
 def _subject_applies(rule: dict, principal: str, roles: set[str], groups: set[str] | None = None, bundle: dict | None = None) -> bool:
@@ -156,6 +203,8 @@ def autonomy(bundle: dict, principal: str, action: str, obj: str, folder: str, *
     allows = [r for r in rules if r["effect"] == "allow"]
     if allows:
         return {"mode": "act", "rule": allows[0], "confirmer": None, "why": "allowed by " + _cite(allows[0]) + through(allows[0])}
+    if action == "comment" and (implied := _implied_comment(bundle, principal, obj, folder)):
+        return {"mode": "act", "rule": implied["rule"], "confirmer": None, "implied": "read", "why": implied["why"]}
     if also_allowed:
         return {"mode": "act", "rule": None, "confirmer": None, "why": also_allowed}
     what = "anything" if obj == "*" else obj.replace("-", " ")

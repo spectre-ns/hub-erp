@@ -354,6 +354,12 @@ class AgentTools(RecordTools):
             or next((x for x in found if x["mode"] == "act"), None)
         if d is None:
             d = authz.autonomy(self.bundle, self.cog, intent["action"], intent["object"], intent["folder"], also_allowed=also)
+        if intent["action"] == "comment" and self.for_whom and d["mode"] != "refuse":
+            # A comment is a write: working for someone, the cog comments only where that person may too (both_may).
+            theirs = authz.check(self.bundle, self.for_whom, "comment", intent["object"], intent["folder"])
+            if not theirs["allowed"]:
+                d = {"mode": "refuse", "rule": theirs.get("rule"), "confirmer": None,
+                     "why": f"{self.for_whom}, for whom you work, may not comment on {intent['object']} in {intent['folder']}: {theirs['why']}"}
         return {**d, "intent": {k: intent[k] for k in ("action", "object", "folder")}}
 
     def execute(self, name: str, args: dict) -> dict:

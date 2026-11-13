@@ -14,8 +14,8 @@ it. Roles, members and folders named anywhere else must be declared here.
 Cogs are members like anyone else: they hold roles, receive routed work and
 messages, and are bound by segregation of duties. What a member may do is
 what the SOPs give their roles, their groups (or them by name); a cog is given
-no role wider than its work needs. A member comments on the items it may read
-where a sentence below or in the SOP that owns them says so.
+no role wider than its work needs. Whoever may read a record may comment on
+it, unless a sentence about commenting there says otherwise.
 
 Groups are named sets of members, people and cogs: listed by name, or
 everyone holding a role (they follow role changes). A group may carry
