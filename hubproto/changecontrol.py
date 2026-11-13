@@ -1981,7 +1981,7 @@ def brief(hub, co_ref, n: int, who: str) -> dict:
         lines.append(f"The compile reports: {e}")
     if any(c.get("op") != "text" and (_effective(c) or {}).get("kind") == "cog" for c in (p or {}).get("changes") or []):
         # A reviewer of a cog-profile change checks the model against what this installation has (the list_models tool's
-        # listing, read by the hub here, as the review asks the model no tools).
+        # listing, read by the hub here, so the brief carries it even for a reviewer that calls no tools).
         from .model import installed_models, installed_models_text
 
         lines.append("This change order changes a cog profile. The models this installation has now (the hub's listing, as the "
@@ -2036,16 +2036,34 @@ def cog_review(hub, co_ref, n: int, cog: str) -> dict:
     prefix = f"R{n}.{cog}."
     prof = (_bundle(hub).get("cogs") or {}).get(cog) or {}
     model, stand_in, text = prof.get("model") or "stand-in", True, ""
+    site, note = None, ""
     if REVIEWER is not None:
         text, stand_in, model = REVIEWER(hub, co, cog, b) or "", False, "test"
     else:
+        from .agent import close_site, site_tools, tool_turn
+
+        # It may look things up, and act where its procedures let it, before it answers; but a reviewer never changes
+        # what it reviews: no write may name the change order, a draft it carries or a document it retires.
+        site = site_tools(hub, cog, trigger="co-review", goal=f"Review round {n} of {co['number']}", about=co["locator"],
+                          protect=tuple(reviewed_refs(hub, co)),
+                          protect_why=f"you are reviewing {co['number']}: a reviewer never changes the change order, what it carries or what it retires")
         try:
-            out = hub.model.complete(model=prof.get("model") or "", system=_review_system(hub, co, cog, prof), user=b["text"] + "\n\n" + REVIEW_FORMAT,
-                                     by=cog, max_tokens=1200)
+            out = tool_turn(hub.model, site, model=prof.get("model") or "", system=_review_system(hub, co, cog, prof, site),
+                            user=b["text"] + "\n\n" + REVIEW_FORMAT, by=cog, max_tokens=1200)
             text, stand_in, model = out.get("text") or "", bool(out.get("stand_in")), out.get("model") or model
         except ModelUnavailable as e:
+            close_site(site)
             result = {"status": "failed", "kind": "cog", "at": utcnow(), "error": f"{cog} could not review: its model is not available ({e})",
                       "findings": [], "questions": [], "suggestions": []}
+            _record_result(hub, co, n, cog, result)
+            return result
+        note = close_site(site, out)
+        co = _co(hub, co["locator"])
+        if cog in contributors(hub, co):
+            # Whatever it did in its tool run made it part of the change order: its review is not counted, and it says so.
+            result = {"status": "failed", "kind": "cog", "at": utcnow(), "excluded": True, "findings": [], "questions": [], "suggestions": [],
+                      "error": f"{cog} became a contributor to {co['number']} during its review (its tool run "
+                               f"/agent-run/{site['run'] if site else ''}), so its review is not counted"}
             _record_result(hub, co, n, cog, result)
             return result
     if stand_in:
@@ -2060,15 +2078,34 @@ def cog_review(hub, co_ref, n: int, cog: str) -> dict:
     else:
         fs, qs, ss = _parse_review(hub, co, text, prefix, ids)
         summary = "\n".join(ln for ln in text.splitlines() if not _LINE.match(ln)).strip()[:2000]
+    if note:
+        summary = (summary + "\n" + note).strip()
     for s in ss:
         s["by"] = cog
     result = {"status": "done", "kind": "cog", "at": utcnow(), "findings": fs, "questions": qs, "suggestions": ss, "summary": summary,
               "model": model, "stand_in": stand_in, "reviewed": _snapshot(_proposal(hub, co)), "since": b["since"]}
+    if site and site["store"].opened:
+        result["tool_run"] = site["run"]
     _record_result(hub, co, n, cog, result)
     return result
 
 
-def _review_system(hub, co: dict, cog: str, prof: dict) -> str:
+def reviewed_refs(hub, co: dict) -> list[str]:
+    """What a reviewer of the change order may not change in its tool run: the change order, the drafts it carries (and
+    the SOP names), and the documents it retires."""
+    out = [co["locator"], co["number"]]
+    for c in eco.carried(hub, co):
+        out += [c["draft"]["locator"], c["draft"]["number"], c["name"] or ""]
+        if c.get("in_force"):
+            f = c["in_force"]
+            out += [f.get("locator") or "", f.get("number") or ""] if isinstance(f, dict) else []
+    for name, r in eco.retirements(co).items():
+        out += [name, (r or {}).get("document") or "", (r or {}).get("locator") or ""]
+    return [x for x in out if x]
+
+
+def _review_system(hub, co: dict, cog: str, prof: dict, site: dict | None = None) -> str:
+    from .agent import site_section
     from .cogs import RunContext, cog_context
 
     meta = hub.releases.current() or {}
@@ -2076,7 +2113,7 @@ def _review_system(hub, co: dict, cog: str, prof: dict) -> str:
         ctx = RunContext(run_id=f"co-review-{co['number']}", release=meta.get("digest") or "", bundle=_bundle(hub), owner=cog, kernel=hub.kernel,
                          runner=hub.runner, inbox=hub.inbox, record=co["locator"], dms=hub.dms, frames=lambda: hub.released_frames(),
                          model=hub.model, extras={"cog_profile": prof, "process": "change-order"})
-        return cog_context(ctx, co, task="review")
+        return cog_context(ctx, co, task="review", tools_now=site["specs"] if site else None, extra=site_section(site))
     except Exception:
         return prof.get("prompt") or f"You are {cog}, a reviewer of configuration changes."
 

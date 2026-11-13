@@ -228,6 +228,25 @@ status closes it. From each move on, a run follows the release in force then
 (it no longer pins its starting release); the Track records each change. Everything is on the
 run's Track (`state/runs/<id>/track.jsonl`) and on the record's events.
 
+### Cog tools at every call site (issue #94)
+
+A cog has its governed tools wherever it answers, not only in agent runs and chats: `mentions.answer` (via
+`cogs.task_answer`, `task_edit_document` and `review.review`, with `ctx.extras["asked_by"]` = the sender, so `both_may`
+applies) and `changecontrol.cog_review`. Each site calls `agent.site_tools(hub, cog, trigger=..., requester=...,
+look_only=..., protect=...)` (an `AgentTools` with the run budget; `None` with no hub, inside a tool run
+(`extras["in_tool_run"]`, set by `AgentTools._ctx`), or for an Ollama model that reports no "tools" capability
+(`model.calls_tools`)), puts `tools_now` and `agent.site_section(site)` in the prompt, asks through
+`agent.tool_turn` (the gateway's `complete_with_tools` with `plain_stand_in=True`, so the stand-in answers as
+`complete()` does; a gateway without `complete_with_tools`, a test fake, gets `complete()`), parses its answer as
+before, then `agent.close_site` writes the run's finished event and returns the hub's note (refusals, proposals).
+The run's Track (`state/agents/<trigger>-<id>.jsonl`) is written only once a tool is called (`_LazyStore`).
+Protection: `AgentTools.protect(refs, why)` refuses any write whose arguments name a protected number, locator or SOP
+name (the reviewed item and its documents; the change order, its drafts, their SOPs and its retirements,
+`changecontrol.reviewed_refs`); after a CO review the hub checks `contributors()` again and records a reviewer that
+became one as excluded. Judgment and lens reviews, and reviews no person asked for, get look tools only. The
+`automation.MODEL_STEPS` steps (`llm_extract`, `prose_drafting._writer`, `changecontrol._panel_by_model`,
+`changecontrol._meaning`) and the mention classifier (`mentions.intent_of`) call `complete()` only: no tools.
+
 ## Sentence grammar (convention mode)
 
 Only inside these sections: `## Roles`, `## Members`, `## Groups`, `## Folders`,
