@@ -224,7 +224,8 @@ def _answer(hub, msg, cog_id, bundle, release, record, sender, actions, intent, 
                            thread=[t for t in thread_ctx if str(t.get("id")) != str(msg.get("comment_id"))], cog_id=cog_id)
     ctx = RunContext(run_id="inbox-" + msg["id"], release=release, bundle=bundle, owner=cog_id, kernel=hub.kernel,
                      runner=hub.runner, inbox=hub.inbox, record=record["locator"] if record else None, dms=hub.dms,
-                     frames=lambda: hub.released_frames(), model=hub.model, extras={"cog_profile": profile, "process": run["process"] if run else ""})
+                     frames=lambda: hub.released_frames(), model=hub.model, extras={"cog_profile": profile, "process": run["process"] if run else "",
+                                                                         "asked_by": sender})  # it works for the person who asked (its tools: both_may)
     if record and intent == "approve":
         # Asked to approve: a cog takes its turn where the Gate is assigned to it, or steps in where its criteria allow
         # and the person asking is one the approval waits for; otherwise it says why not.

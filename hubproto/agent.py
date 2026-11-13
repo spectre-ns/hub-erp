@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import unicodedata
 import uuid
 from pathlib import Path
 
@@ -78,6 +79,20 @@ DRAFT_TOOLS = {"draft_document", "edit_document", "create_document", "apply_docu
 # that went through notes the records it created or changed (the tool event's "records"): completing an item whose
 # process says "Completing the <item> links it to what its work produced." links them (runner._link_produced).
 NOT_PRODUCTS = STEP_TOOLS | WORDS_TOOLS | {"review_document", "assign", "link_records"}
+# Tools that hand work to another member (a task, a cog's queue, an assignment, a process routed to people): in a run
+# that protects what it reviews, none of them is allowed, or a reviewer could have someone else change it for it.
+HAND_OVER_TOOLS = {"create_task", "delegate_to_cog", "assign", "start_process"}
+
+
+def _ref_forms(s: str) -> set[str]:
+    """The spellings a tool's lookup treats as the same reference (tools._find compares upper case; "TAſK-0001" is
+    TASK-0001 there): every comparison with a protected reference goes through the same folding."""
+    s = unicodedata.normalize("NFKC", s).strip()
+    return {s.casefold(), s.upper().casefold(), s.lower()}
+
+
+class _ProtectedWrite(Exception):
+    """A write resolved a record its run protects (``AgentTools.protect``): it is refused, whatever spelling named it."""
 
 # More tools plug in here (hubproto/agent_*.py): register(spec, fn, write=..., intent=...). fn(tools: AgentTools, args) -> dict.
 # A write tool counts against the run's budget and is decided per call from the SOPs (``intent`` says what it would do: an
@@ -263,6 +278,9 @@ class AgentTools(RecordTools):
             # The person confirmed: the cog's "when a person confirms" sentences hold for them, for this run only.
             self.bundle = authz.confirmed_view(self.bundle, cog, confirmed_by, requester=requester)
         self.actions = 0
+        self.read_why = "agent runs are switched off in this hub (HUBPROTO_AGENTS=off): you may only look"
+        self.protected: dict[str, str] = {}  # a number, locator or SOP name (folded, _ref_forms) -> why no write in this run may touch it
+        self._writing = False  # a write is being decided or made: _find refuses a protected record (_ProtectedWrite)
         self.finished_summary: str | None = None
         self.proposed: list[dict] = []
         self.touched: set[str] = set()  # records this run looked at or acted on
@@ -279,6 +297,11 @@ class AgentTools(RecordTools):
     def _find(self, number: str) -> dict | None:
         rec = super()._find(number)
         if rec is not None:
+            if self._writing and self.protected:
+                # The record the tool resolved, not the words that named it: no spelling gets a write to a protected one.
+                why = next((self.protected[f] for ref in (rec["locator"], rec["number"]) for f in _ref_forms(ref) if f in self.protected), "")
+                if why:
+                    raise _ProtectedWrite(why)
             self.touched.add(rec["locator"])
         return rec
 
@@ -339,8 +362,7 @@ class AgentTools(RecordTools):
         from . import authz
 
         if self.mode == "read":
-            return {"mode": "refuse", "confirmer": None, "intent": None,
-                    "why": "agent runs are switched off in this hub (HUBPROTO_AGENTS=off): you may only look"}
+            return {"mode": "refuse", "confirmer": None, "intent": None, "why": self.read_why}
         if name in STEP_TOOLS:
             return {"mode": "act", "confirmer": None, "intent": None, "why": "its own step (the runner and its approval criteria decide)"}
         fn = CORE_INTENTS.get(name) or INTENTS.get(name)
@@ -380,30 +402,26 @@ class AgentTools(RecordTools):
                 res = {"ok": True, "note": "the run is already finished; stop now"}
         elif name == "complete_step" and (why := self.nothing_done(str(args.get("number") or "the step"))):
             res = {"error": why}
+        elif write and self.protected and name in HAND_OVER_TOOLS:
+            why = ("while you review, you may not hand work to anyone (a task, another cog, an assignment, a process): "
+                   "say in your answer who should do what")
+            decision = {"mode": "refuse", "why": why, "intent": None}
+            res = {"error": why}
+        elif write and (why := self.touches_protected(args)):
+            decision = {"mode": "refuse", "why": why, "intent": None}
+            res = {"error": why}
         elif write and self.actions >= self.max_actions and name != "hand_back":  # giving the work back is never out of budget
             res = {"error": f"the run's budget of {self.max_actions} actions is used up; finish and report what is left"}
-        elif write and (decision := self.decide(name, args))["mode"] == "refuse":
-            res = {"error": decision["why"] if decision.get("plain") else
-                   f"{self.cog} may not do this on its own: {decision['why']}; describe what should be done instead, and who may do it"}
-        elif write and decision["mode"] == "propose":
-            self.proposed.append({"tool": name, "arguments": args, "confirmer": decision.get("confirmer") or "person",
-                                  "rule": ((decision.get("rule") or {}).get("source") or {}).get("text")})
-            self.actions += 1
-            who = decision.get("confirmer") or "person"
-            res = {"proposed": True, "note": f"recorded as a proposal; {'a person' if who == 'person' else 'a ' + who.replace('-', ' ')} "
-                                             f"confirms it before it happens ({decision['why']})"}
+        elif write and self.protected:
+            self._writing = True
+            try:
+                res, decision, produced = self._write(name, args)
+            except _ProtectedWrite as e:
+                decision, res = {"mode": "refuse", "why": str(e), "intent": None}, {"error": str(e)}
+            finally:
+                self._writing = False
         elif write:
-            self.actions += 1
-            before = self.hub.kernel.last_seq()
-            res = self.act(name, args)
-            if name in DRAFT_TOOLS and "error" not in res:
-                self._record_draft(name, args, res)
-            if "error" not in res and name not in NOT_PRODUCTS:
-                # What this action created or changed: the work a task's completion links to (runner._link_produced).
-                produced = self.hub.kernel.written_since(before, by=self.cog)
-            if "error" in res and decision.get("rule") is None and name not in STEP_TOOLS and "describe what should be done" not in str(res["error"]):
-                # No SOP sentence gave it this; the tool's own rule refused it too: it reports instead of acting.
-                res = {**res, "error": f"{res['error']}; describe what should be done instead, and who may do it"}
+            res, decision, produced = self._write(name, args)
         elif name in EXTRA_LOOKS:
             try:
                 res = EXTRA_LOOKS[name][1](self, args)
@@ -418,6 +436,62 @@ class AgentTools(RecordTools):
             ev["records"] = produced
         self.store.append(self.run_id, ev)
         return res
+
+    def _write(self, name: str, args: dict) -> tuple[dict, dict, list[str]]:
+        """A write within budget: decided from the SOPs, then refused, proposed or made. (result, decision, produced)."""
+        produced: list[str] = []
+        if (decision := self.decide(name, args))["mode"] == "refuse":
+            res = {"error": decision["why"] if decision.get("plain") else
+                   f"{self.cog} may not do this on its own: {decision['why']}; describe what should be done instead, and who may do it"}
+        elif decision["mode"] == "propose":
+            self.proposed.append({"tool": name, "arguments": args, "confirmer": decision.get("confirmer") or "person",
+                                  "rule": ((decision.get("rule") or {}).get("source") or {}).get("text")})
+            self.actions += 1
+            who = decision.get("confirmer") or "person"
+            res = {"proposed": True, "note": f"recorded as a proposal; {'a person' if who == 'person' else 'a ' + who.replace('-', ' ')} "
+                                             f"confirms it before it happens ({decision['why']})"}
+        else:
+            self.actions += 1
+            before = self.hub.kernel.last_seq()
+            res = self.act(name, args)
+            if name in DRAFT_TOOLS and "error" not in res:
+                self._record_draft(name, args, res)
+            if "error" not in res and name not in NOT_PRODUCTS:
+                # What this action created or changed: the work a task's completion links to (runner._link_produced).
+                produced = self.hub.kernel.written_since(before, by=self.cog)
+            if "error" in res and decision.get("rule") is None and name not in STEP_TOOLS and "describe what should be done" not in str(res["error"]):
+                # No SOP sentence gave it this; the tool's own rule refused it too: it reports instead of acting.
+                res = {**res, "error": f"{res['error']}; describe what should be done instead, and who may do it"}
+        return res, decision, produced
+
+    def protect(self, refs, why: str) -> None:
+        """No write in this run may name any of ``refs`` (record numbers, locators, SOP names): a reviewer never changes
+        what it reviews. The write is refused with ``why`` and the refusal is on the run's Track like any other."""
+        for r in refs:
+            if isinstance(r, str) and r.strip():
+                for f in _ref_forms(r):
+                    self.protected[f] = why
+
+    def touches_protected(self, args) -> str:
+        """Why this write may not be made (it names something protected), or empty. Every string in the arguments, at
+        any depth, is compared whole: a record number, a locator or an SOP name."""
+        if not self.protected:
+            return ""
+        todo = [args]
+        while todo:
+            v = todo.pop()
+            if isinstance(v, dict):
+                todo += list(v.values())
+            elif isinstance(v, (list, tuple)):
+                todo += list(v)
+            elif isinstance(v, str) and len(v) < 400 and (hit := _ref_forms(v) & self.protected.keys()):
+                return self.protected[next(iter(hit))]
+            elif isinstance(v, str) and 0 < len(v.strip()) < 80 and not re.search(r"\s", v.strip()):
+                # Resolved as the tools resolve a number (RecordTools._find): a spelling the lookup folds is the same record.
+                rec = RecordTools._find(self, v)
+                if rec is not None and (hit := (_ref_forms(rec["locator"]) | _ref_forms(rec["number"])) & self.protected.keys()):
+                    return self.protected[next(iter(hit))]
+        return ""
 
     def nothing_done(self, number: str) -> str:
         """Empty unless this run tried to change something and every change was refused (the run's Track, the same record
@@ -453,6 +527,8 @@ class AgentTools(RecordTools):
         if name in EXTRA_ACTS:
             try:
                 return EXTRA_ACTS[name][1](self, a)
+            except _ProtectedWrite:
+                raise
             except Exception as e:  # the system refused (permission, state, policy): the agent hears why
                 return {"error": f"{type(e).__name__}: {e}"}
         try:
@@ -557,6 +633,8 @@ class AgentTools(RecordTools):
                 _wopi.WopiHost(hub).index(hub.kernel.get(rec["locator"]), new, self.cog)
                 return {"ok": True, "document": rec["number"], "version": hub.dms.versions(rec["locator"])[-1]["version"],
                         "changes": report}
+        except _ProtectedWrite:
+            raise
         except Exception as e:  # the system refused (permission, criteria, state): the agent hears why
             return {"error": f"{type(e).__name__}: {e}"}
         return {"error": f"no action {name!r}"}
@@ -603,7 +681,7 @@ class AgentTools(RecordTools):
         return RunContext(run_id=f"agent-{self.run_id}", release=(self.hub.releases.current() or {}).get("digest", ""), bundle=self.bundle, owner=self.cog,
                           kernel=self.hub.kernel, runner=self.hub.runner, inbox=self.hub.inbox, record=rec["locator"] if rec else None,
                           dms=self.hub.dms, frames=lambda: self.hub.released_frames(), model=self.hub.model,
-                          extras={"cog_profile": (self.bundle.get("cogs") or {}).get(self.cog) or {}})
+                          extras={"cog_profile": (self.bundle.get("cogs") or {}).get(self.cog) or {}, "in_tool_run": self.run_id})
 
 
 MODE_WORDS = {"derived": "each write is decided from the SOPs: you act where they let you (or your roles), a person confirms where they "
@@ -839,6 +917,145 @@ def run_duties(hub, cog: str | None = None, today: str | None = None) -> list[di
         mark_duty(hub, name, duty, today)
         out.append({"cog": name, "duty": duty, **{k: res[k] for k in ("run", "status", "summary", "actions")}})
     return out
+
+
+# ---------------------------------------------------------------- tools in a single reply (issue #94)
+# A cog answering a mention, editing a document, reviewing an item or a change order may look things up and act with the
+# same governed tools as an agent run, before it gives its answer in the task's own format. The tool loop is the
+# gateway's (complete_with_tools) and each call goes through AgentTools.execute: the budget, the decision from the
+# released SOPs (act, propose or refuse), both_may with the person asking, and a record on the run's Track. The hub's
+# own model steps (automation.MODEL_STEPS) never get tools.
+SITE_WORDS = ("TOOLS IN THIS REPLY", "You may call the tools listed under YOUR AUTHORITY first: to look things up{acts}. Then give your "
+              "answer in the output format below; your answer is the text you end with, never a tool call. {limit}")
+
+
+class _LazyStore:
+    """An agent run's Track that is written only once a tool is called: a reply that calls none leaves no run behind."""
+
+    def __init__(self, store: AgentStore, started: dict):
+        self.store, self.started, self.opened = store, started, False
+        self.root = store.root
+
+    def append(self, run_id: str, event: dict) -> dict:
+        if not self.opened:
+            self.store.append(run_id, self.started)
+            self.opened = True
+        return self.store.append(run_id, event)
+
+    def load(self, run_id: str) -> list[dict]:
+        return self.store.load(run_id) if self.opened else []
+
+
+def site_tools(hub, cog: str, *, trigger: str, goal: str, requester: str = "", about: str | None = None, look_only: str = "",
+               protect: tuple = (), protect_why: str = "", ctx=None) -> dict | None:
+    """The governed tools for one reply of a cog at a call site (a mention, an edit, a review): {"tools", "specs",
+    "rounds", "run", "store"}, or None when it has none: no hub, or this reply is itself made inside a tool run (a
+    review_document or edit_document a tool started), which never opens a second loop. ``look_only``: why it may only
+    look in this reply (its look tools only). ``protect``: numbers, locators and SOP names no write may name, with
+    ``protect_why`` as the refusal (a reviewer never changes what it reviews)."""
+    if hub is None or getattr(hub, "releases", None) is None or not hasattr(hub, "root"):
+        return None
+    if ctx is not None and (getattr(ctx, "extras", None) or {}).get("in_tool_run"):
+        return None
+    meta = hub.releases.current()
+    if not meta:
+        return None
+    bundle = hub.releases.bundle(meta["digest"])
+    if (bundle.get("members") or {}).get(cog, {}).get("type") != "cog":
+        return None
+    from .model import calls_tools
+
+    if not calls_tools(((bundle.get("cogs") or {}).get(cog) or {}).get("model") or ""):
+        return None  # a model that cannot call tools answers as before, without them
+    from .agent_audit import AUDIT_TOOLS
+    from .audit import is_audit_run
+
+    if not look_only and not agents_enabled():
+        look_only = "agent runs are switched off in this hub (HUBPROTO_AGENTS=off): you may only look"
+    mode = "read" if look_only else "derived"
+    budget = run_budget(bundle, cog)
+    run_id = f"{trigger}-{uuid.uuid4().hex[:10]}"
+    store = _LazyStore(AgentStore(hub.root / "state" / "agents"),
+                       {"type": "started", "cog": cog, "goal": goal[:2000], "by": requester or cog, "trigger": trigger, "mode": mode,
+                        "about": about, "budget": {"actions": budget["actions"], "rounds": budget["rounds"]}, "release": meta["digest"],
+                        "run": run_id})
+    tools = AgentTools(hub, cog, run_id, mode, budget["actions"], store, requester=requester, goal=goal)
+    if look_only:
+        tools.read_why = look_only
+    if protect:
+        tools.protect(protect, protect_why or "you may not change what you are reviewing")
+    specs = look_specs() + ([] if look_only else act_specs(mode))
+    specs = [t for t in specs if t["name"] != "finish" and (t["name"] not in AUDIT_TOOLS or is_audit_run(bundle, cog))]
+    return {"tools": tools, "specs": specs, "rounds": budget["rounds"], "run": run_id, "store": store, "look_only": look_only}
+
+
+def site_section(site: dict | None) -> list[tuple[str, str]]:
+    """The prompt section that tells the cog it may call tools before it answers (none without tools)."""
+    if not site:
+        return []
+    acts = "" if site["look_only"] else (", and to act where your procedures let you (each action is decided from the SOPs: you act, "
+                                         "it waits for a person to confirm, or it is refused)")
+    limit = f"In this reply you may only look: {site['look_only']}." if site["look_only"] else \
+        f"At most {site['tools'].max_actions} actions and {site['rounds']} steps."
+    return [(SITE_WORDS[0], SITE_WORDS[1].format(acts=acts, limit=limit))]
+
+
+def tool_turn(gateway, site: dict | None, *, model: str, system: str, user: str, by: str, max_tokens: int,
+              history: list[dict] | None = None) -> dict:
+    """One model reply at a call site: with tools when the site has them (the gateway's tool loop, each call through the
+    run's AgentTools), else exactly as before (``complete``). A gateway without a tool loop (a test's fake) is asked
+    without tools. Returns complete()'s shape, with ``tool_calls``."""
+    if site is None or not callable(getattr(gateway, "complete_with_tools", None)):
+        out = gateway.complete(model=model, system=system, user=user, by=by, max_tokens=max_tokens, **({"history": history} if history else {}))
+        return {**out, "tool_calls": out.get("tool_calls") or []}
+    offered = {t["name"] for t in site["specs"]}
+    tools: AgentTools = site["tools"]
+
+    def call(name, args):
+        if name not in offered:
+            res = {"error": f"{name} is not a tool you have in this reply"}
+            tools.store.append(tools.run_id, {"type": "tool", "tool": name, "arguments": args if isinstance(args, dict) else {},
+                                              "write": name in WRITE_TOOLS or name in EXTRA_ACTS, "ok": False, "result": res["error"]})
+            return res
+        return tools.execute(name, args)
+
+    try:
+        return gateway.complete_with_tools(model=model, system=system, user=user, by=by, history=history, max_tokens=max_tokens,
+                                           tools=site["specs"], call_tool=call, max_rounds=site["rounds"], plain_stand_in=True)
+    except BaseException as e:
+        # The model failed part way (unavailable, an error): the run is closed with the reason, so it never stays
+        # "running" and what it proposed before can still be confirmed. The caller answers the failure as before.
+        from .model import ModelUnavailable
+
+        close_site(site, error=f"{'its model is not available' if isinstance(e, ModelUnavailable) else type(e).__name__}: {e}",
+                   unavailable=isinstance(e, ModelUnavailable))
+        raise
+
+
+def close_site(site: dict | None, out: dict | None = None, summary: str = "", *, error: str = "", unavailable: bool = False) -> str:
+    """Closes the reply's tool run, if a tool was called: its finished event (what it proposed, what the hub refused;
+    with ``error``, why the reply failed). Once only: a second call says nothing. Returns what the reply should add,
+    written by the hub, never the model: the actions waiting for a person to confirm and the changes the hub refused;
+    empty when there is nothing to say."""
+    if not site or not site["store"].opened or site.get("closed"):
+        return ""
+    site["closed"] = True
+    tools: AgentTools = site["tools"]
+    run = site["run"]
+    failed = [e for e in site["store"].load(run) if e.get("type") == "tool" and e.get("write") and not e.get("ok")]
+    note = []
+    if failed:
+        note.append("Not done (the hub refused): " + "; ".join(f"{e['tool']}: {(e.get('result') or '')[:160]}" for e in failed[:4]))
+    if tools.proposed:
+        note.append(f"{len(tools.proposed)} action(s) wait for confirmation: /agent-run/{run}")
+    status = "proposed" if tools.proposed else ("unavailable" if unavailable else "failed") if error else "done"
+    if error:
+        note.append(f"The reply stopped: {error[:300]}")
+    site["store"].append(run, {"type": "finished", "status": status, **({"error": error[:500]} if error else {}),
+                               "summary": (summary or (out or {}).get("text") or error or "")[:2000], "actions": tools.actions,
+                               "proposed": tools.proposed, "model": (out or {}).get("served_model"),
+                               "refused": [f"{e['tool']}: {(e.get('result') or '')[:160]}" for e in failed[:6]]})
+    return "\n".join(note)
 
 
 # The further tool groups register themselves on import.

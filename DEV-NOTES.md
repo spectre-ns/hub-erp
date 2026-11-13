@@ -228,6 +228,32 @@ status closes it. From each move on, a run follows the release in force then
 (it no longer pins its starting release); the Track records each change. Everything is on the
 run's Track (`state/runs/<id>/track.jsonl`) and on the record's events.
 
+### Cog tools at every call site (issue #94)
+
+A cog has its governed tools wherever it answers, not only in agent runs and chats: `mentions.answer` (via
+`cogs.task_answer`, `task_edit_document` and `review.review`, with `ctx.extras["asked_by"]` = the sender, so `both_may`
+applies) and `changecontrol.cog_review`. Each site calls `agent.site_tools(hub, cog, trigger=..., requester=...,
+look_only=..., protect=...)` (an `AgentTools` with the run budget; `None` with no hub, inside a tool run
+(`extras["in_tool_run"]`, set by `AgentTools._ctx`), or for an Ollama model that reports no "tools" capability
+(`model.calls_tools`)), puts `tools_now` and `agent.site_section(site)` in the prompt, asks through
+`agent.tool_turn` (the gateway's `complete_with_tools` with `plain_stand_in=True`, so the stand-in answers as
+`complete()` does; a gateway without `complete_with_tools`, a test fake, gets `complete()`), parses its answer as
+before, then `agent.close_site` writes the run's finished event and returns the hub's note (refusals, proposals).
+The run's Track (`state/agents/<trigger>-<id>.jsonl`) is written only once a tool is called (`_LazyStore`).
+Protection: `AgentTools.protect(refs, why)` refuses any write that reaches a protected number, locator or SOP name
+(the reviewed item and its documents; the change order, its attached documents, its drafts, their SOPs and its
+retirements, `changecontrol.reviewed_refs`). Arguments are folded as the tools fold them (`_ref_forms`: NFKC, case;
+`tools._find` compares upper case, so "TAſK-0001" is TASK-0001) and resolved as the tools resolve them, and while a
+protected run writes, `AgentTools._find` refuses a protected record it resolves (`_ProtectedWrite`), whatever named it.
+A protected run may not hand work on (`HAND_OVER_TOOLS`: create_task, delegate_to_cog, assign, start_process). After a
+CO review the hub checks `contributors()` again and records a reviewer that became one as excluded. A CO reviewer works
+for the round's `requested_by` when that is a person (`both_may`), else it only looks; so do judgment and lens reviews,
+and reviews no person asked for. If the model raises, `tool_turn` closes the run (`failed`, `unavailable`, or
+`proposed` when it proposed something) and re-raises; `close_site` closes once. `_ollama_tools` counts the tool
+schemas in the prompt budget and trims the system prompt in its middle (`model.fit_prompt`), never its head or tail. The
+`automation.MODEL_STEPS` steps (`llm_extract`, `prose_drafting._writer`, `changecontrol._panel_by_model`,
+`changecontrol._meaning`) and the mention classifier (`mentions.intent_of`) call `complete()` only: no tools.
+
 ## Sentence grammar (convention mode)
 
 Only inside these sections: `## Roles`, `## Members`, `## Groups`, `## Folders`,

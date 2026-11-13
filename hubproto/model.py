@@ -290,6 +290,16 @@ def _ollama_capabilities(name: str) -> list[str] | None:
     return rec["capabilities"] if rec else None
 
 
+def calls_tools(model: str) -> bool:
+    """Whether the model may be offered tools (function calling): every Claude model and the stand-in do; an Ollama model
+    unless Ollama says it cannot (its capabilities lack "tools"). When Ollama does not say, it is offered them, as a chat is."""
+    model = model or DEFAULT_MODEL
+    if backend_for(model) not in OLLAMA_BACKENDS:
+        return True
+    caps = _ollama_capabilities(served_name(model))
+    return caps is None or "tools" in caps
+
+
 def images_refused(model: str) -> str:
     """Why a picture may not be sent to the profile's model ('' when it may). It is a fact about the model, not a policy:
     every Claude model the hub offers reads pictures; an Ollama model does only when Ollama reports the "vision"
@@ -527,6 +537,21 @@ def prompt_budget_chars(model: str, max_tokens: int = 1200) -> int:
     if os.environ.get("HUBPROTO_MODEL_MAX_CHARS"):
         return int(os.environ["HUBPROTO_MODEL_MAX_CHARS"])
     return int(max(4096, num_ctx_for(model) - max_tokens - 1024) * 3.2)
+
+
+TRIMMED = "\n[... context trimmed to fit the model's window ...]\n"
+
+
+def fit_prompt(system: str, room: int) -> str:
+    """The system prompt cut to about ``room`` characters from its middle (the reference and context sections): its
+    head (who the cog is, its authority) and its tail (the output format, the closing rule about untrusted text) are
+    never cut. At least 2,000 characters are kept."""
+    room = max(room, 2000)
+    if len(system) <= room:
+        return system
+    tail = max(room * 2 // 5, min(4000, room // 2))
+    head = max(room - tail - len(TRIMMED), 0)
+    return system[:head] + TRIMMED + system[len(system) - tail:]
 
 
 def safe_url(url: str) -> str:
@@ -780,8 +805,7 @@ class ModelGateway:
         name = served_name(model)
         ceiling = prompt_budget_chars(model, max_tokens)  # what fits in the model's window with room to answer
         if len(system) + len(user) > ceiling:
-            keep = max(ceiling - len(user) - 200, 2000)
-            system = system[:keep] + "\n[... context trimmed to fit the model's window]"
+            system = fit_prompt(system, ceiling - len(user) - 200)
         payload = {"model": name, "stream": False,
                    "options": {"num_predict": max_tokens, "num_ctx": num_ctx_for(model)},
                    "messages": [{"role": "system", "content": system}]
@@ -808,9 +832,12 @@ class ModelGateway:
 
     # ------------------------------------------------------------ tool use (the record tools, MCP-shaped)
     def complete_with_tools(self, *, model: str, system: str, user: str, tools: list[dict], call_tool, by: str = "",
-                            history: list[dict] | None = None, max_tokens: int = 800, max_rounds: int = 6) -> dict:
+                            history: list[dict] | None = None, max_tokens: int = 800, max_rounds: int = 6,
+                            plain_stand_in: bool = False) -> dict:
         """A turn in which the model may call tools (function calling) before it answers. ``call_tool(name, args)``
-        runs a tool and returns a dict. Returns complete()'s shape plus ``tool_calls`` (what was looked at)."""
+        runs a tool and returns a dict. Returns complete()'s shape plus ``tool_calls`` (what was looked at).
+        ``plain_stand_in``: where the stand-in answers, it answers as complete() does (a review, an edit, a reply in the
+        task's own format) and calls no tools; a call site that only gained tools keeps its stand-in answer."""
         from .tools import as_text
 
         t0 = time.monotonic()
@@ -818,6 +845,8 @@ class ModelGateway:
         backend = backend_for(model)
         if backend == "none":
             raise ModelUnavailable(resolve_model(model)["note"])
+        if plain_stand_in and backend == "stand-in":
+            return {**self.complete(model=model, system=system, user=user, max_tokens=max_tokens, by=by, history=history), "tool_calls": []}
         calls: list[dict] = []
 
         def run(name, args):
@@ -839,7 +868,7 @@ class ModelGateway:
         except Exception as e:
             if not stand_in_allowed():
                 raise ModelUnavailable(f"{model} did not answer: {e}") from None
-            text = f"[{backend} model {model} did not answer: {e}]\n" + self._stand_in_tools(user, run)
+            text = f"[{backend} model {model} did not answer: {e}]\n" + (self._stand_in(system, user) if plain_stand_in else self._stand_in_tools(user, run))
             backend = "stand-in"
         text = strip_thinking(text)
         out = {"text": text, "model": model, "served_model": (usage or {}).get("served_model") or (model if backend == "anthropic" else "stand-in"),
@@ -857,21 +886,32 @@ class ModelGateway:
 
     def _ollama_tools(self, model, system, user, history, tools, run, max_tokens, max_rounds, as_text):
         name = served_name(model)
+        fns = [{"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["parameters"]}} for t in tools]
+        # As _ollama: what fits in the model's window with room to answer; the tool definitions take their share of it.
+        ceiling = prompt_budget_chars(model, max_tokens) - len(json.dumps(fns))
+        if len(system) + len(user) > ceiling:
+            system = fit_prompt(system, ceiling - len(user) - 200)
+        think = not os.environ.get("HUBPROTO_MODEL_THINK")
         msgs = [{"role": "system", "content": system}] + [{"role": t["role"], "content": t["content"]} for t in (history or []) if t.get("content")] \
             + [{"role": "user", "content": user}]
-        fns = [{"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["parameters"]}} for t in tools]
         usage = {"prompt_tokens": 0, "output_tokens": 0, "served_model": name}
         for round_ in range(max_rounds + 1):
             payload = {"model": name, "stream": False, "messages": msgs, "tools": fns if round_ < max_rounds else [],
                        "options": {"num_predict": max_tokens, "num_ctx": num_ctx_for(model)}}
-            if not os.environ.get("HUBPROTO_MODEL_THINK"):
+            if think:
                 payload["think"] = False
-            req = urllib.request.Request(ollama_url() + "/api/chat", data=json.dumps(payload).encode("utf-8"), method="POST",
-                                         headers={"content-type": "application/json"})
-            try:
-                data = _fetch_json(req, float(os.environ.get("HUBPROTO_MODEL_TIMEOUT") or 240))
-            except urllib.error.HTTPError as e:
-                raise RuntimeError(f"HTTP {e.code} from Ollama for model {name!r}: {e.read()[:300].decode('utf-8', 'replace')}") from None
+            for attempt in (payload, {k: v for k, v in payload.items() if k != "think"}):
+                req = urllib.request.Request(ollama_url() + "/api/chat", data=json.dumps(attempt).encode("utf-8"), method="POST",
+                                             headers={"content-type": "application/json"})
+                try:
+                    data = _fetch_json(req, float(os.environ.get("HUBPROTO_MODEL_TIMEOUT") or 240))
+                    break
+                except urllib.error.HTTPError as e:
+                    detail = e.read()[:300].decode("utf-8", "replace")
+                    if "think" in detail.lower() and "think" in attempt:
+                        think = False  # this model does not take the flag; ask again without it (as _ollama does)
+                        continue
+                    raise RuntimeError(f"HTTP {e.code} from Ollama for model {name!r}: {detail}") from None
             usage["prompt_tokens"] += data.get("prompt_eval_count") or 0
             usage["output_tokens"] += data.get("eval_count") or 0
             msg = data.get("message") or {}

@@ -1140,6 +1140,17 @@ def item_text(ctx: RunContext, rec: dict | None, doc_budget: int, task: str = ""
     return "\n\n".join(parts)
 
 
+def reply_tools(ctx: RunContext, cog: str, *, trigger: str, goal: str, about: str | None = None, look_only: str = "",
+                protect: tuple = (), protect_why: str = "") -> dict | None:
+    """The governed tools for one reply of a cog (hubproto.agent.site_tools), for the person who asked
+    (``ctx.extras["asked_by"]``): it reads what both may read and acts within its autonomy and both their rights. None
+    where the reply has no hub behind it or is made inside a tool run."""
+    from .agent import site_tools
+
+    return site_tools(getattr(ctx.runner, "hub", None), cog, trigger=trigger, goal=goal, requester=ctx.extras.get("asked_by") or "",
+                      about=about, look_only=look_only, protect=protect, protect_why=protect_why, ctx=ctx)
+
+
 def cog_context(ctx: RunContext, rec: dict | None, *, sop_chars: int | None = None, doc_chars: int | None = None, task: str = "",
                 tools_now: list[dict] | None = None, conversation: str = "", extra: list[tuple[str, str]] | None = None) -> str:
     """The system prompt a cog works under, in sections that carry different weight:
@@ -1284,7 +1295,14 @@ class ReviewerCog(Cog):
         request = input.get("request") or ""
         f = rec["fields"]
         sops = ctx.sop_texts()
-        system = cog_context(ctx, rec, task="edit")
+        from .agent import close_site, site_section, tool_turn
+
+        # It may look before it writes the operations, and act where its procedures let it; never on this document
+        # through a tool (the edit is the operations it returns, performed with the person's rights).
+        site = reply_tools(ctx, self.id, trigger="edit", goal=f"Edit {rec['number']}: {request}", about=rec["locator"],
+                           protect=(rec["locator"], rec["number"]),
+                           protect_why=f"{rec['number']} is changed by the operations you write in your answer, not by a tool")
+        system = cog_context(ctx, rec, task="edit", tools_now=site["specs"] if site else None, extra=site_section(site))
         from . import office as _office
 
         from . import edits as _edits
@@ -1302,9 +1320,11 @@ class ReviewerCog(Cog):
                 + f"A colleague asks you, about the {'spreadsheet' if sheet else 'document'} above:\n{request}\n\n"
                 + "Write the operations that make exactly this change, in the output format.")
         text, model, stand_in = "", ctx.profile.get("model") or "stand-in", True
+        out, note = None, ""
         if ctx.model is not None:
-            out = ctx.model.complete(model=model, system=system, user=user, by=self.id, max_tokens=1600)
+            out = tool_turn(ctx.model, site, model=model, system=system, user=user, by=self.id, max_tokens=1600)
             text, stand_in = out["text"], out["stand_in"]
+        note = close_site(site, out)
         ops = [] if stand_in else _edits.parse_ops(text)
         unknown = [o for o in ops if o["op"] == "unknown"]
         ops = [o for o in ops if o["op"] != "unknown"]
@@ -1317,6 +1337,8 @@ class ReviewerCog(Cog):
                         + (" (" + "; ".join(u["text"] for u in unknown[:3]) + ")" if unknown else "") + ".")
             if len(said) > 4000:
                 said = said[:3999].rstrip() + "…"
+            if note:
+                said = (said + "\n\n" + note).strip()
             return self.ok("edit-document", {"ops": [], "kind": "sheet" if sheet else "text", "model": model, "stand_in": False,
                                              "reply": said, "explanation": "I made no change" + (": " + said[:400] if said else "."),
                                              "provenance": provenance(ctx.bundle or {}, self.id, release=ctx.release,
@@ -1349,7 +1371,8 @@ class ReviewerCog(Cog):
                     o["op"] = "delete_paragraph"
         plan = "; ".join(_edits.describe(o) for o in ops)
         out = {"ops": ops, "kind": "sheet" if sheet else "text", "model": model, "stand_in": stand_in, "start_row": start_row,
-               "explanation": f"Changes: {plan}." + (f" (I skipped {len(unknown)} line(s) I could not read as operations.)" if unknown else "")}
+               "explanation": f"Changes: {plan}." + (f" (I skipped {len(unknown)} line(s) I could not read as operations.)" if unknown else "")
+               + (f"\n{note}" if note else "")}
         # The older fields, for callers that only insert.
         if len(ops) == 1 and ops[0]["op"] == "insert" and ops[0].get("at") in ("start", "end"):
             out.update({"paragraphs": ops[0]["lines"][:120], "position": ops[0]["at"]})
@@ -1380,19 +1403,26 @@ class ReviewerCog(Cog):
         question = input.get("question") or ""
         thread = input.get("thread") or []
         sops = ctx.sop_texts()
-        system = cog_context(ctx, rec, task="answer")
+        from .agent import close_site, site_section, tool_turn
+
+        site = reply_tools(ctx, self.id, trigger="answer", goal=question, about=rec["locator"] if rec else None)
+        system = cog_context(ctx, rec, task="answer", tools_now=site["specs"] if site else None, extra=site_section(site))
         where = "comment in that thread" if input.get("place") != "chatter" else "message on the item's chatter"
         user = (("This thread so far:\n" if input.get("place") != "chatter" else "The conversation on the item so far:\n")
                 + "\n".join(f"- {t.get('author')}: {t.get('text')}" for t in thread) + "\n\n" if thread else "") + \
             f"Reply to this {where}:\n{question}\n\nAnswer in a few sentences a colleague can act on, from the procedures and the {'document' if rec and rec['type'] == 'document' else 'item'} above."
         text, model, stand_in = "", ctx.profile.get("model") or "stand-in", True
+        out = None
         if ctx.model is not None:
-            out = ctx.model.complete(model=model, system=system, user=user, by=self.id, max_tokens=500)
+            out = tool_turn(ctx.model, site, model=model, system=system, user=user, by=self.id, max_tokens=500)
             text, stand_in = out["text"], out["stand_in"]
         if stand_in or not text.strip():
             text = (f"Noted. I follow {', '.join(sorted(sops)) or 'the quality procedures'}; "
                     "configure a model for a worded answer, or ask me to review or edit the document.")
-        return self.ok("answer", {"text": text.strip(), "model": model, "stand_in": stand_in})
+        note = close_site(site, out)
+        text = text.strip() + (f"\n\n{note}" if note else "")
+        return self.ok("answer", {"text": text, "model": model, "stand_in": stand_in,
+                                  "tool_calls": (out or {}).get("tool_calls") or [], "run": site["run"] if site and site["store"].opened else None})
 
     def task_review_document(self, input: dict, ctx: RunContext) -> dict:
         """Review an item against the SOPs this cog follows and file the review as evidence."""

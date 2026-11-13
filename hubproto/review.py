@@ -111,14 +111,29 @@ def review(cog_id: str, profile: dict, ctx, record: dict, question: str = "", ju
     A model's error must quote the SOP sentence it rests on; one that cannot is a warning ("not found in the SOPs").
     In a judgment review (for an approval) the model judges the content only; who may sign is decided in code.
     Returns {"cog", "verdict", "findings", "summary", "routing_notes", "model", "sops", "stand_in"}."""
-    from .cogs import cog_context, untrusted
+    from .agent import close_site, site_section, tool_turn
+    from .cogs import cog_context, reply_tools, untrusted
     from .edits import squash
 
     sops = ctx.sop_texts(profile.get("follows") or []) if profile else {}
     evidence = gather(ctx, record)
     findings = checklist(evidence, sops)
     notes = routing_notes(evidence)
-    system = cog_context(ctx, record, task="review")
+    # It may look things up before it answers. A review a person asked for may also act where the cog's procedures let
+    # it, but never on what it reviews: the item and its documents are protected in the run. A review that is part of a
+    # decision (a judgment for an approval, an adversarial lens) only looks: it decides nothing beyond its findings.
+    reviewed = [record["locator"], record["number"]] + [d["number"] for d in evidence.get("documents") or [] if d.get("number")]
+    if ctx.dms is not None:
+        try:
+            reviewed += [d["locator"] for d in ctx.dms.documents_of(record["locator"])]
+        except Exception:
+            pass
+    site = reply_tools(ctx, cog_id, trigger="review", goal=f"Review {record['number']}" + (f": {question}" if question else ""),
+                       about=record["locator"],
+                       look_only=("a review for a decision only looks" if (judgment or lens) else
+                                  "" if ctx.extras.get("asked_by") else "no person asked for this review, so it only looks"),
+                       protect=tuple(reviewed), protect_why=f"you are reviewing {record['number']}: a reviewer never changes what it reviews")
+    system = cog_context(ctx, record, task="review", tools_now=site["specs"] if site else None, extra=site_section(site))
     item = {k: v for k, v in evidence.items() if k not in ("documents", "conditions")} if record.get("type") == "document" else \
         {k: v for k, v in evidence.items() if k != "conditions"}
     ask = question or "Review this item."
@@ -139,12 +154,14 @@ def review(cog_id: str, profile: dict, ctx, record: dict, question: str = "", ju
             + "\n\nAnswer in the output format.")
     text, model, stand_in = "", profile.get("model") or "stand-in", True
     said_fail = False
+    out = None
     if ctx.model is not None:
         from .model import ModelUnavailable
 
         try:
-            out = ctx.model.complete(model=model, system=system, user=user, by=cog_id)
+            out = tool_turn(ctx.model, site, model=model, system=system, user=user, by=cog_id, max_tokens=1200)
         except ModelUnavailable as e:
+            close_site(site)
             return {"cog": cog_id, "verdict": "declined", "findings": [problem("model", f"{cog_id} is not available: {e}", "warning")],
                     "summary": f"{cog_id} could not review: its model is not available ({e}).", "routing_notes": notes, "model": model,
                     "sops": sorted(sops), "stand_in": False, "date": date.today().isoformat()}
@@ -181,8 +198,13 @@ def review(cog_id: str, profile: dict, ctx, record: dict, question: str = "", ju
                        f"{len(errors)} problem(s) and {remarks} remark(s) in the review." if errors else f"{remarks} remark(s) in the review, nothing wrong.")
     if said_fail and not errors:
         summary += " (The reviewer leaned towards fail but named no error it could quote from the procedures; these are remarks.)"
+    run = site["run"] if site and site["store"].opened else None
+    note = close_site(site, out if ctx.model is not None else None, summary)
+    if note:
+        summary += "\n" + note
     return {"cog": cog_id, "verdict": verdict, "findings": findings, "summary": summary, "routing_notes": notes, "model": model,
-            "sops": sorted(sops), "stand_in": stand_in, "date": date.today().isoformat(), **({"lens": lens} if lens else {})}
+            "sops": sorted(sops), "stand_in": stand_in, "date": date.today().isoformat(), **({"lens": lens} if lens else {}),
+            **({"tool_run": run} if run else {})}
 
 
 def dedupe(findings: list[dict]) -> list[dict]:

@@ -103,8 +103,9 @@ quality-assistant and the qa-manager read and act through the roles listed above
 
 ## 6.2 Autonomy: derived per action
 
-A cog's autonomy is not set in its profile. For each action it wants to take when it works on its own (a task, a duty,
-an assigned item, a chat), the hub decides from the SOPs (hubproto/authz.py, `autonomy`; hubproto/agent.py, `decide`):
+A cog's autonomy is not set in its profile. For each action it wants to take (in a task, a duty, an assigned item, a
+chat, or a reply to a mention, an edit or a review: see "Tools in every reply" in 6.4), the hub decides from the SOPs
+(hubproto/authz.py, `autonomy`; hubproto/agent.py, `decide`):
 
 | The hub finds | The cog |
 |---|---|
@@ -123,7 +124,8 @@ order." **What it may do** lists each permission with "acts", "proposes: a perso
 Autonomy does not govern approvals at Gates: whether a cog may sign is decided only by its approval criteria (6.6).
 
 Every run has a budget: at most 5 actions and 10 model rounds (`HUBPROTO_AGENT_ACTIONS`, `HUBPROTO_AGENT_ROUNDS`); a
-chat turn at most 5 actions and 8 rounds. `HUBPROTO_AGENTS=off` switches all of it off (chapter 8).
+chat turn at most 5 actions and 8 rounds; a reply to a mention, an edit or a review has a run's budget.
+`HUBPROTO_AGENTS=off` switches all of it off: a reply then only looks (chapter 8).
 
 The tools a cog has (hubproto/agent.py, hubproto/agent_records.py, hubproto/agent_docs.py, hubproto/agent_config.py,
 hubproto/agent_inventory.py):
@@ -192,6 +194,36 @@ plain, the cog's model classifies it, but a model's reading never counts as a re
   its turn there; if the item waits for people, the review is attached for them and they are notified.
 * **A question**: an answer of a few sentences "a colleague can act on", from its procedures and the item.
 * **An edit**: chapter 5.7. Only on documents, and only what the person asking may change.
+
+**Tools in every reply.** Wherever a cog works, it has its tools, within its access policy. Answering a question,
+writing an edit, reviewing an item or a change order, it may call its look tools first, and its action tools where its
+procedures let it, before it gives its answer in the usual form (the reply, the edit operations, the verdict and
+findings). Each call goes through the same checks as an agent run (6.2): its budget, the decision from the SOPs (act,
+propose or refuse), and, when a person asked, only what both of them may read and do. A reply that calls a tool is
+recorded as an agent run (6.8) with every call on it; one that calls none is answered as before and leaves no run. The
+hub, not the model, adds to the reply what it refused ("Not done (the hub refused): ...") and how many actions wait
+for confirmation, with the link to the run (hubproto/agent.py, `site_tools`, `tool_turn`, `close_site`).
+
+* **A reviewer never changes what it reviews.** Reviewing an item, no write may reach the item or its documents.
+  Reviewing a change order, no write may reach the change order, the documents attached to it (its test evidence), the
+  drafts it carries, their SOPs or the documents it retires. The hub checks the record each tool actually finds, so
+  no other spelling of a number gets round it. While it reviews, a cog may not hand work to anyone either (a task,
+  another cog's queue, an assignment, a process): it says in its answer who should do what. A cog that has become a
+  contributor to the change order by the end of its review (any other way) is not counted: its result says so, and it
+  is excluded like any contributor (chapter 7.9; hubproto/changecontrol.py, `cog_review`, `reviewed_refs`).
+* **A change-order reviewer works for the person who asked for the round**: only what both may do. A round no person
+  asked for gets a reviewer that only looks.
+* **An edit is its operations.** The edit task may look things up first, but the document is changed only by the
+  operations it returns, written as the person asking (chapter 5.7); a tool may not write to that document.
+* **A review for a decision only looks.** A judgment for an approval (6.6) or an adversarial lens has look tools
+  only, and so has a review nobody asked for; a review a person asked for by mention may also act elsewhere.
+* **The hub's own model steps have no tools**: reading the SOP changes (Compile the Frame), drafting prose for direct
+  changes, suggesting the panel, sending related changes back, and classifying what a mention asks. They answer in
+  their own format, and the hub checks what they say (chapter 7).
+* If the model fails part way, the reply's run is closed with the reason (its proposals can still be confirmed),
+  and the reply answers the failure as before.
+* A model that Ollama says cannot call tools answers without them, as before; so does a tool run's own review or edit
+  (a `review_document` or `edit_document` the cog called), which never opens a second tool loop.
 
 **A message without an item.** The cog files the attached records into its process when the message has attachments
 and says "file", "please" or "process"; answers "status" with what waits for you and your open items; otherwise it says
