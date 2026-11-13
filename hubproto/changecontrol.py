@@ -1582,31 +1582,52 @@ def round_check(hub, co_ref, n: int) -> str:
 
 def widened_principals(hub, co_ref) -> set[str]:
     """The members whose own authority the change order's delta widens: a cog that may approve more, is routed more, or
-    may do more (a permission), a member gaining roles, everyone in a group a widening adds members to. A permission,
-    route or approver given to a role or a group widens each of its members, as the release in force has them (issue
-    #76). Like a person, none of them reviews that change."""
+    may do more (a permission), a member gaining roles, everyone in a group a widening adds members or roles to. A
+    permission, route or approver given to a role or a group widens each of its members (issue #76): as the release in
+    force has them, and as this change order's own group rules define them (a group it creates or gives a role).
+    Removing a route or an approver widens nobody's authority, whoever it named. Like a person, none of them reviews
+    that change."""
     from .routing import principals_for
 
     co = _co(hub, co_ref)
     p = _proposal(hub, co)
+    changes = [c for c in (p or {}).get("changes") or [] if c.get("op") != "text"]
+    bundle = _bundle(hub)
+    # The groups as this change order leaves them: a group rule it adds or restates (its members and roles).
+    new_groups = {_effective(c).get("name"): _effective(c) for c in changes
+                  if c.get("op") != "remove" and _effective(c).get("kind") == "group"}
+
+    def members(ref: str) -> set[str]:
+        kind, _, name = str(ref or "").partition(":")
+        if not name:
+            return set()
+        if kind in ("cog", "person"):
+            return {name}
+        if kind == "role":
+            return set(principals_for(bundle, f"role:{name}"))
+        if kind == "group":
+            out = set(principals_for(bundle, f"group:{name}")) if name in (bundle.get("groups") or {}) else set()
+            g = new_groups.get(name)
+            if g:
+                out |= {str(m).partition(":")[2] or str(m) for m in g.get("members") or [] if m}
+                for role in g.get("roles") or []:
+                    out |= set(principals_for(bundle, f"role:{role}"))
+            return out
+        return set()
+
     out: set[str] = set()
-    bundle = None
-    for c in (p or {}).get("changes") or []:
-        if c.get("op") == "text" or not _widening(c):
+    for c in changes:
+        if not _widening(c):
             continue
         r = _effective(c)
-        refs = [r.get("approver"), r.get("assignee"), r.get("subject"), f"person:{r['principal']}" if r.get("kind") == "member" else None]
-        if r.get("kind") == "group":  # someone joins it, or it gains a role: whatever the group may do now reaches them
+        removed = c.get("op") == "remove"
+        refs = [r.get("subject"), f"person:{r['principal']}" if r.get("kind") == "member" else None]
+        if not removed:  # a route or an approver taken away gives its assignee nothing
+            refs += [r.get("approver"), r.get("assignee")]
+        if r.get("kind") == "group" and not removed:  # someone joins it, or it gains a role: what it may do reaches them
             refs.append(f"group:{r.get('name')}")
-            out |= {str(m).partition(":")[2] or str(m) for m in r.get("members") or [] if m}
         for ref in refs:
-            kind, _, name = str(ref or "").partition(":")
-            if kind in ("cog", "person") and name:
-                out.add(name)
-            elif kind in ("role", "group") and name:
-                if bundle is None:
-                    bundle = _bundle(hub)
-                out |= set(principals_for(bundle, f"{kind}:{name}"))
+            out |= members(ref)
     return out
 
 
