@@ -524,6 +524,29 @@ def test_quoted_markup_is_left_alone_where_the_document_holds_it_or_the_meaning_
     assert edits.unmark_ops(ops("@@ delete: **See** QA."), docx) == [{"op": "delete", "target": "See QA."}]
 
 
+def test_swapping_two_cells_of_a_quoted_row_is_not_rewritten_into_replaces_that_undo_each_other():
+    """Review of #36: the cells are replaced one after another, so 'Audit report' -> 'QA' then 'QA' -> 'Audit report'
+    gave the row 'Audit report | Audit report' and both replaces said they were made."""
+    docx = "Record\nOwner\nAudit report\nQA"
+    swap = ops("@@ replace: | Audit report | QA |\n@@ with: | QA | Audit report |")
+    assert edits.unmark_ops(swap, docx) == swap, "not certain: left as written, so it fails visibly"
+    grow = ops("@@ replace: | Audit report | QA |\n@@ with: | Audit report (QA) | Quality |")
+    assert edits.unmark_ops(grow, docx) == grow, "a new value holding another changed cell's old words"
+    fine = edits.unmark_ops(ops("@@ replace: | Audit report | QA |\n@@ with: | Audit summary | Quality |"), docx)
+    assert fine == [{"op": "replace", "target": "Audit report", "with": "Audit summary"},
+                    {"op": "replace", "target": "QA", "with": "Quality"}], fine
+
+
+def test_a_quoted_heading_or_item_that_is_not_a_whole_paragraph_deletes_only_its_words():
+    """Review of #36: '- suppliers yearly' deleted the paragraph 'Audit suppliers yearly.', and '## Record' the heading
+    'Records'. Only a whole paragraph's words become that paragraph."""
+    text = "Records\nAudit suppliers yearly.\nScope"
+    assert edits.unmark_ops(ops("@@ delete: - suppliers yearly"), text) == [{"op": "delete", "target": "suppliers yearly"}]
+    assert edits.unmark_ops(ops("@@ delete: ## Record"), text) == [{"op": "delete", "target": "Record"}]
+    assert edits.unmark_ops(ops("@@ delete: ## Scope"), text) == [{"op": "delete_paragraph", "target": "Scope"}]
+    assert edits.unmark_ops(ops("@@ delete: - Audit suppliers yearly."), text) == [{"op": "delete_paragraph", "target": "Audit suppliers yearly."}]
+
+
 def test_a_table_row_quoted_with_its_pipes_is_the_row_deleted():
     ext = "docx"
     content = make(ext)

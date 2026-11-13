@@ -262,12 +262,15 @@ def unmark_ops(ops: list[dict], text: str) -> list[dict]:
     operations match them (``applied_text``: a heading or a table cell as its words). A target ``text`` holds as written
     is left alone (a Markdown file holds its own '#' lines), and so is one whose meaning is not certain:
     - a heading, list item or paragraph to find (insert after/before, a section, a paragraph or section operation): its words;
-    - '@@ delete:' of a heading, table row or list item: that paragraph, row or item (``delete_paragraph``);
+    - '@@ delete:' of a table row, or of a heading or list item whose words are a whole paragraph: that row or paragraph
+      (``delete_paragraph``); otherwise the words only;
     - '@@ replace:' of a heading: that heading's paragraph, still a heading of its level;
     - '@@ replace:' of a table row with a row: each cell that changed, when its old words occur once in the document
-      (a replace changes every occurrence), else the operation stays as written and fails visibly;
+      (a replace changes every occurrence) and no new value holds another changed cell's old words, else the operation
+      stays as written and fails visibly;
     - any other replace: its words for its words."""
     have = squash(text)
+    paras = {squash(x) for x in text.splitlines() if x.strip()}
 
     def marked(v) -> bool:
         if not isinstance(v, str) or not v.strip():
@@ -288,8 +291,10 @@ def unmark_ops(ops: list[dict], text: str) -> list[dict]:
         words = plain_line(target)
         if o in ("replace_paragraph", "delete_paragraph", "replace_section", "delete_section"):
             out.append({**op, "target": words})
-        elif o == "delete":  # a quoted heading, row or list item is that paragraph; '**shall**' is the word
-            out.append({"op": "delete_paragraph", "target": words} if _LINE_MARK.match(target.strip()) else {**op, "target": words})
+        elif o == "delete":  # a quoted row, or a heading or list item that is a whole paragraph, is that paragraph;
+            # '**shall**', or '## Record' where the heading is 'Records', is only the words
+            whole = _is_row(target) or (_LINE_MARK.match(target.strip()) and squash(words) in paras)
+            out.append({"op": "delete_paragraph", "target": words} if whole else {**op, "target": words})
         elif o == "replace" and op.get("with") is not None:
             new = op["with"]
             head = _HEADING.match(target.strip())
@@ -303,7 +308,10 @@ def unmark_ops(ops: list[dict], text: str) -> list[dict]:
                 old_cells = _cells(target)
                 new_cells = _cells(new) if _is_row(new) else []
                 pairs = [(a, b) for a, b in zip(old_cells, new_cells) if squash(a) != squash(b)]
-                if (len(new_cells) == len(old_cells) and pairs
+                # The cells are replaced one after another, so a new value holding another cell's old words would be
+                # changed again by that cell's replace ('| A | B |' -> '| B | A |' would give 'A | A'): not certain.
+                crossed = any(i != j and squash(a) in squash(b) for i, (_, b) in enumerate(pairs) for j, (a, _) in enumerate(pairs))
+                if (len(new_cells) == len(old_cells) and pairs and not crossed
                         and all(a.strip() and have.count(squash(a)) == 1 for a, _ in pairs)):
                     out += [{"op": "replace", "target": a, "with": b, **({"section": op["section"]} if op.get("section") else {})}
                             for a, b in pairs]
