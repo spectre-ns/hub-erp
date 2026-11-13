@@ -29,11 +29,12 @@ def test_a_task_filed_for_any_cog_waits_for_that_cog(released, cog):
     assert state["status"] == "waiting" and state["pending"]["assignees"] == [cog], state.get("failure") or state.get("pending")
 
 
-def test_the_cogs_group_gets_tasks_and_nothing_else(released):
+def test_the_cogs_group_gets_tasks_and_working_documents_and_nothing_else(released):
     bundle = released.current_bundle()
     granted = sorted((r["action"], r["object"], r.get("folder") or r.get("resource")) for r in bundle["permissions"]
                      if r.get("subject") == "group:cogs")
-    assert granted == [("approve", "task", "folder:Tasks"), ("read", "*", "folder:Tasks")], granted
+    assert granted == [("approve", "task", "folder:Tasks"), ("create", "document", "folder:Quality/Working Documents"),
+                       ("read", "*", "folder:Quality/Working Documents"), ("read", "*", "folder:Tasks")], granted
     # The auditor, now able to take a task, is not made staff: it still may not create a change order or a part.
     assert not authz.check(bundle, "auditor", "create", "change-order", "Quality/Changes")["allowed"]
     assert not authz.check(bundle, "auditor", "create", "part", "Inventory/Parts")["allowed"]

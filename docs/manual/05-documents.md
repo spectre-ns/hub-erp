@@ -86,6 +86,11 @@ Where documents come from:
 You may file documents in a folder when the policy lets you create documents there, or create any kind of record
 there (hubproto/shell/pages.py, `may_file`).
 
+In the example company, Quality/Working Documents is the place for working papers: plans, notes, analyses and the
+reports cogs write for their tasks. Every member of staff and every cog may create, edit and read documents there
+(frames/iso9001/working-documents-sop.frame.md); a cog writes there only when the person it works for may too. They are
+not controlled documents: a controlled document still starts in Quality/Controlled Documents under document control.
+
 **How to create a new document** (anyone who may file documents in the folder)
 
 1. Open the folder (or the record the document belongs to) and press **New document**.
