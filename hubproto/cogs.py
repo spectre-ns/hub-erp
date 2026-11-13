@@ -1304,7 +1304,13 @@ class ReviewerCog(Cog):
         ops = [] if stand_in else _edits.parse_ops(text)
         unknown = [o for o in ops if o["op"] == "unknown"]
         ops = [o for o in ops if o["op"] != "unknown"]
-        if stand_in or not ops:
+        if not stand_in and not ops:
+            # The model answered in words (a refusal, a question, a reason): that is its reply, and nothing is written
+            # into the document (issue #68). Model output is data: only operations it wrote are applied.
+            said = (text or "").strip()
+            return self.ok("edit-document", {"ops": [], "kind": "sheet" if sheet else "text", "model": model, "stand_in": False,
+                                             "reply": said[:4000], "explanation": "I made no change" + (": " + said if said else ".")})
+        if stand_in:
             # Without a model (or an answer we can read): the old behaviour, a short header written at the start.
             title = f.get("title") or rec["number"]
             lines = ([f"| {title} | per " + (", ".join(sorted(sops)) or "the quality procedures") + " |"] if sheet else

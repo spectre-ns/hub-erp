@@ -123,8 +123,9 @@ def _split_inline(op: dict) -> None:
 
 
 def parse_ops(text: str) -> list[dict]:
-    """The operations in a model's answer. Lines before any '@@' are ignored unless there is no operation at all,
-    in which case they are returned as one 'insert at start' (an older answer style)."""
+    """The operations in a model's answer: its '@@' heads and their lines. Lines outside any operation are never content
+    (issue #68): an answer with no '@@' at all, a refusal or a question in words, has no operations and changes
+    nothing."""
     ops: list[dict] = []
     loose: list[str] = []
     cur: dict | None = None
@@ -176,8 +177,6 @@ def parse_ops(text: str) -> list[dict]:
                 op["lines"].pop()
             while op["lines"] and not op["lines"][0].strip():
                 op["lines"].pop(0)
-    if not ops and any(x.strip() for x in loose):
-        ops = [{"op": "insert", "at": "start", "lines": [x for x in loose if x.strip()]}]
     return ops
 
 
