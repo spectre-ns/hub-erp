@@ -280,7 +280,7 @@ def _answer(hub, msg, cog_id, bundle, release, record, sender, actions, intent, 
         explanation = f"Working on it: {plan}" + ("" if not r.get("stand_in") else " (drafted with the stand-in: configure a model for real wording)")
         reply = hub.inbox.reply(msg, sender=cog_id, body=explanation, record=record["locator"], envelope=env)
         # The cog's seat performs the operations live in the editor where it can; the hub does them in the file otherwise.
-        edit = {"ops": r["ops"], "kind": r.get("kind") or "text", "before_text": (hub.kernel.get(record["locator"])["fields"].get("text") or ""),
+        edit = {"ops": r["ops"], "kind": r.get("kind") or "text", "before_text": hub.dms.edit_text(record["locator"]),
                 "asked_by": sender, "stand_in": bool(r.get("stand_in"))}
         for k in ("paragraphs", "position", "start_row"):
             if r.get(k):

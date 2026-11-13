@@ -76,6 +76,8 @@ class Kernel:
     def __init__(self, path: Path, config_dir: Path | None = None):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        # A document's words live in its file, not its fields: the hub sets this to DMS.text_of so query(text=) finds them.
+        self.document_text = None
         # One connection shared by the shell's handler threads; callers serialize writes (the shell holds a lock).
         self.db = sqlite3.connect(str(self.path), check_same_thread=False)
         self.db.execute(
@@ -157,6 +159,20 @@ class Kernel:
             (at, type_, aggregate, body, run_id, release, by, chain),
         )
         return int(cur.lastrowid)
+
+    def last_seq(self) -> int:
+        """The sequence number of the last event written (0 before the first)."""
+        return int(self.db.execute("SELECT COALESCE(MAX(seq), 0) FROM events").fetchone()[0])
+
+    def written_since(self, seq: int, *, by: str) -> list[str]:
+        """The records ``by`` wrote an event on after event ``seq``, in the order first written: what one of its actions
+        created or changed (``agent.AgentTools.execute`` notes it, ``runner._link_produced`` links it)."""
+        out: list[str] = []
+        for (ag,) in self.db.execute("SELECT aggregate FROM events WHERE seq > ? AND by = ? AND aggregate LIKE 'rec:%' "
+                                     "ORDER BY seq", (int(seq), by)):
+            if ag not in out:
+                out.append(ag)
+        return out
 
     def verify_chain(self) -> list[str]:
         """Problems with the event chain (empty when every chained event is intact and in order)."""
@@ -322,10 +338,18 @@ class Kernel:
                 continue
             if overdue_at and not (rec["due"] and rec["due"] < overdue_at and rec["state"].startswith("awaiting")):
                 continue
-            if needle and needle not in json.dumps(rec["fields"], default=str).lower() and needle not in rec["number"].lower():
+            if needle and needle not in rec["number"].lower() and not self._mentions(rec, needle):
                 continue
             out.append(rec)
         return sorted(out, key=lambda r: r["events"][0])
+
+    def _mentions(self, rec: dict, needle: str) -> bool:
+        """Whether a record's fields, or a document's file, hold the words. A ``text`` field older records carry is a
+        stale copy of a file's words: the file is read instead."""
+        fields = {k: v for k, v in rec["fields"].items() if not (k == "text" and rec["type"] == "document")}
+        if needle in json.dumps(fields, default=str).lower():
+            return True
+        return bool(rec["type"] == "document" and self.document_text and needle in self.document_text(rec).lower())
 
     def links_of(self, ref: str) -> list[dict]:
         rec = self.require(ref)
@@ -342,8 +366,10 @@ class Kernel:
 
     @staticmethod
     def flat(rec: dict) -> dict:
-        """Fields merged to the top level, for list views and older callers."""
-        out = {**rec["fields"], "id": rec["number"], "kind": rec["type"], "type": rec["type"], "state": rec["state"],
+        """Fields merged to the top level, for list views and older callers. A ``text`` field an older document carries
+        is a stale copy of its file's words: left out."""
+        fields = {k: v for k, v in rec["fields"].items() if not (k == "text" and rec["type"] == "document")}
+        out = {**fields, "id": rec["number"], "kind": rec["type"], "type": rec["type"], "state": rec["state"],
                "folder": rec["folder"], "run_id": rec["run_id"], "release": rec["release"], "events": rec["events"],
                "locator": rec["locator"], "last_event": rec.get("last_event", ""), "assignees": rec["assignees"],
                "due": rec["due"], "labels": rec["labels"]}

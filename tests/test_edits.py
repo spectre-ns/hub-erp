@@ -406,3 +406,246 @@ def test_a_new_docx_carries_heading_styles():
     styles = z.read("word/styles.xml").decode()
     assert 'w:styleId="Heading1"' in styles and 'w:styleId="Heading3"' in styles and 'w:styleId="TableGrid"' in styles
     assert "styles.xml" in z.read("word/_rels/document.xml.rels").decode() and "/word/styles.xml" in z.read("[Content_Types].xml").decode()
+
+
+# ---------------------------------------------------------------- an SOP draft (review of #36, finding 1)
+def _sop_draft(hub, title):
+    """A document of an SOP's lineage with its Frame header, as an SOP draft on a change order is (eco keeps both): it
+    reads as the compile reads it ('## Scope', '| Audit report | QA |'), while an edit finds a heading by its words."""
+    from hubproto import sopdocs
+
+    doc = _doc(hub, title=title)
+    hub.kernel.set_fields(doc["locator"], {"lineage": sopdocs.LINEAGE + "supplier-audit",
+                                           "frame_header": "---\nname: supplier-audit\nversion: 1\n---"}, by="carol")
+    rec = hub.kernel.get(doc["locator"])
+    assert "## Scope" in hub.dms.text_of(rec).splitlines(), "the compile's reading marks the heading"
+    return rec
+
+
+def _paragraphs(content: bytes) -> list[str]:
+    """Every paragraph of a .docx body, empty ones too, as its words."""
+    return [b.text for b in edits.TextDoc(content, "docx").blocks if b.kind in ("h", "p")]
+
+
+def test_deleting_an_sop_drafts_heading_by_its_words_deletes_the_heading_paragraph(released, monkeypatch):
+    """The words of a whole paragraph are its paragraph: deleting them leaves no empty heading behind, in an SOP draft too,
+    whose text reads its headings as '#' lines."""
+    hub = released
+    rec = _sop_draft(hub, "SOP heading to delete")
+    before = _paragraphs(hub.dms.content(rec["locator"])[0])
+    monkeypatch.setattr(hub, "model", FakeModel("@@ delete: Scope"))
+    hub.send("carol", "carol", "Comment", "@quality-assistant please delete the Scope heading", record=rec["locator"])
+    [reply] = [m for m in hub.inbox.on_record(rec["locator"]) if m["from"] == "quality-assistant"]
+    assert hub.inbox.find(reply["id"])["edit"]["ops"][0]["op"] == "delete_paragraph", "a whole heading's words are its paragraph"
+    after = _paragraphs(hub.dms.content(rec["locator"])[0])
+    assert "Scope" not in after and "" not in after and len(after) == len(before) - 1, after
+
+
+def test_a_misplaced_insert_in_an_sop_draft_never_takes_out_its_own_heading(released, monkeypatch):
+    """A cog asked to insert '## Scope' at the start of an SOP draft; the live seat put it at the end. The hub moves the
+    insert, and takes out only what the insert added: the SOP's own Scope heading stays above its paragraph."""
+    hub = released
+    rec = _sop_draft(hub, "SOP misplaced insert")
+    loc = rec["locator"]
+    hub.dms.checkout(loc, by="carol", via="editor")  # carol is in the editor: the seat edits live
+    monkeypatch.setattr(hub, "model", FakeModel("@@ insert at start\n## Scope\nApplies to every supplier."))
+    hub.send("carol", "carol", "Comment", "@quality-assistant please add a Scope section at the start", record=loc)
+    [reply] = [m for m in hub.inbox.on_record(loc) if m["from"] == "quality-assistant"]
+    assert hub.inbox.find(reply["id"])["edit"]["ops"][0]["op"] == "insert"
+    # Live, the seat put the lines at the end; the session saved that.
+    content, _ = hub.dms.content(loc)
+    wrong, _ = edits.apply_ops(content, "docx", ops("@@ insert at end\n## Scope\nApplies to every supplier."))
+    hub.dms.add_version(loc, wrong, by="carol", filename="SOP misplaced insert.docx", mime=wopi.EDITABLE_EXTENSIONS["docx"], note="saved in the editor")
+    out = wopi.WopiHost(hub).verify_edit(hub.kernel.get(loc), reply["id"], "carol")
+    assert out["fixed"] == 1 and not out["failed"], out
+    paras = [p for p in _paragraphs(hub.dms.content(loc)[0]) if p.strip()]
+    at = paras.index("All suppliers shall be audited.")
+    assert paras[at - 1] == "Scope", f"the SOP's own Scope heading was taken out: {paras}"
+    assert paras.count("Applies to every supplier.") == 1 and paras.index("Applies to every supplier.") < paras.index("Supplier audit"), paras
+    hub.dms.undo_checkout(loc, by="carol")
+
+
+# ---------------------------------------------------------------- an SOP draft's lines, quoted (review of #36, finding 1)
+SOP_QUOTES = ("@@ replace: | Audit report | QA |\n@@ with: | Audit report | Quality |\n"
+              "@@ insert after: ## Scope\nApplies to every supplier.\n"
+              "@@ append to section: ## Records\nKeep the audit plan too.\n"
+              "@@ delete: ## Purpose")
+
+
+def _reply_report(hub, rec) -> list[dict]:
+    [reply] = [m for m in hub.inbox.on_record(rec["locator"]) if m["from"] == "quality-assistant"]
+    return hub.inbox.find(reply["id"]).get("edit_report") or []
+
+
+def test_a_cog_editing_an_sop_draft_is_shown_the_lines_its_operations_find(released, monkeypatch):
+    """The edit task reads an SOP draft as its operations match it: a heading or a table cell as its words, no Frame
+    header, so a line the cog copies is one its operations find (the review, the page and the compile keep the Frame
+    reading)."""
+    hub = released
+    rec = _sop_draft(hub, "SOP shown to an editing cog")
+    fake = FakeModel("@@ replace: QA\n@@ with: Quality")
+    monkeypatch.setattr(hub, "model", fake)
+    hub.send("carol", "carol", "Comment", "@quality-assistant please make the audit report's owner Quality", record=rec["locator"])
+    shown = fake.calls[0]["system"].split("== THE ITEM ==", 1)[1].split("== REFERENCE", 1)[0]
+    for markup in ("## Scope", "| Audit report | QA |", "name: supplier-audit"):
+        assert markup not in shown, f"the edit task is shown {markup!r}, which no operation finds"
+    assert {"Scope", "Audit report", "QA"} <= {x.strip() for x in shown.splitlines()}, shown
+    assert [r["ok"] for r in _reply_report(hub, rec)] == [True]
+
+
+def test_an_sop_drafts_lines_quoted_with_their_frame_markup_are_found(released, monkeypatch):
+    """A cog that quotes an SOP's lines as the compile reads them ('## Records', '| Audit report | QA |') changes what
+    it meant: the heading, the section, the row's cell; nothing fails with "Could not"."""
+    hub = released
+    rec = _sop_draft(hub, "SOP quoted with its markup")
+    monkeypatch.setattr(hub, "model", FakeModel(SOP_QUOTES))
+    hub.send("carol", "carol", "Comment", "@quality-assistant please change the Scope and Records sections and delete the Purpose heading", record=rec["locator"])
+    report = _reply_report(hub, rec)
+    assert report and all(r["ok"] for r in report), report
+    paras = [p for p in _paragraphs(hub.dms.content(rec["locator"])[0]) if p.strip()]
+    assert "Purpose" not in paras and paras[paras.index("Scope") + 1] == "Applies to every supplier.", paras
+    t = text_of(hub.dms.content(rec["locator"])[0], "docx")
+    assert "Quality" in t.splitlines() and "QA" not in t.splitlines() and "Keep the audit plan too." in t, t
+
+    other = _sop_draft(hub, "SOP section quoted with its markup")
+    monkeypatch.setattr(hub, "model", FakeModel("@@ delete section: ## Records"))
+    hub.send("carol", "carol", "Comment", "@quality-assistant please delete the Records section", record=other["locator"])
+    assert [r["ok"] for r in _reply_report(hub, other)] == [True]
+    t = text_of(hub.dms.content(other["locator"])[0], "docx")
+    assert "Records" not in t and "Audit report" not in t and "Scope" in t, t
+
+
+def test_quoted_markup_is_left_alone_where_the_document_holds_it_or_the_meaning_is_not_certain():
+    md = "## Scope\nSee QA.\n| Record | Owner |\n|---|---|\n| Audit report | QA |\n"
+    assert edits.unmark_ops(ops("@@ insert after: ## Scope\nx"), md)[0]["after"] == "## Scope", "a Markdown file holds its '#' lines"
+    docx = "Scope\nSee QA.\nRecord\nOwner\nAudit report\nQA"
+    row = ops("@@ replace: | Audit report | QA |\n@@ with: | Audit report | Quality |")
+    assert edits.unmark_ops(row, docx) == row, "'QA' occurs twice: a replace of it would change both"
+    assert edits.unmark_ops(ops("@@ delete: **See** QA."), docx) == [{"op": "delete", "target": "See QA."}]
+
+
+def test_swapping_two_cells_of_a_quoted_row_is_not_rewritten_into_replaces_that_undo_each_other():
+    """Review of #36: the cells are replaced one after another, so 'Audit report' -> 'QA' then 'QA' -> 'Audit report'
+    gave the row 'Audit report | Audit report' and both replaces said they were made."""
+    docx = "Record\nOwner\nAudit report\nQA"
+    swap = ops("@@ replace: | Audit report | QA |\n@@ with: | QA | Audit report |")
+    assert edits.unmark_ops(swap, docx) == swap, "not certain: left as written, so it fails visibly"
+    grow = ops("@@ replace: | Audit report | QA |\n@@ with: | Audit report (QA) | Quality |")
+    assert edits.unmark_ops(grow, docx) == grow, "a new value holding another changed cell's old words"
+    fine = edits.unmark_ops(ops("@@ replace: | Audit report | QA |\n@@ with: | Audit summary | Quality |"), docx)
+    assert fine == [{"op": "replace", "target": "Audit report", "with": "Audit summary"},
+                    {"op": "replace", "target": "QA", "with": "Quality"}], fine
+
+
+@pytest.mark.parametrize("ext", ["docx", "odt", "md"])
+def test_a_quoted_list_item_deletes_the_item(ext):
+    """Review of #36: an exact match compared a list item's text with its mark ('- ', '• ', '1. '), so a quoted item,
+    with or without its full stop, was never found."""
+    content = make(ext, LINES + ["- Keep reports for review.", "1. Check the list"])
+    reading = edits.applied_text(content, ext)
+    for quoted, gone in (("- Keep reports for review", "Keep reports for review"), ("1. Check the list", "Check the list")):
+        q = edits.unmark_ops(ops(f"@@ delete: {quoted}"), reading)
+        new, report = edits.apply_ops(content, ext, q)
+        assert report[0]["ok"], (quoted, q, report)
+        after = text_of(new, ext)
+        assert gone not in after and "Audit suppliers yearly." in after and "Keep records for 3 years." in after, after
+
+
+def test_a_quoted_item_in_an_sop_drafts_bullet_list_is_deleted():
+    """The same through a real SOP draft: a bullet list as sopdocs writes it into a .docx."""
+    from hubproto import sopdocs
+    frame = "---\nname: t-sop\n---\n# T SOP\n\n## Records\n- Audit suppliers yearly.\n- Keep reports.\n"
+    content = sopdocs.to_docx(frame)
+    reading = edits.applied_text(content, "docx")
+    q = edits.unmark_ops(ops("@@ delete: - Audit suppliers yearly"), reading)
+    new, report = edits.apply_ops(content, "docx", q)
+    assert report[0]["ok"], (q, report)
+    after = text_of(new, "docx")
+    assert "Audit suppliers yearly" not in after and "Keep reports." in after, after
+
+
+@pytest.mark.parametrize("ext", ["docx", "odt", "md"])
+def test_a_quoted_heading_or_item_deletes_only_the_paragraph_that_is_exactly_its_words(ext):
+    """Reviews of #36: '- suppliers yearly' deleted the paragraph 'Audit suppliers yearly.'; '## Record' deleted the
+    heading 'Records', or every 'Record' in the document, or (beside a 'Record' table cell) still the heading. A quoted
+    heading or item is the paragraph whose words are exactly its own, a closing full stop forgiven; else nothing changes
+    and the operation says so."""
+    content = make(ext, LINES + ["Record retention is set by policy."])
+    before = text_of(content, ext)
+    reading = edits.applied_text(content, ext)
+    for quoted in ("- suppliers yearly", "## Record"):
+        q = edits.unmark_ops(ops(f"@@ delete: {quoted}"), reading)
+        new, report = edits.apply_ops(content, ext, q)
+        assert not report[0]["ok"] and (new is None or text_of(new, ext) == before), (quoted, q, report)
+    q = edits.unmark_ops(ops("@@ delete: - Audit suppliers yearly"), reading)  # no full stop, as a model may quote it
+    new, report = edits.apply_ops(content, ext, q)
+    assert report[0]["ok"], (q, report)
+    after = [ln.strip("# ").strip() for ln in text_of(new, ext).splitlines()]
+    assert "Audit suppliers yearly." not in after and "." not in after, "the paragraph, with its full stop"
+    assert {"Records", "Record retention is set by policy.", "Keep records for 3 years."} <= set(after), "nothing else touched"
+    q = edits.unmark_ops(ops("@@ delete: ## Records"), reading)
+    new, report = edits.apply_ops(content, ext, q)
+    assert report[0]["ok"] and "Keep records for 3 years." in text_of(new, ext), (q, report)
+    assert "Records" not in [ln.strip("# ").strip() for ln in text_of(new, ext).splitlines()], "the heading, and only it"
+
+
+def _quoted(content: bytes, ext: str, src: str):
+    q = edits.unmark_ops(ops(src), edits.applied_text(content, ext))
+    new, report = edits.apply_ops(content, ext, q)
+    return q, new, report
+
+
+@pytest.mark.parametrize("ext", ["docx", "odt"])
+def test_a_quoted_heading_changes_a_heading_never_a_list_item_with_its_words(ext):
+    """Review of #36: a quoted heading was matched against every paragraph, so '## Records' found the bullet
+    '• Records' (its mark forgiven) before the heading: a replace turned the bullet into a heading, a delete deleted it."""
+    content = make(ext, ["# T", "## Record keeping", "- Records", "- Other"])
+    before = text_of(content, ext)
+    for src in ("@@ replace: ## Records\n@@ with: ## Archive", "@@ delete: ## Records"):
+        q, new, report = _quoted(content, ext, src)
+        assert not report[0]["ok"] and (new is None or text_of(new, ext) == before), (src, q, report)
+
+
+@pytest.mark.parametrize("ext", ["docx", "odt", "md"])
+def test_a_quoted_list_item_deletes_the_item_never_a_heading_with_its_words(ext):
+    """Review of #36: '- Records' deleted the heading 'Records', the first block whose words were the item's."""
+    for item in ("- Records", "* Records"):
+        content = make(ext, ["# T", "## Records", "Keep.", "## Training", item])
+        q, new, report = _quoted(content, ext, "@@ delete: - Records")
+        assert report[0]["ok"], (item, q, report)
+        after = [ln.strip("#•*- ").strip() for ln in text_of(new, ext).splitlines()]
+        assert after.count("Records") == 1 and after.index("Records") < after.index("Keep."), (item, after)
+
+
+@pytest.mark.parametrize("ext", ["docx", "odt", "md"])
+def test_a_quoted_item_whose_words_start_with_a_number_is_not_a_paragraph_without_it(ext):
+    """Review of #36: the quote's mark was removed twice, so '- 2. Keep records' deleted the paragraph 'Keep records.'
+    and left the item '2. Keep records'."""
+    content = make(ext, ["# T", "Keep records.", "- 2. Keep records"])
+    q, new, report = _quoted(content, ext, "@@ delete: - 2. Keep records")
+    assert report[0]["ok"], (q, report)
+    after = [ln.strip("•- ").strip() for ln in text_of(new, ext).splitlines()]
+    assert "Keep records." in after and "2. Keep records" not in after, after
+
+
+@pytest.mark.parametrize("ext", ["docx", "odt", "md"])
+def test_a_quoted_item_that_is_only_punctuation_finds_nothing(ext):
+    """Review of #36: '- .' lost its full stop to the forgiven closing punctuation and matched an empty line, deleting a
+    Markdown '---' or a blank paragraph."""
+    content = make(ext, ["# T", "Keep.", "---", "", "Done."])
+    before = text_of(content, ext)
+    q, new, report = _quoted(content, ext, "@@ delete: - .")
+    assert not report[0]["ok"] and (new is None or new == content or text_of(new, ext) == before), (q, report)
+    if new is not None and ext == "md":
+        assert new == content, new
+
+
+def test_a_table_row_quoted_with_its_pipes_is_the_row_deleted():
+    ext = "docx"
+    content = make(ext)
+    quoted = edits.unmark_ops(ops("@@ delete: | Audit report | QA |"), edits.applied_text(content, ext))
+    assert quoted == [{"op": "delete_paragraph", "target": "Audit report QA"}]
+    new, report = edits.apply_ops(content, ext, quoted)
+    assert report[0]["ok"] and report[0]["detail"].startswith("deleted the table row"), report
+    lines = text_of(new, ext).splitlines()
+    assert "Audit report" not in lines and "QA" not in lines and "Record" in lines and "Owner" in lines, lines

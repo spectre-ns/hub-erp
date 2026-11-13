@@ -227,7 +227,8 @@ class RecordTools:
             if words:
                 # Values only, as words: "high" must not match a field named risk_not_high.
                 hay = " ".join([r["number"], r["type"], TYPE_NAMES.get(r["type"]) or "", r["state"].replace("-", " "),
-                                *[_values_text(v) for k, v in r["fields"].items() if k not in SEARCH_SKIP]]).lower()
+                                *[_values_text(v) for k, v in r["fields"].items() if k not in SEARCH_SKIP and not (k == "text" and r["type"] == "document")],
+                                self.hub.dms.text_of(r) if r["type"] == "document" else ""]).lower()
                 tokens = set(re.findall(r"[\w.-]+", hay))
                 if not all(any(t == w.rstrip("s") or t.rstrip("s") == w.rstrip("s") or (len(w) > 3 and t.startswith(w.rstrip("s"))) for t in tokens)
                            for w in words):
@@ -261,23 +262,27 @@ class RecordTools:
             out["run"] = {"process": run["process"], "status": run["status"],
                           "waiting_at": (run.get("pending") or {}).get("title"), "waiting_for": (run.get("pending") or {}).get("assignees")}
         if rec["type"] == "document":
-            out["has_text"] = bool(rec["fields"].get("text"))
+            out["has_text"] = bool(self.hub.dms.text_of(rec).strip())
         return out
 
     def read_document(self, number: str, version: int | None = None, max_chars: int = 6000) -> dict:
         rec = self._find(number)
         if rec is None or rec["type"] != "document":
             return {"error": f"no document {number!r} that you may read"}
-        from .dms import extract_text
-
         try:
-            content, v = self.hub.dms.content(rec["locator"], int(version) if version else None)
+            _, v = self.hub.dms.content(rec["locator"], int(version) if version else None)
         except Exception as e:
             return {"error": str(e)}
-        text = extract_text(content, v.get("mime") or "", v.get("filename") or "")
+        text = self.hub.dms.text_of(rec, v["version"])  # as the document page and the compile read it
         cap = max(500, min(int(max_chars or 6000), 20000))
         out = {"number": rec["number"], "title": rec["fields"].get("title"), "version": v.get("version"), "filename": v.get("filename"),
                "text": text[:cap], "truncated": len(text) > cap}
+        from .sopdocs import LINEAGE
+
+        if str(rec["fields"].get("lineage") or "").startswith(LINEAGE):
+            out["note"] = ("This SOP reads as the compile reads it. The lines between the first two '---' lines are its header, kept on the "
+                           "record and not in the file. In the file a heading or a table cell is its words alone: apply_document_ops "
+                           "quotes 'Scope', not '## Scope', and changes a cell with '@@ replace: QA' then '@@ with: Quality'.")
         comments = rec["fields"].get("office_comments") or []
         if comments:
             out["comments"] = [{"id": c.get("id"), "author": c.get("author"), "text": c.get("text"), "reply_to": c.get("parent")} for c in comments[:30]]

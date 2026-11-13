@@ -1643,7 +1643,12 @@ def process_change_words(old_rule: dict | None, new_rule: dict | None) -> list[s
                 o = status_map(og).get(s["id"])
                 if o is not None and not o.get("sla_days"):
                     s.pop("sla_days", None)
-        return [i["text"] for i in diff(og, ng)]
+        words = [i["text"] for i in diff(og, ng)]
+        if bool(old_rule.get("links_produced")) != bool(new_rule.get("links_produced")):
+            words.append(f"Completing the {new_rule.get('object') or name} "
+                         + ("now links it to what its work produced" if new_rule.get("links_produced")
+                            else "no longer links it to what its work produced"))
+        return words
     except Exception:  # a rule that does not compile: the compile says why; the words stay short
         return [f"The {name} workflow changed"]
 

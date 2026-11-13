@@ -3234,7 +3234,7 @@ def decide_item(hub, co_ref, item_id: str, verdict: str, by: str, meaning: str, 
         was = c.get("changes_from") or c.get("was")
         target = _apply(base, [{"op": "change" if was else "add", "rule": new, **({"was": was} if was else {})}]
                         + ([{"op": "remove", "rule": c["rule"]}] if c.get("op") == "remove" else []))
-        errs = [x for x in consistency_guard(target, hub.registry.ids(), hub.kernel.types) if x.severity == "error" and x.rule_key == rule_key(new)]
+        errs = [x for x in consistency_guard(target, hub.registry.ids(), hub.kernel.types, hub.kernel.link_vocab) if x.severity == "error" and x.rule_key == rule_key(new)]
         if errs:
             raise ValueError("the override does not hold: " + "; ".join(x.detail for x in errs[:3]))
         widen = any(d.get("widening") for d in drift_guard(base, target) if d["op"] == "add" and rule_key(d["rule"]) == rule_key(new))

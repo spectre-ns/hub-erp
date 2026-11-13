@@ -63,6 +63,7 @@ class Hub:
 
         self.settings_drafts = SettingsDrafts(state / "settings" / "drafts")
         self.dms = DMS(self.kernel, BlobStore(state / "blobs"))
+        self.kernel.document_text = self.dms.text_of
         self.releases.blobs = self.dms.blobs  # the Frame texts each proposal was compiled from, kept by hash
         self.runner = Runner(state / "runs", self.kernel, self.releases, self.registry, self.inbox, self.dms)
         # Cogs are users who work from a queue: a Gate that pends for a cog, a mention, a message or a task lands in the
@@ -266,7 +267,7 @@ class Hub:
 
         from .guards import consistency_guard, drift_guard, schema_guard
 
-        findings = schema_guard(rules) + consistency_guard(rules, self.registry.ids(), self.kernel.types)
+        findings = schema_guard(rules) + consistency_guard(rules, self.registry.ids(), self.kernel.types, self.kernel.link_vocab)
         old_rules = self.releases.rules(base) if base else []
         changes = drift_guard(old_rules, rules)
         for c in changes:
@@ -381,7 +382,7 @@ class Hub:
         store = frames.with_overrides(texts, added=added) if texts else frames
         proposal = compile_proposal(store, scopes or default_scopes(store), self.registry.ids(), self.releases,
                                     extractor=extractor or self.extractor(), now=now,
-                                    record_types=self.kernel.types, config_digests=self.kernel.config_digests,
+                                    record_types=self.kernel.types, config_digests=self.kernel.config_digests, link_vocab=self.kernel.link_vocab,
                                     resolve_document=self.resolve_document, resolve_reference=self._reference_resolver(sop_drafts))
         proposal["overrides"] = {n: {"text": t, "draft": docs.get(n), "path": store.get(n).relpath} for n, t in texts.items()}
         from .runner import state_map_questions  # statuses this change removes while items are in them (change control 5.2)
@@ -485,16 +486,13 @@ class Hub:
                 "sha256": v.get("sha256") or "", "filename": v.get("filename") or ""}
 
     def pinned_text(self, pin: dict | None, limit: int = 20000) -> str:
-        """The text of a document exactly as a release pinned it."""
+        """The text of a document exactly as a release pinned it, read as every reader reads it (``DMS.text_of``)."""
         if not pin:
             return ""
-        from .dms import extract_text
-
         try:
-            content, v = self.dms.content(pin["locator"], pin.get("version"))
+            return self.dms.text_of(pin["locator"], pin.get("version"))[:limit]
         except Exception:
             return ""
-        return extract_text(content, v.get("mime") or "", v.get("filename") or "")[:limit]
 
     def frame_document(self, name: str, create: bool = True, by: str = "hub") -> dict | None:
         """The controlled document that carries a Frame's text: created on first use, versioned on every release. It is

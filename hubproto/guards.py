@@ -91,7 +91,10 @@ def change_order_signer_guard(rules: list[dict]) -> list[Finding]:
     return out
 
 
-def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict | None = None) -> list[Finding]:
+def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict | None = None,
+                      link_vocab: dict | None = None) -> list[Finding]:
+    """``record_types`` and ``link_vocab``: the record types and the link vocabulary the rules will run with (in force,
+    with what a change order carries); without them, what the rules need of them is not checked."""
     out: list[Finding] = list(change_order_signer_guard(rules))
     # A cog with a profile and no code of its own is a profile cog: the hub installs it from the release.
     cog_ids = set(cog_ids) | {r["name"] for r in rules if r.get("kind") == "cog"}
@@ -257,6 +260,15 @@ def consistency_guard(rules: list[dict], cog_ids: set[str], record_types: dict |
                            and (checkpoint_for(rule, r["step"]) or {}).get("id") == cp["id"] for r in rules):
                     out.append(Finding("consistency", "warning", f"checkpoint {cp['title']!r} of {rule['name']} has no routing sentence; it will route to the role on the step", key, frame, cp["line"]))
             out += workflow_checks(rule, key, frame, line, record_types)
+    # "Completing the <item> links it to what its work produced." links with produces: the link vocabulary must have it,
+    # or every such completion would leave its links out (PR #93 review). The same check as a record type a process needs.
+    if link_vocab is not None and "produces" not in link_vocab:
+        for proc in processes.values():
+            if proc.get("links_produced"):
+                pf, pl = _where(proc)
+                out.append(Finding("consistency", "error", f"process {proc['name']} links its item to what its work produced, but the link "
+                                   "vocabulary has no produces relation; add produces (inverse produced-by) to the link vocabulary on "
+                                   "the change order, or take the sentence out", rule_key(proc), pf, pl))
     out += responsibilities_guard(rules, roles, roles_with_members, members, groups)
     classed: dict[str, set[str]] = {}
     for r in rules:

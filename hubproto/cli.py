@@ -868,7 +868,9 @@ def cmd_decide(args) -> int:
     if not (args.meaning or "").strip():
         # Let the core say why a signature needs its meaning (nothing is changed first: no fields are passed).
         hub.runner.decide(run_id, args.as_user, args.verdict, meaning="", payload_digest=seen)
-    s = hub.runner.decide(run_id, args.as_user, args.verdict, meaning=args.meaning, payload_digest=seen, fields=fields or None)
+    produced = [x for v in (args.produced or []) for x in v.replace(",", " ").split()]
+    s = hub.runner.decide(run_id, args.as_user, args.verdict, meaning=args.meaning, payload_digest=seen, fields=fields or None,
+                          produced=produced or None)
     return report_run(hub, s, f"{args.verdict}d by {args.as_user}")
 
 
@@ -1623,6 +1625,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--verdict", choices=["approve", "reject"], required=True, help="approve or reject")
     s.add_argument("--meaning", default="", metavar="TEXT", help="what you are confirming (or why you reject); required")
     s.add_argument("--field", action="append", metavar="K=V", help="a field the Gate accepts (inbox-pending lists them); repeatable")
+    s.add_argument("--produced", action="append", metavar="NUMBER", help="a record your work on the item produced, linked to it when it "
+                   "completes (when its process says so); repeatable, or several separated by commas")
     s.add_argument("--seen", metavar="DIGEST", help="the seen digest from inbox-pending; default: the item as it is now")
     s.set_defaults(fn=cmd_decide)
     s = sub.add_parser("tick", help="escalate overdue Gates as the routing sentences say")

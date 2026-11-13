@@ -468,8 +468,9 @@ class PagesMixin:
             f = d["fields"]
             name = f.get("filename") or ""
             ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-            if ext in ("md", "txt") and f.get("text"):
-                thumb = f"<pre aria-hidden='true'>{esc(short(_plain_preview(f['text']), 220))}</pre>"
+            words = self.hub.dms.text_of(d) if ext in ("md", "txt") else ""
+            if words:
+                thumb = f"<pre aria-hidden='true'>{esc(short(_plain_preview(words), 220))}</pre>"
             else:
                 thumb = file_icon(name, label=False)
             page = href("/document/" + quote(d["locator"], safe=":"), user)
@@ -1071,13 +1072,14 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
                                                f'<a href="{href("/download", user, doc=loc, v=v["version"])}">Download version {esc(v["version"])}</a>',
                                                (f'<a href="{href("/compare/" + quote(loc, safe=":"), user, a=v["version"] - 1, b=v["version"])}">what changed</a>'
                                                 if v["version"] > 1 else "")] for v in versions], "No content yet.")
-        if f.get("text"):
+        words = self.hub.dms.text_of(rec)
+        if words:
             if f.get("mime") == "text/markdown" or str(f.get("filename") or "").endswith(".md"):  # a generated document: rendered
                 from .text import markdown_html
 
-                body += "<h2>Text</h2>" + markdown_html(str(f["text"])[:60000], link=lambda path: href(path, user))
+                body += "<h2>Text</h2>" + markdown_html(words[:60000], link=lambda path: href(path, user))
             else:
-                body += f"<h2>Text</h2><pre>{esc(short(f['text'], 20000))}</pre>"
+                body += f"<h2>Text</h2><pre>{esc(short(words, 20000))}</pre>"
         body += self._sop_doc_html(rec)
         body += "<h2 id='checkout'>Check-out and check-in</h2><div class='card'>"
         err = self._form_error(["file", "note"]) if self.route in ("/checkout", "/checkin", "/undo-checkout") else ""
@@ -1127,8 +1129,6 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
 
     def page_compare(self):
         """/compare/<document>?a=<version>&b=<version>: what changed between two versions, as text."""
-        from .. import office
-        from ..wopi import extension_of
         from .policy_docs import diff_html
 
         user = self.user
@@ -1149,12 +1149,8 @@ item {self._record_link(s['record']) if s.get('record') else '-'}; {self._versio
         if a not in nums or b not in nums:
             raise ShellError(f"{rec['number']} has versions {min(nums)} to {max(nums)}.", 404)
 
-        def text_of(n: int) -> str:
-            content, v = self.hub.dms.content(rec["locator"], n)
-            ext = extension_of(v.get("filename") or rec["fields"].get("filename") or "")
-            if ext in ("md", "txt", "csv"):
-                return content.decode("utf-8", "replace")
-            return office.extract_text(content, ext, limit=200000)
+        def text_of(n: int) -> str:  # each version read as the document page reads it (an SOP as the compile does)
+            return self.hub.dms.text_of(rec, n)
         va, vb = nums[a], nums[b]
         body = (f"<h1>{esc(rec['number'])}: what changed from version {a} to {b}</h1>"
                 f"<p class='why'>Version {a}: {esc(va.get('by'))} on {esc(when(va.get('at')))} ({esc(va.get('note') or '-')}). "

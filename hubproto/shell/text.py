@@ -491,6 +491,7 @@ def track_sentence(ev: dict, link_number=None) -> str:
     t = ev.get("type", "")
     step = esc(step_words(ev.get("step")))
     by = esc(ev.get("by", ""))
+    link = (lambda loc: link_number(loc, loc.rsplit(":", 1)[-1]) if link_number else esc(loc.rsplit(":", 1)[-1]))
     if t == "run.started":
         return f"{esc(ev.get('owner', ''))} started the run" + (f" on policy version {esc(str(ev.get('release', ''))[:12])}" if ev.get("release") else "")
     if t == "step.started":
@@ -544,6 +545,17 @@ def track_sentence(ev: dict, link_number=None) -> str:
         return f"{by} decided: {esc(ev.get('verdict'))} “{esc(ev.get('meaning', ''))}”"
     if t == "grant.issued":
         return f"grant issued by {esc(ev.get('decided_by', by))}"
+    if t == "record.produced_named":
+        recs = ev.get("records") or []
+        return f"{by} named what their work produced: " + ", ".join(link(r) for r in recs)
+    if t == "record.produced_linked":
+        recs = [x.get("record", "") for x in ev.get("links") or []]
+        return (f"{'when it was ' + esc(ev.get('when')) + ', ' if ev.get('when') else ''}the hub linked it to what its work produced: "
+                + ", ".join(link(r) for r in recs))
+    if t == "record.produced_not_linked":
+        recs = [x.get("record", "") for x in ev.get("not_linked") or []]
+        return (f"{'when it was ' + esc(ev.get('when')) + ', ' if ev.get('when') else ''}the hub could not link it to what its work produced"
+                + (": " + ", ".join(link(r) for r in recs) if recs else "") + f". {esc(ev.get('reason', ''))}")
     return esc(t.replace(".", " ").replace("_", " "))
 
 

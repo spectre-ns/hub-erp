@@ -37,7 +37,7 @@ committee reads (7.4) (frames/reference/writing-policy-frames.frame.md; DEV-NOTE
 | `## Approval criteria` | "The ap-reviewer cog may approve purchase-to-pay bills under 2,000 USD when the three-way match is within tolerance and the supplier is approved." | a cog's rail (chapter 6.6) |
 | `## Segregation of duties` | "The preparer and the approver of a bill must be different people." "A cog's work is signed by a person." | who is kept from deciding |
 | `## Duties` | "Every week the it-admin cog reviews the open change orders that touch permissions, record types or forms and comments on each what it found." | a cog's standing duty, every day, week or month (chapter 6.8) |
-| `## Process: <name>` | numbered steps ("1. [finance-clerk] Extract the bill (invoice-extractor)"), or statuses and transitions ("Statuses: Open (to do), ..." "From Open to Awaiting disposition: automatically, after ...") | a workflow graph (chapter 3.1, "Processes as graphs") |
+| `## Process: <name>` | numbered steps ("1. [finance-clerk] Extract the bill (invoice-extractor)"), or statuses and transitions ("Statuses: Open (to do), ..." "From Open to Awaiting disposition: automatically, after ..."); "Completing the task links it to what its work produced." | a workflow graph (chapter 3.1, "Processes as graphs"); the last sentence links an item, when it is completed or handed back, to what its work produced (chapter 3.15) |
 | `## Cog: <name>` | `About:`, `Model:`, `Persona:` (and optionally `Prompt from:`, `References:`) | a cog's identity (chapter 6.1) |
 | `## Persona: <name>` | `Tone:`, `Stance:`, `Lenses:`, `Reviews: 3 adversarial passes`, `Escalates:`, `Behaviour:` | how the cogs that share it behave (chapter 6.1) |
 | `## Committee: <name>` | `Group: senior-cogs` `Chair: carol` `Purpose: ...` | a committee on a group, deciding by consensus (7.6) |
@@ -701,7 +701,9 @@ roles, context, permissions, routes, approval criteria, duties or steps change")
 
 ### Validation and test evidence
 
-The IT SOP's validation classes apply to each item (7.16). The **Approval** section lists what is missing, for example
+The IT SOP's validation classes apply to each item (7.16). The example company's IT SOP needs only the review of the
+delta for every class, so nothing is listed here unless a test failed. When an IT SOP asks for evidence, the
+**Approval** section lists what is missing, for example
 "5 high-risk item(s) need test evidence (...): attach a document of type test-evidence to the change order, or record
 a test record (what was run, expected and actual result, pass or fail)" and "1 medium-risk item(s) need a test note
 ...". A failed test stops approval. Evidence is either a document of type `test-evidence` attached to the change order,
@@ -1027,7 +1029,10 @@ itself:
   committee's questions with the chair.
 * **Access management** through the organization model, by change order with a reason; "a cog is given only the roles
   its work needs and never a role that approves policy"; a quarterly access check (access review interval 90 days).
-* **Risk-based validation**, "in the manner of computer software assurance": the classes of 7.4. A high-risk item
+* **Risk-based validation**, "in the manner of computer software assurance": the classes of 7.4. The example
+  company's IT SOP asks only **the review of the delta** for every class ("High-risk changes need the review
+  of the delta."), so no change order waits for test evidence; evidence may still be attached, and a failed test still
+  stops it. An IT SOP that asks for more is enforced the same way: a high-risk item
   needs a **test record** (a scripted check: what was run, expected, what happened, pass or fail; or an attached
   document of type test-evidence); a medium-risk item a **test note** (an unscripted try-out and what was seen); a
   low-risk item only the review of the delta. The change order cannot be approved until each item has what its class

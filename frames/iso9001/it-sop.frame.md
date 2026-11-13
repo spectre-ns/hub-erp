@@ -3,7 +3,7 @@ type: frame [0.2]
 name: it-sop
 description: "IT and configuration: the hub's configuration changes only by change order; who is given which roles (cogs included); risk-based validation of configuration changes; backup and restore; incidents; what system administrators may do."
 visibility: internal
-version: "0.2.1"
+version: "0.2.2"
 scope: department
 maintainer: bob
 inherits: org-model
@@ -48,16 +48,14 @@ delta is classed: high risk when it changes who may approve, sign or see what
 (permissions, approval criteria, segregation of duties, members and roles, a
 cog's model or persona), medium when it changes how work flows (routing, due
 dates, processes, record types and required fields), low when it changes
-presentation only (form layouts, wording). A high-risk item is tested with a
-recorded scripted check before approval; a medium-risk item is tried out in an
-unscripted test whose outcome is noted on the change order; a low-risk item is
-validated by the review of the delta itself. The evidence is attached to the
-change order and kept with it: a test record (a document of type test-evidence,
-or a test record entered on the change order: what was run, what was expected,
-what happened, pass or fail) or a test note. The change order cannot be
-approved until each item has the evidence its class needs, and a failed test
-stops it. The classes and what each needs are stated in the Validation section
-below; a change to them is a change order like any other.
+presentation only (form layouts, wording). Every class is validated by the
+review of the delta itself: no test record or test note is required before
+approval. Evidence may still be attached to the change order and is kept with
+it: a test record (a document of type test-evidence, or a test record entered
+on the change order: what was run, what was expected, what happened, pass or
+fail) or a test note. A failed test stops the change order. The classes and
+what each needs are stated in the Validation section below; a change to them is
+a change order like any other.
 
 Hosted models. The cogs run on the local models the installation provides. A
 hosted model (Claude, from Anthropic) is used only when a system administrator
@@ -111,8 +109,8 @@ Changes to permissions, approval criteria, segregation of duties, members, roles
 Changes to record types and workflow gates are high risk.
 Changes to routing, due dates, processes, thresholds, required fields, duties, folders, scopes and responsibilities are medium risk.
 Changes to form layouts and wording are low risk.
-High-risk changes need a test record.
-Medium-risk changes need a test note.
+High-risk changes need the review of the delta.
+Medium-risk changes need the review of the delta.
 Low-risk changes need the review of the delta.
 
 ## Thresholds
@@ -130,7 +128,7 @@ Every week the it-admin cog reviews the open change orders that touch permission
 |---|---|
 | System administrator | Prepares configuration changes as change orders, manages access, backs up and restores the hub, handles incidents, and switches hosted models on or off as a recorded installation change; approves nothing as a system administrator. |
 | Management reviewer | Reviews changes to roles, limits and segregation of duties. |
-| Quality manager | Approves the change orders that carry configuration changes, once each item has the validation evidence its class needs. |
+| Quality manager | Approves the change orders that carry configuration changes, once each item has the validation its class needs. |
 | Policy owner | Decides the items of a change order, widenings by both policy owners. |
 | the senior-cogs group | Compiles the SOPs and works on the tasks assigned to it, on a hosted model only when it is switched on, and sends only what this SOP allows. |
 | Internal auditor | Audits system administration they did not perform. |

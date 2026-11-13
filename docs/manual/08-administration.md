@@ -154,7 +154,8 @@ The same is visible in the web pages: each cog's profile shows its model with "a
 People page shows unavailable cogs; the messenger lists them as not available.
 
 **How to change a cog's model.** A cog's model is part of its profile, which is configuration: changing it is a
-direct change on a change order, a widening (two policy owners) and high risk (a test record). Use **Change model** on
+direct change on a change order, a widening (two policy owners) and high risk (validated by the review of the delta in the example IT SOP; a test record where the IT SOP asks for
+one, chapter 7.16). Use **Change model** on
 the cog's profile (chapter 6.10), or Settings > **Cog rails** > the cog's profile (chapter 7.7). When a change names a
 model this hub cannot reach, the compiler adds a warning ("the cog will be unavailable until it can").
 

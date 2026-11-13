@@ -106,15 +106,147 @@ def test_text_is_extracted_for_text_and_markdown_and_is_searchable(d, hub):
                    filename="notes.txt")
     pdf = d.create(title="scan", doc_class="working", folder=FOLDER, by="alice", content=b"%PDF-1.4 reference weights",
                    filename="scan.pdf")
-    assert md["fields"]["mime"] == "text/markdown" and "Calibration procedure" in md["fields"]["text"]
-    assert txt["fields"]["mime"] == "text/plain" and txt["fields"]["text"] == "Plain text about torque"
-    assert pdf["fields"]["mime"] == "application/pdf" and pdf["fields"]["text"] == ""
+    assert md["fields"]["mime"] == "text/markdown" and "Calibration procedure" in d.text_of(md)
+    assert txt["fields"]["mime"] == "text/plain" and d.text_of(txt) == "Plain text about torque"
+    assert pdf["fields"]["mime"] == "application/pdf" and d.text_of(pdf) == ""
     assert [r["number"] for r in hub.kernel.query(type_="document", text="reference weights")] == [md["number"]]
     assert [r["number"] for r in hub.kernel.query(text="about torque")] == [txt["number"]]
     assert d.versions(md["locator"])[0]["text_excerpt"].startswith("# Calibration procedure")
     d.add_version(md["locator"], b"# Calibration procedure\n\nUse the torque wrench.", by="alice", mime="text/markdown")
     assert [r["number"] for r in hub.kernel.query(text="reference weights")] == [], "search follows the latest version"
     assert [r["number"] for r in hub.kernel.query(text="torque wrench")] == [md["number"]]
+
+
+def test_the_file_is_the_one_source_of_a_documents_words(d, hub):
+    """#22: the record keeps no copy of a document's text. Every reading comes from the file of the version asked for,
+    so search, reviews and the cogs see what the file says; a text field an older record still carries is ignored."""
+    from hubproto.review import gather
+
+    doc = d.create(title="WI-7", doc_class="working", folder=FOLDER, by="alice", content=b"Torque to 2 Nm.", filename="wi-7.txt")
+    assert "text" not in doc["fields"] and d.text_of(doc) == "Torque to 2 Nm."
+    d.add_version(doc["locator"], b"Torque to 3 Nm.", by="alice", filename="wi-7.txt")
+    assert d.text_of(doc["locator"]) == "Torque to 3 Nm." and d.text_of(doc["locator"], version=1) == "Torque to 2 Nm."
+    hub.kernel.set_fields(doc["locator"], {"text": "a stale copy about rivets"}, by="alice")  # as an older record carries it
+    assert hub.kernel.query(type_="document", text="rivets") == [], "the stale copy is not the document's words"
+    assert [r["number"] for r in hub.kernel.query(type_="document", text="3 nm")] == [doc["number"]]
+    assert hub.kernel.query(type_="document", text="2 nm") == [], "an earlier version's words are not the document's"
+    ctx = type("Ctx", (), {"dms": d})()
+    assert gather(ctx, hub.kernel.get(doc["locator"]))["documents"][0]["text"] == "Torque to 3 Nm.", "a reviewer reads the file"
+    assert d.text_of("rec:document:none") == "" and d.text_of(d.create(title="empty", doc_class="working", folder=FOLDER, by="alice")) == ""
+    held = hub.kernel.get(doc["locator"])
+    d.add_version(doc["locator"], b"Torque to 4 Nm.", by="alice", filename="wi-7.txt")
+    assert d.text_of(held) == "Torque to 4 Nm.", "a record the caller held from before is read as it is now"
+    big = b"x" * 30000
+    assert len(d.text_of(d.create(title="long", doc_class="working", folder=FOLDER, by="alice", content=big, filename="long.txt"))) == 30000, \
+        "no cap: the whole file"
+
+
+def test_an_sop_reads_the_same_for_the_reviewing_cog_and_the_compile(released):
+    """#29: an SOP or policy document reads as the compile reads it (sopdocs.frame_text: its header, and its body with a
+    line per picture), so the cog reviewing it, the document page and the compile see the same lines."""
+    from hubproto import sopdocs
+    from hubproto.cogs import RunContext, item_text
+
+    hub = released
+    sopdocs.convert(hub, by="carol")
+    rec = next(x for x in hub.kernel.query(type_="document") if str(x["fields"].get("lineage") or "").startswith(sopdocs.LINEAGE))
+    compiled = sopdocs.frame_text(hub, rec)
+    assert hub.dms.text_of(rec) == compiled and compiled.startswith("---")
+    ctx = RunContext(run_id="t", release="", bundle={}, owner="quality-assistant", kernel=hub.kernel, dms=hub.dms)
+    line = next(x for x in compiled.split("\n---", 1)[1].splitlines() if x.strip() and ">>>" not in x and "<<<" not in x)
+    assert line in item_text(ctx, rec, 10 ** 6), "the reviewing cog reads the compile's lines"
+
+
+def test_a_version_saved_while_an_sop_is_read_is_not_cached_as_the_one_before(d, monkeypatch):
+    """The reading cached under a version's hash is that version's: a save landing while an SOP is being read (the
+    editor, a cog's edit) does not put the new words under the old hash (review of #36, finding 2)."""
+    from hubproto import sopdocs
+
+    doc = working(d, content=b"## Scope\nThe first words.\n", title="SOP read during a save")
+    d.kernel.set_fields(doc["locator"], {"lineage": sopdocs.LINEAGE + "race-sop", "frame_header": "---\nname: race-sop\n---"}, by="alice")
+    original, saved = sopdocs.frame_text, []
+
+    def save_meanwhile(hub, rec, version=None, pictures=True):
+        if not saved:
+            saved.append(d.add_version(doc["locator"], b"## Scope\nThe second words.\n", by="alice", filename="draft.txt"))
+        return original(hub, rec, version, pictures)
+
+    monkeypatch.setattr(sopdocs, "frame_text", save_meanwhile)
+    assert "The first words." in d.text_of(doc["locator"]), "read as the version the record named when the read began"
+    monkeypatch.setattr(sopdocs, "frame_text", original)
+    assert "The first words." in d.text_of(doc["locator"], 1), "version 1 is cached as version 1's words"
+    assert "The second words." in d.text_of(doc["locator"]) and "The second words." in d.text_of(doc["locator"], 2)
+
+
+def test_no_writer_puts_a_copy_of_a_documents_words_on_its_record(released):
+    """Review of #36: applying a cog's replies and filing a review put a text field on the document again. Neither does;
+    a text field an older document carries is never passed on (a cog step's payload, list views); and the classifier
+    reads the document's words from its file."""
+    from hubproto import wopi
+    from hubproto.cogs import Cog, DocumentClassifier, RunContext
+    from hubproto.kernel import Kernel
+    from hubproto.review import file_review
+    from test_review_agent_reliability import _doc_with_pending_edit
+
+    hub = released
+    loc, _ = _doc_with_pending_edit(hub, "No copy plan")
+    assert wopi.WopiHost(hub).apply_replies(hub.kernel.get(loc), "alice")
+    assert "text" not in hub.kernel.get(loc)["fields"] and "twice a year" in hub.dms.text_of(loc), "the words are in the file only"
+    ctx = RunContext(run_id="t-review", release="", bundle={}, owner="quality-assistant", kernel=hub.kernel, dms=hub.dms)
+    said = {"cog": "quality-assistant", "verdict": "pass", "model": "stand-in", "stand_in": True, "sops": [], "findings": [], "summary": "Fine."}
+    filed = file_review(ctx, hub.kernel.get(loc), [said], by="quality-assistant")
+    assert filed and "text" not in filed["fields"] and "Overall: pass" in hub.dms.text_of(filed), "a review is evidence in its file"
+
+    scan = hub.dms.create(title="scan 0001", doc_class="working", folder=FOLDER, by="alice", content=b"INVOICE 4471 from Acme Ltd",
+                          filename="scan-0001.txt")
+    hub.kernel.set_fields(scan["locator"], {"text": "a stale copy about rivets"}, by="alice")  # as an older record carries it
+    held = RunContext(run_id="t-classify", release="", bundle={}, owner="document-classifier", kernel=hub.kernel, dms=hub.dms,
+                      record=scan["locator"])
+    assert "text" not in Kernel.flat(hub.kernel.get(scan["locator"])), "list views show no stale copy"
+    assert "text" not in Cog._prior({}, held), "a cog step's payload carries no stale copy"
+    out = DocumentClassifier().task_run({}, held)
+    assert out["payload"]["doc_type"] == "invoice" and "text" not in out["payload"], "the classifier reads the file's words"
+
+
+def test_an_office_file_reads_in_full(d, hub):
+    """Review of #36: a .docx was still read only to its first 20,000 characters, so search missed its end."""
+    from hubproto import office, wopi
+
+    blank, _ = wopi.blank_document("docx")
+    lines = [f"Paragraph {i}: torque the fasteners to the value on the drawing, then mark them." for i in range(600)] + \
+            ["The closing paragraph names the rivet gauge."]
+    doc = d.create(title="long docx", doc_class="working", folder=FOLDER, by="alice", content=office.insert_paragraphs(blank, "docx", lines, "replace"),
+                   filename="long.docx")
+    text = d.text_of(doc)
+    assert len(text) > 40000 and text.rstrip().endswith("The closing paragraph names the rivet gauge."), len(text)
+    assert [r["number"] for r in hub.kernel.query(type_="document", text="rivet gauge")] == [doc["number"]]
+
+
+def test_an_sops_pictures_read_the_same_for_every_reader(released):
+    """Review of #36: the reviewing cog, the cog's read_document tool, the version compare and the compile read an SOP
+    document the same way, its picture lines included (they read it through DMS.text_of)."""
+    from hubproto import agent_docs, office, sopdocs
+    from hubproto.cogs import RunContext, item_text
+    from hubproto.tools import RecordTools
+    from test_sop_pictures import ANCHOR, BASE, DOCX, PNG, word_picture
+
+    hub = released
+    plain = sopdocs.to_docx(BASE)
+    doc = hub.dms.create(title="Pictured SOP", doc_class="working", folder=FOLDER, by="carol", content=plain, filename="pictured-sop.docx",
+                         mime=DOCX, fields={"lineage": sopdocs.LINEAGE + "pictured-sop", "frame_header": "---\nname: pictured-sop\nversion: 1\n---"})
+    hub.dms.add_version(doc["locator"], word_picture(plain, ANCHOR, PNG), by="carol", filename="pictured-sop.docx", mime=DOCX)
+    rec = hub.kernel.get(doc["locator"])
+    compiled = sopdocs.frame_text(hub, rec)
+    [pic] = [x for x in compiled.splitlines() if office.is_picture_line(x)]
+    assert hub.dms.text_of(rec) == compiled, "the document's text is the compile's"
+    ctx = RunContext(run_id="t", release="", bundle={}, owner="quality-assistant", kernel=hub.kernel, dms=hub.dms)
+    assert pic in item_text(ctx, rec, 10 ** 6), "the reviewing cog sees the picture"
+    tools = RecordTools(hub, "carol")
+    assert pic in tools.read_document(rec["number"])["text"], "the cog's read_document tool sees the picture"
+    assert pic not in tools.read_document(rec["number"], version=1)["text"], "an earlier version reads as it was"
+    diff = agent_docs.document_versions(tools, {"number": rec["number"], "compare": [1, 2]})["diff"]
+    assert "+" + pic in diff.splitlines(), "the version compare shows the picture that was added"
+    assert "error" in agent_docs.document_versions(tools, {"number": rec["number"], "compare": [1, 9]})
 
 
 # --------------------------------------------------------------------- classes

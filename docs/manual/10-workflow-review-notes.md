@@ -397,7 +397,8 @@ dave did in chapter 7.9. Together with E1 (the quality manager never signs a rev
 example company's people cannot approve much of their own configuration work. Question: deputies, more policy owners,
 or different rules?
 
-**V3 [high]. Validation evidence is self-declared and has no page.** The IT SOP's classes are enforced: a change order
+**V3 [high]. Validation evidence is self-declared and has no page.** (Written when the example IT SOP asked for
+evidence; it now asks only for the review of the delta, chapter 7.16.) The IT SOP's classes are enforced: a change order
 cannot be approved until its high-risk items have a passing test record and its medium-risk items a test note. But
 there is no page or command to record a test entry (in chapter 7.9 it was recorded through the Python interface), any
 member may record one, the author included, an entry that names no items covers all of them, and nothing checks it

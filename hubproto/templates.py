@@ -210,7 +210,7 @@ def new_revision(hub, ref: str, *, by: str, bundle: dict) -> dict:
         return open_[-1]
     content, version = hub.dms.content(rec["locator"])
     fields = {"template_source": lineage, "template_source_sha": f.get("template_source_sha"), "template_for": f.get("template_for") or "",
-              "placeholders": placeholders(f.get("text") or ""), "revises": rec["number"],
+              "placeholders": placeholders(hub.dms.text_of(rec)), "revises": rec["number"],
               "revision": next_revision(f.get("revision") or "A")}
     if not f.get("template_source"):
         hub.kernel.set_fields(rec["locator"], {"template_source": lineage}, by=by)

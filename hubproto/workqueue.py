@@ -475,7 +475,7 @@ def assigned_work(hub, task: dict, state: dict | None = None) -> dict:
     waiting = (run or {}).get("pending") or {}
     step_mine = bool(run) and hub.runner.is_assigned_work(hub.runner.load(run["id"]), cog)
     f = rec["fields"]
-    what = f.get("description") or f.get("text", "")[:600] or ""
+    what = f.get("description") or (hub.dms.text_of(rec) if rec["type"] == "document" else f.get("text") or "")[:600]
     goal = (f"You are assigned {rec['number']} ({rec['type']}: {f.get('title') or ''}) by {task.get('by') or 'a colleague'}."
             + (f" Their instruction: {p['instruction']}" if p.get("instruction") else "")
             + (f" What the item says: {what}" if what else "")
@@ -488,7 +488,7 @@ def assigned_work(hub, task: dict, state: dict | None = None) -> dict:
     agent = Agent(hub, cog)
     res = agent.resume_or_none(f"q{task['id']}", by=task.get("by") or cog)
     if res is None:
-        prep = agent.prepare(goal, by=task.get("by") or cog, trigger="assigned", run_id=f"q{task['id']}")
+        prep = agent.prepare(goal, by=task.get("by") or cog, trigger="assigned", run_id=f"q{task['id']}", about=rec["locator"])
         res = agent.conclude(prep, agent.think_safely(prep))
     out = {"run": res["run"], "status": res["status"], "summary": res["summary"], "actions": res["actions"], "record": rec["number"]}
     if run and step_mine and hub.runner.is_assigned_work(hub.runner.load(run["id"]), cog):
