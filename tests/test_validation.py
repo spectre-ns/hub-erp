@@ -49,10 +49,11 @@ def test_hosted_model_use_is_governed_by_the_it_sop(released):
 # ---------------------------------------------------------------- validation (QMS A5)
 def test_the_risk_classes_come_from_the_it_sop(released):
     b = bundle(released)
-    assert b["validation"]["classes"]["permission"] == "high" and b["validation"]["needs"]["medium"] == "test-note"
+    assert b["validation"]["classes"]["permission"] == "high" and b["validation"]["needs"]["medium"] == "review"
     assert all(s_["frame"] == "it-sop" for s_ in b["validation"]["sources"]), "compiled from the IT SOP, each with its line"
     pol = validation.policy(released)
-    assert pol["source"] == "release" and pol["needs"] == {"high": "test-record", "medium": "test-note", "low": "review"}
+    assert pol["source"] == "release" and pol["needs"] == {"high": "review", "medium": "review", "low": "review"}, \
+        "the example IT SOP asks only for the review of the delta, for now"
     assert "it-sop" in validation.basis(released)
     perm = {"op": "add", "rule": {"kind": "permission"}, "widening": True}
     assert validation.classify(perm, pol) == "high"
@@ -77,6 +78,22 @@ def test_the_risk_classes_come_from_the_it_sop(released):
     assert validation.classify({"op": "add", "rule": {"kind": "threshold"}}, validation.policy(released)) == "low"
 
 
+def test_the_example_it_sop_asks_for_no_test_evidence(cc_hub):
+    """For the demo, a change order of any risk waits for no test record or test note: the review of the delta is its
+    validation. A failed test still stops it."""
+    hub = cc_hub
+    co = new_co(hub)
+    revise(hub, co, "finance-policy", OLD, NEW)  # approval criteria: high risk
+    cc.request_review(hub, co["number"], "alice")
+    its = validation.annotate(validation.items_of(hub, hub.kernel.get(co["locator"])), validation.policy(hub))
+    assert any(i["risk"] == "high" for i in its) and all(i["validation"] == "review" for i in its)
+    assert validation.requirements(hub, co["number"]) == []
+    assert not any("test evidence" in r or "test note" in r for r in cc.approval_reasons(hub, co["number"]))
+    validation.record_evidence(hub, co["number"], by="bob", kind="test-record", text="bill of 1,400 USD submitted",
+                               expected="the cog approves", actual="it waited for dave", result="fail")
+    assert validation.requirements(hub, co["number"])[0].startswith("a test of"), "a failed test still stops it"
+
+
 def test_without_validation_sentences_the_defaults_apply_and_say_so(released):
     text = released.frames.get("it-sop").path.read_text()
     head, rest = text.split("## Validation\n", 1)
@@ -97,7 +114,7 @@ def test_without_validation_sentences_the_defaults_apply_and_say_so(released):
     assert any(n.get("severity") == "unread" and "names nothing the hub can class" in n["note"] for n in notes)
 
 
-def test_a_change_order_needs_the_evidence_its_items_risk_class_asks_for(cc_hub):
+def test_a_change_order_needs_the_evidence_its_items_risk_class_asks_for(cc_hub, evidence_required):
     hub = cc_hub
     co = new_co(hub)
     revise(hub, co, "finance-policy", OLD, NEW)  # the ap-reviewer cog's approval limit: approval criteria, high risk
@@ -121,7 +138,7 @@ def test_a_change_order_needs_the_evidence_its_items_risk_class_asks_for(cc_hub)
     assert validation.requirements(hub, co["number"])[0].startswith("a test of"), "a failed test stops it"
 
 
-def test_a_test_evidence_document_on_the_change_order_counts(cc_hub):
+def test_a_test_evidence_document_on_the_change_order_counts(cc_hub, evidence_required):
     hub = cc_hub
     co = new_co(hub, title="Tolerance")
     revise(hub, co, "finance-policy", "The match tolerance is 2 percent.", "The match tolerance is 3 percent.")

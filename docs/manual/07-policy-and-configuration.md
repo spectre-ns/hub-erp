@@ -701,7 +701,9 @@ roles, context, permissions, routes, approval criteria, duties or steps change")
 
 ### Validation and test evidence
 
-The IT SOP's validation classes apply to each item (7.16). The **Approval** section lists what is missing, for example
+The IT SOP's validation classes apply to each item (7.16). The example company's IT SOP needs only the review of the
+delta for every class, so nothing is listed here unless a test failed. When an IT SOP asks for evidence, the
+**Approval** section lists what is missing, for example
 "5 high-risk item(s) need test evidence (...): attach a document of type test-evidence to the change order, or record
 a test record (what was run, expected and actual result, pass or fail)" and "1 medium-risk item(s) need a test note
 ...". A failed test stops approval. Evidence is either a document of type `test-evidence` attached to the change order,
@@ -1027,7 +1029,10 @@ itself:
   committee's questions with the chair.
 * **Access management** through the organization model, by change order with a reason; "a cog is given only the roles
   its work needs and never a role that approves policy"; a quarterly access check (access review interval 90 days).
-* **Risk-based validation**, "in the manner of computer software assurance": the classes of 7.4. A high-risk item
+* **Risk-based validation**, "in the manner of computer software assurance": the classes of 7.4. The example
+  company's IT SOP asks, for now, only **the review of the delta** for every class ("High-risk changes need the review
+  of the delta."), so no change order waits for test evidence; evidence may still be attached, and a failed test still
+  stops it. An IT SOP that asks for more is enforced the same way: a high-risk item
   needs a **test record** (a scripted check: what was run, expected, what happened, pass or fail; or an attached
   document of type test-evidence); a medium-risk item a **test note** (an unscripted try-out and what was seen); a
   low-risk item only the review of the delta. The change order cannot be approved until each item has what its class
