@@ -63,6 +63,21 @@ def test_a_change_order_carries_a_new_document_that_comes_into_force_with_its_re
     assert "persona-coach" in hub.frames.frames
 
 
+def test_a_new_document_keeps_its_whole_header_when_its_description_holds_a_line_separator(hub):
+    """A new SOP whose description holds U+2028 (header_text writes it as it is) keeps its whole header on the draft,
+    closing ``---`` included, and the header reads back as written (#32)."""
+    from hubproto.frames import parse_frontmatter
+
+    text = coach_text().replace("It explains, weighs and recommends; it signs nothing.",
+                                "It explains, weighs and recommends;\u2028it signs nothing.")
+    assert "\u2028" in text
+    co = new_co(hub, by="carol", title="Add the coach persona")
+    draft = eco.add_new_sop(hub, co["number"], "persona-coach", text, by="carol", relpath=COACH)
+    head = draft["fields"]["frame_header"]
+    assert head.startswith("---\n") and head.endswith("\n---"), f"the draft's header lost its closing ---: {head!r}"
+    assert parse_frontmatter(head + "\n")[0]["description"].endswith("recommends;\u2028it signs nothing.")
+
+
 def test_a_change_order_retires_a_document_as_an_item_of_its_delta(hub):
     co, draft = add_coach(hub)
     released(hub, co)

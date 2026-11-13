@@ -723,4 +723,4 @@ def test_cog_users_verb_takes_the_items_waiting_for_cogs(fresh, monkeypatch):
 def test_models_lists_what_each_cog_is_bundled_with(fresh):
     release_all(Hub(fresh))
     rc, out = run_cli(fresh, "models")
-    assert rc == 0 and "cogs:" in out and "quality-assistant" in out and "ollama/qwen3:14b" in out
+    assert rc == 0 and "cogs:" in out and "quality-assistant" in out and "ollama/gemma4:12b-it-qat" in out

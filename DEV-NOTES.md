@@ -23,6 +23,7 @@ for pytest-xdist, a development-only dependency; without `-n auto` the suite run
 | `hubproto/process_graph.py` | processes as graphs (change control 10.1): compile numbered steps and graph sentences into one shape, read it (options, verdicts, globals), write it back as sentences, the earlier shape's view | core |
 | `hubproto/cogs.py` | Cog catalog (code cogs, context stand-ins, reviewer cogs) | core |
 | `hubproto/groups.py` | groups (listed, by role) and committees (on a group, a chair, consensus): who is in each, resolving a role-like name to a group | core |
+| `hubproto/audit.py`, `hubproto/agent_audit.py`, `hubproto/shell/audit_ui.py` | the internal audit and the auditor cog (issue #25): exact checks from records and the Track, the clause criteria (`config/standard-clauses.json`), findings validated against their evidence (and again at the Gate: `runner.DECISION_FIELD_GUARDS`), the programme, the audit budget, the quality manager's per-finding verdicts, the audit-action-raiser cog; the cog's audit tools; the findings panel on an audit's page | core |
 | `hubproto/org_cog.py` | the organization cog (junior) and the senior cogs of the compile-frame committee | core |
 | `hubproto/inbox.py` | DMs and email to people and cogs | core |
 | `hubproto/cad.py` | CAD/ECAD: FreeCAD and KiCad stdlib extraction, worker client, cad-exporter, bom-reconciler, part-releaser cogs | core |
@@ -33,8 +34,16 @@ for pytest-xdist, a development-only dependency; without `-n auto` the suite run
 | `hubproto/references.py` | document references in SOP prose (issue #8): citations read at compile with their line (`read_references`), resolved (`resolve`: a number names the document in its revision in force, "DOC-n rev X" that revision), a warning for one not in force (`reference_guard`); at release `references` links (`sync_links`) and flags to the owners of SOPs citing a document no longer in force, once (`flag_citations`) | core |
 | `hubproto/closure.py` | no configuration change without a change order once the SOPs are documents: the guards `Hub.compile`, `review`, `release` and `frame_draft` call; the sentence (`CO_ROUTE`) | core |
 | `hubproto/recordtypes.py` | record types under change control: the record types in force (`state/record-types`), changes carried on change orders (`carry`, `carried_reasons`, `delta_items`, `activate`), the file's drift | core |
+| `hubproto/configdocs.py` | the link vocabulary and the retention classes under change control, as record types are: what is in force (`state/config/links`, `state/config/retention`), changes carried on change orders (`config_changes`: `carry`, `carried_reasons`, `delta_items`, `activate`), the files' drift | core |
+| `hubproto/configjson.py` | the configuration in force as one JSON document (`export`, `dumps`; format in docs/design/config-json.md) and a document proposed on a change order (`plan`, `propose`: through Settings' direct changes, `recordtypes.carry`, `formlayout.carry`, `configdocs.carry`; all or nothing) | core |
+| `hubproto/scripts.py` | configuration scripts on a change order (issue #34): `propose` (a person only; allow-list check, run in the script worker or, only with `HUBPROTO_SCRIPT_FALLBACK=1`, a local subprocess labelled weaker isolation; a run whose protection its parent did not confirm counts for nothing; output parsed, held to the schema and carried by `configjson.propose`; each run kept in the CO's `config_scripts`), `where_it_runs`, `run`, the worker client (`unix://` or `http://`) | core |
+| `hubproto/scriptcheck.py` | the `ast` allow-list check of a script, in the hub, before anything is sent (imports, eval/exec/open, computed getattr, dunder and frame attributes); each refusal names its line | core |
+| `hubproto/scriptworker.py` | the script worker (its own image, docker/script-worker): /invoke envelope seam on a Unix socket; `run_local`: runs one at a time, each a fresh `python -I -S -B` subprocess in a fresh private folder, PATH only; checks the run's protection itself (`verify`) before sending the script; answer in a frame on a control descriptor; timeout, output cap | core |
+| `hubproto/script_sandbox.py` | the run's own process (never imported by the hub): rlimits, not dumpable, Landlock, a seccomp filter (no execve, fork, socket, prctl, ...), a handshake, then an audit-hook tripwire, restricted builtins and modules as namespaces of their allowed names, then the script | core |
+| `hubproto/schemacheck.py` | a document held to `docs/design/config-json.schema.json` (the keywords it uses), standard library only | core |
 | `hubproto/cli_dev.py`, `hubproto/dev_demo.py`, `hubproto/__main__.py` | `python -m hubproto`; CLI verbs `dev serve`, `dev list`, `dev stop`, `dev clean` (`register(sub)`): development hubs on localhost, the registry, ports; the demo data a served hub gets | dev tooling |
 | `hubproto/cli_recordtypes.py` | CLI verbs `record-types status`, `show`, `carry` (`register(sub)`) | cli agent |
+| `hubproto/cli_config.py` | CLI verbs `config export`, `config propose` (`register(sub)`) | cli agent |
 | `hubproto/cli.py` | command line: policy, run, message and operations verbs; `main` returns the exit code; shared helpers (`fail`, `clean`, `require_member`, `resolve_*`) | cli agent |
 | `hubproto/shell/` | the workspace shell package (handler, pages, inbox, forms, actions, policy, css, text; stdlib http.server) | shell agent |
 | `hubproto/cli_records.py` | CLI verbs for runs waiting on people, records and documents (`register(sub)`) | cli agent |
@@ -84,8 +93,23 @@ what in your final report and work around it meanwhile.
   the Frames' drift from the restored release (`frames_drift`). The Frames are copied after the kernel snapshot with no
   lock, so only a backup of a stopped hub is consistent across all parts. `status --check` exits 1 when no release is in force or the Frames
   on disk differ from the release's bill of materials (the entrypoint prints that on later starts); once the SOPs are
-  documents, also when `config/record-types.json` differs from the record types in force or another config file from
-  what the release recorded.
+  documents, also when `config/record-types.json` differs from the record types in force, or `config/links.json` or
+  `config/retention.json` from the link vocabulary or retention classes in force (none of them is used then).
+* `config export [--out FILE]` writes everything in force as one JSON document (sorted keys, stable order; `GET
+  /api/config` gives the same bytes to a member who may read `Policy`). `config propose FILE.json --as PERSON [--co CO]`
+  puts what an edited export changes on a change order (the person's settings change order by default): exit 0 carried
+  or nothing to carry, 1 refused (every reason printed, nothing carried; not JSON, a repeated key, a number that is not
+  finite, a look-alike name, a document from another hub or with stale or missing versions included), 2 no such file. The format is
+  docs/design/config-json.md (and its JSON Schema, config-json.schema.json).
+* `config propose SCRIPT.py --as PERSON [--co CO]` (or `--script FILE`) runs a configuration script (issue #34): the
+  allow-list check (exit 1 with the lines refused), one run in the script worker (`HUBPROTO_SCRIPT_WORKER_URL`,
+  `unix:///run/script-worker/worker.sock` in compose) or, only with `HUBPROTO_SCRIPT_FALLBACK=1` (dev hubs, tests), a
+  local subprocess with the same kernel restrictions, labelled weaker isolation; every other hub refuses a script
+  without a worker. The script reads `config` (the export) and leaves `result` (the whole
+  document or a part, with `schema`, `hub`, `release` and `versions`); its output is carried as `config propose
+  FILE.json` carries a document, and the run (script, sha256, snapshot digest, output, run record) is kept on the
+  change order's `config_scripts`, part of its content digest. The release applies what was carried; it never runs a
+  script. See docs/design/config-paths.md and docs/manual/07-policy-and-configuration.md 7.14.
 * Once the SOPs are documents a configuration change outside a change order is refused by the hub
   (`closure.ChangeOrderRequired`, a `CompileError`): the verbs exit 1 with a sentence ending "Configuration changes only
   through a change order: open one under Quality > Change orders." (`compile`, `review`, `release`,
@@ -152,6 +176,37 @@ its own process, and a test may run on any worker in any order, so:
 
 To check a suite for order dependence, run it reversed per file (a plugin with `items.reverse()` and
 `--dist loadfile`) and each test on its own.
+
+### The local-inference suite (`tests_inference/`)
+
+The main suite never calls a model. `tests_inference/` does nothing else: it runs the cogs on the models the Frames
+name (`frames/company/cogs.frame.md`; the junior cogs on `ollama/gemma4:12b-it-qat`), served by a real Ollama, and
+checks what a real model does to the hub: an answer that does not parse, format drift, refusals, a cog that ignores its
+tools, slowness.
+
+```bash
+python -m pytest tests_inference -v                  # HUBPROTO_OLLAMA_URL, default http://localhost:11434
+python -m pytest tests_inference -v -m "not slow"    # without the committee reading (about a minute less)
+HUBPROTO_INFERENCE_SHOW=1 python -m pytest tests_inference   # print every answer, passing tests too
+```
+
+* **When:** after any change to the prompts (`cogs.cog_context`, `review.py`, `llm_extract.py`, the personas), the
+  model gateway (`model.py`), the cog profiles, or the models the Frames name. GitHub CI does not run it (no GPU); run
+  it by hand before such a PR and put the result (passed, failed, timings) in the PR.
+* **Never collected from the root:** `pyproject.toml` has `testpaths = ["tests"]`, so `python -m pytest` runs only
+  `tests/`. Its own `conftest.py` clears `HUBPROTO_ALLOW_STAND_IN` (no stand-in answers for a model that fails),
+  `HUBPROTO_HOSTED_MODELS` and `ANTHROPIC_API_KEY` (no hosted model, no cost), and does not import `tests/conftest.py`.
+* **A missing model skips, never fails:** each test calls `need(model)`, which skips with the sentence to act on
+  (start Ollama, or `ollama pull <model>`).
+* **Properties, not words:** a review ends with a verdict line the hub reads, an error quotes a procedure, a cog
+  decides or hands back with a reason, a picture of a red square is read as one, a sentence nobody read is a blocking
+  question. Each test's model calls together stay inside a bound (`timed()`, 240 s unless the test says more; one call
+  times out at `HUBPROTO_MODEL_TIMEOUT`, 300 s here).
+* **A failure prints the model's raw output** (every call the test made, its timing and token counts), so it reads as a
+  finding about the model. A model that answers badly is reported, not tuned away; a hub bug it exposes gets a
+  stand-in test in `tests/` (AGENTS.md rule 6).
+* On this machine's shared 8 GB GPU the suite takes two to three minutes; the first call loads the model (about a
+  minute).
 
 ## The model in one paragraph
 
@@ -220,7 +275,7 @@ Only inside these sections: `## Roles`, `## Members`, `## Groups`, `## Folders`,
 ## Duties           Every day|week|month the quality-assistant cog finds nonconformances that ... .   (a cog's standing goal)
 ## Committee: design-review   Group: design-reviewers   Chair: bob (a person, required)   Purpose: <what it decides>
                     (decides by consensus; "Members:" and "Agree: n of m" of earlier texts are still read: Agree is not used)
-## Cog: ap-reviewer About: <one paragraph: what it does>   Model: ollama/qwen3:14b   Persona: reviewer
+## Cog: ap-reviewer About: <one paragraph: what it does>   Model: ollama/gemma4:12b-it-qat   Persona: reviewer
                     [Prompt from: DOC-n (its job from a pinned document)   References: DOC-n, ...]
 ## Persona: reviewer  Tone: formal|informal   Stance: reviewer|executor|author|advisor   Lenses: compliance, consistency, impact
                     Reviews: 3 adversarial passes   Escalates: when ...   Behaviour: <the behaviour prompt, may run on>
@@ -359,6 +414,41 @@ From any status except done to Cancelled ("Cancel"): the quality manager.
 * **The compile-frame committee** is defined on the `senior-cogs` group (cogs bundled with `claude-opus-5-5`, change
   control 11.1); `hub.compile_committee()` gives its members with their models, those unavailable (hosted models off, no
   key) and its chair; an unavailable member is a `member-unavailable` question naming the chair, never skipped.
+* **Pictures** (issue #31, `hubproto.picture_reading`): the committee's members read each picture put in or replaced
+  (`CommitteeExtractor.read_pictures`, the picture's bytes from `sopdocs.picture_images`); the reading, its
+  divergences from the prose and the `Process:` section, and each member's answer are on the picture's `unread-rule`
+  question. The chair answers with `answer_question(..., picture="confirm" | "confirm:<member>" | "correct" | "nothing",
+  reading_text=)` ("confirm" only when the members agreed); any answer to a picture's question only while the CO is
+  editable, and an answer that writes lines records no acceptance of the question's warning; the confirmed reading is
+  the CO's `picture_readings` and, from the next compile, lines of the Frame text right after the picture
+  (`> Picture sha256:<12 hex>: <sentence>`), compared with the prose again, in force with the release and kept by an
+  unchanged picture. Whoever confirmed or corrected it wrote SOP text: a contributor (`contributors`) and a maker of
+  every item read from those lines (`_makers`).
+* **Pictures in a model call**: `gateway.complete(..., images=[{"data", "media_type"}])` for a model that reads them
+  (`model.supports_images`: Claude models; an Ollama model whose `/api/show` reports "vision", refused when Ollama does not
+  say; by family, `VISION_FAMILIES`, only where the stand-in answers); any other raises `ImagesNotSupported` with a
+  sentence. Limits are on the base64 size (5 MB a picture, 20 MB a call). The call's record and `prompt_digest` name
+  each picture by its sha256. Fakes: `call(model, system, user, images=None)`.
+* **Where a model runs** (`model.backend_for`, the only gateway): `anthropic` (a `claude-*` model, hosted), `ollama`
+  (a model the local Ollama runs on this machine), `ollama-cloud` (one of Ollama's cloud models, issue #52), `stand-in`
+  (development only) or `none`. A cloud model is called through the local Ollama but runs on Ollama's servers, so it is
+  hosted like Claude: refused with a sentence while `HUBPROTO_HOSTED_MODELS` is off (never stood in for), and labelled
+  as running "on Ollama's servers, not this machine" wherever a model is named (`hubproto models`, the cog profile and
+  its model picker, `resolve_model`'s `leaves_machine`, each call's record). `model.ollama_cloud` decides for listing and
+  choosing: Ollama's own word first (`/api/show`, or the model's `/api/tags` entry, names a `remote_host` or
+  `remote_model`), then the tag, which fails closed (a name ending in `:cloud` or `-cloud` is never read as local).
+  What `/api/show` says of a model is one record (`model._SHOW`: capabilities, where it runs, context length), kept
+  `SHOW_TTL` (60 s); a lookup that failed is asked again after `SHOW_RETRY` (15 s). A call about to be sent asks Ollama
+  again every time (`model.where_now`), so a name re-pointed at a cloud model (`ollama cp gemma4:cloud team-reader`)
+  is never sent as local; when Ollama does not say where a model without a cloud tag runs, nothing is sent. A proposal
+  that names a cloud model for a cog (the cog page, a new cog, the `propose_cog_model` tool) says so in its change order
+  or draft note and in a notice to every policy owner. The SOP reader's largest-local-model fallback and a new cog's
+  default model never pick a cloud model. A cog asks which models this installation has with the `list_models` look
+  tool (`model.installed_models`: each Ollama model's size, family, quantization, whether it reads pictures and whether
+  it is hosted; the Claude models only while hosted models are on; each cog's model now, issue #79); the review of a
+  change order that changes a cog profile is given the same listing in its brief (`changecontrol.brief`), as a review
+  asks its model no tools. Tests use a fake Ollama for `/api/show` and move `model._clock` for the
+  lifetimes (`tests/test_ollama_cloud.py`).
 
 ## Record types (`config/record-types.json`)
 
@@ -422,7 +512,7 @@ Cog ids available for process steps: record-filer, record-linker, notifier,
 document-renderer, risk-scorer, invoice-extractor, three-way-matcher,
 ledger-poster, document-drafter, document-publisher, ncr-classifier,
 capa-opener, ncr-opener, capa-drafter, effectiveness-scheduler,
-audit-checklist-drafter, document-classifier; reviewer cogs (members):
+audit-checklist-drafter, audit-action-raiser, document-classifier; reviewer cogs (members):
 ap-reviewer, doc-reviewer, quality-assistant.
 
 Workflow bundle shape (change control 10.1): `bundle["workflows"][process] = {process, record_type, form: steps|graph,
@@ -446,3 +536,40 @@ BOM lines to `item` records by MPN and manufacturer and attaches proposals for
 unknown lines. `part-releaser` creates or revises the `part` after the design
 authority's approval. The worker answers with synthetic exports when
 `HUBPROTO_CAD_FAKE=1` (tests, and `CAD_TOOLS=none` images).
+
+## Configuration scripts and the script worker (issue #34)
+
+A script is a generator of a proposed change: its output, never the script, goes on the change order. The boundary is
+the kernel, in the run's own process, and the container around it; the `ast` check and the tripwire are defense in
+depth (the security review of PR #55 got past both, and its escapes are regression tests in
+`tests/test_config_scripts.py`). Layers, outside in:
+
+| Layer | Where | What it stops |
+|---|---|---|
+| `ast` allow-list | `scriptcheck.check`, in the hub (and again in the worker) | imports off the list (`typing` is not on it: `TypeVar.evaluate_bound`, `ForwardRef` and `get_type_hints` evaluate text); any name of an allowed module that is not on its list (`ALLOWED_NAMES`: no `statistics.sys`, `collections._sys`, `collections.namedtuple`, `string.Formatter`); a module used as a value; eval/exec/compile/`__import__`/open/`chr`; getattr/setattr/delattr at all; dunder names and attributes; text holding `__` or beginning or ending with `_` (so `"_" + "_"` cannot spell one); names that evaluate (`evaluate*`, `ForwardRef`, `TypeVar`); frame attributes; `match` class patterns; annotations written as text. A sentence per line, before anything runs |
+| the container | `docker-compose.yml` `script-worker` | `network_mode: none` (it reaches nothing, the hub included; the hub reaches it over a Unix socket on a tmpfs volume mounted read-only in the hub), read-only root, `cap_drop: ALL`, no-new-privileges, uid 10001, pids/memory/CPU limits, no hub state, secrets or Docker socket |
+| the container's seccomp profile | `docker/script-worker/seccomp.json` | an allow-list: socket only for AF_UNIX; no connect, ptrace, mount, unshare, setns, bpf, execveat, module loading; landlock_* allowed so each run can restrict itself |
+| one run at a time | `scriptworker._one_at_a_time`, `MAX_CONNECTIONS` | runs are serialized (one runs, `MAX_QUEUED` wait, more are refused as busy); connections past the bound get a busy answer without a thread. No run shares the machine with another |
+| the run's own kernel restrictions (fail closed) | `script_sandbox.protect`, before the script is sent | rlimits (CPU, address space, file size, open files, no processes); `PR_SET_DUMPABLE` 0 (its `/proc` entries are closed to every other process); **Landlock** at the kernel's highest ABI: read only the standard library, the interpreter and the sandbox file, read and write only its own fresh 0700 folder, nothing else (no `/proc`, no hub state, no other run's folder, not the socket; `dir_fd` and symlinks alike), no TCP, and from ABI 6 no signals or abstract sockets outside; **seccomp, an allow-list that denies by default** (`script_sandbox.ALLOWED_CALLS`, `filter_program`): reading (open/openat only without write flags), writing to descriptors it holds, memory, its own signals, time, identity, randomness and exit; `fcntl` only F_GETFD/F_SETFD/F_GETFL/F_DUPFD_CLOEXEC and F_SETFL without O_ASYNC, `ioctl` only TCGETS/FIOCLEX/FIONCLEX; everything else EPERM (prlimit64, setrlimit, setpriority, sched_set*, ioprio_set, syslog, kill, F_SETOWN/F_SETSIG, ptrace, execve, fork, socket, chmod, mkdir, ...), another architecture or x32 killed. Measured with `strace -f` in the worker image on `tests/test_config_scripts.py`'s REPRESENTATIVE script and the error, memory, no-result, bad-result and tripwire paths: after the filter the run made only brk, mmap, munmap, read, write and exit_group; the rest of the list is a margin of calls that touch nothing but the process. Because fcntl and ioctl cannot set an owner or O_ASYNC, no run can signal another at any Landlock ABI, so the minimum stays 3. Landlock below ABI 3 (no truncate control), a run as root, or any layer missing: the run is refused |
+| the parent's check | `scriptworker.verify` | before it sends the script, the parent (the worker, or the hub for the fallback) reads `/proc/<child>/status` itself: `Seccomp: 2`, more filters than its own, `NoNewPrivs: 1`, and `/proc/<child>/environ` owned by root (not dumpable); Landlock as the handshake said, written before the script existed. The protection on the change order is what the parent saw |
+| the answer channel | `_Collector`, `_conclude` | the answer is one length-prefixed frame on a control descriptor after the script returns; the exit reason comes from how the process ended first. Everything the run wrote (its answer, its prints, anything else) is the script's own output, shown as such |
+| audit-hook tripwire | `script_sandbox._make_hook` (`sys.addaudithook`) | the catch-all: once the script starts, any `compile` or `exec` other than the script's own one ends the run, so text evaluated through any API stops there whatever the lists miss. Also os.system, subprocess, exec/spawn/fork, socket, ctypes, opens outside the folder, path changes relative to a `dir_fd`, imports off the list, frame introspection. Errors are reported without the traceback module (it compiles). Its state is in a closure no frame of the script reaches |
+
+**Where it runs.** With `HUBPROTO_SCRIPT_WORKER_URL`, in the worker. Without it, only a hub told it may
+(`HUBPROTO_SCRIPT_FALLBACK=1`: `hubproto dev serve` and `tests/conftest.py` set it; never with `HUBPROTO_DEPLOYED=1`)
+runs the same subprocess beside itself, labelled weaker isolation; every other hub refuses. The worker is long-running
+with a fresh subprocess and folder per run; a fresh container per run needs a launcher holding the Docker socket (issue
+#35, decision 1, and finding 6 of the review: the maintainer's decision on #34). The worker exits when its socket is
+removed, replaced or made unusable (`socket_problem`: its mode, owner and directory too), when its own limits change, or
+when it does not answer a health request on its own socket within 5 s twice running (`answers`: spinning, out of
+descriptors); the healthcheck asks the same, over the socket (the container profile allows `connect`, Unix sockets
+only). The restart policy brings a fresh one; a restart gives the directory back its mode. A busy answer is read by the hub
+even when it comes while the hub is still sending. A run waits at most `MAX_WAIT` for the one before it.
+
+Tests drive `run_local` and the /invoke server on a socket in `tmp_path`; they need no Docker. Test-only parameters,
+never offered over /invoke: `check=False` (no allow-list), `tripwire=False` (no audit hook), `_skip`/`_claim` (a kernel
+layer left out, and said to be there). Not covered: the kernel restrictions need Linux with Landlock and seccomp on
+x86_64 or aarch64 and Landlock ABI 3 or later (elsewhere scripts are refused); Landlock (to ABI 7) does not restrict
+`stat` or `access` of a path, so a run can learn whether a path exists and its size, mode and times, not read it
+(readlink and `O_PATH` are refused by the run's allow-list); the
+fallback has no container around it.

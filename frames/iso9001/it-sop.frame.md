@@ -3,7 +3,7 @@ type: frame [0.2]
 name: it-sop
 description: "IT and configuration: the hub's configuration changes only by change order; who is given which roles (cogs included); risk-based validation of configuration changes; backup and restore; incidents; what system administrators may do."
 visibility: internal
-version: "0.2.0"
+version: "0.2.1"
 scope: department
 maintainer: bob
 inherits: org-model
@@ -63,11 +63,14 @@ Hosted models. The cogs run on the local models the installation provides. A
 hosted model (Claude, from Anthropic) is used only when a system administrator
 switches it on, as an installation change recorded under this SOP (who, when,
 why, and the provider, which is evaluated and approved as a supplier under the
-supplier evaluation SOP), and only by the senior cogs, for compilation: reading
-the SOPs into rules on the compile-frame committee. Other cogs keep their
+supplier evaluation SOP), and only by the cogs bundled with it: by the senior
+cogs for compilation, reading the SOPs into rules on the compile-frame
+committee, and by any of them for the tasks assigned to that cog (an in-depth report,
+an analysis), working for the person who filed the task. Other cogs keep their
 bundled models. What may leave the hub to the provider is the SOP and policy
 text being compiled, its diff against the release in force, the rules in force
-it is read against, and the item the senior cog is working on; no other record,
+it is read against, the item the senior cog is working on, and for a task the
+task itself and the records and documents the cog reads for it; no other record,
 document or person's data. Each use is recorded: every decision, review and
 drafted text a cog produces keeps the model that produced it, the cog's persona
 and its version, and the release that gave it its context; each compile
@@ -129,7 +132,7 @@ Every week the it-admin cog reviews the open change orders that touch permission
 | Management reviewer | Reviews changes to roles, limits and segregation of duties. |
 | Quality manager | Approves the change orders that carry configuration changes, once each item has the validation evidence its class needs. |
 | Policy owner | Decides the items of a change order, widenings by both policy owners. |
-| the senior-cogs group | Compiles the SOPs, on a hosted model only when it is switched on, and sends only what this SOP allows. |
+| the senior-cogs group | Compiles the SOPs and works on the tasks assigned to it, on a hosted model only when it is switched on, and sends only what this SOP allows. |
 | Internal auditor | Audits system administration they did not perform. |
 | the it-admin cog | Reviews open change orders that touch permissions, record types or forms; changes no configuration itself. |
 | the management cog | Reviews changes to roles, limits and segregation of duties; approves nothing. |

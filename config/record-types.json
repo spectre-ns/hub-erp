@@ -297,7 +297,9 @@
    "planned": "date",
    "checklist": "list",
    "findings": "list",
-   "summary": "text"
+   "summary": "text",
+   "finding_decisions": "list",
+   "actions_raised": "list"
   },
   "required_by_state": {
    "awaiting-accept-the-findings": [
@@ -314,7 +316,11 @@
   },
   "decision_fields": [
    "findings",
+   "finding_decisions",
    "summary"
+  ],
+  "system_fields": [
+   "actions_raised"
   ]
  },
  "supplier-evaluation": {

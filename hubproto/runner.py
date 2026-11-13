@@ -45,6 +45,9 @@ LIVE_STATUSES = ("submitted", "running", "waiting", "completed")
 OPEN_RUN = ("submitted", "running", "waiting")
 # Words in a segregation-of-duties sentence that name the deciding side, not a person to keep out.
 DECIDER_WORDS = {"approver", "reviewer", "verifier", "decider", "signer", "countersigner"}
+# Who made a change order, as segregation-of-duties sentences and a Gate's "not" name them: set aside only when one of
+# them rejects it (``Runner.maker_may_reject``).
+CO_MAKER_ROLES = {"contributor", "author", "requester", "preparer", "owner"}
 SOD_FIELDS = {**{k: v for k, v in {"assignee": "assignee", "owner": "owner", "author": "author", "requester": "requested_by",
                                     "auditor": "auditor", "chair": "chair", "evaluator": "evaluator", "reporter": "reported_by"}.items()},
               "designer": "designer", "preparer": "owner", "filer": "filed_by", "captured-by": "captured_by", "raiser": "raised_by"}
@@ -55,6 +58,13 @@ def pending_title(step: dict) -> str:
 
 
 PRE_DECISION_HOOKS: dict = {}  # record type -> fn(kernel, record, verdict); raise KernelGuardError to block
+# record type -> fn(kernel, record, verdict, *, by, fields, bundle) -> the fields to set: checked before a decision's fields
+# are set, so fields a guard refuses never reach the record (raise KernelGuardError to refuse them), whoever decides and
+# by whatever path (a person's form, a cog's step, the library)
+DECISION_FIELD_GUARDS: dict = {}
+# record type -> fn(kernel, bundle, fields, owner): checked when a process files an item of that type (a new one, or an
+# existing item it is started on), before anything is written; raise KernelGuardError to refuse it
+START_GUARDS: dict = {}
 POST_DECISION_HOOKS: dict = {}  # record type -> fn(kernel, record, verdict); runs after the decision took effect
 
 
@@ -398,6 +408,7 @@ class Runner:
             why = self._may_submit_existing(bundle, rec, wf, owner_name)
             if why:
                 raise RunError(why)
+            self._start_guard(wf["record_type"], bundle, {**rec["fields"], **(inputs.get("record") or {})}, owner_name)
             home = self.folder_for(manifest, rec["fields"])
             if home != manifest["folder"] and not parent_run:
                 d = authz.check(bundle, owner, "create", manifest["object"], home)
@@ -432,6 +443,7 @@ class Runner:
                 d = authz.check(bundle, owner, "create", manifest["object"], home)
                 if not d["allowed"]:
                     raise RunError(f"{owner} may not file a {fields.get('doc_type')} in {home}: {d['why']}")
+            self._start_guard(wf["record_type"], bundle, fields, owner_name)
             try:
                 rec = self.kernel.create(wf["record_type"], home, fields, by=opener or owner_name, run_id=run_id,
                                          release=release["digest"], state="open")
@@ -455,6 +467,14 @@ class Runner:
         self._save(state)
         self.advance(run_id)
         return run_id
+
+    def _start_guard(self, record_type: str, bundle: dict, fields: dict, owner: str) -> None:
+        guard = START_GUARDS.get(record_type)
+        if guard is not None:
+            try:
+                guard(self.kernel, bundle, fields, owner)
+            except KernelGuardError as e:
+                raise RunError(str(e)) from None
 
     @staticmethod
     def folder_for(manifest: dict, fields: dict) -> str:
@@ -750,6 +770,12 @@ class Runner:
         self._notify([state["owner"]], kind="rejection", subject=f"{state['process']} {state.get('record')} {word}",
                      body=f"{by} {word} it: {close.get('meaning') or ''}", run_id=state["id"])
         self._save(state)
+        rec = self.kernel.get(state["record"]) if state.get("record") else None
+        for hook in list(self.on_completed):  # a run that ended rejected or cancelled is over too (a rejected change order closes)
+            try:
+                hook(self.load(state["id"]), rec)
+            except Exception as e:  # an automation that cannot start never undoes the run; it says why
+                track.append({"type": "automation.not_started", "run_id": state["id"], "reason": f"{type(e).__name__}: {e}"})
 
     def _auto_holds(self, state: dict, t: dict) -> bool:
         when = (t.get("gate") or {}).get("when") or "actions-succeed"
@@ -849,7 +875,8 @@ class Runner:
     def _sod_applies(self, bundle: dict, state: dict) -> bool:
         return any(s["object"] == state["manifest"]["object"] and not s.get("rule") for s in bundle["sod"])
 
-    def excluded(self, bundle: dict, state: dict, route: str = "role:", gate_not: list | None = None, signing: bool = True) -> dict[str, str]:
+    def excluded(self, bundle: dict, state: dict, route: str = "role:", gate_not: list | None = None, signing: bool = True,
+                 makers: bool = True) -> dict[str, str]:
         """Who may not decide this item, and why. Every process keeps its preparer (who filed it, the run's owner)
         from approving it on a route to a role or a cog; a segregation sentence also keeps out everyone it names on
         the record (the reporter, the author, the requester...). A step the SOP routes to a named field (the
@@ -868,14 +895,17 @@ class Runner:
                 pass
         named_route = str(route or "").startswith(("field:", "person:"))
         rules = [r for r in bundle.get("sod") or [] if r["object"] == state["manifest"]["object"] and not r.get("rule")]
-        if not named_route or rules:
+        # makers=False (a change order's maker rejecting it, ``maker_may_reject``): leave out only the rules that keep
+        # whoever made it from deciding it; every other exclusion stands.
+        skip = set() if makers or not self.is_change_order(state) else CO_MAKER_ROLES
+        if (not named_route or rules) and not skip:
             out[owner] = "segregation of duties: they prepared this item"
             created = (rec or {}).get("created_by")
             if created and not child and created not in ("hub", "system", "seed") and created not in out:
                 out[created] = "segregation of duties: they filed this item"
         for r in rules:
             for role in r.get("roles") or []:
-                if role in DECIDER_WORDS:
+                if role in DECIDER_WORDS or role in skip:
                     continue
                 field = SOD_FIELDS.get(role) or role.replace("-", "_")
                 vals = f.get(field)
@@ -883,11 +913,13 @@ class Runner:
                     if v and isinstance(v, str):
                         out.setdefault(authz.principal_name(v), f"segregation of duties: they are the {role.replace('-', ' ')} of this item "
                                                                 f"({r.get('source', {}).get('text', 'policy')})")
-        if self.is_change_order(state):
+        if self.is_change_order(state) and not skip:
             self._change_order_signers(state, out, owner, rec, signing=signing)
         # The gate's own exclusions ("the quality manager decides, not the author"; not whoever decided another step).
         nots = gate_not if gate_not is not None else (((state.get("pending") or {}).get("gate") or {}).get("not") or [])
         for n in nots:
+            if n in skip:
+                continue
             if n in SOD_FIELDS or n in FIELD_ROLES:
                 v = owner if n in ("owner", "preparer") else f.get(SOD_FIELDS.get(n) or FIELD_ROLES.get(n) or n)
                 for x in v if isinstance(v, list) else [v]:
@@ -934,6 +966,21 @@ class Runner:
             except Exception:  # a change order the change-control module cannot read: the recorded field stands
                 pass
         return sorted({authz.principal_name(x) for x in out if x})
+
+    def maker_may_reject(self, state: dict, by: str, by_type: str, verdict: str) -> bool:
+        """Whether ``by`` is a person who made this change order (prepared it, filed it or contributed to it) rejecting
+        it: then the rules that keep its makers from deciding it are set aside for that rejection (``decide`` checks
+        every other exclusion again with ``excluded(makers=False)``). A rejection approves nothing and puts nothing in
+        force, so it is never an approval of their own change (issue #63). Approving keeps every rule: a maker is never
+        its only approver. (A revision's author is a contributor too, but is never routed the Gate at all: the routing
+        leaves them off it, ``_change_order_signers``.)"""
+        if verdict != "reject" or by_type != "person" or not self.is_change_order(state):
+            return False
+        rec = self.kernel.get(state["record"]) if state.get("record") else None
+        makers = set(self.contributors(state)) | {authz.principal_name(state["owner"])}
+        if rec and rec.get("created_by"):
+            makers.add(authz.principal_name(rec["created_by"]))
+        return authz.principal_name(by) in makers
 
     def _change_order_signers(self, state: dict, out: dict, owner: str, rec: dict | None, signing: bool = True) -> None:
         """Who may sign a change order (change control 3.6, as agreed): the author of a revision it carries never; any other
@@ -1164,8 +1211,13 @@ class Runner:
             people = [who] if who and bundle["members"].get(who) else []
             if people and bundle["members"][who]["type"] == "cog" and name != "assignee":
                 # Only a task's assignee may be a cog: a cog named in requested_by, owner or reporter would sign a
-                # step with no approval criteria, chosen by whoever filled the field.
-                return skip(f"{who} is a cog: a cog cannot be named in {name} to take this step (only a task's assignee may be a cog)")
+                # step with no approval criteria, chosen by whoever filled the field. The auditor is the other work
+                # field (the step is recording the findings, not approving them): a cog there must hold the step's own
+                # role and its permission, as a person auditor does, so naming a cog gives it nothing it does not have.
+                role = (step.get("gate") or {}).get("role") or next((s.get("role") for s in state["manifest"]["steps"] if s["id"] == step["id"]), "")
+                why = self.work_cog_refused(bundle, state, who, name, role)
+                if why:
+                    return skip(why)
         else:
             people = [p for p in principals_for(bundle, assignee) if bundle["members"][p]["type"] == "person"]
             if not people:
@@ -1181,6 +1233,25 @@ class Runner:
         if not allowed_people:
             return skip("; ".join(dropped) or "no eligible person holds this route")
         return allowed_people
+
+    def work_cog_refused(self, bundle: dict, state: dict, cog: str, field: str, role: str) -> str:
+        """Why this cog, named in a field, may not take the step as its work (empty when it may): only a work field
+        (``WORK_ROUTES``) other than the assignee's, and only a cog that holds the step's role, may approve the object
+        there, follows the SOP and is available."""
+        if f"field:{field}" not in self.WORK_ROUTES:
+            return f"{cog} is a cog: a cog cannot be named in {field} to take this step (only a task's assignee may be a cog)"
+        if not role or role not in authz.roles_of(bundle, cog):
+            return f"{cog} is a cog that does not hold the {(role or 'step').replace('-', ' ')} role, so it cannot be the {field} here"
+        allowed = authz.check(bundle, cog, "approve", state["manifest"]["object"], state["manifest"]["folder"])
+        if not allowed["allowed"]:
+            return allowed["why"]
+        why = self.cog_follows(bundle, cog, state["process"])
+        if why:
+            return why
+        from .model import cog_availability
+
+        ok, why = cog_availability(bundle, cog)
+        return "" if ok else why
 
     @staticmethod
     def cog_follows(bundle: dict, cog_name: str, process: str) -> str:
@@ -1783,7 +1854,7 @@ class Runner:
     # ------------------------------------------------------------ cogs as users
     cog_users_inline = True  # False: an item waiting for a cog is not put in its queue (a sweep gives it later)
     queue = None  # the cogs' work queue (hubproto.workqueue.CogQueue), set by the Hub
-    on_completed: list = []  # callables (state, record) run after a run completes: automation triggers, set by the Hub
+    on_completed: list = []  # callables (state, record) run after a run ends (completed, rejected or cancelled): automation triggers, set by the Hub
 
     def give_to_cog(self, state: dict) -> dict:
         """An item now waits for a cog: it goes in that cog's queue, like a task in a person's tray. In inline mode the
@@ -1980,19 +2051,25 @@ class Runner:
         self._save(state)
         return self.cog_decide(run_id, cog_name)
 
+    # The fields whose holder a step routed to is given the work itself (the assignee does the task, the auditor records
+    # the findings), not an approval: a cog routed there does the work and completes the step, within what the Gate takes.
+    WORK_ROUTES = ("field:assignee", "field:auditor")
+
     @staticmethod
     def is_assigned_work(state: dict, cog_name: str) -> bool:
         """The item waits for the cog because it was assigned the step (a field or a name), not routed to it to approve."""
         pending = state.get("pending") or {}
         return (state["status"] == "waiting" and cog_name in (pending.get("assignees") or [])
-                and pending.get("route") == "field:assignee" and not pending.get("stepped_in_from"))
+                and pending.get("route") in Runner.WORK_ROUTES and not pending.get("stepped_in_from"))
 
-    def cog_complete(self, run_id: str, cog_name: str, summary: str) -> dict:
-        """A cog finishes a step it was assigned (complete the task, do the work): its summary is the signature's meaning."""
+    def cog_complete(self, run_id: str, cog_name: str, summary: str, fields: dict | None = None) -> dict:
+        """A cog finishes a step it was assigned (complete the task, do the work): its summary is the signature's meaning;
+        ``fields`` are what its work produced (the auditor's findings), only those the Gate takes."""
         state = self.load(run_id)
         if not self.is_assigned_work(state, cog_name):
             raise RunError(f"run {run_id} is not waiting for {cog_name} to do assigned work")
-        return self.decide(run_id, cog_name, "approve", meaning=f"completed: {summary.strip() or 'done'}", payload_digest=self.seen_digest(state))
+        return self.decide(run_id, cog_name, "approve", meaning=f"completed: {summary.strip() or 'done'}", payload_digest=self.seen_digest(state),
+                           fields=fields or None)
 
     def hand_back(self, run_id: str, cog_name: str, reason: str) -> dict:
         """A cog gives assigned work back: the step now waits for the person who filed the item, with the cog's reason."""
@@ -2008,16 +2085,31 @@ class Runner:
             rec = self.kernel.get(state["record"]) if state.get("record") else None
             by = (rec or {}).get("created_by")
             to = by if (bundle["members"].get(by) or {}).get("type") == "person" else None
-        if to is None:
+        people = [to] if to else []
+        if not people and pending.get("route") == "field:auditor":
+            # A cog filed it (an audit the auditor cog planned): it goes to the people in the step's own seat who may
+            # take it, as a route to that role would give it (the permission, segregation of duties).
+            role = (pending.get("gate") or {}).get("role") or next((s.get("role") for s in state["manifest"]["steps"] if s["id"] == pending.get("step")), "")
+            excluded = self.excluded(bundle, state, f"role:{role}")
+            obj, folder = state["manifest"]["object"], state["manifest"]["folder"]
+            people = [p for p in principals_for(bundle, f"role:{role}") if (bundle["members"].get(p) or {}).get("type") == "person"
+                      and p not in excluded and authz.check(bundle, p, "approve", obj, folder)["allowed"]] if role and role not in FIELD_ROLES else []
+            if not people:
+                raise RunError(f"there is no person to hand it back to: a cog filed it, and no person in the {(role or 'step').replace('-', ' ')} "
+                               "role may take it")
+        if not people:
             raise RunError("there is no person to hand it back to")
+        to = people[0]
+        route = f"person:{to}" if len(people) == 1 else f"role:{role}"
         track = Track(self._dir(state["id"]))
-        track.append({"type": "gate.handed_back", "run_id": state["id"], "step": pending["step"], "by": cog_name, "to": to, "reason": reason})
-        state["pending"] = {**{k: v for k, v in pending.items() if k != "stepped_in_from"}, "assignees": [to], "assignee_type": "person",
-                            "route": f"person:{to}", "handed_back_by": cog_name}
+        track.append({"type": "gate.handed_back", "run_id": state["id"], "step": pending["step"], "by": cog_name, "to": to, "assignees": people,
+                      "reason": reason})
+        state["pending"] = {**{k: v for k, v in pending.items() if k != "stepped_in_from"}, "assignees": people, "assignee_type": "person",
+                            "route": route, "handed_back_by": cog_name}
         self._save(state)
         if state.get("record"):
-            self.kernel.assign(state["record"], [to], by=cog_name, run_id=state["id"], release=state["release"])
-        self._notify([to], kind="handed-back", subject=f"{cog_name} handed back {pending.get('title', 'the item')}: {state.get('record') or state['process']}",
+            self.kernel.assign(state["record"], people, by=cog_name, run_id=state["id"], release=state["release"])
+        self._notify(people, kind="handed-back", subject=f"{cog_name} handed back {pending.get('title', 'the item')}: {state.get('record') or state['process']}",
                      body=reason, run_id=state["id"])
         return self.load(run_id)
 
@@ -2444,9 +2536,12 @@ class Runner:
                 raise RunError(f"segregation of duties: {by} may not countersign this item")
         own = next((o for o in pending.get("options") or [] if o["id"] == option["id"] and o.get("assignees") is not None), None)
         if own is not None and by not in (pending.get("assignees") or []):
-            excluded = self.excluded(bundle, state, own.get("route") or "role:", gate_not=own.get("not") or [])
+            exclusions = lambda **kw: self.excluded(bundle, state, own.get("route") or "role:", gate_not=own.get("not") or [], **kw)
         else:
-            excluded = self.excluded(bundle, state, pending.get("route") or "role:")
+            exclusions = lambda **kw: self.excluded(bundle, state, pending.get("route") or "role:", **kw)
+        excluded = exclusions()
+        if by in excluded and self.maker_may_reject(state, by, by_type, verdict):
+            excluded = exclusions(makers=False)  # a maker rejecting: only the rules about making it are set aside
         if by in excluded:
             raise RunError(f"{excluded[by]}; {by} cannot decide it")
         if by_type == "cog" and verdict == "approve" and not delegating_rule and not self.is_assigned_work(state, by):
@@ -2463,6 +2558,12 @@ class Runner:
         rec = self.kernel.get(state["record"]) if state.get("record") else None
         if verdict == "reject" and not option.get("fields"):
             fields = None  # a rejection changes nothing on the record; its reason is the meaning
+        guard = DECISION_FIELD_GUARDS.get(rec["type"]) if rec is not None else None
+        if guard is not None:
+            try:
+                fields = guard(self.kernel, rec, verdict, by=by, fields=fields or {}, bundle=bundle) or None
+            except KernelGuardError as e:
+                raise RunError(str(e)) from None
         if fields and rec is not None:
             permitted = set(self.allowed_decision_fields(state, option["id"]))
             refused = sorted(k for k in fields if k not in permitted)

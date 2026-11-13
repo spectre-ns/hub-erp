@@ -18,8 +18,8 @@ A **Frame** is the text of one SOP, work instruction or policy as the hub compil
 scope, maintainer, what it inherits, the ISO clauses it covers) and Markdown text (hubproto/frames.py). Once the SOPs
 are documents (7.8), which a new hub does at its first release, the Frame is compiled from the controlled document in
 force, not from a file. The example company has an organization model, the cog profiles, the scopes, four personas, a
-finance policy, a purchasing policy, an inventory policy, a design-control SOP, the ISO 9001 quality manual, twelve ISO
-9001 SOPs (the IT SOP among them), and eight work instructions: 32 Frames in the release. A 33rd, the reference guide on
+finance policy, a purchasing policy, an inventory policy, a design-control SOP, the ISO 9001 quality manual, thirteen ISO
+9001 SOPs (the IT SOP and the working-documents SOP among them), and eight work instructions: 33 Frames in the release. A 34th, the reference guide on
 writing Frames, is read by people and is in no release (checked by running the code).
 
 <!-- figure: c07-frame -->
@@ -142,6 +142,17 @@ cog profiles on the **senior-cogs** group (the senior-organization and senior-qa
   chair, carol, intervenes. Make its model available here, or change the committee or the cog's model through a change
   order." Nothing is read that round, and no junior cog reads in its place.
 * **A changed rule-like sentence nobody read** is a blocking `unread-rule` question, also when no model reads prose.
+* **A picture put in or replaced** (a line `![description](sha256:…)` of the SOP's text) is a blocking `unread-rule`
+  question too. Each senior cog reads the picture itself, with a model that reads pictures (a Claude model; an Ollama
+  model only with vision), and the question says what they read it to state and where that differs from the prose or
+  the `Process:` section. The chair answers, while the change order is being revised: **Confirm the committee's
+  reading** (where the members read it differently, **Confirm *member*'s reading**), **Correct it** (the reading, one
+  sentence a line), or **The picture states nothing**. Whoever confirms or corrects a reading has written SOP text: they
+  are a contributor of the change order and never the only approver of what is read from it. A confirmed reading becomes part of the SOP's text at the next
+  review round, one line per sentence right after the picture (`> Picture sha256:…: …`), and is released with it; an
+  unchanged picture keeps its reading in later revisions and asks nothing. Where nobody could read the picture (hosted
+  models off, a senior cog on a text-only model, a linked picture), the question says why, and the chair decides as for
+  any unread sentence.
 
 The seniors' model is hosted, so the committee reads only where an administrator has switched hosted models on
 (`HUBPROTO_HOSTED_MODELS=on` with an `ANTHROPIC_API_KEY`, chapter 8.4; the IT SOP, 7.16). With hosted models off, which
@@ -203,12 +214,14 @@ sentence "Configuration changes only through a change order: open one under Qual
 | Editing a Frame in the hub (`/frame-draft`) | "The ncr-sop Frame is compiled from DOC-0013: revise that document on a change order." |
 | A Frame's page | "This Frame is compiled from DOC-*n*. It is not edited here: change the document through a change order, and the Frame follows when the change order is released." |
 | Settings, the workflow editor, the forms editor, the record types page, a cog's **Change model**, **Add someone** | the change is recorded on a change order as a direct change (7.7, 7.12 to 7.14; chapter 6.10) |
-| `hubproto record-types carry CO-...` | carries a record-type change on that change order; there is no other way (7.14) |
+| `hubproto record-types carry CO-...` | carries a record-type change on that change order (7.14) |
+| `hubproto config propose FILE.json`, a change order's **Propose a configuration file (JSON)** | carries what an edited export changes on a change order, by the paths above; refused with every reason and nothing carried when any part cannot be (7.14) |
+| `hubproto config propose SCRIPT.py`, a change order's **Run a configuration script (Python)** | runs the script once, in the script worker, and carries its output as a configuration file is carried; the script and its output are kept on the change order (7.14) |
 
 An edit to a `.frame.md` file on disk is not policy: `hubproto status --check` reports it ("they are not used: the
 Frame is compiled from the SOP documents") and exits 1. So does a `config/record-types.json` that differs from the
-record types in force. `links.json` and `retention.json` are still read from the configuration directory and are "not
-under change control yet" (docs/design/config-paths.md).
+record types in force, and a `links.json` or `retention.json` that differs from the link vocabulary or retention classes in
+force ("it is not used"; docs/design/config-paths.md).
 
 **The first release converts the SOPs.** However the first release is made (the container's first start, `hubproto
 bootstrap-release`, or `hubproto dev serve`), the hub converts the SOPs to documents at once (hubproto/closure.py,
@@ -370,8 +383,10 @@ one marked, and a **Next:** line saying what to do.
 | approved | **Approved**: release under way | Approved |
 | released | **Released**: in force | Released |
 
-A rejected Gate sends the change order back to revising ("*name* rejected its approval: ... It is back to revising"). A
-Gate nobody can take leaves it in state Failed, back at revising.
+A rejected Gate closes the change order: it stays **Rejected**, with who rejected it, why and when, and nothing more is
+done with it ("Rejected. *name* rejected its approval: ... It is closed"). The revisions it carried are withdrawn, so
+another change order can revise those SOPs; to try again, prepare a new change order (hubproto/changecontrol.py,
+`sync`). A Gate nobody can take leaves it in state Failed, back at revising.
 
 <!-- figure: c07-co-stage -->
 
@@ -553,6 +568,12 @@ valid and answers every removed status that has items; and the IT SOP's validati
   **independent approver**: a person who contributed nothing and approved every item of its delta. Until then they are
   still routed the Gate but refused at signing, with the reason. This is the IT SOP's "whoever made a direct
   configuration change on a change-order is not its only approver".
+* These rules are about approving. Whoever prepared a change order or contributed to it may still **reject** it at a
+  person's Gate routed to them, with a reason (hubproto/runner.py, `maker_may_reject`); every other exclusion still
+  holds for them (a Gate's own "not", another segregation-of-duties sentence). A rejection approves nothing and puts
+  nothing in force: in the change-order process it closes the change order as rejected (a workflow of your own may
+  send it elsewhere on its rejection). The author of a revision is never routed the Gate,
+  and a committee's Gate keeps its own rules.
 * A contributor does not review it, and a reviewer with results is not removed.
 * A person signs, never a cog: a cog may review a change order and say what it found, never approve it, and a rule
   that would let a cog sign one stops it ("a person signs a change order").
@@ -585,6 +606,7 @@ The approval starts the **release-change-order** automation (hubproto/automation
 | Move items by the state map | items in removed statuses are moved (below) |
 | Publish the revisions | each revision becomes **Effective**, the one it replaces **Obsolete** |
 | Apply the form layouts | and the workflow layouts (7.12, 7.13) |
+| Apply the link and retention changes | 7.14 |
 | Apply the record-type changes | 7.14 |
 | Assign training | acknowledgement tasks for people; republishes the required-training matrix when it changes (7.15) |
 | Record divergences | raises a change request for each new one (below) |
@@ -869,6 +891,64 @@ line: `hubproto record-types status`, `show TYPE`, `carry CO-... --as P (--chang
 A record-type change is high risk (7.16) and covered by the change order's approval, not decided item by item. A change
 order cannot carry a new record type together with a process that files it: the compile checks the process against
 the record types in force (ran the code; chapter 10.9).
+
+**The link vocabulary and the retention classes** are kept the same way (`state/config/links`, `state/config/retention`;
+hubproto/configdocs.py): `config/links.json` and `config/retention.json` are not used after the conversion. A change
+order carries a new relation or class, a new inverse label, a class kept for more or fewer years ("records of the
+standard class are kept 1 year(s) less" is a warning shown with it), or a removal; removing a relation a link uses or
+the hub's own steps use, `standard`, or a class a record type is kept under is refused. The release step **Apply the
+link and retention changes** brings them into force, before the record types, so one change order may add a class and
+keep a record type under it. Links are medium risk, retention classes high (7.16).
+
+**The configuration as JSON.** `hubproto config export --out config.json` (or **the configuration in force** link on a
+change order's page, `GET /api/config?as=<you>`, for anyone who may read Policy) writes everything in force as one
+JSON document: the rules, members, roles, groups, folders, cog profiles and personas, the record types, the form
+layouts, the link vocabulary and the retention classes. Edit it and propose it: `hubproto config propose config.json
+--as carol [--co CO-...]`, or **Propose a configuration file (JSON)** under **What it carries** on a change order you
+are preparing. What it changes is carried exactly as the same edit made in Settings, the forms editor or the record
+types page would be (rules become direct changes whose prose the review round writes into the SOP), with the same
+review, widenings and signature. A file exported before another release came into force is refused ("export again"),
+and so is anything that cannot be carried, with nothing carried. The format: docs/design/config-json.md.
+
+**Configuration scripts.** For a change that is easier to compute than to type (forty members, a threshold retuned in
+every SOP), write a short Python script instead. It reads the configuration in force as `config` (the document above)
+and leaves what it proposes in `result`: the whole document, or only the parts it changes, with the `schema`, `hub`,
+`release` and `versions` it read. For example:
+
+```python
+th = next(e for e in config["policy"]["thresholds"] if e["name"] == "purchase-approval-threshold")
+th["value"] = 8000.0
+result = {k: config[k] for k in ("schema", "hub", "release", "versions")}
+result["policy"] = {"thresholds": config["policy"]["thresholds"]}
+```
+
+Submit it with `hubproto config propose tune.py --as carol [--co CO-...]`, or **Run a configuration script (Python)**
+under **What it carries** on a change order you are preparing. What happens:
+
+1. The hub checks the script first and refuses, naming the line, an import other than json, math, re, datetime,
+   decimal, collections, itertools, functools, statistics and string, or a name of those modules that is not on its
+   list (`statistics.sys`, `collections.namedtuple`, for example); `eval`, `exec`, `compile`, `__import__`, `open`,
+   `getattr`, `setattr`, `delattr`, `globals`, `locals`, `vars`, `chr`; any `__dunder__` name or attribute; text that
+   holds two underscores together or begins or ends with one; a class pattern in `match`; and an annotation written as
+   text ("Line 2: import os is not allowed: ..."). Once it runs, anything that evaluates text as code stops it.
+2. It runs once, in the **script worker**: a container of its own with no network, a read-only file system, no
+   privileges and nothing of the hub's in it, one run at a time, under limits of time, memory, processor and output.
+   Before the script is sent, the run's process is locked down by the kernel (it may read only Python's standard
+   library and read and write only its own fresh folder; it cannot start a program, open a connection or reach another
+   process, or change any file; the kernel lets it make only the few calls a computation needs), and the worker checks
+   that itself; a run it cannot
+   lock down is refused, and so is one on a kernel too old to lock it down fully (Landlock ABI 3, Linux 6.2). A script that tries more is
+   stopped, and the change order says what it tried. A development hub without the worker
+   (`HUBPROTO_SCRIPT_FALLBACK=1`, set by `hubproto dev serve`) runs it in a local subprocess with the same locks, and the
+   change order says **weaker isolation**; every other hub without a worker refuses to run scripts.
+3. Its output is read as data, exactly as an uploaded configuration file: checked against the format and carried, or
+   refused with every reason and nothing carried.
+
+The change order keeps every run: the script and its sha256, the digest of the configuration it read, its output, what
+it printed (shown as the script's own output), where it ran, the protection its parent checked, and why it stopped. Reviewers and approvers see all of it under **Configuration scripts**, with
+the changes it carried decided item by item like any other. The release applies the output that was signed and never
+runs the script again. Only a person submits a script; no cog may write or run one. A run recorded after a review round
+needs another round, like any change to what the change order carries.
 
 ## 7.15 Roles and responsibilities, and required training
 

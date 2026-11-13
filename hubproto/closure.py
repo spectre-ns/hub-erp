@@ -121,13 +121,15 @@ def stale_reason(released: dict) -> str:
 
 def on_conversion(hub) -> None:
     """When the SOPs become documents: proposals compiled from the Frame files can no longer be released (they are
-    marked stale, with the change-order route), and the record types in force are kept as they are now."""
-    from . import recordtypes
+    marked stale, with the change-order route), and the record types, link vocabulary and retention classes in force
+    are kept as they are now."""
+    from . import configdocs, recordtypes
 
     for p in hub.proposals.list():
         if p.get("status") == "open" and not p.get("eco"):
             hub._mark_stale(p, "the SOPs became documents, so a proposal compiled from the Frame files cannot be released. " + CO_ROUTE)
     recordtypes.ensure(hub)
+    configdocs.ensure(hub)
     from .sopdocs import _kept_path
 
     _kept_path(hub).unlink(missing_ok=True)  # converting ends the opt-out of keeping the Frame files

@@ -269,7 +269,10 @@ def _answer(hub, msg, cog_id, bundle, release, record, sender, actions, intent, 
         env = cog.invoke("edit-document", {"record": record["locator"], "request": msg.get("body") or msg.get("subject")}, ctx)
         r = env.get("payload") or {}
         if not r.get("ops"):
-            body = f"I cannot change {record['number']}: " + ((env.get("error") or {}).get("detail") or "I found nothing to do")
+            # No operations: the cog's own words when it answered in words (it declined, or asks what is meant), never
+            # written into the document (issue #68).
+            body = (r.get("reply") or "").strip() or (f"I cannot change {record['number']}: "
+                                                       + ((env.get("error") or {}).get("detail") or "I found nothing to do"))
             out.append(hub.inbox.reply(msg, sender=cog_id, body=body, record=record["locator"], envelope=env))
             return
         plan = (r.get("explanation") or "").replace("Changes:", "", 1).strip() or "the changes asked"

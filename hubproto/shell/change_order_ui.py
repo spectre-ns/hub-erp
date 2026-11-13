@@ -444,8 +444,27 @@ class ChangeOrderMixin:
             raise self._co_refused(e) from None
         self._co_done(co, "The title and description are saved.", "co-stage")
 
+    def _co_closed_line(self, co: dict) -> str:
+        """Why a closed change order is closed (rejected or cancelled), in a sentence; nothing more is done with it."""
+        f = co["fields"]
+        drafts = [c["draft"]["number"] for c in eco.carried(self.hub, co, withdrawn=True) if c["draft"]["state"] == "withdrawn"]
+        if co["state"] == "rejected":
+            rej = f.get("rejected") or {}
+            meaning = (rej.get("meaning") or "").strip()
+            why = (f"{esc(rej.get('by') or 'its approver')} rejected its approval"
+                   + (f": “{esc(meaning)}”" if meaning else "") + ("" if meaning[-1:] in ".!?" and meaning else "."))
+        else:
+            why = "It was cancelled."
+        return (f"{why} It is closed: nothing more is done with it, and none of it came into force"
+                + (f"; its {'revision' if len(drafts) == 1 else 'revisions'} {', '.join(esc(d) for d in drafts)} "
+                   f"{'is' if len(drafts) == 1 else 'are'} withdrawn" if drafts else "")
+                + ". To try again, prepare a new change order.")
+
     def _co_stage_html(self, ctx: dict) -> str:
         co, stage, f = ctx["co"], ctx["stage"], ctx["f"]
+        if stage in cc.CLOSED:
+            return (f"<div class='card' id='co-stage' data-live><h2 style='margin-top:0'>{icon('activity')}Where {esc(co['number'])} stands</h2>"
+                    f"<div class='card warn' role='status'>{icon('x')} <b>{esc(stage.capitalize())}.</b> {self._co_closed_line(co)}</div></div>")
         stages = list(cc.STAGES)
         cur = stages.index(stage)
         rnd = ctx["round"] or {}
@@ -464,10 +483,6 @@ class ChangeOrderMixin:
                     f"is related {'by definition' if bc.get('kind') == 'definition' else 'by meaning' + (' (' + esc(bc.get('cog')) + ')' if bc.get('cog') else '')}: "
                     f"{esc('; '.join(bc.get('reasons') or []))}. Its reviews and item decisions are stale until another round runs. "
                     "<a href='#co-related'>Related changes</a></div>")
-        rej = f.get("rejected") or {}
-        if rej and stage in cc.EDITABLE:
-            out += (f"<div class='card warn' role='status'>{icon('x')} {esc(rej.get('by'))} rejected its approval"
-                    + (f": “{esc(rej.get('meaning'))}”" if rej.get("meaning") else "") + ". It is back to revising.</div>")
         unav = [q for q in self._co_unavailable_questions(ctx) if q.get("status", "open") == "open"]
         if unav and stage in cc.EDITABLE + ("awaiting-approval",):
             out += (f"<div class='card warn' role='status'>{icon('alert')} <b>The compile-frame committee could not read part of the prose</b> "
@@ -527,6 +542,8 @@ class ChangeOrderMixin:
         rnd = ctx["round"] or {}
         who = ctx["requester"] or "its requester"
         f = co["fields"]
+        if stage in cc.CLOSED:
+            return f"<p class='status'>{self._co_closed_line(co)}</p>"
         if stage == "released":
             return (f"<p class='status'>Released: its revisions and configuration are in force "
                     f"({self._version_html(f.get('released_release')) if f.get('released_release') else 'the release in force'}).</p>")
@@ -558,12 +575,13 @@ class ChangeOrderMixin:
         if stage == "preparing":
             if not mine:
                 return f"<p>{esc(who)} is preparing it: carrying the revisions and changes it makes.</p>"
-            carries = eco.carried(self.hub, co) or cc_api("items")(co) or f.get("form_changes") or f.get("record_type_changes") or f.get("workflow_changes")
+            carries = (eco.carried(self.hub, co) or cc_api("items")(co) or f.get("form_changes") or f.get("record_type_changes") or f.get("workflow_changes")
+                       or f.get("config_changes"))
             if not carries:
                 return ("<p><b>Next:</b> carry what it changes: start a revision of an SOP or policy below, make a direct change in "
                         f"<a href='{href('/settings', self.user)}'>Settings</a>, the <a href='{href('/forms', self.user)}'>forms editor</a>, "
-                        f"the <a href='{href('/workflows', self.user)}'>workflow editor</a> or on the <a href='{href('/record-types', self.user)}'>record types</a> page. "
-                        "Then request review.</p>")
+                        f"the <a href='{href('/workflows', self.user)}'>workflow editor</a> or on the <a href='{href('/record-types', self.user)}'>record types</a> page, "
+                        "or carry a configuration file (JSON) or run a configuration script below. Then request review.</p>")
             first = "when the revisions say what you mean, request review" if eco.carried(self.hub, co) else "request review"
             return (f"<p><b>Next:</b> {first}. Round 1 compiles the delta from the prose, drafts "
                     "the prose for direct changes, suggests the panel and asks it.</p><div class='actions'>" + self._co_request_form(ctx, False) + "</div>")
@@ -610,6 +628,8 @@ class ChangeOrderMixin:
         out += self._co_direct_html(ctx)
         out += self._forms_co_section(co, ctx["mine"], prep)
         out += self._co_rt_html(ctx)
+        out += self._co_config_html(ctx)  # link vocabulary, retention classes, and a configuration file to carry (issue #33)
+        out += self._co_scripts_html(ctx)  # configuration scripts: each run, its output, and a script to submit (issue #34)
         wfc = f.get("workflow_changes") or {}
         if wfc:
             out += (f"<h3>{icon('workflow')}Workflows</h3><p>{len(wfc)} workflow change(s): {esc(', '.join(sorted(wfc)))}; drawn under "
@@ -1180,14 +1200,42 @@ class ChangeOrderMixin:
                 if q.get("code") == "unread-rule":
                     div += (f"<label class='check'><input type='checkbox' name='category' value='procedure'{' checked' if self._co_cv('/co-answer', fid, 'category') else ''}> "
                             "It is a procedure: people follow it; the hub does not enforce it (not a divergence)</label>")
+                if q.get("picture"):
+                    div = self._co_picture_answer(q, fid) + div
+                need = "" if q.get("picture") else " <b aria-hidden='true'>*</b>"
                 inner = (f"<input type='hidden' name='qid' value='{esc(q['id'])}'>{div}<div class='fields'>"
-                         f"<label class='f'><span>Your answer <b aria-hidden='true'>*</b></span><textarea name='answer' rows='2' required>{esc(self._co_cv('/co-answer', fid, 'answer'))}</textarea></label>"
+                         f"<label class='f'><span>Your answer{need}</span><textarea name='answer' rows='2'{'' if q.get('picture') else ' required'}>{esc(self._co_cv('/co-answer', fid, 'answer'))}</textarea></label>"
                          f"<label class='f'><span>The line of the prose that says it</span><input name='line' inputmode='numeric' size='6' value='{esc(self._co_cv('/co-answer', fid, 'line'))}'></label></div>"
                          f"<div class='actions'><button class='secondary'>{icon('check')}Mark answered</button></div>")
                 body += details("Answer it", self._co_form("/co-answer", co, fid, inner, label=f"Answer: {short(q.get('text') or '', 60)}"),
                                 open_=bool(self.err and self.route == "/co-answer" and self.vals.get("form") == fid))
             out += body + "</div></li>"
         return out + "</ul></section>"
+
+    def _co_picture_answer(self, q: dict, fid: str) -> str:
+        """A picture question's own answers (issue #31): confirm the compile-frame committee's reading, correct it, or say
+        the picture states nothing. The reading confirmed is part of the SOP's text from the next review round on."""
+        reading = q.get("reading") or {}
+        chosen = self._co_cv("/co-answer", fid, "picture")
+        text = self._co_cv("/co-answer", fid, "reading_text") or "\n".join(reading.get("proposed") or [])
+
+        def opt(value: str, words: str) -> str:
+            return (f"<label class='check'><input type='radio' name='picture' value='{value}' required{' checked' if chosen == value else ''}> "
+                    f"{words}</label>")
+        out = "<fieldset><legend>What the picture states <b aria-hidden='true'>*</b></legend>"
+        if reading.get("divergences"):
+            out += "<p class='why' style='margin:0'>It differs from the prose: " + esc("; ".join(reading["divergences"])) + ".</p>"
+        if reading and reading.get("agreed", True):
+            out += opt("confirm", "Confirm the committee's reading" + (" (it states nothing)" if reading.get("states_nothing") else
+                                                                       ": it becomes part of the SOP's text, after the picture"))
+        elif reading:  # the members read it differently: the person chooses whose reading is meant, by name
+            for r in reading.get("readings") or []:
+                said = "it states nothing" if r.get("states_nothing") else "“" + " ".join(r.get("sentences") or []) + "”"
+                out += opt(f"confirm:{esc(r.get('member') or '')}", f"Confirm {esc(r.get('member'))}'s reading: {esc(said)}")
+        out += opt("correct", "Correct it: the reading below becomes part of the SOP's text, after the picture")
+        out += opt("nothing", "The picture states nothing (a photo, a logo, a label)")
+        return (out + f"<label class='f'><span>The reading, one sentence a line</span><textarea name='reading_text' rows='4'>{esc(text)}</textarea></label>"
+                "</fieldset>")
 
     def _co_unavailable_card(self, ctx: dict, unav: list[dict]) -> str:
         """The compile-frame committee's member-unavailable questions as one card: who could not read what, why, who can
@@ -1536,6 +1584,12 @@ class ChangeOrderMixin:
         for it in recordtypes.delta_items(self.hub, co):
             lis.append(f"<li>Record type: {esc(it.get('reason'))} <span class='why'>(approved with the change order"
                        + ("; " + esc("; ".join(it.get("errors") or [])) if it.get("errors") else "") + ")</span></li>")
+        from .. import configdocs
+
+        for it in configdocs.delta_items(self.hub, co):
+            warn = "; ".join(w["text"] for w in it.get("warnings") or [])
+            lis.append(f"<li>{esc(it.get('reason')[:1].upper() + it.get('reason')[1:])} <span class='why'>(approved with the change order"
+                       + ("; " + esc(warn) if warn else "") + ("; " + esc("; ".join(it.get("errors") or [])) if it.get("errors") else "") + ")</span></li>")
         if not lis:
             return ""
         return "<h3>Shown, not decided item by item</h3><ul>" + "".join(lis) + "</ul>"
@@ -1802,6 +1856,8 @@ class ChangeOrderMixin:
         co, stage = ctx["co"], ctx["stage"]
         ov = ctx["ov"]
         out = f"<section class='co-sec' id='co-approval'><h2>{icon('check-circle')}Approval</h2>"
+        if stage in cc.CLOSED:
+            return out + f"<p class='status'>{esc(stage.capitalize())}: closed without a release.</p></section>"
         if stage == "released":
             return out + "<p class='status'>Released.</p></section>"
         if stage == "approved":
@@ -2075,11 +2131,16 @@ class ChangeOrderMixin:
             except ValueError:
                 raise ShellError("The line is a number (the line of the SOP that answers it).", field="line") from None
         answer = self._f("answer")
-        if not answer:
+        picture = self._f("picture") or None
+        asked = next((q for q in cc.questions(self.hub, co["locator"]) if q.get("id") == self._f("qid")), None)
+        if asked is not None and asked.get("picture") and not picture:  # a picture's answer says what it states, every time
+            raise ShellError("Choose what the picture states: confirm a reading, correct it, or say it states nothing.", field="picture")
+        if not answer and not picture:
             raise ShellError("Say what the answer is (and, best, which line of the prose says it).", field="answer")
         try:
             cc.answer_question(self.hub, co["locator"], self._f("qid"), answer, self.user, line=line,
-                               record_divergence=bool(self._f("record_divergence")), category=self._f("category") or None)
+                               record_divergence=bool(self._f("record_divergence")), category=self._f("category") or None,
+                               picture=picture, reading_text=self._f("reading_text") or "")
         except ValueError as e:
             raise self._co_refused(e) from None
         self._co_done(co, "The question is marked answered.", "co-questions")

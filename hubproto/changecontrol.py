@@ -37,7 +37,7 @@ person can act on when a step is refused. The API the shell builds its pages on:
 
 Reading
     stage_of(co)                                        the stage of a CO record
-    sync(hub, co)                                       the CO, after noticing a rejected approval (back to revising)
+    sync(hub, co)                                       the CO, after noticing a rejected approval (closed)
     overview(hub, co)                                   everything a CO page shows, in one dict
     delta(hub, co)                                      the delta items (origin, warnings with acceptances, state, stale)
     co_warnings(hub, co)                                warnings on the CO as a whole (kept divergences, general findings)
@@ -60,7 +60,8 @@ The loop
     accept_suggestion(hub, co, sid, by) / reject_suggestion(hub, co, sid, by, reason="")
     answer_question(hub, co, qid, answer, by, line=None)
     add_direct_change(hub, co, rule_or_change, by) / remove_direct_change(hub, co, item_id, by)
-    rules_to_change_order(hub, user, new_rules, reason="")   Settings: direct changes on the person's settings CO
+    rules_to_change_order(hub, user, new_rules, reason="", co_ref=None)   Settings: direct changes on the person's settings CO
+    settings_change_order(hub, user) / rule_changes(base, new_rules)       that CO; the direct changes a new rule set makes
     set_state_map(hub, co, process, mapping, by)
     send_for_approval(hub, co, by)
     decide_item(hub, co, item_id, verdict, by, meaning, accept_warnings=(), override=None)
@@ -86,6 +87,7 @@ from .rules import rule_key, sha256_of, validate_rule
 
 STAGES = ("preparing", "in-review", "revising", "awaiting-approval", "approved", "released")
 EDITABLE = ("preparing", "in-review", "revising")
+CLOSED = ("rejected", "cancelled")  # a change order closed without a release: nothing more is done with it (issue #65)
 CHANGE_CONTROL_SOP = "change-control-sop"
 REVIEW_SECTION = "review of changes"
 PANEL_COG = "quality-assistant"
@@ -277,6 +279,8 @@ def stage_of(co: dict) -> str:
         return "released"
     if st == "approved":
         return "approved"
+    if st in CLOSED:
+        return st
     s = co["fields"].get("stage")
     if s in STAGES:
         return s
@@ -287,21 +291,38 @@ def stage_of(co: dict) -> str:
 
 def sync(hub, co_ref) -> dict:
     """The change order, after noticing what happened to it outside this module: an approval Gate that was rejected
-    sends it back to revising (the record is open again, the rejection kept in ``rejected``); anything it carries that
-    changed after it was sent for approval (a revision, a direct, form, record-type or workflow change, the state map)
-    sends it back to revising too, its decisions void (``_back_to_revising``)."""
+    closes it (issue #65: it stays rejected, the rejection kept in ``rejected``, its drafts withdrawn, and nothing more is
+    done with it); one that an earlier rejection sent back to revising, with no review requested since, closes the same
+    way. Anything it carries that changed after it was sent for approval (a revision, a direct, form, record-type or
+    workflow change, the state map) sends it back to revising, its decisions void (``_back_to_revising``)."""
     co = _co(hub, co_ref)
-    eco.withdraw_cancelled_drafts(hub, co)
-    if co["state"] == "rejected":
+    if co["state"] == "open" and _reopened_by_rejection(hub, co):
+        hub.kernel.transition(co["locator"], "rejected", by="hub",
+                              reason="its approval was rejected; a rejected change order is closed, not revised")
+        co = _co(hub, co["locator"])
+    if co["state"] == "rejected" and not (co["fields"].get("rejected") or {}).get("closed"):
         dec = next((d for d in reversed(co.get("decisions") or []) if d.get("verdict") == "reject"), {})
-        hub.kernel.transition(co["locator"], "open", by="hub", reason="its approval was rejected: back to revising")
-        _hold_drafts(hub, co, False)
-        co = _set(hub, co, stage="revising", frozen=None, rejected={"by": dec.get("by"), "meaning": dec.get("meaning"), "at": dec.get("at")})
-    elif stage_of(co) == "awaiting-approval" and co["fields"].get("frozen"):
+        was = co["fields"].get("rejected") or {}
+        co = _set(hub, co, frozen=None, rejected={"by": dec.get("by") or was.get("by"), "meaning": dec.get("meaning") or was.get("meaning"),
+                                                  "at": dec.get("at") or was.get("at"), "closed": True})
+    eco.withdraw_cancelled_drafts(hub, co)
+    if stage_of(co) == "awaiting-approval" and co["fields"].get("frozen"):
         changed = changed_since_sent(hub, co)
         if changed:
             co = _back_to_revising(hub, co, "changed after it was sent for approval: " + ", ".join(changed))
     return co
+
+
+def _reopened_by_rejection(hub, co: dict) -> bool:
+    """A change order an earlier rejection sent back to revising (before issue #65): its process ended rejected, it
+    has not been sent again, and no review round was requested after the rejection (so nobody is reworking it)."""
+    rej = co["fields"].get("rejected") or {}
+    if not rej or rej.get("closed") or stage_of(co) != "revising":
+        return False
+    run = hub.runner.run_for_record(co["locator"])
+    if not run or run.get("status") != "rejected":
+        return False
+    return not any((r.get("requested_at") or r.get("at") or "") > (rej.get("at") or "") for r in rounds(co))
 
 
 def on_approved(hub, co_ref) -> dict:
@@ -548,25 +569,37 @@ def remove_direct_change(hub, co_ref, item_id: str, by: str) -> list[dict]:
     return rest
 
 
-def rules_to_change_order(hub, user: str, new_rules: list[dict], reason: str = "") -> dict:
-    """Settings as direct changes (change control v2): the difference between the rules in force and ``new_rules`` is
-    recorded on the person's open settings change order (one is started when they have none). Settings no longer
-    writes sentences into the SOPs: the review round drafts the prose (the qa-manager cog). Returns {"change_order",
-    "locator", "report"}; each report line says what was recorded."""
-    from .guards import drift_guard
-
-    base = hub.settings_rules()
-    changes = drift_guard(base, new_rules)
-    if not changes:
-        raise ValueError("that changes nothing")
+def settings_change_order(hub, user: str, reason: str = "", *, create: bool = True) -> dict | None:
+    """The person's open settings change order, where Settings records their changes; one is started when they have none
+    (``create``), else None."""
     co = next((r for r in hub.kernel.query(type_="change-order") if r["state"] in eco.OPEN_STATES and r["fields"].get("requested_by") == user
                and r["fields"].get("from_settings") and stage_of(r) in EDITABLE), None)
-    if co is None:
+    if co is None and create:
         co = hub.kernel.create("change-order", "Quality/Changes", {"title": f"Policy changes by {user}", "description": reason or "Changes to the policy.",
                                                                    "requested_by": user, "from_settings": True, "stage": "preparing"}, by=user)
+    return co
+
+
+def rule_changes(base: list[dict], new_rules: list[dict]) -> list[dict]:
+    """The direct changes that make ``base`` (the rules in force) say what ``new_rules`` says, as Settings records them:
+    a change for each rule whose slot holds another rule now, an add or a remove for the rest."""
+    from .guards import drift_guard
+
+    return [{"op": "change" if c.get("changes_from") else c["op"], "rule": c["rule"], **({"was": c["changes_from"]} if c.get("changes_from") else {})}
+            for c in drift_guard(base, new_rules) if not (c["op"] == "remove" and c.get("changed_to"))]
+
+
+def rules_to_change_order(hub, user: str, new_rules: list[dict], reason: str = "", co_ref=None) -> dict:
+    """Settings as direct changes (change control v2): the difference between the rules in force and ``new_rules`` is
+    recorded on the person's open settings change order (one is started when they have none), or on ``co_ref``. Settings
+    no longer writes sentences into the SOPs: the review round drafts the prose (the qa-manager cog). Returns
+    {"change_order", "locator", "report"}; each report line says what was recorded."""
+    base = hub.settings_rules()
+    wanted = rule_changes(base, new_rules)
+    if not wanted:
+        raise ValueError("that changes nothing")
+    co = _co(hub, co_ref) if co_ref is not None else settings_change_order(hub, user, reason)
     before = {it["id"] for it in _items(co)}
-    wanted = [{"op": "change" if c.get("changes_from") else c["op"], "rule": c["rule"], **({"was": c["changes_from"]} if c.get("changes_from") else {})}
-              for c in changes if not (c["op"] == "remove" and c.get("changed_to"))]
     items = add_direct_change(hub, co, wanted, by=user)
     report = []
     for it in items:
@@ -591,7 +624,8 @@ def _version_authors(hub, draft: dict) -> list[str]:
 
 def contributors(hub, co_ref) -> list[str]:
     """Everyone who wrote a revision the change order carries (or opened it for its author: ``started_by``), retires a
-    document on it, or made a direct, suggested (who accepted it), form or record-type change on it. None of them may sign its approval (the change-control SOP's segregation sentence)."""
+    document on it, confirmed or corrected a picture's reading that puts words into an SOP (``picture_readings``), or made
+    a direct, suggested (who accepted it), form, record-type, link-vocabulary or retention change on it. None of them may sign its approval (the change-control SOP's segregation sentence)."""
     co = _co(hub, co_ref)
     out = []
     for c in eco.carried(hub, co):
@@ -600,12 +634,15 @@ def contributors(hub, co_ref) -> list[str]:
     for it in _items(co):
         o = it.get("origin") or {}
         out += [o.get("accepted_by")] if o.get("kind") == "suggested" else [o.get("by")]
-    for kind in ("form_changes", "record_type_changes", "workflow_changes"):
+    for kind in ("form_changes", "record_type_changes", "workflow_changes", "config_changes"):
         carried = co["fields"].get(kind) or {}
         out += [(v or {}).get("by") for v in (carried.values() if isinstance(carried, dict) else carried)]
     p = _proposal(hub, co)
     out += [(c.get("override") or {}).get("by") for c in (p or {}).get("changes") or []]  # an overrider wrote that value
     out += [(m or {}).get("by") for per in (co["fields"].get("state_map_meta") or {}).values() for m in (per or {}).values()]
+    from .picture_reading import confirmers
+
+    out += [w for who in confirmers(co).values() for w in who]  # who confirmed or corrected a picture's reading wrote SOP lines
     return sorted({w for w in out if w and w not in MACHINES})
 
 
@@ -685,8 +722,11 @@ def compile_delta(hub, co_ref, *, extractor=None, n: int | None = None) -> dict:
     prev = _proposal(hub, co)
     drafts = eco.drafts_of(hub, co)
     f = co["fields"]
+    from . import picture_reading  # a reading a person confirmed since the last compile is compiled into the text
+
     same = (prev is not None and prev.get("status") == "open" and f.get("staged_base") == _digest(hub)
             and (f.get("staged_from") or {}) == _shas(hub, drafts) and not f.get("staged_errors")
+            and (f.get("staged_readings") or "") == picture_reading.digest(picture_reading.confirmed_of(co))
             and (bool(drafts) or prev.get("extractor") == "none"))
     recompiled = not same
     if same:
@@ -721,6 +761,8 @@ def _annotate(hub, co: dict, p: dict, prev: dict | None, n: int | None) -> dict:
     its maker: origin ``direct`` or ``suggested``, with the SOP line that states it), every direct change the prose does
     not state (yet) as an item of its own (``unstated``), decisions and overrides carried from the last compile for an
     item that is the same, questions carried (a rebase question for each item a release made moot)."""
+    from .picture_reading import confirmer_of
+
     old = {c["id"]: c for c in ((prev or p).get("changes") or [])}
     p["changes"] = [c for c in p.get("changes") or [] if not c.get("unstated")]
     items = _items(co)
@@ -743,8 +785,10 @@ def _annotate(hub, co: dict, p: dict, prev: dict | None, n: int | None) -> dict:
                 covered.setdefault(it["id"], set()).add(c["op"])
             else:
                 o = c.get("origin") or {}
-                c["origin"] = {"kind": "prose", **o, **where, "by": o.get("by") or ", ".join(authors.get(where["frame"]) or []) or None,
-                               "at": o.get("at") or p.get("created_at")}
+                # A rule read from a picture's reading was written by whoever confirmed or corrected that reading.
+                reader = confirmer_of(co, where["frame"] or "", where["quote"])
+                c["origin"] = {"kind": "prose", **o, **where, "by": reader or o.get("by") or ", ".join(authors.get(where["frame"]) or []) or None,
+                               "at": o.get("at") or p.get("created_at"), **({"reading_by": reader} if reader else {})}
             prior = old.get(c["id"])
             c["decisions"] = [dict(d) for d in (prior or {}).get("decisions") or []]
             if prior and prior.get("override"):
@@ -924,15 +968,23 @@ def _warnings(hub, co: dict, p: dict) -> tuple[dict[str, list[dict]], list[dict]
     return items, general
 
 
-def _makers(c: dict, authors: dict[str, list[str]]) -> list[str]:
+def _makers(c: dict, authors: dict[str, list[str]], co: dict | None = None) -> list[str]:
     """Who made a delta item: whoever wrote it in the prose (the revision's authors) or made it directly, who accepted it
-    (a suggestion), who overrode its value, who set a state-map entry. None of them decides it."""
+    (a suggestion), who overrode its value, who set a state-map entry, who confirmed or corrected the picture's reading
+    it was read from (and, for a wording change, every reading of that SOP). None of them decides it."""
+    from .picture_reading import confirmers, writers_of
+
     o = c.get("origin") or {}
     # A suggestion's maker is who accepted it onto the change order (the reviewer who suggested it reviewed, not authored).
     by = [] if o.get("kind") == "suggested" else [x.strip() for x in str(o.get("by") or "").split(",")]
     out = by + [o.get("accepted_by"), (c.get("override") or {}).get("by")]
+    frame = o.get("frame") or c.get("frame") or ""
     if o.get("kind") == "prose" or c.get("op") == "text":
-        out += authors.get(o.get("frame") or c.get("frame") or "") or []
+        out += authors.get(frame) or []
+    if co is not None:
+        out += writers_of(co, frame, o.get("quote") or ((c.get("rule") or {}).get("source") or {}).get("text"))
+        if c.get("op") == "text":  # the SOP's wording change holds the readings' lines: their writers made it too
+            out += [w for (f, _short), who in confirmers(co).items() if f == frame for w in who]
     return sorted({w for w in out if w and w not in MACHINES})
 
 
@@ -991,7 +1043,7 @@ def _refresh(hub, co: dict, p: dict) -> dict:
     contribs = contributors(hub, co)
     ids = {c["id"] for c in p.get("changes") or []}
     for c in p.get("changes") or []:
-        c["makers"] = _makers(c, authors)
+        c["makers"] = _makers(c, authors, co)
         c["contributors"] = contribs
         # The removal a change supersedes is that change's other half (its "from"): decided with it, never on its own.
         half = "add:" + rule_key(c["changed_to"]) if c.get("op") == "remove" and c.get("changed_to") else None
@@ -1088,7 +1140,8 @@ def _roles_named(rule: dict) -> set[str]:
 
 
 def touches(hub, co_ref, p: dict | None = None) -> dict[str, set]:
-    """What the change order changes: {"sop", "process", "slot", "record_type", "form", "role", "kind"} (sets)."""
+    """What the change order changes: {"sop", "process", "slot", "record_type", "form", "role", "kind"} (sets). A link-vocabulary
+    or retention change is a kind ("links", "retention")."""
     co = _co(hub, co_ref)
     f = co["fields"]
     p = p if p is not None else _proposal(hub, co)
@@ -1116,6 +1169,7 @@ def touches(hub, co_ref, p: dict | None = None) -> dict[str, set]:
     out["process"] |= set(f.get("workflow_changes") or {})  # a workflow carried from the editor (hubproto.workflows)
     rtc = f.get("record_type_changes") or []
     out["record_type"] = {x.get("type") for x in (rtc if isinstance(rtc, list) else [{"type": k} for k in rtc])}
+    out["kind"] |= {x.get("doc") for x in f.get("config_changes") or [] if isinstance(x, dict)}
     for k in out:
         out[k].discard(None)
         out[k].discard("")
@@ -1327,7 +1381,7 @@ def request_review(hub, co_ref, by: str, panel=None, drop_reason: str = "") -> d
         raise ValueError(f"{co['number']} is {st.replace('-', ' ')}: review rounds are over")
     f = co["fields"]
     if not (eco.carried(hub, co) or eco.retirements(co) or _items(co) or f.get("form_changes") or f.get("record_type_changes")
-            or f.get("workflow_changes")):
+            or f.get("workflow_changes") or f.get("config_changes")):
         raise ValueError(f"{co['number']} changes nothing yet: carry an SOP or policy revision, make a direct change or carry a form first")
     last = current_round(co)
     if last and last.get("status") == "compiling":
@@ -1534,7 +1588,7 @@ def round_check(hub, co_ref, n: int) -> str:
     w = int(co["fields"].get("staged_widenings") or 0)
     # What this round reviews: the revisions and the direct changes as they are now (send_reasons compares with it).
     content = content_digest(hub, co)
-    seen = {k: content[k] for k in REVIEWED_KEYS}
+    seen = {k: content[k] for k in REVIEWED_KEYS if k in content}
 
     def put(r):
         r["reviewed_from"] = seen
@@ -1548,18 +1602,52 @@ def round_check(hub, co_ref, n: int) -> str:
 
 def widened_principals(hub, co_ref) -> set[str]:
     """The members whose own authority the change order's delta widens: a cog that may approve more, is routed more, or
-    may do more (a permission), a member gaining roles. Like a person, none of them reviews that change."""
+    may do more (a permission), a member gaining roles, everyone in a group a widening adds members or roles to. A
+    permission, route or approver given to a role or a group widens each of its members (issue #76): as the release in
+    force has them, and as this change order's own group rules define them (a group it creates or gives a role).
+    Removing a route or an approver widens nobody's authority, whoever it named. Like a person, none of them reviews
+    that change."""
+    from .routing import principals_for
+
     co = _co(hub, co_ref)
     p = _proposal(hub, co)
+    changes = [c for c in (p or {}).get("changes") or [] if c.get("op") != "text"]
+    bundle = _bundle(hub)
+    # The groups as this change order leaves them: a group rule it adds or restates (its members and roles).
+    new_groups = {_effective(c).get("name"): _effective(c) for c in changes
+                  if c.get("op") != "remove" and _effective(c).get("kind") == "group"}
+
+    def members(ref: str) -> set[str]:
+        kind, _, name = str(ref or "").partition(":")
+        if not name:
+            return set()
+        if kind in ("cog", "person"):
+            return {name}
+        if kind == "role":
+            return set(principals_for(bundle, f"role:{name}"))
+        if kind == "group":
+            out = set(principals_for(bundle, f"group:{name}")) if name in (bundle.get("groups") or {}) else set()
+            g = new_groups.get(name)
+            if g:
+                out |= {str(m).partition(":")[2] or str(m) for m in g.get("members") or [] if m}
+                for role in g.get("roles") or []:
+                    out |= set(principals_for(bundle, f"role:{role}"))
+            return out
+        return set()
+
     out: set[str] = set()
-    for c in (p or {}).get("changes") or []:
-        if c.get("op") == "text" or not _widening(c):
+    for c in changes:
+        if not _widening(c):
             continue
         r = _effective(c)
-        for ref in (r.get("approver"), r.get("assignee"), r.get("subject"), f"person:{r['principal']}" if r.get("kind") == "member" else None):
-            kind, _, name = str(ref or "").partition(":")
-            if kind in ("cog", "person") and name:
-                out.add(name)
+        removed = c.get("op") == "remove"
+        refs = [r.get("subject"), f"person:{r['principal']}" if r.get("kind") == "member" else None]
+        if not removed:  # a route or an approver taken away gives its assignee nothing
+            refs += [r.get("approver"), r.get("assignee")]
+        if r.get("kind") == "group":  # someone joins it or it gains a role; or, removed, its members lose a deny it carried
+            refs.append(f"group:{r.get('name')}")
+        for ref in refs:
+            out |= members(ref)
     return out
 
 
@@ -1814,6 +1902,14 @@ def brief(hub, co_ref, n: int, who: str) -> dict:
         lines += [f"- [{x.get('severity')}] {(x.get('about') or {}).get('item') or 'general'}: {x.get('text')}" for x in earlier]
     for e in f.get("staged_errors") or []:
         lines.append(f"The compile reports: {e}")
+    if any(c.get("op") != "text" and (_effective(c) or {}).get("kind") == "cog" for c in (p or {}).get("changes") or []):
+        # A reviewer of a cog-profile change checks the model against what this installation has (the list_models tool's
+        # listing, read by the hub here, as the review asks the model no tools).
+        from .model import installed_models, installed_models_text
+
+        lines.append("This change order changes a cog profile. The models this installation has now (the hub's listing, as the "
+                     "list_models tool gives it; a profile names a model as written here):")
+        lines.append(installed_models_text(installed_models(_bundle(hub))))
     return {"items": items, "gone": gone, "earlier": earlier, "since": last[0] if last else None, "text": "\n".join(lines)}
 
 
@@ -2059,11 +2155,13 @@ def committee_answerer(hub, co_ref, q: dict, by: str, p: dict | None = None) -> 
         own |= set(_draft_authors(hub, co).get(q.get("frame") or "") or [])  # the line is in their own prose
     if by in own:
         return f"segregation of duties: {by} made what this question is about; the other policy owner answers it", "", []
+    if by in contributors(hub, co):  # an answer may write SOP text (a picture's reading): never a contributor's
+        return f"segregation of duties: {by} contributed to {co['number']}; a policy owner who did not answers for the committee", "", []
     return "", "policy-owner", concerned
 
 
 def answer_question(hub, co_ref, qid: str, answer: str, by: str, line: int | None = None, record_divergence: bool = False,
-                    category: str | None = None) -> dict:
+                    category: str | None = None, picture: str | None = None, reading_text: str = "") -> dict:
     """Mark a question answered, with the answer (and, best, the line of the prose that answers it). The next compile
     also closes a compiler question that no longer arises. A committee question (``COMMITTEE_CODES``) is answered by a
     person (``committee_answerer``: its chair or a system administrator; with no person as either in the release in
@@ -2071,8 +2169,22 @@ def answer_question(hub, co_ref, qid: str, answer: str, by: str, line: int | Non
     (a committee question): the line stays unenforced and the release records it as a divergence, with the answer as its
     meaning. ``category="procedure"`` (an ``unread-rule`` question): the sentence is a procedure people follow and the
     hub does not enforce it; not a divergence, an accepted warning like any answer. Other questions: the requester, a
-    document controller or a contributor answers."""
+    document controller or a contributor answers.
+
+    ``picture`` (a picture's question, issue #31): "confirm" the compile-frame committee's reading of it, "correct" it
+    (``reading_text``: the reading, one sentence a line) or say it states "nothing". The reading confirmed is recorded on
+    the change order (``picture_readings``) and is part of the SOP's text from the next compile on (the next review
+    round), after the picture's line (``hubproto.picture_reading``); the signed answer holds it."""
+    from . import picture_reading
+
     co = sync(hub, co_ref)
+    if picture is not None and not picture_reading.kind_of(picture):
+        raise ValueError(f"a picture's question is answered with {', '.join(picture_reading.ANSWERS)}")
+    if picture is not None and stage_of(co) not in EDITABLE:  # whatever it says: the text signed is the text compiled
+        raise ValueError(f"{co['number']} is {stage_of(co)}: a picture's answer decides the SOP's text, so answer it while the "
+                         "change order is being revised (send it back to revising first)")
+    if not (answer or "").strip() and picture:
+        answer = picture_reading.ANSWERS[picture_reading.kind_of(picture)]
     if not (answer or "").strip():
         raise ValueError("say what the answer is (and, best, which line of the prose says it)")
     if category is not None and category not in ANSWER_CATEGORIES:
@@ -2092,6 +2204,20 @@ def answer_question(hub, co_ref, qid: str, answer: str, by: str, line: int | Non
     concerned: list[str] = []
     if category and (q is None or q.get("code") != "unread-rule"):
         raise ValueError("only an unread-rule question (prose that reads like a rule and configures nothing) is answered as a procedure")
+    if q is not None and q.get("picture") and stage_of(co) not in EDITABLE:  # any answer: the text signed is the text compiled
+        raise ValueError(f"{co['number']} is {stage_of(co)}: a picture's answer decides the SOP's text, so answer it while the "
+                         "change order is being revised (send it back to revising first)")
+    reading: list[str] | None = None
+    if picture is not None:
+        if q is None or not q.get("picture"):
+            raise ValueError("only a picture's question is answered with the picture's reading")
+        reading = picture_reading.answer_lines(q, picture, reading_text)
+        upd.update({"picture_answer": picture, "confirmed_reading": reading})
+        if reading:
+            upd["answer"] = meaning = f"{meaning} The picture's reading: “{' '.join(reading)}”"
+            divs = picture_reading.divergences_of(q, picture)
+            if divs:  # the approvers see where it differs, with the answer
+                upd["answer"] = meaning = f"{meaning} It differs from the prose: {'; '.join(divs)}."
     if committee_q:
         # The compile committee could not read (a member was unavailable) or did not agree: a person intervenes.
         why, as_, concerned = committee_answerer(hub, co, q, by, p)
@@ -2108,7 +2234,18 @@ def answer_question(hub, co_ref, qid: str, answer: str, by: str, line: int | Non
         q.update(upd)
         _record(hub, co, "question_answered", {**_signed(hub, co, by=by, verdict="answer", meaning=meaning, step=qid,
                                                          payload=_hash(q.get("text")), at=now), "question": qid}, by)
-        if committee_q:  # the intervention is an accepted warning on the change order (and on each item it concerns)
+        if reading is not None:  # the change order holds the reading a person confirmed; the next compile puts it in the text
+            ref = picture_reading.PICTURE_LINE.fullmatch(str(q.get("quote") or "")).group(2)
+            kept = {f: dict(v or {}) for f, v in (co["fields"].get("picture_readings") or {}).items()}
+            wrote = picture_reading.writers(kept.get(q.get("frame") or "", {}).get(ref)) + ([by] if reading else [])
+            kept.setdefault(q.get("frame") or "", {})[ref] = {
+                "lines": reading, "answer": picture_reading.kind_of(picture), "chosen": picture, "by": by, "at": now, "question": qid,
+                "writers": list(dict.fromkeys(wrote)),
+                "read_by": list((q.get("reading") or {}).get("by") or []), "proposed": list((q.get("reading") or {}).get("proposed") or [])}
+            co = _set(hub, co, by=by, picture_readings=kept)
+        if committee_q and not reading:  # the intervention is an accepted warning on the change order (and on each item it concerns)
+            # An answer that writes SOP lines made its author a contributor: what is raised against those lines (the reading's
+            # divergences) stays a warning for an approver who contributed nothing to accept.
             for item, key in [(None, f"co|question|{qid}")] + [(cid, f"{cid}|question|{qid}") for cid in concerned]:
                 p.setdefault("acceptances", {})[key] = {"by": by, "meaning": meaning, "at": now}
                 _record(hub, co, "warning_accepted", {**_signed(hub, co, by=by, verdict="accept", meaning=meaning, step=key,
@@ -2293,9 +2430,10 @@ def set_state_map(hub, co_ref, process: str, mapping: dict, by: str) -> dict:
 
 
 # ---------------------------------------------------------------- integrity: what was reviewed, sent and signed
-REVIEWED_KEYS = ("drafts", "items", "forms", "record_types", "workflows")
+REVIEWED_KEYS = ("drafts", "items", "forms", "record_types", "workflows", "config", "scripts")
 CONTENT_WORDS = {"drafts": "the revisions it carries", "items": "its direct changes", "forms": "its form changes",
                  "record_types": "its record-type changes", "workflows": "its workflow changes", "state_map": "its state map",
+                 "config": "its link-vocabulary and retention changes", "scripts": "its configuration scripts and their output",
                  "proposal": "its compiled delta"}
 
 
@@ -2305,17 +2443,25 @@ def _hash(obj) -> str:
 
 def content_digest(hub, co_ref) -> dict:
     """What a change order carries, by hash: {"drafts": {SOP: content sha}, "items", "forms", "record_types",
-    "workflows", "state_map"}. A review round records it (``reviewed_from``), sending for approval freezes it
-    (``frozen``), the signature and the release check against it."""
+    "workflows", "state_map", "config" (its link-vocabulary and retention changes, when it carries some)}. A review
+    round records it (``reviewed_from``), sending for approval freezes it (``frozen``), the signature and the release
+    check against it."""
     co = _co(hub, co_ref)
     f = co["fields"]
     return {"drafts": _shas(hub, eco.drafts_of(hub, co)), "items": _sig(_items(co)), "forms": _hash(f.get("form_changes") or {}),
             "record_types": _hash(f.get("record_type_changes") or []), "workflows": _hash(f.get("workflow_changes") or {}),
-            "state_map": _hash(f.get("state_map") or {})}
+            "state_map": _hash(f.get("state_map") or {}),
+            # Only when it carries some: the digest of a change order without them is what it was before they existed.
+            **({"config": _hash(f["config_changes"])} if f.get("config_changes") else {}),
+            # The configuration scripts run on it (issue #34: script, output, run record), likewise only when there are some.
+            **({"scripts": _hash(f["config_scripts"])} if f.get("config_scripts") else {})}
+
+
+OPTIONAL_KEYS = ("config", "scripts")  # in a content digest only when the change order carries some: absent on either side is none
 
 
 def _differs(was: dict, now: dict, keys) -> list[str]:
-    return [CONTENT_WORDS[k] for k in keys if k in (was or {}) and (was or {}).get(k) != now.get(k)]
+    return [CONTENT_WORDS[k] for k in keys if (k in (was or {}) or k in OPTIONAL_KEYS) and (was or {}).get(k) != now.get(k)]
 
 
 def changed_since_sent(hub, co_ref) -> list[str]:
@@ -2497,7 +2643,7 @@ def send_reasons(hub, co_ref) -> list[str]:
     the release in force and compiles; no "baseline changed" flag waits for another round; every change request it
     implements is approved and not flagged; its forms are valid. Unresolved findings and questions do not stop it:
     they become warnings at approval."""
-    from . import formlayout
+    from . import formlayout, picture_reading
 
     co = _co(hub, co_ref)
     if co["state"] == "approved" and not co["fields"].get("released_release"):
@@ -2513,7 +2659,8 @@ def send_reasons(hub, co_ref) -> list[str]:
     f = co["fields"]
     carried = eco.carried(hub, co)
     items = _items(co)
-    if not (carried or eco.retirements(co) or items or f.get("form_changes") or f.get("record_type_changes") or f.get("workflow_changes")):
+    if not (carried or eco.retirements(co) or items or f.get("form_changes") or f.get("record_type_changes") or f.get("workflow_changes")
+            or f.get("config_changes")):
         return ["it changes nothing yet: carry an SOP or policy revision, make a direct change or carry a form"]
     reasons = []
     if not str(f.get("description") or "").strip():
@@ -2533,14 +2680,17 @@ def send_reasons(hub, co_ref) -> list[str]:
             reasons.append(f"the revisions changed since round {last['n']}: request review again")
         if rec.get("items") is not None and rec["items"] != now["items"]:
             reasons.append(f"the direct changes changed since round {last['n']}: request review again")
-        for k in ("forms", "record_types", "workflows"):  # data-model changes carried after the round are reviewed too
-            if k in rec and rec[k] != now[k]:
+        for k in ("forms", "record_types", "workflows", "config", "scripts"):  # data-model changes carried after the round are reviewed too
+            if (k in rec or k in OPTIONAL_KEYS) and rec.get(k) != now.get(k):
                 reasons.append(f"{CONTENT_WORDS[k][4:]} changed since round {last['n']}: request review again")
         p = _proposal(hub, co)
         if (carried or eco.retirements(co) or items) and (p is None or p.get("status") != "open"):
             reasons.append("the delta is not compiled (or its compile was replaced): request review again")
         elif p is not None and (f.get("staged_base") != _digest(hub) or (f.get("staged_from") or {}) != _shas(hub, drafts)):
             reasons.append("the delta was compiled against a release no longer in force: it is being compiled again (or request review again)")
+        elif p is not None and (f.get("staged_readings") or "") != picture_reading.digest(picture_reading.confirmed_of(co)):
+            reasons.append("a picture's reading was confirmed after the last compile: request review again, so it is compiled into "
+                           "the SOP's text and read with it")
     for d in carried:
         run = hub.runner.run_for_record(d["draft"]["locator"])
         if run and run["status"] in ("submitted", "running", "waiting"):
@@ -2556,6 +2706,9 @@ def send_reasons(hub, co_ref) -> list[str]:
         recordtypes = None
     if recordtypes is not None:
         reasons += recordtypes.carried_reasons(hub, co)
+    from . import configdocs  # the link vocabulary and retention classes (issue #33)
+
+    reasons += configdocs.carried_reasons(hub, co)
     from . import workflows  # workstream 8: workflow layouts and graph snapshots carried from the editor
 
     reasons += workflows.carried_reasons(hub, co)

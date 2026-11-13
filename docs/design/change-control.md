@@ -174,10 +174,11 @@ changed) stops the job with "unknown step". The steps of change control:
   images (an SVG and its PNG, an mc:Choice and an mc:Fallback that differ), with a crop,
   rotation or flip, or naming a part in a way that could mean more than one part, it is the
   hash of all of that together. An added, removed or replaced picture is therefore a changed
-  line of the diff; an editor renaming its media parts changes nothing. No reader reads pictures
-  yet and none is sent to a model, so a picture line that is not in the text in force is a
-  blocking `unread-rule` question for a person, whatever the section, keyed on the SOP and the
-  picture (an answer stays with it when lines above it move); an unchanged picture asks nothing.
+  line of the diff; an editor renaming its media parts changes nothing. A picture line that is
+  not in the text in force is a blocking `unread-rule` question for a person, whatever the
+  section, keyed on the SOP and the picture (an answer stays with it when lines above it move);
+  an unchanged picture asks nothing. The compile-frame committee reads it first (below,
+  "Reading a picture").
   - **The reader fails closed:** whatever it cannot place or recognise still changes a line when
     its bytes change. The body is parsed once, with the namespaces as the document scopes them.
     Under a drawing (w:drawing, w:pict, w:object, mc:AlternateContent with Choice and Fallback
@@ -214,9 +215,49 @@ changed) stops the job with "unknown step". The steps of change control:
     rotations; what a `link:` address serves (its line is its address); a header's or a style's
     picture has no place of its own (only the last line); and reference and persona Frames and
     the `scopes` Frame, which ask no `unread-rule` questions at all, so none for pictures either.
-    Showing the picture beside its line on the change-order pages, a notice listing SOPs in force
-    whose document holds pictures their release text lacks, and a cog that reads pictures are later
-    work.
+    Showing the picture beside its line on the change-order pages, and a notice listing SOPs in force
+    whose document holds pictures their release text lacks, are later work.
+- **Reading a picture** (issue #31): at compile, each senior cog of the compile-frame committee
+  reads each picture put in or replaced, from its bytes in the SOP's document
+  (`sopdocs.picture_images`, PNG, JPEG, GIF or WebP), through the model gateway with the picture
+  as an image (`model.prepare_images`; a member whose model reads text only, or an Ollama model
+  Ollama does not say reads pictures, is refused with a sentence, and the picture stays unread). It writes what the picture states (sentences, the
+  steps and who does each, the rules it states); the answer is data, parsed and guarded as a
+  prose reading is (`picture_reading.parse`: one plain sentence a line, each rule built and
+  validated and quoting one of its sentences), compared between members (`agreed`) and with the
+  SOP (`divergences`: a rule the prose states otherwise or not at all, a step the `Process:`
+  section does not have, has done by someone else or in another order). Each divergence is a
+  warning on the compile and a line of the picture's question, which stays open and blocking.
+  The committee's chair (or a system administrator) answers it (`changecontrol.answer_question(picture=...)`):
+  confirm the reading (only when the members read it the same way; otherwise one member's reading,
+  chosen by name), correct it, or say the picture states nothing (a divergence may also be
+  recorded). Any answer to a picture's question, a plain one included, is given only while the
+  change order is editable, and the page asks for one of those choices every time. Whoever
+  confirms or corrects a reading writes SOP text: they are a contributor of the change order (and
+  stay one when a later answer replaces their words) and a maker of every item read from its
+  lines and of the SOP's wording change, so they never approve those items alone, and their
+  answer is not recorded as accepting the question's warning: an approver who contributed nothing
+  accepts it. At the next compile the reading in the text is compared with the prose again (the
+  rules read from its lines) and with the `Process:` section (the steps its sentences name, by
+  their words, and the role each names), and its divergences are warnings and words of the
+  question; a confirmed reading's divergences (the chosen member's) are also in the signed answer.
+  - **Where the reading lives:** in the Frame text, one line per sentence right after the
+    picture's line, `> Picture sha256:<first 12 hex of its hash>: <sentence>`
+    (`office.reading_line`). The release digest covers it (it is in the text the bill of
+    materials hashes), and no picture bytes go into a release. The grammar reads a reading line
+    as its sentence in a rule section and never as part of a process, a profile or a table
+    (there it is prose, and a rule-like one nobody read is a question); the committee reads it
+    in the diff like any prose. A document never holds one: the hub puts the readings into the
+    text it compiles (`sopdocs.draft_text`, `in_force_text`, `picture_reading.with_readings`),
+    words typed like a reading line read escaped, and `to_docx` writes none.
+  - **Across revisions:** a draft's text gets the reading in force of every picture it keeps,
+    by its hash, so an unchanged picture keeps its reading and asks nothing; a replaced picture
+    (another hash) loses it and is read again. A reading confirmed on a change order
+    (`picture_readings` on the change order, with who confirmed it) comes into its text at the
+    next compile: until then the change order may not be sent (`send_reasons`), and once it is
+    awaiting approval a reading is no longer confirmed on it.
+  - **Upgrading:** a picture in force before readings existed has no reading line, so its text
+    and the release digest stay as they are, and it asks nothing until a revision replaces it.
 - **Prose, by the compile-frame committee** (organization + qa-manager cogs, quorum as today):
   reading is **diff-based**. For a frame whose text differs from the version in force, the reader is
   given the unified diff with line numbers and the rules currently in force for that frame (and the
@@ -225,7 +266,7 @@ changed) stops the job with "unknown step". The steps of change control:
   what amount?). An unchanged frame keeps the release's rules for it with no model call.
 - Every guard still applies (grounding: the quote is at that line; schema; consistency; scope;
   widening needs two owners).
-- The local model is `qwen3:14b` (`HUBPROTO_EXTRACTOR_MODEL` may name another installed model). If
+- The local model is `gemma4:12b-it-qat` (`HUBPROTO_EXTRACTOR_MODEL` may name another installed model). If
   extraction quality is a problem, an administrator may switch hosted models on for compilation only
   (Claude Opus via the existing Claude extractor), with an API key; cogs keep their bundled models.
 - Tests never call a model: the readers take a `call=` fake, and the stand-in (HUBPROTO_ALLOW_STAND_IN)
@@ -468,14 +509,15 @@ final report every place you needed another workstream's code and what you assum
 ### 11.1 Senior and junior cogs; the compile Op (agreed 2026-11-09)
 
 - **Seniority distinguishes models.** A senior cog is bundled with `claude-opus-5-5`; a junior cog
-  with `qwen3:14b` (local). Groups `senior-cogs` and `junior-cogs` carry what the SOPs give each.
+  with `gemma4:12b-it-qat` (local; `qwen3:14b` until issue #46). Groups `senior-cogs` and `junior-cogs`
+  carry what the SOPs give each.
 - **Compilation is an Op** run by the existing Op machinery: the `compile-frame` automation, started
   as the first step of a review round (section 3.3), each step recorded and retryable.
 - **The compile Op's committee is composed of senior cogs**: the compile-frame committee is defined on
   the `senior-cogs` group and decides by consensus. Initial seniors: `senior-organization` (knows the
   organization; reads SOPs into rules; signs nothing) and `senior-qa-manager` (the quality system),
   new cogs on Opus with the existing personas. The existing `organization` and `qa-manager` stay as
-  juniors on qwen for day-to-day work (chat, drafting, reviews).
+  juniors on the local model for day-to-day work (chat, drafting, reviews).
 - Seniors are usable only where the administrator has switched hosted models on
   (`HUBPROTO_HOSTED_MODELS`, `ANTHROPIC_API_KEY`, IT SOP); an unavailable senior means the committee
   cannot reach consensus and a person intervenes (a `member-unavailable` question).

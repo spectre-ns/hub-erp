@@ -86,6 +86,11 @@ Where documents come from:
 You may file documents in a folder when the policy lets you create documents there, or create any kind of record
 there (hubproto/shell/pages.py, `may_file`).
 
+In the example company, Quality/Working Documents is the place for working papers: plans, notes, analyses and the
+reports cogs write for their tasks. Every member of staff and every cog may create, edit and read documents there
+(frames/iso9001/working-documents-sop.frame.md); a cog writes there only when the person it works for may too. They are
+not controlled documents: a controlled document still starts in Quality/Controlled Documents under document control.
+
 **How to create a new document** (anyone who may file documents in the folder)
 
 1. Open the folder (or the record the document belongs to) and press **New document**.
@@ -145,8 +150,9 @@ folder. A draft of a policy Frame may only be changed by its author or a policy 
    title, an **editing** or **read-only** chip with the reason, and **Finish editing**.
 2. Opening the editor checks the document out to you as an editing session. Others who may change it can press **Join
    the editing**; everyone's changes merge in the editor.
-3. Work as in any office editor. The page asks the editor to save about two seconds after each change. Every save
-   becomes a new version noted "saved in the editor".
+3. Work as in any office editor. Save with Ctrl+S when you want a version; the editor also saves on its own from time
+   to time, and when you finish. Every save becomes a new version noted "saved in the editor". Comments reach the hub
+   when the document is saved (5.7).
 4. Press **Finish editing**. The status line says "Finished editing DOC-0123: your changes are version *n*", or
    "nothing was changed". The last person to finish releases the document; while others are still in it, it stays
    checked out to one of them.
@@ -191,8 +197,12 @@ hubproto/mentions.py).
 1. In the online editor, insert a comment and type `@`. The editor suggests members and roles of the organization;
    pick the cog (for example `@qa-manager`) and write your request: a question ("is the scope clear?"), a review ("please
    review this procedure"), or a change ("delete the Records section", "say must, not shall").
-2. The comment is picked up when the document is saved. It becomes a message on the document's chatter from you,
-   and goes into the cog's queue; saving does not wait for the cog. The editor bar shows which cog is working on it.
+2. When the comment says what you want, save the document: press Ctrl+S, or **Finish editing** (the editor also
+   saves on its own from time to time). The comment is picked up then: it becomes a message on the document's chatter
+   from you and goes into the cog's queue, and saving does not wait for the cog. The editor bar shows which cog is
+   working on it. Pressing **Save** on the comment keeps it in the document but does not send it yet. The editor also
+   keeps a comment when you leave its box, and a kept comment goes out with the next save of any kind, the editor's
+   own included: finish a comment before you leave its box, or delete it.
 3. The cog answers in the comment thread:
    * a **question** gets an answer in a few sentences, from its procedures and the document;
    * a **review** gets its findings, filed as an evidence document;

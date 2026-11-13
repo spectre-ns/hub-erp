@@ -39,7 +39,8 @@ def test_a_system_administrator_approves_nothing_as_one(released):
 def test_hosted_model_use_is_governed_by_the_it_sop(released):
     text = released.frames.get("it-sop").text
     hosted = text.split("Hosted models.")[1].split("## ")[0]
-    for words in ("a system administrator", "installation change recorded under this SOP", "only by the senior cogs",
+    for words in ("a system administrator", "installation change recorded under this SOP", "only by the cogs bundled with it",
+                  "for the tasks assigned to that cog", "working for the person who filed the task",  # issue #73: hosted cogs take tasks
                   "supplier evaluation SOP", "What may leave the hub", "its diff against the release in force", "Each use is recorded"):
         assert words in " ".join(hosted.split()), words
     assert not [f for f in released.compile(save=False)["findings"] if f["severity"] == "error"]
@@ -147,16 +148,16 @@ def test_every_cog_decision_review_and_draft_keeps_what_produced_it(released):
     env = hub.registry.get("quality-assistant").invoke("review-document", {"record": loc, "question": "ok?"},
                                                      tools(hub, "quality-assistant", "carol")._ctx(hub.kernel.get(loc)))
     review = [e["data"] for e in hub.kernel.events(loc) if e["type"] == "cog.worked" and e["data"]["kind"] == "review"]
-    assert review and review[-1]["model"] == "ollama/qwen3:14b" and review[-1]["stand_in"] is True and env["payload"]["provenance"]["cog"] == "quality-assistant"
+    assert review and review[-1]["model"] == "ollama/gemma4:12b-it-qat" and review[-1]["stand_in"] is True and env["payload"]["provenance"]["cog"] == "quality-assistant"
     t = tools(hub, "qa-manager", "carol")
     out = t.execute("draft_document", {"title": "Torque WI", "text": "# Torque WI\n1. Torque to 2 Nm."})
     doc = hub.kernel.get(out["document"])
     drafted = [e["data"] for e in hub.kernel.events(doc["locator"]) if e["type"] == "cog.worked"]
-    assert drafted and drafted[-1]["kind"] == "draft" and drafted[-1]["persona"] == "author" and drafted[-1]["model"] == "ollama/qwen3:14b"
+    assert drafted and drafted[-1]["kind"] == "draft" and drafted[-1]["persona"] == "author" and drafted[-1]["model"] == "ollama/gemma4:12b-it-qat"
     from hubproto.shell.text import event_sentence
 
     line = event_sentence(next(e for e in hub.kernel.events(doc["locator"]) if e["type"] == "cog.worked"))
-    assert "wrote it" in line and "model ollama/qwen3:14b" in line and "persona author 2.0.0" in line and "trained by release v1" in line
+    assert "wrote it" in line and "model ollama/gemma4:12b-it-qat" in line and "persona author 2.0.0" in line and "trained by release v1" in line
 
 
 # ---------------------------------------------------------------- look tools and read rights (governance M4)

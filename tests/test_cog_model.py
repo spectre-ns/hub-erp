@@ -49,7 +49,7 @@ def test_a_persona_is_a_behaviour_document_shared_by_cogs(released):
     assert rev["stance"] == "reviewer" and rev["tone"] == "formal" and rev["lenses"] == ["compliance", "consistency", "impact"]
     assert rev["passes"] == 3 and rev["escalates"].startswith("when an item is outside its approval criteria")
     assert rev["behaviour"].startswith("You review items against the procedures you follow") and "quoting it" in rev["behaviour"]
-    assert rev["cogs"] == ["ap-reviewer", "doc-reviewer", "quality-assistant"], "one persona, many cogs"
+    assert rev["cogs"] == ["ap-reviewer", "auditor", "doc-reviewer", "quality-assistant"], "one persona, many cogs"
     assert b["personas"]["executor"]["cogs"] == ["it-admin", "purchasing-assistant", "stores"]
     # The cog's merged profile carries its persona's behaviour; lenses drive its adversarial reviews.
     qa = b["cogs"]["qa-manager"]
@@ -75,7 +75,7 @@ def test_a_cog_profile_is_its_identity(released):
     p = released.compile(save=False)
     ap = next(r for r in p["rules"] if r["kind"] == "cog" and r["name"] == "ap-reviewer")
     assert {k for k in ap if k != "source"} == {"kind", "name", "about", "model", "persona", "prompt_from", "references"}
-    assert ap["persona"] == "reviewer" and ap["model"] == "ollama/qwen3:14b" and ap["about"].startswith("Matches supplier bills")
+    assert ap["persona"] == "reviewer" and ap["model"] == "ollama/gemma4:12b-it-qat" and ap["about"].startswith("Matches supplier bills")
     prof = bundle(released)["cogs"]["ap-reviewer"]
     assert prof["prompt"].startswith("You are the ap-reviewer cog, a member of the organization. What you do: Matches supplier bills")
     rules, notes = extract("## Cog: helper\nAbout: Helps.\nModel: ollama/qwen3:14b\nPersona: persona-executor\nDuty: Do things.\nPrompt: Be good.\nand kind.\n",
@@ -101,10 +101,10 @@ def test_a_new_cog_is_proposed_with_its_identity_and_a_persona_that_exists(relea
 def test_what_a_cog_follows_is_derived_from_the_roles_and_responsibilities_tables(released):
     b = bundle(released)
     company = ["org-model", "quality-manual", "tasks-sop"]
-    assert b["cogs"]["ap-reviewer"]["follows"] == company + ["finance-policy"]
-    assert b["cogs"]["doc-reviewer"]["follows"] == company + ["document-control-sop", "wi-review-a-document"]
-    assert b["cogs"]["it-admin"]["follows"] == company + ["change-control-sop", "it-sop"]
-    assert b["cogs"]["management"]["follows"] == company + ["change-control-sop", "it-sop", "management-review-sop"]
+    assert b["cogs"]["ap-reviewer"]["follows"] == company + ["finance-policy", "working-documents-sop"]
+    assert b["cogs"]["doc-reviewer"]["follows"] == company + ["document-control-sop", "wi-review-a-document", "working-documents-sop"]
+    assert b["cogs"]["it-admin"]["follows"] == company + ["change-control-sop", "it-sop", "working-documents-sop"]
+    assert b["cogs"]["management"]["follows"] == company + ["change-control-sop", "it-sop", "management-review-sop", "working-documents-sop"]
     why = b["cogs"]["purchasing-assistant"]["follows_why"]
     assert "cog:purchasing-assistant" in why["design-control-sop"], "the swarm step names it"
     assert "role:stock-reviewer" in why["inventory-policy"] and why["org-model"][0] == "company" and why["quality-manual"] == ["company", "role:staff"]
@@ -249,7 +249,7 @@ def test_the_it_and_management_cogs_and_the_it_sop(released):
     b = bundle(released)
     assert b["members"]["it-admin"]["roles"] == ["system-administrator"] and b["members"]["management"]["roles"] == ["management-reviewer"]
     assert "system-administrator" in b["members"]["bob"]["roles"] and b["members"]["organization"]["roles"] == ["policy-reader"]
-    assert b["cogs"]["it-admin"]["model"] == b["cogs"]["management"]["model"] == "ollama/qwen3:14b"
+    assert b["cogs"]["it-admin"]["model"] == b["cogs"]["management"]["model"] == "ollama/gemma4:12b-it-qat"
     assert b["cogs"]["it-admin"]["persona"] == "executor" and b["cogs"]["management"]["persona"] == "advisor"
     assert b["scopes"]["it"]["compiles"] == ["it-sop"]
     for cog in ("it-admin", "management"):

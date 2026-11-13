@@ -1,5 +1,5 @@
 """Live check of targeted edits: a docx that carol has open in the editor, and a request on its chatter asking the
-quality cog to replace a word and delete a paragraph. The cog answers from its queue (qwen); the editor page (loaded
+quality cog to replace a word and delete a paragraph. The cog answers from its queue (the local model); the editor page (loaded
 by headless Chrome) has the cog's seat do the changes live, then the hub verifies them after the save."""
 import sys
 import time

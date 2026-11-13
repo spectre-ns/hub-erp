@@ -31,14 +31,15 @@ def _co(hub, ref: str) -> dict:
     return rec
 
 
-def carried(hub, co: dict) -> list[dict]:
-    """The SOP drafts a change order carries: [{"name", "draft", "in_force"}]."""
+def carried(hub, co: dict, withdrawn: bool = False) -> list[dict]:
+    """The SOP drafts a change order carries: [{"name", "draft", "in_force"}]. ``withdrawn``: also the drafts withdrawn
+    with it (a closed change order's page names them)."""
     out = []
     for link in hub.kernel.links_of(co["locator"]):
         if link["rel"] != CARRIES or link["direction"] != "out":
             continue
         d = hub.kernel.get(link["target"])
-        if d is not None and d["state"] == "withdrawn":
+        if d is not None and d["state"] == "withdrawn" and not withdrawn:
             continue
         if d is None:
             continue
@@ -94,7 +95,7 @@ def add_new_sop(hub, co_ref: str, name: str, text: str, *, by: str, author: str 
     owner);
     ``author`` writes it (default ``by``). ``relpath`` is where its Frame file goes under frames/ (default
     ``<name>.frame.md``). Returns the draft (or the one the change order already carries for that name)."""
-    from .frames import load_frame_text
+    from .frames import header_of, load_frame_text
 
     co = _co(hub, co_ref)
     if finished(co) or (co.get("state") or "").startswith("awaiting"):
@@ -119,7 +120,7 @@ def add_new_sop(hub, co_ref: str, name: str, text: str, *, by: str, author: str 
         raise ValueError(f"the text is the Frame {frame.name!r}, not {name!r}")
     doc_type, folder = sopdocs.kind_of(frame)
     writer = author or by
-    head = "\n".join(text.splitlines()[: max(0, frame.body_start - 1)])
+    head = header_of(text, frame.body_start)
     tail = max(1, len(text) - len(text.rstrip("\n")))
     draft = hub.dms.create(title=sopdocs.title_of(frame), doc_class="controlled", folder=folder, by=writer, content=sopdocs.to_docx(frame.body),
                            filename=f"{name}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -174,15 +175,16 @@ def finished(co: dict) -> bool:
 
 
 def withdraw_cancelled_drafts(hub, co: dict) -> list[str]:
-    """A cancelled change order's revisions are withdrawn: no other change order can carry them, and an open draft of an
-    SOP stops anyone starting another revision of it. Their versions and history stay. Returns their numbers."""
-    if co.get("state") != "cancelled":
+    """A cancelled or rejected change order's revisions are withdrawn: it is closed, no other change order can carry
+    them, and an open draft of an SOP stops anyone starting another revision of it. Their versions and history stay.
+    Returns their numbers."""
+    if co.get("state") not in ("cancelled", "rejected"):
         return []
     out = []
     for c in carried(hub, co):
         d = c["draft"]
         if d["state"] in ("draft", "open", "held", "returned"):
-            hub.kernel.transition(d["locator"], "withdrawn", by="hub", reason=f"withdrawn with {co['number']}, which was cancelled")
+            hub.kernel.transition(d["locator"], "withdrawn", by="hub", reason=f"withdrawn with {co['number']}, which was {co['state']}")
             out.append(d["number"])
     return out
 
@@ -230,8 +232,12 @@ def add_sop(hub, co_ref: str, name: str, *, by: str, author: str | None = None) 
         if d["state"] in ("draft", "open", "held"):
             other = next((lk["target"] for lk in hub.kernel.links_of(d["locator"]) if lk["rel"] == CARRIES and lk["direction"] == "in"), None)
             o = hub.kernel.get(other) if other else None
-            if o is not None and d["number"] in withdraw_cancelled_drafts(hub, o):
-                continue  # the revision of a cancelled change order: withdrawn, it no longer stops a new one
+            if o is not None and o["type"] == "change-order":
+                from . import changecontrol
+
+                o = changecontrol.sync(hub, o["locator"])  # a rejected one closes here if nothing noticed it yet
+            if o is not None and (d["number"] in withdraw_cancelled_drafts(hub, o) or hub.kernel.get(d["locator"])["state"] == "withdrawn"):
+                continue  # the revision of a cancelled or rejected change order: withdrawn, it no longer stops a new one
             raise ValueError(f"{current['number']} is already being revised ({d['number']}" + (f", on {o['number']})" if o else ")"))
     content, v = hub.dms.content(current["locator"])
     f = current["fields"]
@@ -297,7 +303,7 @@ class carried_record_types:
         except ImportError:
             return self
         k = self.hub.kernel
-        types, _, _ = recordtypes.check(self.hub, changes, k.types)
+        types, _, _ = recordtypes.check(self.hub, changes, k.types, retention=recordtypes._retention(self.hub, self.co))
         self.saved = (k.types_hook, k._types)
         k.types_hook, k._types = None, types
         return self
@@ -312,6 +318,7 @@ def stage(hub, co_ref: str, drafts: dict[str, str] | None = None, extractor=None
     """Compile the Frame the change order's approved revisions make (or the given ``drafts``: {SOP name: locator}),
     against the release in force, and stage it on the change order as its proposal (replacing the one staged before).
     The compile-frame automation does this when a revision is approved."""
+    from . import picture_reading
     from .compile import CompileError, blocking_findings
 
     co = _co(hub, co_ref)
@@ -319,14 +326,16 @@ def stage(hub, co_ref: str, drafts: dict[str, str] | None = None, extractor=None
         drafts = {**{n: d["locator"] for n, d in approved_of(hub, co).items()}, **{n: None for n in retirements(co)}}
     old = co["fields"].get("staged_proposal")
     shas = {n: (str((hub.kernel.get(loc) or {}).get("fields", {}).get("content_sha") or "") if loc else "retired") for n, loc in sorted(drafts.items())}
+    readings = picture_reading.confirmed_of(co)  # the pictures' readings a person confirmed: compiled into the drafts' text
     fields: dict = {"staged_from": shas, "staged_base": (hub.releases.current() or {}).get("digest"), "staged_errors": [],
+                    "staged_readings": picture_reading.digest(readings),
                     "staged_at": __import__("hubproto.release", fromlist=["utcnow"]).utcnow()}
     if not drafts:
         fields.update({"staged_proposal": None, "staged_number": None, "staged_changes": 0, "staged_widenings": 0})
     else:
         try:
             with carried_record_types(hub, co):  # a CO may carry a new record type and the process that uses it
-                p = hub.compile(sop_drafts=drafts, save=True, extractor=extractor)
+                p = hub.compile(sop_drafts=drafts, save=True, extractor=extractor, picture_readings=readings)
             p["eco"] = co["number"]
             p["source"] = "eco"
             if old and old != p["id"]:  # the questions of the compile staged before (on any release) carry, or close
@@ -364,8 +373,10 @@ def preview(hub, co_ref: str) -> dict | None:
     drafts = drafts_of(hub, co)
     if not drafts:
         return None
+    from . import picture_reading
+
     try:
-        p = hub.compile(sop_drafts=drafts, save=False)
+        p = hub.compile(sop_drafts=drafts, save=False, picture_readings=picture_reading.confirmed_of(co))
     except CompileError as e:
         return {"changes": [], "errors": [str(e)], "preview": True}
     p["errors"] = [f"{f['detail']} ({f['frame']} line {f['line']})" for f in blocking_findings(p)]
@@ -479,6 +490,9 @@ def release_problems(hub, co_ref: str) -> list[str]:
         cur = c["in_force"]
         if d["fields"].get("revises") and (cur is None or cur["number"] != d["fields"]["revises"]):
             out.append(f"{d['number']} revises {d['fields']['revises']}, which is no longer the {c['name']} in force")
+    from . import configdocs  # the link vocabulary and retention classes it changes still check against what is in force
+
+    out += configdocs.release_problems(hub, co)
     return out
 
 

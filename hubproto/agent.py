@@ -68,6 +68,9 @@ WRITE_TOOLS = {"comment", "message", "start_process", "take_turn", "review_docum
 MODES = ("derived", "confirmed", "read")
 # Its own step: the turn at a Gate routed to it (bound by its approval criteria), a step assigned to it.
 STEP_TOOLS = {"take_turn", "complete_step", "hand_back"}
+# Writes that only tell people something: they are not the work of a step, so they neither count as a change the cog
+# tried nor as one that went through when it completes a step assigned to it (``AgentTools.nothing_done``).
+WORDS_TOOLS = {"comment", "message"}
 # Tools whose result is text the cog wrote: the document keeps what produced it (hubproto.cogs.provenance).
 DRAFT_TOOLS = {"draft_document", "edit_document", "create_document", "apply_document_ops"}
 
@@ -363,7 +366,9 @@ class AgentTools(RecordTools):
                 res = {"ok": True}
             else:
                 res = {"ok": True, "note": "the run is already finished; stop now"}
-        elif write and self.actions >= self.max_actions:
+        elif name == "complete_step" and (why := self.nothing_done(str(args.get("number") or "the step"))):
+            res = {"error": why}
+        elif write and self.actions >= self.max_actions and name != "hand_back":  # giving the work back is never out of budget
             res = {"error": f"the run's budget of {self.max_actions} actions is used up; finish and report what is left"}
         elif write and (decision := self.decide(name, args))["mode"] == "refuse":
             res = {"error": decision["why"] if decision.get("plain") else
@@ -395,6 +400,21 @@ class AgentTools(RecordTools):
             ev["decided"] = {"mode": decision["mode"], "why": decision["why"][:300], "intent": decision.get("intent")}
         self.store.append(self.run_id, ev)
         return res
+
+    def nothing_done(self, number: str) -> str:
+        """Empty unless this run tried to change something and every change was refused (the run's Track, the same record
+        its "Not done (the hub refused)" summary is built from): then why the cog may not complete the step assigned to
+        it. A step that needs no change (look and say) can still be completed; comments and messages are not the work."""
+        tried = [e for e in self.store.load(self.run_id) if e.get("type") == "tool" and e.get("write")
+                 and e.get("tool") not in STEP_TOOLS | WORDS_TOOLS]
+        # A change only proposed (waiting for a person to confirm it) has not gone through either: the step is not done.
+        if not tried or any(e.get("ok") and (e.get("decided") or {}).get("mode") != "propose" for e in tried):
+            return ""
+        names = sorted({e["tool"] for e in tried})
+        proposed = any(e.get("ok") for e in tried)
+        return (f"nothing was done: every change you tried was {'refused or only proposed' if proposed else 'refused'} "
+                f"({', '.join(names)}), so {number} is not complete; hand it back with hand_back, saying why you could not do it"
+                + (" or what waits for a person to confirm" if proposed else ""))
 
     def _record_draft(self, name: str, args: dict, res: dict) -> None:
         """A document the cog wrote or changed keeps what produced the text: its model, persona and the release."""
@@ -530,7 +550,11 @@ class AgentTools(RecordTools):
         title = str(a.get("title") or "").strip()
         if not title:
             return {"error": "a document needs a title"}
-        folder = str(a.get("folder") or "Quality/Controlled Documents")
+        controlled = ((self.bundle.get("ops") or {}).get("document-control") or {}).get("folder") or "Quality/Controlled Documents"
+        folder = str(a.get("folder") or controlled)
+        if folder != controlled:  # a controlled draft starts only where document control files it (issue #74)
+            return {"error": f"a draft of a controlled document is filed in {controlled}, under document control; for a working "
+                             f"document (a plan, notes, an analysis, a report) use create_document in {folder}"}
         allowed = self.both_may("create", "document", folder)
         if not allowed["allowed"]:
             return {"error": allowed["why"]}
@@ -582,6 +606,22 @@ What you may do: {mode}. Budget: at most {actions} actions and {rounds} steps.
 - You work for {for_whom}: you see what they may see, and you write only to the people this work concerns."""
 
 
+def run_budget(bundle: dict, cog: str, max_actions: int | None = None, max_rounds: int | None = None) -> dict:
+    """How much one run may do: what the caller asks, else HUBPROTO_AGENT_ACTIONS / HUBPROTO_AGENT_ROUNDS (5 actions, 10
+    model rounds). A cog in the internal auditor's seat is auditing: its runs get the audit budget (``audit.audit_budget``:
+    larger, bounded by a ceiling neither the environment nor the caller can lift), since an audit records a finding per action."""
+    from .audit import audit_budget, is_audit_run
+
+    if is_audit_run(bundle, cog):
+        from .audit import AUDIT_CEILING
+
+        b = audit_budget()
+        return {"actions": max(1, min(int(max_actions or b["actions"]), AUDIT_CEILING["actions"])),
+                "rounds": max(1, min(int(max_rounds or b["rounds"]), AUDIT_CEILING["rounds"])), "max_tokens": b["max_tokens"]}
+    return {"actions": int(max_actions or os.environ.get("HUBPROTO_AGENT_ACTIONS") or 5),
+            "rounds": int(max_rounds or os.environ.get("HUBPROTO_AGENT_ROUNDS") or 10), "max_tokens": 900}
+
+
 class Agent:
     def __init__(self, hub, cog: str):
         self.hub = hub
@@ -609,8 +649,8 @@ class Agent:
             raise ValueError(why)
         prof = (bundle.get("cogs") or {}).get(self.cog) or {}
         mode = "derived"
-        actions = int(max_actions or os.environ.get("HUBPROTO_AGENT_ACTIONS") or 5)
-        rounds = int(max_rounds or os.environ.get("HUBPROTO_AGENT_ROUNDS") or 10)
+        budget = run_budget(bundle, self.cog, max_actions, max_rounds)
+        actions, rounds = budget["actions"], budget["rounds"]
         run_id = run_id or uuid.uuid4().hex[:10]
         self.store.append(run_id, {"type": "started", "cog": self.cog, "goal": goal, "by": by, "trigger": trigger, "mode": mode,
                                    "budget": {"actions": actions, "rounds": rounds}, "release": meta["digest"] if meta else ""})
@@ -618,15 +658,21 @@ class Agent:
         from .cogs import cog_context
 
         specs = look_specs() + act_specs(mode)
+        from .agent_audit import AUDIT_TOOLS
+        from .audit import is_audit_run
+
+        if not is_audit_run(bundle, self.cog):  # the audit tools are an internal auditor's: other cogs are not offered them
+            specs = [s for s in specs if s["name"] not in AUDIT_TOOLS]
         rules = AGENT_RULES.format(cog=self.cog, goal=goal, mode=MODE_WORDS[mode], actions=actions, rounds=rounds,
                                    for_whom=tools.for_whom or "yourself (a standing duty)")
         system = cog_context(tools._ctx(None), None, tools_now=specs, extra=[("YOUR TASK", rules)])
         return {"run": run_id, "tools": tools, "system": system, "specs": specs, "model": prof.get("model") or "stand-in", "mode": mode,
-                "goal": goal, "by": by, "rounds": rounds}
+                "goal": goal, "by": by, "rounds": rounds, "max_tokens": budget["max_tokens"]}
 
     def think(self, prep: dict, call_tool=None) -> dict:
         """Slow, unlocked: the model plans and calls tools; ``call_tool`` (locked by the caller) runs each one."""
-        return self.hub.model.complete_with_tools(model=prep["model"], system=prep["system"], user=prep["goal"], by=self.cog, max_tokens=900,
+        return self.hub.model.complete_with_tools(model=prep["model"], system=prep["system"], user=prep["goal"], by=self.cog,
+                                                  max_tokens=prep.get("max_tokens") or 900,
                                                   tools=prep["specs"], call_tool=call_tool or prep["tools"].execute, max_rounds=prep["rounds"])
 
     def conclude(self, prep: dict, out: dict) -> dict:
@@ -762,7 +808,13 @@ def mark_duty(hub, cog: str, duty: str, today: str | None = None) -> None:
 def run_duties(hub, cog: str | None = None, today: str | None = None) -> list[dict]:
     """Take up every duty not yet done today; each is an agent run triggered by the duty, on behalf of the cog itself."""
     out = []
+    from .model import cog_availability
+
     for name, duty in due_duties(hub, cog, today):
+        ok, why = cog_availability(hub.current_bundle() or {}, name)
+        if not ok:  # its model cannot be reached: the duty stays due, and nothing stands in for it
+            out.append({"cog": name, "duty": duty, "run": None, "status": "unavailable", "summary": why, "actions": 0})
+            continue
         res = Agent(hub, name).run(duty, by=name, trigger="duty")
         mark_duty(hub, name, duty, today)
         out.append({"cog": name, "duty": duty, **{k: res[k] for k in ("run", "status", "summary", "actions")}})
@@ -770,4 +822,4 @@ def run_duties(hub, cog: str | None = None, today: str | None = None) -> list[di
 
 
 # The further tool groups register themselves on import.
-from . import agent_records, agent_docs, agent_config, agent_inventory  # noqa: E402,F401
+from . import agent_records, agent_docs, agent_config, agent_inventory, agent_audit  # noqa: E402,F401

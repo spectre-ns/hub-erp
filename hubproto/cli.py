@@ -42,7 +42,7 @@ from .runner import RunError
 
 DIGEST = 12
 POLICY_OWNER_ROLE = "policy-owner"
-BACKUP_PARTS = ("runs", "releases", "proposals", "blobs", "inbox", "agents", "settings", "forms", "record-types")
+BACKUP_PARTS = ("runs", "releases", "proposals", "blobs", "inbox", "agents", "settings", "forms", "record-types", "config")
 SQLITE_PARTS = ("queue.db",)  # copied with the SQLite backup API (a consistent snapshot while the hub runs)
 NEEDS_FRAMES = {"seed", "compile", "frames", "bootstrap-release", "conformance", "status"}
 NO_HUB_NEEDED = {"init", "restore", "dev"}  # dev makes its own hubs (hubproto.cli_dev)
@@ -979,20 +979,24 @@ def cmd_tick(args) -> int:
 
 
 def cmd_models(args) -> int:
-    from .model import available_models, resolve_model
+    from .model import OFF_MACHINE, available_models, hosted_allowed, resolve_model
 
     hub = _hub(args)
     av = available_models(refresh=True)
     print("installed in Ollama:" if av["ollama"] else f"Ollama: {av['ollama_error'] or 'no models installed'}")
     for m in av["ollama"]:
-        print(f"  ollama/{m['name']:28s} {m['params']:>7s} {m['family']:10s} {m['quant']:8s} {m['size_gb']} GB")
+        if m.get("cloud"):  # nothing of it is on this machine: no size, and where it runs instead
+            print(f"  ollama/{m['name']:28s} cloud: {OFF_MACHINE}" + ("" if hosted_allowed() else " (not available: hosted models are off)"))
+        else:
+            print(f"  ollama/{m['name']:28s} {m['params']:>7s} {m['family']:10s} {m['quant']:8s} {m['size_gb']} GB")
     print("Claude:", "Anthropic key set" if av["anthropic_key"] else "no Anthropic key: a cog bundled with a claude-* model is not available here")
     meta = hub.releases.current()
     cogs = (hub.releases.bundle(meta["digest"]).get("cogs") or {}) if meta else {}
     print("cogs:")
     for name, prof in sorted(cogs.items()):
         r = resolve_model(prof.get("model") or "")
-        print(f"  {name:22s} {prof.get('model') or '-':22s} " + (f"-> {r['served']} ({r['backend']})" if r["available"] else f"NOT AVAILABLE: {r['note']}"))
+        where = f"{r['backend']}: {OFF_MACHINE}" if r["backend"] == "ollama-cloud" else r["backend"]
+        print(f"  {name:22s} {prof.get('model') or '-':22s} " + (f"-> {r['served']} ({where})" if r["available"] else f"NOT AVAILABLE: {r['note']}"))
     return 0
 
 
@@ -1193,15 +1197,32 @@ def config_drift(hub: Hub, cur: dict) -> bool:
             print(f"  ... and {len(rt['in_file']) - 20} more")
         print(f"to bring what it adds into force: hubproto record-types carry <change order> --from-file --as <person>, "
               "then approve and release the change order")
-    recorded = cur.get("config") or {}
+    from . import configdocs
+
+    for doc, name in sorted(configdocs.DOCS.items()):
+        entry = configdocs.in_force(hub, doc)
+        print(f"{configdocs.WORDS[doc]} in force: v{entry['version']} ({clean(entry.get('source'))})")
+        d = configdocs.drift(hub, doc)
+        if not d:
+            continue
+        differs = True
+        print(f"config/{name} differs from the {configdocs.WORDS[doc]} in force (v{d['version']}); it is not used:")
+        for line in d["in_file"][:20]:
+            print(f"  in the file, not in force: {clean(line)}")
+        for line in d["in_force"][:20]:
+            print(f"  in force, not in the file: {clean(line)}")
+        print(f"to bring a change into force: put it on a change order (hubproto config propose FILE.json --as <person>), then "
+              "approve and release the change order")
+    recorded = cur.get("config") or {}  # any other configuration file (the audit's standard clauses): reported only
+    governed = {recordtypes.FILE, *configdocs.DOCS.values()}
     for name in sorted(hub.kernel.config_digests):
-        if name == recordtypes.FILE or name not in recorded:
+        if name in governed or name not in recorded:
             continue
         current = _config_sha(Path(hub.kernel.config_dir) / name)
         if current != recorded[name]:
             differs = True
             print(f"config/{name} differs from what the release in force, {version_of(hub, cur['digest'])}, recorded: it is used as it "
-                  "is (link vocabulary and retention classes are not under change control yet)")
+                  "is (it is not under change control)")
     return differs
 
 
@@ -1624,11 +1645,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--as", dest="cogs", action="append", metavar="COG", help="only this cog (repeatable); default: every cog")
     s.add_argument("--loop", type=int, metavar="SECONDS", help="keep working every SECONDS until stopped")
     s.set_defaults(fn=cmd_cog_users)
-    from . import cli_records, cli_recordtypes, cli_sops, cli_templates
+    from . import cli_config, cli_records, cli_recordtypes, cli_sops, cli_templates
 
     cli_templates.register(sub)  # templates import, templates list
     cli_sops.register(sub)  # sops convert, sops status
     cli_recordtypes.register(sub)  # record-types status, record-types carry
+    cli_config.register(sub)  # config export, config propose (the configuration as JSON)
 
     cli_records.register(sub)  # inbox-pending, retry, resubmit, cancel, records, record, link, snapshot, documents
     from . import cli_dev

@@ -19,8 +19,12 @@ image. Six parts carry everything, and each has a home in `hubproto/`:
 | **Tracks** | The append-only, hash-chained record of every run, with signed decisions; records have a chained event history | `track.py`, `kernel.py` |
 
 Change control (every configuration change goes through a change order) is `changecontrol.py` + `eco.py`, with
-`validation.py` for test evidence; the web shell is `hubproto/shell/` (stdlib `http.server`). The design is
-[docs/design/change-control.md](docs/design/change-control.md); the user manual is [docs/manual/](docs/manual/).
+`validation.py` for test evidence, `configdocs.py` for the link vocabulary and retention classes, and `configjson.py` for
+the configuration as one JSON document (export, and a document proposed on a change order), and `scripts.py` for
+configuration scripts, run only in the script worker (`scriptworker.py`, `script_sandbox.py`; their output, never the
+script, is carried and released); the web shell is
+`hubproto/shell/` (stdlib `http.server`). The design is [docs/design/change-control.md](docs/design/change-control.md);
+the user manual is [docs/manual/](docs/manual/).
 
 ## Setup and tests
 
@@ -38,6 +42,11 @@ python -m pytest -q -n auto      # about 1,100 tests, about a minute; all must p
   `tests/test_cog_queue.py::test_a_question_in_the_chatter_gets_an_answer_not_a_review`. If only this test fails in a
   full run, rerun it on its own; if it still fails, the failure is real.
 - Run one test: `python -m pytest -q tests/test_x.py -k name`.
+- **The local-inference suite**, `python -m pytest tests_inference -v`, runs the cogs on the models the Frames name,
+  on the local Ollama (`HUBPROTO_OLLAMA_URL`, default `http://localhost:11434`), with no stand-in and no hosted model.
+  Run it after any change to the prompts, the model gateway (`model.py`), the cog profiles or the models in the
+  Frames, and put its result in the PR. It is never collected from the repository root, GitHub CI does not run it (no
+  GPU), and a model that is not pulled skips its tests with what to pull (DEV-NOTES.md, "The local-inference suite").
 
 ## Hard rules
 

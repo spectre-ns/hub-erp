@@ -17,7 +17,7 @@ def test_profiles_compile_into_the_release_and_change_as_a_widening(released):
     b = bundle_of(released)
     prof = b["cogs"]["ap-reviewer"]
     company = ["org-model", "quality-manual", "tasks-sop"]  # the company scope every member follows
-    assert prof["model"] == "ollama/qwen3:14b" and "Matches supplier bills" in prof["about"] and prof["follows"] == company + ["finance-policy"]
+    assert prof["model"] == "ollama/gemma4:12b-it-qat" and "Matches supplier bills" in prof["about"] and prof["follows"] == company + ["finance-policy", "working-documents-sop"]
     assert prof["persona"] == "reviewer" and prof["stance"] == "reviewer", "its behaviour comes from its persona"
     assert "You are the ap-reviewer cog" in prof["prompt"] and "say plainly what does not match" in prof["prompt"]
     assert {"ncr-sop", "capa-sop", "training-sop", "design-control-sop"} <= set(b["cogs"]["quality-assistant"]["follows"])
@@ -198,8 +198,11 @@ def test_the_gateway_uses_ollama_when_configured(monkeypatch):
         from hubproto.model import ModelUnavailable
 
         monkeypatch.delenv("HUBPROTO_ALLOW_STAND_IN", raising=False)
+        monkeypatch.setenv("HUBPROTO_HOSTED_MODELS", "on")  # hosted models on, and no key: that is what it needs
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         with pytest.raises(ModelUnavailable, match="needs an Anthropic key"):
             g.complete(model="claude-sonnet-5-5", system="s", user="u")
+        monkeypatch.delenv("HUBPROTO_HOSTED_MODELS", raising=False)
         monkeypatch.setenv("HUBPROTO_ALLOW_STAND_IN", "1")
         # A model that does not answer never blocks the work.
         monkeypatch.setenv("HUBPROTO_OLLAMA_URL", "http://127.0.0.1:9")
@@ -325,4 +328,4 @@ def test_a_cog_whose_model_is_not_available_is_not_used(released, monkeypatch):
     assert any(m["kind"] == "mention" and "ap-reviewer is not available" in m["subject"] for m in hub.inbox.for_principal("alice"))
     # The compiler warns that the cogs' models cannot be reached here.
     p = hub.compile(save=False)
-    assert any(f["guard"] == "model" and "ap-reviewer is bundled with ollama/qwen3:14b" in f["detail"] for f in p["findings"])
+    assert any(f["guard"] == "model" and "ap-reviewer is bundled with ollama/gemma4:12b-it-qat" in f["detail"] for f in p["findings"])
