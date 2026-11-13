@@ -43,14 +43,28 @@ ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 # against the request's max_tokens. A caller's max_tokens is the length of the answer it wants, so every Claude call
 # adds this much room for the thinking (HUBPROTO_ANTHROPIC_THINKING_TOKENS); only the tokens used are billed.
 ANTHROPIC_THINKING_ROOM = 8000
-ANTHROPIC_TIMEOUT = 180  # seconds: room to think as well as to answer, in one non-streamed response
+ANTHROPIC_MAX_OUTPUT = 128000  # the most a current Claude model writes in one response; asking for more is refused
+ANTHROPIC_MIN_TIMEOUT = 180  # seconds for one non-streamed response, thinking included ...
+ANTHROPIC_TOKENS_A_SECOND = 40  # ... and longer for a larger budget, at a pace slower than Claude writes
+
+
+def thinking_room() -> int:
+    """HUBPROTO_ANTHROPIC_THINKING_TOKENS as written in the manual ("8,000", "8 000" or "8000"); a value that is not a
+    number is the default, so a typo never takes the Claude cogs offline."""
+    raw = re.sub(r"[\s,_]", "", os.environ.get("HUBPROTO_ANTHROPIC_THINKING_TOKENS") or "")
+    return max(0, int(raw)) if raw.isdigit() else ANTHROPIC_THINKING_ROOM
 
 
 def anthropic_budget(answer_tokens: int) -> int:
-    """The max_tokens sent to Claude for an answer of ``answer_tokens``: the answer plus room for the thinking."""
-    raw = os.environ.get("HUBPROTO_ANTHROPIC_THINKING_TOKENS")
-    room = int(raw) if raw not in (None, "") else ANTHROPIC_THINKING_ROOM
-    return max(1, int(answer_tokens)) + max(0, room)
+    """The max_tokens sent to Claude for an answer of ``answer_tokens``: the answer plus room for the thinking, never
+    more than a response may hold."""
+    return min(max(1, int(answer_tokens)) + thinking_room(), ANTHROPIC_MAX_OUTPUT)
+
+
+def anthropic_timeout(budget: int) -> float:
+    """How long one Claude response may take: enough to write the whole budget (a non-streamed response arrives only
+    when it is finished)."""
+    return float(max(ANTHROPIC_MIN_TIMEOUT, budget / ANTHROPIC_TOKENS_A_SECOND))
 
 
 class AnswerCutOff(RuntimeError):
@@ -671,7 +685,7 @@ class ModelGateway:
                            "messages": turns + [{"role": "user", "content": content}]}).encode("utf-8")
         req = urllib.request.Request(ANTHROPIC_URL, data=body, method="POST", headers={
             "content-type": "application/json", "x-api-key": os.environ["ANTHROPIC_API_KEY"], "anthropic-version": "2023-06-01"})
-        data = _fetch_json(req, ANTHROPIC_TIMEOUT)
+        data = _fetch_json(req, anthropic_timeout(budget))
         _anthropic_stopped_short(data, budget)
         return "".join(part.get("text", "") for part in data.get("content", []) if part.get("type") == "text")
 
@@ -804,7 +818,7 @@ class ModelGateway:
                 body["tools"] = specs
             req = urllib.request.Request(ANTHROPIC_URL, data=json.dumps(body).encode("utf-8"), method="POST", headers={
                 "content-type": "application/json", "x-api-key": os.environ["ANTHROPIC_API_KEY"], "anthropic-version": "2023-06-01"})
-            data = _fetch_json(req, ANTHROPIC_TIMEOUT)
+            data = _fetch_json(req, anthropic_timeout(budget))
             _anthropic_stopped_short(data, budget)  # a cut-off tool call or answer is neither run nor used
             content = data.get("content") or []
             uses = [b for b in content if b.get("type") == "tool_use"]
