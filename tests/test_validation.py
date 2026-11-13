@@ -39,7 +39,8 @@ def test_a_system_administrator_approves_nothing_as_one(released):
 def test_hosted_model_use_is_governed_by_the_it_sop(released):
     text = released.frames.get("it-sop").text
     hosted = text.split("Hosted models.")[1].split("## ")[0]
-    for words in ("a system administrator", "installation change recorded under this SOP", "only by the senior cogs",
+    for words in ("a system administrator", "installation change recorded under this SOP", "only by the cogs bundled with it",
+                  "for the tasks assigned to it", "working for the person who filed the task",  # issue #73: hosted cogs take tasks
                   "supplier evaluation SOP", "What may leave the hub", "its diff against the release in force", "Each use is recorded"):
         assert words in " ".join(hosted.split()), words
     assert not [f for f in released.compile(save=False)["findings"] if f["severity"] == "error"]
