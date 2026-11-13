@@ -377,6 +377,26 @@ def _frame_of(hub, name: str, draft: dict):
     return frame
 
 
+def _why_not_written(hub, co_ref: str, name: str, rep: dict) -> str:
+    """Why the edit for a direct change could not be written into the carried draft of ``name``, and what to do, in a
+    sentence a person can act on (never a guard's code such as ``checked-out:``). ``rep`` is ``apply_plan``'s failed
+    report, or ``{"refused": error}`` when the write was refused."""
+    e = rep.get("refused")
+    draft = _carried_draft(hub, co_ref, name)
+    f = (draft or {}).get("fields") or {}
+    if isinstance(e, KernelGuardError) and e.guard == "checked-out" and f.get("checked_out_by"):
+        who = f["checked_out_by"]
+        if f.get("checked_out_via") == "editor":
+            return f"{draft['number']} is checked out by {who} (open in the editor): finish editing it, then request review again"
+        return f"{draft['number']} is checked out by {who}: check it in or undo the check-out, then request review again"
+    if isinstance(e, KernelGuardError):
+        return e.detail
+    if e is not None:
+        return str(e)
+    where = f" to {draft['number']}" if draft else ""
+    return f"the edit did not apply{where}: {rep.get('detail') or 'the text it changes is not in the draft'}"
+
+
 def draft_direct_changes(hub, co_ref: str, by: str, *, call=None, extractor=None) -> list[dict]:
     """Have the qa-manager cog state each direct change of the change order not yet stated in the prose of the SOP it
     belongs to (``eco.add_sop`` makes sure the change order carries that SOP's draft revision), then check every stated
@@ -433,12 +453,13 @@ def draft_direct_changes(hub, co_ref: str, by: str, *, call=None, extractor=None
                                             note=f"drafted by the {QA_MANAGER} cog (not by {maker}) for the direct change "
                                                  f"{item.get('id') or ''} made by {maker}: {said}")
         except (ValueError, KernelGuardError) as e:
-            rep = {"ok": False, "detail": str(e)}
+            rep = {"ok": False, "refused": e}
         if not rep.get("ok"):
-            q = question(name, 0, f"The direct change “{_says(item, processes)}” could not be written into {name}",
-                         raised_by=QA_MANAGER, code="round-trip", item=item.get("id"), detail=rep.get("detail") or "")
+            why = _why_not_written(hub, co["locator"], name, rep)
+            q = question(name, 0, f"The direct change “{_says(item, processes)}” could not be written into {name}, because {why}",
+                         raised_by=QA_MANAGER, code="round-trip", item=item.get("id"), detail=why)
             questions.append(q)
-            item["round_trip"] = {"ok": False, "question": q["id"], "at": utcnow(), "detail": rep.get("detail") or ""}
+            item["round_trip"] = {"ok": False, "question": q["id"], "at": utcnow(), "detail": why}
             continue
         draft = _carried_draft(hub, co["locator"], name)
         if "workflow_ids" in op:
