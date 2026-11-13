@@ -145,8 +145,9 @@ folder. A draft of a policy Frame may only be changed by its author or a policy 
    title, an **editing** or **read-only** chip with the reason, and **Finish editing**.
 2. Opening the editor checks the document out to you as an editing session. Others who may change it can press **Join
    the editing**; everyone's changes merge in the editor.
-3. Work as in any office editor. The page asks the editor to save about two seconds after each change. Every save
-   becomes a new version noted "saved in the editor".
+3. Work as in any office editor. Save with Ctrl+S when you want a version; the editor also saves on its own from time
+   to time, and when you finish. Every save becomes a new version noted "saved in the editor". Saving a comment saves
+   the document too, so the comment reaches the hub at once (5.7).
 4. Press **Finish editing**. The status line says "Finished editing DOC-0123: your changes are version *n*", or
    "nothing was changed". The last person to finish releases the document; while others are still in it, it stays
    checked out to one of them.
@@ -191,8 +192,11 @@ hubproto/mentions.py).
 1. In the online editor, insert a comment and type `@`. The editor suggests members and roles of the organization;
    pick the cog (for example `@qa-manager`) and write your request: a question ("is the scope clear?"), a review ("please
    review this procedure"), or a change ("delete the Records section", "say must, not shall").
-2. The comment is picked up when the document is saved. It becomes a message on the document's chatter from you,
-   and goes into the cog's queue; saving does not wait for the cog. The editor bar shows which cog is working on it.
+2. Press **Save** on the comment (or **Reply** in a thread). The page saves the document then, and the comment is
+   picked up: it becomes a message on the document's chatter from you and goes into the cog's queue, and saving does
+   not wait for the cog. The editor bar shows which cog is working on it. The editor also keeps a comment as saved
+   when you leave its box after typing in it (its button reads "Saved"), except while you are choosing a name after
+   `@`; such a comment is picked up the same way.
 3. The cog answers in the comment thread:
    * a **question** gets an answer in a few sentences, from its procedures and the document;
    * a **review** gets its findings, filed as an evidence document;

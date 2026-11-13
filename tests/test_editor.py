@@ -218,6 +218,25 @@ def test_the_editor_page_offers_members_and_roles_as_mentions(shell, working_doc
     shell["hub"].dms.undo_checkout(working_doc["locator"], by="alice")
 
 
+def test_the_editor_saves_when_a_comment_is_saved_and_never_on_every_change(shell, working_doc, monkeypatch):
+    """Issue #67: the page saved two seconds after every change, so a pause in typing made a version and a cog came in
+    mid-sentence. It saves when Collabora says a comment was saved (Inserted_Comment), and after a cog answers."""
+    import re
+
+    monkeypatch.setenv("HUBPROTO_COLLABORA_URL", "http://editor.test:9980")
+    monkeypatch.setenv("HUBPROTO_WOPI_BASE", "http://hub.test:8080")
+    monkeypatch.setenv("HUBPROTO_COLLABORA_URLSRC", "http://editor.test:9980/browser/dist/cool.html?")
+    status, text = get(shell, "/edit/" + quote(working_doc["locator"], safe=":"), **{"as": "alice"})
+    assert status == 200
+    script = text[text.index("<script>(function(){var frame"):]
+    assert "Doc_ModifiedStatus" not in script, "a change alone never saves"
+    on_comment = re.search(r"if\(m\.MessageId==='Inserted_Comment'\)\{(.*?)\}\}\);", script, re.S)
+    assert on_comment and "MessageId:'Action_Save'" in on_comment.group(1), "a saved comment saves the document"
+    # The saves for a cog's answer stay: after it answered live, and before the hub writes a pending answer into the file.
+    assert script.count("MessageId:'Action_Save'") == 3
+    shell["hub"].dms.undo_checkout(working_doc["locator"], by="alice")
+
+
 def test_two_people_edit_the_same_document_together_and_the_last_out_releases_it(shell):
     hub = shell["hub"]
     content, mime = wopi.blank_document("docx")
