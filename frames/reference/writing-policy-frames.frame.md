@@ -3,7 +3,7 @@ type: frame [0.2]
 name: writing-policy-frames
 description: How to write a policy Frame so the compiler can read it. Sentence shapes for permissions, thresholds, routing, approval criteria, segregation of duties and processes.
 visibility: public
-version: "0.2.0"
+version: "0.2.1"
 scope: reference
 maintainer: operations
 ---
@@ -69,6 +69,10 @@ A section "## Process: <name>", one line "Records are filed in <Folder>.",
 then numbered steps "n. [role] Title (cog-id)". A step without a cog is a
 human checkpoint and becomes a Gate on the step before it, routed by the
 Routing sentences for that process.
+"Completing the <object> links it to what its work produced." makes the
+hub link an item, when it completes or is handed back, to the records its
+work created or changed: what the cog wrote while working it, or what the
+person names when they complete it.
 
 ## Roles and responsibilities
 | Role | Responsibilities |

@@ -318,6 +318,8 @@ def process_rule(bundle: dict, process: str, graph: dict) -> dict:
             "reject_to": None, "statuses": statuses, "transitions": transitions}
     if old.get("files_by_type"):
         rule["files_by_type"] = dict(old["files_by_type"])
+    if old.get("links_produced"):  # traceability the editor does not show: a workflow change keeps it
+        rule["links_produced"] = True
     return rule
 
 

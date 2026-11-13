@@ -165,7 +165,7 @@ class ActionsMixin:
             verdict = "approve"
             meaning = self._f("meaning")
             fields = {}
-            reserved = {"as", "run", "verdict", "meaning", "digest", "confirm", "reason", "once", "transition"}
+            reserved = {"as", "run", "verdict", "meaning", "digest", "confirm", "reason", "once", "transition", "produced"}
             given = {k: v for k, v in self.form.items() if k not in reserved and v.strip()}
             if given and state.get("pending") and state["pending"].get("kind", "decision") == "decision" and rec:
                 td = self.hub.kernel.types.get(rec["type"], {}).get("fields", {})
@@ -184,8 +184,10 @@ class ActionsMixin:
         queue = [r["id"] for r in self._pending(user, "decision")]
         following = [i for i in queue[queue.index(run_id) + 1:]] if run_id in queue else []
         transition = self._f("transition") or None  # a button naming one of the Gate's options (its transition)
+        # "What your work produced": record numbers, linked to the item when it completes (its process says so).
+        produced = self._f("produced").replace(",", " ").replace(";", " ").split() if verdict == "approve" else []
         result = self.hub.runner.decide(run_id, user, None if transition else verdict, meaning=meaning, payload_digest=self._f("digest") or None,
-                                        fields=fields or None, transition=transition)
+                                        fields=fields or None, transition=transition, produced=produced or None)
         log_line(f"decision run={run_id} record={state.get('record')} by={user} verdict={verdict} fields={sorted(fields)} meaning={meaning!r} status={result['status']}")
         rec = self.hub.kernel.get(state["record"]) if state.get("record") else None
         if verdict == "reject":

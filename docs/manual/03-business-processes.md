@@ -709,6 +709,16 @@ folder does not exist): the hub tells it nothing was done, and the task comes ba
 **Done** (`AgentTools.nothing_done`). Comments and messages are not counted as the work; a task that only asks the cog
 to check something and say so can still be completed.
 
+**What the task produced.** Completing a task links it to what its work produced (tasks-sop: "Completing the task links
+it to what its work produced."). When a cog completes a task, the hub links the task to every document the cog drafted
+or edited, every record it filed or changed, every change order it proposed and every process it started while working
+the task; its comments, messages, reviews and links are not counted. When you complete a task yourself, the card asks
+**What your work produced (optional)**: give the numbers of the records and documents your work made or changed
+(TASK-*n*, NCR-*n*, DOC-*n*, separated by spaces or commas), and the hub links each one you may read, refusing a number
+that does not exist or that you cannot read. A task handed back is linked to what was produced so far. The links are
+made by the hub, recorded on the task's Track and in its history ("the hub linked it to what its work produced: ..."), never twice, and show on the task
+under **Links** as "produces" and on each record as "produced-by" (hubproto/runner.py, `_link_produced`).
+
 ## 3.16 Design control and requirements
 
 A mechanical or electrical design is submitted with its CAD files, exported, reconciled against the part master,

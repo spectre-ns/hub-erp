@@ -284,6 +284,7 @@ Records are filed in Quality/Nonconformances.
 The record type is ncr.                      (optional; otherwise derived from the first step's object)
 Closes as closed.                            (terminal state; default closed)
 Rejections return to Open the nonconformance.   (optional; otherwise a rejection ends in state rejected)
+Completing the nonconformance links it to what its work produced.   (optional; links_produced: see below)
 1. [staff] Open the nonconformance (ncr-classifier)        <- step with a cog = automatic
 2. [system] File the nonconformance (record-filer)
 3. [system] Score the risk (risk-scorer)
@@ -298,6 +299,17 @@ must hold the first step's role and a `create <object>` permission on the
 filing folder; a person deciding a checkpoint must hold `approve <object>`
 there. The record type is the config type whose `object` equals that noun,
 unless `The record type is X.` says otherwise.
+
+`Completing the <object> links it to what its work produced.` sets `links_produced` on the process (not a
+widening; turning it on or off is a process change reviewers read). When an item of such a process completes or is
+handed back, `Runner._link_produced` links it `produces` to every record its work created or changed, as `hub` with
+the run id, and records `record.produced_linked` on the Track; `kernel.link` keeps it free of duplicates, and evidence
+documents and the item itself are left out. A cog's products are what it wrote while working the item: each act-mode
+write tool records on its agent-run event the records the cog wrote events on during that call
+(`Kernel.written_since`; steps, words, reviews, `assign` and `link_records` are not products), and
+`Runner.cog_products` reads the cog's assigned runs (`q<task id>`) on the item. A person names what their work
+produced when they complete the item (`decide(produced=...)`, the card's "What your work produced" field,
+`hubproto decide --produced`); each must exist and be readable by them (`record.produced_named`). No model is involved.
 
 **Cogs** (change control v2, section 7). A cog's profile is its identity; its persona (shared) says how it behaves;
 the bundle's `cogs[name]` is the merged view (`about`, `model`, `persona`, the persona's fields, the composed `prompt`).

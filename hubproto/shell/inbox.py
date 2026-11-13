@@ -307,13 +307,20 @@ class InboxMixin:
                         f"For example: “{esc(examples[0])}” or “{esc(examples[1])}”.")
         digest = r.get("seen_digest") or self.hub.runner.seen_digest(r)
         leads = f"Approval moves it to {self._state_chip(nxt, r.get('workflow'))}" if nxt else "Approval completes it"
+        produced = ""
+        completes = not nxt or nxt == (r.get("workflow") or {}).get("terminal")
+        if completes and rec and self.hub.runner.links_produced(r):  # "Completing the <item> links it to what its work produced."
+            produced = ("<div class='fields'>" + text_input(
+                "produced", "What your work produced (optional)", values.get("produced", ""),
+                hint=f"The numbers of the documents and records your work on {rec['number']} made or changed, separated by commas. "
+                     f"Completing it links {rec['number']} to them, with what any cog assigned to it produced.") + "</div>")
         rej = (f"Reject returns it to {esc(r['owner'])} for rework" if on_reject == "returned" else
                f"Reject rewinds it to {esc(state_name(on_reject, r.get('workflow')))}" if on_reject and on_reject.startswith("awaiting") else
                "Reject closes it as rejected; nothing more can be done with it" + (
                    ". To send it back for rework instead, use Back to the start on its page" if rt in ("document", "capa", "design", "change-request") else ""))
         approve_form = f"""{err}<form method="post" action="/decide" aria-labelledby="h-{esc(r['id'])}">{hidden_as(user)}<input type="hidden" name="run" value="{esc(r['id'])}"><input type="hidden" name="digest" value="{esc(digest)}"><input type="hidden" name="verdict" value="approve">
 {needs}<div class="fields">{inputs}</div>
-<div class="fields">{text_input("meaning", "Meaning of your signature", values.get("meaning", ""), required=True, textarea=True, hint="", error=self._field_error("meaning") if mine else None)}</div>
+{produced}<div class="fields">{text_input("meaning", "Meaning of your signature", values.get("meaning", ""), required=True, textarea=True, hint="", error=self._field_error("meaning") if mine else None)}</div>
 <p class="why">{meaning_hint}</p>
 <div class="actions"><label><input type="checkbox" name="confirm" value="1" required{' checked' if values.get('confirm') else ''}> I have read the item and the checks above</label>
 {self._option_buttons(r, user, "approve", blocked) or f"<button{' disabled' if blocked else ''}>{esc(_approve_label(rt, p, rec))}</button>"} <span class="why">{leads}.</span></div></form>"""

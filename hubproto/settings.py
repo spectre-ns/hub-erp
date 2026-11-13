@@ -215,6 +215,8 @@ def sentence(rule: dict, processes: dict | None = None) -> str:
             lines.append(f"The record type is {rule['record_type']}.")
         if rule.get("terminal") and rule["terminal"] != "closed":
             lines.append(f"Closes as {rule['terminal']}.")
+        if rule.get("links_produced"):
+            lines.append(links_produced_sentence(rule))
         for st in rule.get("steps") or []:
             cog = f" ({', '.join(st['swarm'])})" if st.get("swarm") else (f" ({st['cog']})" if st.get("cog") else "")
             lines.append(f"{st['n']}. [{st['role']}] {st['title']}{cog}")
@@ -224,6 +226,11 @@ def sentence(rule: dict, processes: dict | None = None) -> str:
             lines += to_sentences(rule)
         return "\n".join(lines)
     return json.dumps({x: y for x, y in rule.items() if x != "source"})
+
+
+def links_produced_sentence(rule: dict) -> str:
+    """The sentence of a process whose completion links its item to what the work on it produced (``links_produced``)."""
+    return f"Completing the {rule.get('object') or rule.get('record_type') or rule.get('name')} links it to what its work produced."
 
 
 def stamp(rule: dict, by: str, processes: dict | None = None) -> dict:
