@@ -703,7 +703,11 @@ due date, so tasks are never escalated. **On reject:** Rejected.
 
 **A task assigned to a cog.** The cog takes it from its queue and does the work within its autonomy. It completes the
 step with a summary of what it did, or hands it back to the person who filed it with the reason. If it does neither,
-the step goes back to that person automatically (hubproto/workqueue.py, `assigned_work`; chapter 6.6).
+the step goes back to that person automatically (hubproto/workqueue.py, `assigned_work`; chapter 6.6). A cog may not
+complete the step when it tried to change something and the hub refused every change (it was not allowed, or the
+folder does not exist): the hub tells it nothing was done, and the task comes back to the person instead of closing as
+**Done** (`AgentTools.nothing_done`). Comments and messages are not counted as the work; a task that only asks the cog
+to check something and say so can still be completed.
 
 ## 3.16 Design control and requirements
 

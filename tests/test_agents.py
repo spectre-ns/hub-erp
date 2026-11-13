@@ -2,6 +2,7 @@
 budget; duties; new cogs and people as policy proposals; profile cogs with no code."""
 
 import json
+import re
 from urllib.parse import quote
 
 import pytest
@@ -151,3 +152,94 @@ def test_the_shell_hands_a_cog_a_task_and_adds_members(monkeypatch, tmp_path):
     finally:
         server.shutdown()
         server.server_close()
+
+
+# ---------------------------------------------------------------- a task assigned to a cog (issue #72)
+def assigned_cog(plan):
+    """A stand-in for a cog working a task assigned to it: ``plan(number)`` gives the tools it calls, in order. A step
+    may be a function of what the cog has heard so far (``heard``: each tool's last result), so it can react to a
+    refusal as a model would; None skips it."""
+    def fake(**kw):
+        number = re.search(r"You are assigned (\S+)", kw["user"]).group(1)
+        calls, heard = [], {}
+        for step in plan(number):
+            step = step(heard) if callable(step) else step
+            if step is None:
+                continue
+            name, args = step
+            heard[name] = res = kw["call_tool"](name, args)
+            calls.append({"tool": name, "arguments": args, "ok": "error" not in res, "result": res})
+        return {"text": "done", "stand_in": False, "served_model": "scripted", "model": "scripted", "tool_calls": calls}
+    return fake
+
+
+def file_task(hub, cog: str, by: str, title: str) -> tuple[str, dict]:
+    """A task filed for a cog; the cog queue is inline, so the cog has worked it when this returns."""
+    run_id = hub.runner.submit("task", {"record": {"title": title, "description": title, "assignee": cog}}, owner=by)
+    return run_id, hub.runner.load(run_id)
+
+
+def refused_writes_then_complete(number: str) -> list:
+    # quality-assistant may not create documents in Quality/Audits, and there is no folder Quality/Plans: both refused.
+    return [("create_document", {"title": "Audit plan", "folder": "Quality/Audits", "text": "# Audit plan"}),
+            ("create_document", {"title": "Audit plan", "folder": "Quality/Plans", "text": "# Audit plan"}),
+            ("comment", {"number": number, "text": "I could not create the audit plan."}),  # telling is not the work
+            ("complete_step", {"number": number, "summary": "I could not create the document."})]
+
+
+def the_runs_complete_step(hub, cog: str) -> dict:
+    store = AgentStore(hub.root / "state" / "agents")
+    [run] = store.runs(cog)
+    [ev] = [e for e in store.load(run["run"]) if e.get("tool") == "complete_step"]
+    return ev
+
+
+def test_a_cog_whose_every_change_was_refused_may_not_complete_its_task_and_hands_it_back(released, monkeypatch):
+    hub = released
+    monkeypatch.setattr(hub.model, "complete_with_tools", assigned_cog(lambda number: refused_writes_then_complete(number) + [
+        lambda heard: ("hand_back", {"number": number, "reason": "I may not create documents in Quality/Audits"})
+        if "error" in heard["complete_step"] else None,
+        ("finish", {"summary": "Could not create the audit plan."})]))
+    run_id, state = file_task(hub, "quality-assistant", "bob", "Create an audit plan")
+    assert state["status"] == "waiting" and state["pending"]["assignees"] == ["bob"], \
+        f"the task closed although nothing was done: {state['status']}"
+    assert not any(d["meaning"].startswith("completed") for d in hub.kernel.get(state["record"])["decisions"])
+    refusal = the_runs_complete_step(hub, "quality-assistant")
+    assert not refusal["ok"] and "nothing was done: every change you tried was refused" in refusal["result"] \
+        and "hand it back" in refusal["result"]
+    [handed] = [e for e in hub.runner.track(run_id) if e["type"] == "gate.handed_back"]
+    assert "I may not create documents in Quality/Audits" in json.dumps(handed), "the cog's own hand-back, with its reason"
+
+
+def test_a_cog_that_ignores_the_refusal_still_leaves_the_task_with_the_person(released, monkeypatch):
+    hub = released
+    monkeypatch.setattr(hub.model, "complete_with_tools", assigned_cog(lambda number: refused_writes_then_complete(number) + [
+        ("finish", {"summary": "Created the audit plan."})]))
+    run_id, state = file_task(hub, "quality-assistant", "bob", "Create an audit plan")
+    assert state["status"] == "waiting" and state["pending"]["assignees"] == ["bob"], \
+        f"the task closed although nothing was done: {state['status']}"
+    [handed] = [e for e in hub.runner.track(run_id) if e["type"] == "gate.handed_back"]
+    assert "Not done (the hub refused)" in json.dumps(handed), "the hand-back says what the hub refused"
+
+
+def test_a_cog_may_complete_a_task_that_needs_no_change(released, monkeypatch):
+    hub = released
+    monkeypatch.setattr(hub.model, "complete_with_tools", assigned_cog(lambda number: [
+        ("search_records", {"type": "ncr"}),
+        ("complete_step", {"number": number, "summary": "there are no open nonconformances"}),
+        ("finish", {"summary": "Checked: no open nonconformances."})]))
+    run_id, state = file_task(hub, "quality-assistant", "bob", "Check for open nonconformances")
+    assert state["status"] == "completed"
+    assert hub.kernel.get(state["record"])["decisions"][-1]["meaning"].startswith("completed: there are no open")
+
+
+def test_a_cog_may_complete_a_task_when_one_of_its_changes_went_through(released, monkeypatch):
+    hub = released
+    monkeypatch.setattr(hub.model, "complete_with_tools", assigned_cog(lambda number: [
+        ("create_document", {"title": "Calibration plan", "folder": "Quality/Audits", "text": "# Calibration plan"}),
+        ("create_document", {"title": "Calibration plan", "folder": "Quality/Controlled Documents", "text": "# Calibration plan"}),
+        ("complete_step", {"number": number, "summary": "created the calibration plan"}),
+        ("finish", {"summary": "Created the calibration plan."})]))
+    run_id, state = file_task(hub, "qa-manager", "carol", "Create a calibration plan")
+    assert the_runs_complete_step(hub, "qa-manager")["ok"]
+    assert state["status"] == "completed", "a refused attempt and then one that went through is work done"
