@@ -269,17 +269,42 @@ register({"name": "assign",
 
 
 # ---------------------------------------------------------------- link_records
-def link_records(t, a: dict) -> dict:
-    hub = t.hub
+def _link_refusal(t, a: dict) -> str:
+    """Why a cog may not make this link, or ''. Both records must be ones it may read (and, working for someone, that
+    person may too), and the relation one that only relates records: those the hub's own steps make and act on
+    (``configdocs.HUB_RELATIONS``: a change order's drafts, a revision, an attachment, ...) are never made by hand."""
+    from .configdocs import HUB_RELATIONS
+
     rec = t._find(str(a.get("number") or ""))
     other = t._find(str(a.get("target") or ""))
     if rec is None or other is None:
         missing = a.get("number") if rec is None else a.get("target")
-        return {"error": f"no record {missing!r} that {t.cog} may read"}
+        return f"no record {missing!r} that {t.cog} may read"
+    rel = str(a.get("rel") or "").strip()
+    if rel in HUB_RELATIONS:
+        return (f"{rel} links are made by the hub's own steps ({HUB_RELATIONS[rel]}); "
+                f"use concerns or references to relate these records")
+    vocab = [k for k in t.hub.kernel.link_vocab if not k.startswith("$") and k not in HUB_RELATIONS]
+    if rel not in vocab:
+        return f"unknown link {rel!r}; use one of: {', '.join(sorted(vocab))}"
+    return ""
+
+
+def _link_intent(t, a: dict) -> dict:
+    """A link is decided as a comment on the record it starts from: whoever may read both records may link them."""
+    why = _link_refusal(t, a)
+    return {"error": why} if why else intent_on_record("comment")(t, a)
+
+
+def link_records(t, a: dict) -> dict:
+    hub = t.hub
+    why = _link_refusal(t, a)  # again here: a proposed link is made only when a person confirms it
+    if why:
+        return {"error": why}
+    rec = t._find(str(a.get("number") or ""))
+    other = t._find(str(a.get("target") or ""))
     rel = str(a.get("rel") or "").strip()
     vocab = {k: v for k, v in hub.kernel.link_vocab.items() if not k.startswith("$")}
-    if rel not in vocab:
-        return {"error": f"unknown link {rel!r}; use one of: {', '.join(sorted(vocab))}"}
     if any(l["rel"] == rel and l["target"] == other["locator"] for l in rec["links"]):
         return {"error": f"{rec['number']} already {rel} {other['number']}"}
     try:
@@ -290,11 +315,11 @@ def link_records(t, a: dict) -> dict:
 
 
 register({"name": "link_records",
-          "description": "Link two records with a named relation (concerns, caused, references, affects, supersedes...). "
-                         "The link shows on both records.",
+          "description": "Link two records you may read with a named relation: concerns, references, caused, affects, "
+                         "part-of, evidence-for or produces. The link shows on both records.",
           "parameters": {"type": "object", "properties": {"number": {"type": "string"}, "rel": {"type": "string"}, "target": {"type": "string"}},
                          "required": ["number", "rel", "target"]}},
-         link_records, write=True, intent=intent_on_record("comment"))
+         link_records, write=True, intent=_link_intent)
 
 
 # ---------------------------------------------------------------- send_back_to_start

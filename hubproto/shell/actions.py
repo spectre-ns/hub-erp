@@ -300,6 +300,10 @@ class ActionsMixin:
             if rec is None:
                 raise ShellError(f"There is no item '{record}' to post the message on.", 404)
             self._require_read(rec["folder"])
+            may = self._can_comment(rec)
+            if not may["allowed"]:
+                obj = (self.hub.kernel.types.get(rec["type"]) or {}).get("object") or rec["type"]
+                raise ShellError(f"You may not comment on {rec['number']}. " + self._why_text(may, "comment", obj, rec["folder"]), 403)
             record = rec["locator"]
         reply = self.hub.send(user, to, subject[:300], body, channel=channel, record=record)
         is_cog = bundle["members"][to]["type"] == "cog"
