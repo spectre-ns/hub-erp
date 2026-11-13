@@ -72,3 +72,27 @@ def test_removing_a_route_widens_nobody_it_named(hub):
     add(hub, co, {k: v for k, v in route.items() if k != "key"}, op="remove")
     named = everyone(hub, route["assignee"])
     assert named and not named & cc.widened_principals(hub, co["number"]), "its assignees gain no authority"
+
+
+def test_removing_a_group_that_carries_a_deny_widens_its_members(tmp_path):
+    """Its members lose the "may not" it carried (guards._flag_lost_denies): none of them reviews its removal."""
+    import shutil
+
+    from conftest import ROOT, release_all
+    from hubproto import sopdocs
+    from hubproto.app import Hub
+
+    shutil.copytree(ROOT / "frames", tmp_path / "frames")
+    org = tmp_path / "frames" / "company" / "org-model.frame.md"
+    text = org.read_text()
+    assert "## Permissions\n" in text
+    org.write_text(text.replace("## Permissions\n", "## Permissions\nThe junior-cogs group may not approve documents in Policy.\n", 1))
+    h = Hub(tmp_path)
+    h.kernel.seed()
+    release_all(h)
+    sopdocs.convert(h, by="carol")
+    co = new_co(h, title="Drop the junior cogs group")
+    old = next(r for r in h.settings_rules() if r["kind"] == "group" and r["name"] == "junior-cogs")
+    add(h, co, {k: v for k, v in old.items() if k != "key"}, op="remove")
+    assert any(cc.widening(c) for c in cc.delta(h, co["number"])), "its members lose a deny: a widening"
+    assert everyone(h, "group:junior-cogs") <= cc.widened_principals(h, co["number"])

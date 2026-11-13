@@ -1624,7 +1624,7 @@ def widened_principals(hub, co_ref) -> set[str]:
         refs = [r.get("subject"), f"person:{r['principal']}" if r.get("kind") == "member" else None]
         if not removed:  # a route or an approver taken away gives its assignee nothing
             refs += [r.get("approver"), r.get("assignee")]
-        if r.get("kind") == "group" and not removed:  # someone joins it, or it gains a role: what it may do reaches them
+        if r.get("kind") == "group":  # someone joins it or it gains a role; or, removed, its members lose a deny it carried
             refs.append(f"group:{r.get('name')}")
         for ref in refs:
             out |= members(ref)
