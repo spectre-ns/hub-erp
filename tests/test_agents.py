@@ -243,3 +243,21 @@ def test_a_cog_may_complete_a_task_when_one_of_its_changes_went_through(released
     run_id, state = file_task(hub, "qa-manager", "carol", "Create a calibration plan")
     assert the_runs_complete_step(hub, "qa-manager")["ok"]
     assert state["status"] == "completed", "a refused attempt and then one that went through is work done"
+
+
+def test_a_change_only_proposed_is_not_work_done_and_hand_back_is_never_out_of_budget(released, tmp_path):
+    """Review of #80: a write waiting for a person to confirm it has not gone through, so the step is not complete; and a
+    cog whose budget is spent can still give the work back with its reason."""
+    from hubproto.agent import AgentStore, AgentTools
+
+    t = AgentTools(released, "qa-manager", "run-proposed", "act", 1, AgentStore(tmp_path))
+    t.store.append(t.run_id, {"type": "tool", "tool": "draft_document", "arguments": {}, "write": True, "ok": True,
+                              "result": "{\"proposed\": true}", "decided": {"mode": "propose", "why": "a person confirms", "intent": None}})
+    why = t.nothing_done("TASK-0001")
+    assert why.startswith("nothing was done: every change you tried was refused or only proposed (draft_document)")
+    t.store.append(t.run_id, {"type": "tool", "tool": "draft_document", "arguments": {}, "write": True, "ok": True, "result": "{}",
+                              "decided": {"mode": "act", "why": "allowed", "intent": None}})
+    assert t.nothing_done("TASK-0001") == "", "a change that went through is work done"
+    t.actions = t.max_actions
+    res = t.execute("hand_back", {"number": "TASK-0404", "reason": "I could not do it"})
+    assert "budget" not in str(res.get("error") or ""), res

@@ -368,7 +368,7 @@ class AgentTools(RecordTools):
                 res = {"ok": True, "note": "the run is already finished; stop now"}
         elif name == "complete_step" and (why := self.nothing_done(str(args.get("number") or "the step"))):
             res = {"error": why}
-        elif write and self.actions >= self.max_actions:
+        elif write and self.actions >= self.max_actions and name != "hand_back":  # giving the work back is never out of budget
             res = {"error": f"the run's budget of {self.max_actions} actions is used up; finish and report what is left"}
         elif write and (decision := self.decide(name, args))["mode"] == "refuse":
             res = {"error": decision["why"] if decision.get("plain") else
@@ -407,11 +407,14 @@ class AgentTools(RecordTools):
         it. A step that needs no change (look and say) can still be completed; comments and messages are not the work."""
         tried = [e for e in self.store.load(self.run_id) if e.get("type") == "tool" and e.get("write")
                  and e.get("tool") not in STEP_TOOLS | WORDS_TOOLS]
-        if not tried or any(e.get("ok") for e in tried):
+        # A change only proposed (waiting for a person to confirm it) has not gone through either: the step is not done.
+        if not tried or any(e.get("ok") and (e.get("decided") or {}).get("mode") != "propose" for e in tried):
             return ""
         names = sorted({e["tool"] for e in tried})
-        return (f"nothing was done: every change you tried was refused ({', '.join(names)}), so {number} is not complete; "
-                f"hand it back with hand_back, saying why you could not do it")
+        proposed = any(e.get("ok") for e in tried)
+        return (f"nothing was done: every change you tried was {'refused or only proposed' if proposed else 'refused'} "
+                f"({', '.join(names)}), so {number} is not complete; hand it back with hand_back, saying why you could not do it"
+                + (" or what waits for a person to confirm" if proposed else ""))
 
     def _record_draft(self, name: str, args: dict, res: dict) -> None:
         """A document the cog wrote or changed keeps what produced the text: its model, persona and the release."""
