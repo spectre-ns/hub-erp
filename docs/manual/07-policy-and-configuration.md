@@ -566,6 +566,10 @@ valid and answers every removed status that has items; and the IT SOP's validati
   **independent approver**: a person who contributed nothing and approved every item of its delta. Until then they are
   still routed the Gate but refused at signing, with the reason. This is the IT SOP's "whoever made a direct
   configuration change on a change-order is not its only approver".
+* These rules are about approving. Whoever prepared a change order, contributed to it or wrote a revision it carries
+  may still **reject** it at a Gate routed to them, with a reason (hubproto/runner.py, `maker_may_reject`). A rejection
+  approves nothing and puts nothing in force: the change order goes back to revising, where its requester changes it
+  or cancels it.
 * A contributor does not review it, and a reviewer with results is not removed.
 * A person signs, never a cog: a cog may review a change order and say what it found, never approve it, and a rule
   that would let a cog sign one stops it ("a person signs a change order").

@@ -950,6 +950,26 @@ class Runner:
                 pass
         return sorted({authz.principal_name(x) for x in out if x})
 
+    def maker_may_reject(self, state: dict, by: str, by_type: str, verdict: str) -> bool:
+        """Whether ``by`` may reject a change order although segregation of duties keeps them from approving it: whoever
+        prepared it, contributed to it or wrote a revision it carries. A rejection approves nothing and puts nothing in
+        force (the change order goes back to revising), so it is never an approval of their own change (issue #63).
+        Approving keeps every rule: a maker is never its only approver, and an author never approves it."""
+        if verdict != "reject" or by_type != "person" or not self.is_change_order(state):
+            return False
+        rec = self.kernel.get(state["record"]) if state.get("record") else None
+        makers = set(self.contributors(state)) | {authz.principal_name(state["owner"])}
+        if rec and rec.get("created_by"):
+            makers.add(authz.principal_name(rec["created_by"]))
+        if getattr(self, "hub", None) is not None:
+            try:
+                from . import changecontrol
+
+                makers |= {authz.principal_name(a) for a in changecontrol.revision_authors(self.hub, state["record"])}
+            except Exception:  # the change-control module cannot read it: the makers recorded on the run stand
+                pass
+        return authz.principal_name(by) in makers
+
     def _change_order_signers(self, state: dict, out: dict, owner: str, rec: dict | None, signing: bool = True) -> None:
         """Who may sign a change order (change control 3.6, as agreed): the author of a revision it carries never; any other
         contributor (its requester and preparer included) only alongside an independent approver, a person who
@@ -2507,7 +2527,7 @@ class Runner:
             excluded = self.excluded(bundle, state, own.get("route") or "role:", gate_not=own.get("not") or [])
         else:
             excluded = self.excluded(bundle, state, pending.get("route") or "role:")
-        if by in excluded:
+        if by in excluded and not self.maker_may_reject(state, by, by_type, verdict):
             raise RunError(f"{excluded[by]}; {by} cannot decide it")
         if by_type == "cog" and verdict == "approve" and not delegating_rule and not self.is_assigned_work(state, by):
             raise RunError(f"{by} signs only within its approval criteria, and none covers this step")
