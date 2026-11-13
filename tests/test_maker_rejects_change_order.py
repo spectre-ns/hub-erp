@@ -40,7 +40,7 @@ def test_the_quality_manager_rejects_a_change_order_she_prepared_and_cannot_appr
     run = gate(hub, co, who="carol", verdict="reject", meaning="Rejected: controllers keep reading Finance.")
     assert run["status"] != "waiting"
     co = cc.sync(hub, co["number"])
-    assert cc.stage_of(co) == "revising" and co["fields"]["rejected"]["by"] == "carol"
+    assert cc.stage_of(co) == "rejected" and co["fields"]["rejected"]["by"] == "carol", "closed (issue #65)"
     assert co["fields"]["rejected"]["meaning"] == "Rejected: controllers keep reading Finance."
 
 

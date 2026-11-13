@@ -768,6 +768,12 @@ class Runner:
         self._notify([state["owner"]], kind="rejection", subject=f"{state['process']} {state.get('record')} {word}",
                      body=f"{by} {word} it: {close.get('meaning') or ''}", run_id=state["id"])
         self._save(state)
+        rec = self.kernel.get(state["record"]) if state.get("record") else None
+        for hook in list(self.on_completed):  # a run that ended rejected or cancelled is over too (a rejected change order closes)
+            try:
+                hook(self.load(state["id"]), rec)
+            except Exception as e:  # an automation that cannot start never undoes the run; it says why
+                track.append({"type": "automation.not_started", "run_id": state["id"], "reason": f"{type(e).__name__}: {e}"})
 
     def _auto_holds(self, state: dict, t: dict) -> bool:
         when = (t.get("gate") or {}).get("when") or "actions-succeed"
@@ -1846,7 +1852,7 @@ class Runner:
     # ------------------------------------------------------------ cogs as users
     cog_users_inline = True  # False: an item waiting for a cog is not put in its queue (a sweep gives it later)
     queue = None  # the cogs' work queue (hubproto.workqueue.CogQueue), set by the Hub
-    on_completed: list = []  # callables (state, record) run after a run completes: automation triggers, set by the Hub
+    on_completed: list = []  # callables (state, record) run after a run ends (completed, rejected or cancelled): automation triggers, set by the Hub
 
     def give_to_cog(self, state: dict) -> dict:
         """An item now waits for a cog: it goes in that cog's queue, like a task in a person's tray. In inline mode the

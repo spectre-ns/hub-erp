@@ -453,17 +453,21 @@ def test_the_approver_may_not_be_a_contributor_unless_an_independent_approver_de
         cc.may_not_sign = original
 
 
-def test_a_rejected_approval_goes_back_to_revising(hub):
+def test_a_rejected_approval_closes_the_change_order(hub):
+    """Issue #65: a rejection closes it; nothing more is done with it, and its drafts are withdrawn at once."""
     co = new_co(hub)
-    revise(hub, co, "finance-policy", OLD, NEW)
+    draft = revise(hub, co, "finance-policy", OLD, NEW)
     cc.request_review(hub, co["number"], "alice")
     cc.send_for_approval(hub, co["number"], "alice")
     assert gate(hub, co, verdict="reject", meaning="say why the limit drops")["status"] != "waiting"
+    assert hub.kernel.get(draft["locator"])["state"] == "withdrawn", "withdrawn when the approval run ends, before anyone looks"
     co = cc.sync(hub, co["number"])
-    assert co["state"] == "open" and cc.stage_of(co) == "revising" and co["fields"]["rejected"]["by"] == "carol"
-    cc.request_review(hub, co["number"], "alice")
-    state = cc.send_for_approval(hub, co["number"], "alice")
-    assert state["status"] == "waiting" and state["pending"]["assignees"] == ["carol"]
+    assert co["state"] == "rejected" and cc.stage_of(co) == "rejected"
+    assert co["fields"]["rejected"] == {**co["fields"]["rejected"], "by": "carol", "meaning": "say why the limit drops", "closed": True}
+    with pytest.raises(ValueError):
+        cc.request_review(hub, co["number"], "alice")
+    again = new_co(hub, title="Lower the AP cog limit, again")
+    assert revise(hub, again, "finance-policy", OLD, NEW)["state"] == "draft", "the SOP is free to revise on a new change order"
 
 
 def test_a_state_items_are_in_needs_a_state_map_before_approval(hub):

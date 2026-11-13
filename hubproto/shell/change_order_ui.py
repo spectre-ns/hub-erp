@@ -444,8 +444,27 @@ class ChangeOrderMixin:
             raise self._co_refused(e) from None
         self._co_done(co, "The title and description are saved.", "co-stage")
 
+    def _co_closed_line(self, co: dict) -> str:
+        """Why a closed change order is closed (rejected or cancelled), in a sentence; nothing more is done with it."""
+        f = co["fields"]
+        drafts = [c["draft"]["number"] for c in eco.carried(self.hub, co, withdrawn=True) if c["draft"]["state"] == "withdrawn"]
+        if co["state"] == "rejected":
+            rej = f.get("rejected") or {}
+            meaning = (rej.get("meaning") or "").strip()
+            why = (f"{esc(rej.get('by') or 'its approver')} rejected its approval"
+                   + (f": “{esc(meaning)}”" if meaning else "") + ("" if meaning[-1:] in ".!?" and meaning else "."))
+        else:
+            why = "It was cancelled."
+        return (f"{why} It is closed: nothing more is done with it, and none of it came into force"
+                + (f"; its {'revision' if len(drafts) == 1 else 'revisions'} {', '.join(esc(d) for d in drafts)} "
+                   f"{'is' if len(drafts) == 1 else 'are'} withdrawn" if drafts else "")
+                + ". To try again, prepare a new change order.")
+
     def _co_stage_html(self, ctx: dict) -> str:
         co, stage, f = ctx["co"], ctx["stage"], ctx["f"]
+        if stage in cc.CLOSED:
+            return (f"<div class='card' id='co-stage' data-live><h2 style='margin-top:0'>{icon('activity')}Where {esc(co['number'])} stands</h2>"
+                    f"<div class='card warn' role='status'>{icon('x')} <b>{esc(stage.capitalize())}.</b> {self._co_closed_line(co)}</div></div>")
         stages = list(cc.STAGES)
         cur = stages.index(stage)
         rnd = ctx["round"] or {}
@@ -464,10 +483,6 @@ class ChangeOrderMixin:
                     f"is related {'by definition' if bc.get('kind') == 'definition' else 'by meaning' + (' (' + esc(bc.get('cog')) + ')' if bc.get('cog') else '')}: "
                     f"{esc('; '.join(bc.get('reasons') or []))}. Its reviews and item decisions are stale until another round runs. "
                     "<a href='#co-related'>Related changes</a></div>")
-        rej = f.get("rejected") or {}
-        if rej and stage in cc.EDITABLE:
-            out += (f"<div class='card warn' role='status'>{icon('x')} {esc(rej.get('by'))} rejected its approval"
-                    + (f": “{esc(rej.get('meaning'))}”" if rej.get("meaning") else "") + ". It is back to revising.</div>")
         unav = [q for q in self._co_unavailable_questions(ctx) if q.get("status", "open") == "open"]
         if unav and stage in cc.EDITABLE + ("awaiting-approval",):
             out += (f"<div class='card warn' role='status'>{icon('alert')} <b>The compile-frame committee could not read part of the prose</b> "
@@ -527,6 +542,8 @@ class ChangeOrderMixin:
         rnd = ctx["round"] or {}
         who = ctx["requester"] or "its requester"
         f = co["fields"]
+        if stage in cc.CLOSED:
+            return f"<p class='status'>{self._co_closed_line(co)}</p>"
         if stage == "released":
             return (f"<p class='status'>Released: its revisions and configuration are in force "
                     f"({self._version_html(f.get('released_release')) if f.get('released_release') else 'the release in force'}).</p>")
@@ -1839,6 +1856,8 @@ class ChangeOrderMixin:
         co, stage = ctx["co"], ctx["stage"]
         ov = ctx["ov"]
         out = f"<section class='co-sec' id='co-approval'><h2>{icon('check-circle')}Approval</h2>"
+        if stage in cc.CLOSED:
+            return out + f"<p class='status'>{esc(stage.capitalize())}: closed without a release.</p></section>"
         if stage == "released":
             return out + "<p class='status'>Released.</p></section>"
         if stage == "approved":
