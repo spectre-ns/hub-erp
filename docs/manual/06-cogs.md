@@ -130,7 +130,8 @@ hubproto/agent_inventory.py):
 
 * **Looking** (always, within its read rights, 6.11): search records, read a record or document, see what waits for
   someone, a record's history, counts, a document's versions, read and search procedures, read a section of an SOP,
-  list settings and proposals, check a permission, find parts and a part's stock.
+  list settings and proposals, list the models this installation has and each cog's model now (`list_models`), check a
+  permission, find parts and a part's stock.
 * **Acting** (where the SOPs let it): comment, message, start a process (the hub checks it may, and that the person it
   works for may), take its turn, complete a step, hand back, draft a document, review a document, edit a document,
   create a record, update fields (never fields the hub manages), move, assign, link, change an item's state where no

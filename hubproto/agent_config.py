@@ -203,8 +203,22 @@ register({"name": "propose_policy_change",
               "text": {"type": "string", "description": "the whole new text (instead of ops)"},
               "reason": {"type": "string"}}, "required": ["frame", "reason"]}},
          propose_policy_change, write=True, intent=intent_change_order)
+def list_models(tools, a: dict) -> dict:
+    """The models this installation has and each cog's model now (``model.installed_models``): read only."""
+    from .model import installed_models
+
+    return installed_models(tools.bundle)
+
+
+register({"name": "list_models",
+          "description": "List the models this installation has, which a cog's profile can name: each installed Ollama model with its size, "
+                         "family and quantization, whether it reads pictures, and whether it runs locally or is one of Ollama's cloud models "
+                         "(hosted); the Claude models when hosted models are on; and which model each cog uses now. Check a model here before "
+                         "you propose, review or question one for a cog.",
+          "parameters": {"type": "object", "properties": {}}},
+         list_models, write=False)
 register({"name": "propose_cog_model",
-          "description": "Propose that a cog use a different model, as a policy proposal. The model must be one this hub can reach. An Ollama "
+          "description": "Propose that a cog use a different model, as a policy proposal. The model must be one this hub can reach (list_models). An Ollama "
                          "cloud model (a tag ending in :cloud or -cloud) runs on Ollama's servers, not this machine: it is hosted, refused "
                          "while hosted models are off. " + _OWNERS_DECIDE,
           "parameters": {"type": "object", "properties": {"cog": {"type": "string", "description": "the cog (default: you)"},

@@ -611,6 +611,72 @@ def resolve_model(model: str, refresh: bool = False) -> dict:
     return {"asked": model, "backend": "none", "served": "", "available": False, "leaves_machine": away, "note": why}
 
 
+def installed_models(bundle: dict | None = None, refresh: bool = False) -> dict:
+    """The models this installation has, as a cog is told them (the ``list_models`` tool, and the review of a change order
+    that changes a cog profile): read only, from what Ollama lists (``available_models``) and the release's cog profiles.
+
+    {"hosted_models": "on"|"off", "ollama": [{"model", "params", "family", "quantization", "size_gb", "reads_pictures",
+    "runs", "hosted", "available"}], "ollama_error", "claude": [...] (only while hosted models are on), "claude_note"
+    (while they are off), "cogs": [{"cog", "model", "available", "runs" or "note"}]}. A model is named in a cog profile
+    as its ``model`` value. One of Ollama's cloud models is hosted (it runs on Ollama's servers); nothing of it is on
+    this machine, so it has no size here."""
+    av = available_models(refresh)
+    hosted = hosted_allowed()
+    ollama = []
+    for m in av["ollama"]:
+        name, cloud = f"ollama/{m['name']}", bool(m.get("cloud"))
+        row = {"model": name, "params": m.get("params") or "", "family": m.get("family") or "", "quantization": m.get("quant") or ""}
+        if not cloud:
+            row["size_gb"] = m.get("size_gb") or 0
+        row.update({"reads_pictures": supports_images(name), "runs": f"hosted: {OFF_MACHINE}" if cloud else "local", "hosted": cloud,
+                    "available": not cloud or hosted})
+        if cloud and not hosted:
+            row["note"] = "not available while hosted models are off (HUBPROTO_HOSTED_MODELS)"
+        ollama.append(row)
+    out = {"hosted_models": "on" if hosted else "off", "ollama": ollama}
+    if av["ollama_error"]:
+        out["ollama_error"] = av["ollama_error"]
+    if hosted:
+        out["claude"] = [{"model": c, "reads_pictures": True, "runs": "hosted: the Anthropic API", "hosted": True, "available": av["anthropic_key"],
+                          **({} if av["anthropic_key"] else {"note": "needs an Anthropic key (ANTHROPIC_API_KEY), which is not set here"})}
+                         for c in CLAUDE_MODELS]
+    else:
+        out["claude_note"] = "no Claude model is offered: hosted models are switched off here (HUBPROTO_HOSTED_MODELS)"
+    cogs = []
+    for cog, prof in sorted(((bundle or {}).get("cogs") or {}).items()):
+        r = resolve_model(prof.get("model") or "")
+        row = {"cog": cog, "model": prof.get("model") or "", "available": r["available"]}
+        if r["available"]:
+            row["runs"] = f"hosted: {OFF_MACHINE}" if r["backend"] == "ollama-cloud" else ("hosted: the Anthropic API" if r["backend"] == "anthropic"
+                                                                                           else r["note"] if r["backend"] == "stand-in" else "local")
+        else:
+            row["note"] = r["note"]
+        cogs.append(row)
+    out["cogs"] = cogs
+    return out
+
+
+def installed_models_text(listing: dict) -> str:
+    """``installed_models`` in sentences, one line a model: what a reviewer of a cog-profile change is given."""
+    lines = []
+    for m in listing.get("ollama") or []:
+        what = ", ".join(x for x in (" ".join(y for y in (m.get("params"), m.get("family")) if y), m.get("quantization"),
+                                    f"{m['size_gb']} GB" if "size_gb" in m else "") if x)
+        lines.append(f"- {m['model']} ({what + '; ' if what else ''}{m['runs']}; {'reads pictures' if m['reads_pictures'] else 'reads text only'})"
+                     + (f": {m['note']}" if m.get("note") else ""))
+    if not listing.get("ollama"):
+        lines.append(f"- no Ollama model: {listing.get('ollama_error') or 'Ollama lists none'}")
+    elif listing.get("ollama_error"):
+        lines.append(f"- {listing['ollama_error']}")
+    for m in listing.get("claude") or []:
+        lines.append(f"- {m['model']} ({m['runs']}; reads pictures)" + (f": {m['note']}" if m.get("note") else ""))
+    if listing.get("claude_note"):
+        lines.append(f"- {listing['claude_note']}")
+    cogs = [f"- {c['cog']}: {c['model'] or 'no model'} (" + (c["runs"] if c["available"] else f"not available: {c['note']}") + ")"
+            for c in listing.get("cogs") or []]
+    return "\n".join(lines + (["Each cog's model in the release in force:"] + cogs if cogs else []))
+
+
 def cog_availability(bundle: dict, cog: str) -> tuple[bool, str]:
     """Whether a cog can be used now: it is bundled with its profile's model, and that model must answer."""
     prof = (bundle.get("cogs") or {}).get(cog)
