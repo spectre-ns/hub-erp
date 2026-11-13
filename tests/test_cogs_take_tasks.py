@@ -31,18 +31,22 @@ def test_a_task_filed_for_any_cog_waits_for_that_cog(released, cog):
 
 def test_the_cogs_group_gets_tasks_and_nothing_else(released):
     bundle = released.current_bundle()
-    granted = [r for r in bundle["permissions"] if r.get("subject") == "group:cogs"]
-    assert sorted((r["action"], r["object"], r.get("folder") or r.get("resource")) for r in granted) == sorted(
-        [("approve", "task", r.get("folder") or r.get("resource")) for r in granted if r["action"] == "approve"]
-        + [("read", r["object"], r.get("folder") or r.get("resource")) for r in granted if r["action"] == "read"])
-    assert {r["action"] for r in granted} == {"approve", "read"} and len(granted) == 2
+    granted = sorted((r["action"], r["object"], r.get("folder") or r.get("resource")) for r in bundle["permissions"]
+                     if r.get("subject") == "group:cogs")
+    assert granted == [("approve", "task", "folder:Tasks"), ("read", "*", "folder:Tasks")], granted
     # The auditor, now able to take a task, is not made staff: it still may not create a change order or a part.
     assert not authz.check(bundle, "auditor", "create", "change-order", "Quality/Changes")["allowed"]
     assert not authz.check(bundle, "auditor", "create", "part", "Inventory/Parts")["allowed"]
 
 
-def test_the_auditor_working_for_bob_may_draft_in_quality_audits(released):
-    """TASK-0002's audit plan: the auditor cog and bob (an internal auditor) may both create documents there."""
-    bundle = released.current_bundle()
-    for who in ("auditor", "bob"):
-        assert authz.check(bundle, who, "create", "document", "Quality/Audits")["allowed"], who
+def test_the_auditor_drafts_in_quality_audits_working_for_bob_and_not_for_dave(released, tmp_path):
+    """TASK-0002's audit plan: a cog writes only where it and the person it works for may (AgentTools.both_may). Bob is an
+    internal auditor, like the auditor cog; dave is not."""
+    from hubproto.agent import AgentStore, AgentTools
+
+    def tools(requester):
+        return AgentTools(released, "auditor", "run-test", "act", 5, AgentStore(tmp_path / requester), requester=requester)
+
+    assert tools("bob").both_may("create", "document", "Quality/Audits")["allowed"]
+    refused = tools("dave").both_may("create", "document", "Quality/Audits")
+    assert not refused["allowed"] and "dave, for whom you work, may not" in refused["why"]
