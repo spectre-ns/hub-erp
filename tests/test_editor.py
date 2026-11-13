@@ -218,6 +218,25 @@ def test_the_editor_page_offers_members_and_roles_as_mentions(shell, working_doc
     shell["hub"].dms.undo_checkout(working_doc["locator"], by="alice")
 
 
+def test_the_editor_never_saves_on_a_change_or_a_kept_comment(shell, working_doc, monkeypatch):
+    """Issue #67: the page saved two seconds after every change, so a pause in typing made a version and a cog came in
+    mid-sentence. A comment reaches the hub when the document is saved; the page saves only around a cog's answer."""
+    import re
+
+    monkeypatch.setenv("HUBPROTO_COLLABORA_URL", "http://editor.test:9980")
+    monkeypatch.setenv("HUBPROTO_WOPI_BASE", "http://hub.test:8080")
+    monkeypatch.setenv("HUBPROTO_COLLABORA_URLSRC", "http://editor.test:9980/browser/dist/cool.html?")
+    status, text = get(shell, "/edit/" + quote(working_doc["locator"], safe=":"), **{"as": "alice"})
+    assert status == 200
+    script = text[text.index("<script>(function(){var frame"):]
+    assert "Doc_ModifiedStatus" not in script, "a change alone never saves"
+    assert "Inserted_Comment" not in script, "a comment Collabora keeps (on Save, or when its box loses focus) is not sent"
+    # The saves for a cog's answer stay: after it answered live, and before the hub writes a pending answer into the file.
+    saves = [m.start() for m in re.finditer(r"MessageId:'Action_Save'", script)]
+    assert len(saves) == 2 and all(script.rfind("function poll", 0, i) != -1 for i in saves), "only in the answer path"
+    shell["hub"].dms.undo_checkout(working_doc["locator"], by="alice")
+
+
 def test_two_people_edit_the_same_document_together_and_the_last_out_releases_it(shell):
     hub = shell["hub"]
     content, mime = wopi.blank_document("docx")

@@ -77,8 +77,11 @@ New purpose.
     assert got[15]["at"] == 2 and got[15]["lines"] == ["| a | b |"]
 
 
-def test_plain_text_without_operations_is_an_insert_at_the_start():
-    assert ops("# Header\nSome text") == [{"op": "insert", "at": "start", "lines": ["# Header", "Some text"]}]
+def test_plain_text_without_operations_is_no_operation():
+    """Issue #68: words outside any '@@' are never content (they used to become an insert at the start)."""
+    assert ops("# Header\nSome text") == []
+    assert ops("I have written no operations for this change.\nThe request is incomplete.") == []
+    assert ops("A note first.\n@@ insert at end\nA new line.") == [{"op": "insert", "at": "end", "lines": ["A new line."]}]
 
 
 # ---------------------------------------------------------------- text documents
@@ -277,6 +280,33 @@ def test_a_comment_asking_for_a_deletion_removes_it_from_the_file(shell, monkeyp
     assert "Could not: delete “not in the document”" in body and len(msgs) == 1
     applied = hub.inbox.find(msgs[0]["id"])
     assert applied["applied_in"] and [r["ok"] for r in applied["edit_report"]] == [True, True, True, False]
+
+
+def test_a_cog_that_answers_an_edit_request_in_words_changes_nothing_and_its_words_are_the_reply(shell, monkeypatch):
+    """Issue #68 (DOC-0034): the cog declined in words and the hub wrote its 13 lines of explanation into the body."""
+    hub = shell["hub"]
+    doc = _doc(hub, title="Words, not operations")
+    before, v_before = hub.dms.content(doc["locator"])
+    words = ("I have written no operations for this change. The request is incomplete, and a model change is not mine to "
+             "make by editing the draft.\n**Why I cannot write the operations**\n1. The request does not say what to change.")
+    monkeypatch.setattr(hub, "model", FakeModel(words))
+    hub.send("carol", "carol", "Comment", "@quality-assistant please change this to qwen 14b or", record=doc["locator"])
+    after, v_after = hub.dms.content(doc["locator"])
+    assert after == before and v_after["version"] == v_before["version"], "nothing is written into the document"
+    [reply] = [m for m in hub.inbox.on_record(doc["locator"]) if m["from"] == "quality-assistant"]
+    assert reply["body"].startswith("I have written no operations for this change.") and "Done:" not in reply["body"]
+    assert not hub.inbox.find(reply["id"]).get("edit"), "no edit waits to be made, live or in the file"
+
+
+def test_operations_the_hub_cannot_read_change_nothing_and_the_reply_says_so(shell, monkeypatch):
+    hub = shell["hub"]
+    doc = _doc(hub, title="Unreadable operations")
+    before, v_before = hub.dms.content(doc["locator"])
+    monkeypatch.setattr(hub, "model", FakeModel("@@ replce: shall\n@@ wiht: must"))
+    hub.send("carol", "carol", "Comment", "@quality-assistant please change shall to must", record=doc["locator"])
+    assert hub.dms.content(doc["locator"]) == (before, v_before) or hub.dms.content(doc["locator"])[1]["version"] == v_before["version"]
+    [reply] = [m for m in hub.inbox.on_record(doc["locator"]) if m["from"] == "quality-assistant"]
+    assert reply["body"].startswith("I made no change: I could not read the operations I wrote") and not hub.inbox.find(reply["id"]).get("edit")
 
 
 def test_after_a_live_edit_the_hub_finishes_what_did_not_take(shell, monkeypatch):

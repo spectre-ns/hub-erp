@@ -84,8 +84,9 @@ def test_the_table_survives_the_docx_round_trip_as_a_word_table(released):
 # ---------------------------------------------------------------- who reads what
 def test_follows_and_required_reading_come_from_the_tables(released):
     b = bundle(released)
-    assert b["cogs"]["organization"]["follows"] == ["org-model", "quality-manual", "tasks-sop", "cog-profiles", "scopes"]
-    assert b["cogs"]["ap-reviewer"]["follows"] == ["org-model", "quality-manual", "tasks-sop", "finance-policy"]
+    assert b["cogs"]["organization"]["follows"] == ["org-model", "quality-manual", "tasks-sop", "cog-profiles", "scopes",
+                                                     "working-documents-sop"]
+    assert b["cogs"]["ap-reviewer"]["follows"] == ["org-model", "quality-manual", "tasks-sop", "finance-policy", "working-documents-sop"]
     alice = [r["frame"] for r in sc.required_reading(b, "alice")]
     assert alice[:3] == ["org-model", "quality-manual", "tasks-sop"] and "finance-policy" in alice and "capa-sop" in alice
     assert "audit-sop" not in alice and "it-sop" not in alice

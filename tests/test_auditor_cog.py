@@ -54,12 +54,17 @@ def test_the_auditor_cog_is_a_senior_cog_holding_only_the_internal_auditor_role(
     assert "audit-sop" in b["cogs"]["auditor"]["follows"]
     for folder in TOP:
         assert authz.check(b, "auditor", "read", "*", folder)["allowed"], f"an internal auditor reads {folder}"
-    # Every permission that reaches it comes through the role: a person holding internal-auditor has the same reach.
+    # Every permission that reaches it comes through the role (a person holding internal-auditor has the same reach),
+    # and through the cogs group only the tasks assigned to it (issue #73) and working documents (issue #74).
     perms = authz.permissions_of(b, "auditor")
-    assert perms and {p["via"] for p in perms} == {"role:internal-auditor"}, perms
+    assert perms and {p["via"] for p in perms} == {"role:internal-auditor", "group:cogs"}, perms
+    assert {(p["action"], p["resource"]) for p in perms if p["via"] == "group:cogs"} == {("approve", "folder:Tasks"), ("read", "folder:Tasks"),
+                                                                                 ("create", "folder:Quality/Working Documents"),
+                                                                                 ("read", "folder:Quality/Working Documents")}
     writes = sorted({(p["action"], p["object"], p["resource"]) for p in perms if p["action"] != "read"})
-    assert writes == [("approve", "audit", "folder:Quality/Audits"), ("create", "audit", "folder:Quality/Audits"),
-                      ("create", "document", "folder:Quality/Audits")], writes
+    assert writes == [("approve", "audit", "folder:Quality/Audits"), ("approve", "task", "folder:Tasks"),
+                      ("create", "audit", "folder:Quality/Audits"), ("create", "document", "folder:Quality/Audits"),
+                      ("create", "document", "folder:Quality/Working Documents")], writes
     for action, obj, folder in (("approve", "bill", "Finance/Payables"), ("create", "nonconformance", "Quality/Nonconformances"),
                                 ("comment", "*", "Quality"), ("approve", "document", "Policy"), ("create", "change-order", "Quality/Changes"),
                                 ("update", "stock-item", "Inventory/Stock")):

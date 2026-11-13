@@ -18,8 +18,8 @@ A **Frame** is the text of one SOP, work instruction or policy as the hub compil
 scope, maintainer, what it inherits, the ISO clauses it covers) and Markdown text (hubproto/frames.py). Once the SOPs
 are documents (7.8), which a new hub does at its first release, the Frame is compiled from the controlled document in
 force, not from a file. The example company has an organization model, the cog profiles, the scopes, four personas, a
-finance policy, a purchasing policy, an inventory policy, a design-control SOP, the ISO 9001 quality manual, twelve ISO
-9001 SOPs (the IT SOP among them), and eight work instructions: 32 Frames in the release. A 33rd, the reference guide on
+finance policy, a purchasing policy, an inventory policy, a design-control SOP, the ISO 9001 quality manual, thirteen ISO
+9001 SOPs (the IT SOP and the working-documents SOP among them), and eight work instructions: 33 Frames in the release. A 34th, the reference guide on
 writing Frames, is read by people and is in no release (checked by running the code).
 
 <!-- figure: c07-frame -->
@@ -383,8 +383,10 @@ one marked, and a **Next:** line saying what to do.
 | approved | **Approved**: release under way | Approved |
 | released | **Released**: in force | Released |
 
-A rejected Gate sends the change order back to revising ("*name* rejected its approval: ... It is back to revising"). A
-Gate nobody can take leaves it in state Failed, back at revising.
+A rejected Gate closes the change order: it stays **Rejected**, with who rejected it, why and when, and nothing more is
+done with it ("Rejected. *name* rejected its approval: ... It is closed"). The revisions it carried are withdrawn, so
+another change order can revise those SOPs; to try again, prepare a new change order (hubproto/changecontrol.py,
+`sync`). A Gate nobody can take leaves it in state Failed, back at revising.
 
 <!-- figure: c07-co-stage -->
 
@@ -566,6 +568,12 @@ valid and answers every removed status that has items; and the IT SOP's validati
   **independent approver**: a person who contributed nothing and approved every item of its delta. Until then they are
   still routed the Gate but refused at signing, with the reason. This is the IT SOP's "whoever made a direct
   configuration change on a change-order is not its only approver".
+* These rules are about approving. Whoever prepared a change order or contributed to it may still **reject** it at a
+  person's Gate routed to them, with a reason (hubproto/runner.py, `maker_may_reject`); every other exclusion still
+  holds for them (a Gate's own "not", another segregation-of-duties sentence). A rejection approves nothing and puts
+  nothing in force: in the change-order process it closes the change order as rejected (a workflow of your own may
+  send it elsewhere on its rejection). The author of a revision is never routed the Gate,
+  and a committee's Gate keeps its own rules.
 * A contributor does not review it, and a reviewer with results is not removed.
 * A person signs, never a cog: a cog may review a change order and say what it found, never approve it, and a rule
   that would let a cog sign one stops it ("a person signs a change order").

@@ -139,6 +139,32 @@ def test_a_direct_change_that_cannot_be_written_is_a_question(hub):
     assert "stated" not in item and not item["round_trip"]["ok"], "the next round tries again"
 
 
+def test_a_draft_open_in_the_editor_says_who_has_it_and_what_to_do(hub):
+    # Issue #66: bob followed the link to the carried draft and opened it in the editor, then requested a round.
+    co = change_order(hub, raise_limit(hub))
+    draft = eco.add_sop(hub, co["number"], "finance-policy", by="bob")
+    hub.dms.checkout(draft["locator"], by="bob", via="editor")
+    [q] = draft_direct_changes(hub, co["number"], "bob")
+    why = f"{draft['number']} is checked out by bob (open in the editor): finish editing it, then request review again"
+    assert why in q["text"], f"the question says why and what to do: {q['text']}"
+    assert "checked-out:" not in q["text"] + q["detail"], "never a guard's code"
+    [item] = hub.kernel.get(co["locator"])["fields"]["direct_changes"]
+    assert item["round_trip"]["detail"] == why and "stated" not in item
+    # Once bob has finished editing, the next round writes the change.
+    hub.dms.leave_editing(draft["locator"], by="bob")
+    assert draft_direct_changes(hub, co["number"], "bob") == []
+    assert NEW in sopdocs.frame_text(hub, draft_of(hub, co))
+
+
+def test_a_draft_checked_out_by_hand_says_how_to_release_it(hub):
+    co = change_order(hub, raise_limit(hub))
+    draft = eco.add_sop(hub, co["number"], "finance-policy", by="bob")
+    hub.dms.checkout(draft["locator"], by="carol")
+    [q] = draft_direct_changes(hub, co["number"], "bob")
+    assert q["text"].endswith(f"because {draft['number']} is checked out by carol: check it in or undo the check-out, "
+                              "then request review again"), q["text"]
+
+
 def test_prose_that_states_more_than_the_change_is_a_question_and_the_drafter_is_credited(hub):
     """governance M5: the drafted revision must differ from its base by exactly the direct change. A rule the drafter
     writes besides it (steered by the section's text, say) is a round-trip question, and it is the qa-manager's, never

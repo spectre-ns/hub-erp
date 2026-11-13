@@ -604,6 +604,11 @@ def on_run_completed(hub, state: dict, rec: dict | None) -> None:
     change order carries no longer compiles anything: the delta is compiled in its review rounds.)"""
     if rec is None:
         return
+    if rec["type"] == "change-order" and rec["state"] in ("rejected", "cancelled"):
+        from . import changecontrol
+
+        changecontrol.sync(hub, rec["locator"])  # a rejected or cancelled change order closes at once: its drafts are withdrawn (#65)
+        return
     if rec["type"] == "change-order" and rec["state"] == "approved":
         from . import changecontrol
 

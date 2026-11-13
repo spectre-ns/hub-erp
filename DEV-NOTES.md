@@ -443,7 +443,11 @@ From any status except done to Cancelled ("Cancel"): the quality manager.
   is never sent as local; when Ollama does not say where a model without a cloud tag runs, nothing is sent. A proposal
   that names a cloud model for a cog (the cog page, a new cog, the `propose_cog_model` tool) says so in its change order
   or draft note and in a notice to every policy owner. The SOP reader's largest-local-model fallback and a new cog's
-  default model never pick a cloud model. Tests use a fake Ollama for `/api/show` and move `model._clock` for the
+  default model never pick a cloud model. A cog asks which models this installation has with the `list_models` look
+  tool (`model.installed_models`: each Ollama model's size, family, quantization, whether it reads pictures and whether
+  it is hosted; the Claude models only while hosted models are on; each cog's model now, issue #79); the review of a
+  change order that changes a cog profile is given the same listing in its brief (`changecontrol.brief`), as a review
+  asks its model no tools. Tests use a fake Ollama for `/api/show` and move `model._clock` for the
   lifetimes (`tests/test_ollama_cloud.py`).
 
 ## Record types (`config/record-types.json`)

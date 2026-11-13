@@ -3,7 +3,7 @@ type: frame [0.2]
 name: org-model
 description: Roles, members (people and cogs) and folders of Example Instruments Ltd.
 visibility: internal
-version: "1.8.0"
+version: "1.9.0"
 scope: company
 maintainer: operations
 ---
@@ -63,12 +63,14 @@ reads no SOP into rules and owns no process but the audit.
 ## Groups
 - senior-cogs: senior-organization and senior-qa-manager
 - junior-cogs: ap-reviewer, doc-reviewer, quality-assistant, qa-manager, organization, it-admin and management
+- cogs: ap-reviewer, doc-reviewer, quality-assistant, qa-manager, organization, it-admin, management, senior-organization, senior-qa-manager and auditor
 
 ## Folders
 - Finance
 - Finance/Payables
 - Quality
 - Quality/Controlled Documents
+- Quality/Working Documents
 - Quality/Training
 - Quality/Nonconformances
 - Quality/CAPA

@@ -97,6 +97,7 @@ def test_a_cog_listed_in_no_table_is_warned_that_it_will_be_routed_nothing(shell
     assert not [f for f in p["findings"] if "listed in no Roles" in f["detail"]], [f["detail"] for f in p["findings"] if "listed in no Roles" in f["detail"]]
     from hubproto.guards import consistency_guard
 
-    rules = [r for r in p["rules"] if not (r["kind"] == "responsibility" and r["who"] == "cog:organization")]
+    # Every cog is listed through the cogs group's row in the tasks SOP (issue #73): take that row out too.
+    rules = [r for r in p["rules"] if not (r["kind"] == "responsibility" and r["who"] in ("cog:organization", "group:cogs"))]
     found = [f.detail for f in consistency_guard(rules, set(hub.registry.ids()))]
     assert any("cog organization is listed in no Roles and responsibilities table" in d for d in found)
