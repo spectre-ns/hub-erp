@@ -68,6 +68,9 @@ WRITE_TOOLS = {"comment", "message", "start_process", "take_turn", "review_docum
 MODES = ("derived", "confirmed", "read")
 # Its own step: the turn at a Gate routed to it (bound by its approval criteria), a step assigned to it.
 STEP_TOOLS = {"take_turn", "complete_step", "hand_back"}
+# Writes that only tell people something: they are not the work of a step, so they neither count as a change the cog
+# tried nor as one that went through when it completes a step assigned to it (``AgentTools.nothing_done``).
+WORDS_TOOLS = {"comment", "message"}
 # Tools whose result is text the cog wrote: the document keeps what produced it (hubproto.cogs.provenance).
 DRAFT_TOOLS = {"draft_document", "edit_document", "create_document", "apply_document_ops"}
 
@@ -363,7 +366,9 @@ class AgentTools(RecordTools):
                 res = {"ok": True}
             else:
                 res = {"ok": True, "note": "the run is already finished; stop now"}
-        elif write and self.actions >= self.max_actions:
+        elif name == "complete_step" and (why := self.nothing_done(str(args.get("number") or "the step"))):
+            res = {"error": why}
+        elif write and self.actions >= self.max_actions and name != "hand_back":  # giving the work back is never out of budget
             res = {"error": f"the run's budget of {self.max_actions} actions is used up; finish and report what is left"}
         elif write and (decision := self.decide(name, args))["mode"] == "refuse":
             res = {"error": decision["why"] if decision.get("plain") else
@@ -395,6 +400,21 @@ class AgentTools(RecordTools):
             ev["decided"] = {"mode": decision["mode"], "why": decision["why"][:300], "intent": decision.get("intent")}
         self.store.append(self.run_id, ev)
         return res
+
+    def nothing_done(self, number: str) -> str:
+        """Empty unless this run tried to change something and every change was refused (the run's Track, the same record
+        its "Not done (the hub refused)" summary is built from): then why the cog may not complete the step assigned to
+        it. A step that needs no change (look and say) can still be completed; comments and messages are not the work."""
+        tried = [e for e in self.store.load(self.run_id) if e.get("type") == "tool" and e.get("write")
+                 and e.get("tool") not in STEP_TOOLS | WORDS_TOOLS]
+        # A change only proposed (waiting for a person to confirm it) has not gone through either: the step is not done.
+        if not tried or any(e.get("ok") and (e.get("decided") or {}).get("mode") != "propose" for e in tried):
+            return ""
+        names = sorted({e["tool"] for e in tried})
+        proposed = any(e.get("ok") for e in tried)
+        return (f"nothing was done: every change you tried was {'refused or only proposed' if proposed else 'refused'} "
+                f"({', '.join(names)}), so {number} is not complete; hand it back with hand_back, saying why you could not do it"
+                + (" or what waits for a person to confirm" if proposed else ""))
 
     def _record_draft(self, name: str, args: dict, res: dict) -> None:
         """A document the cog wrote or changed keeps what produced the text: its model, persona and the release."""
