@@ -146,7 +146,7 @@ def test_a_group_by_role_follows_role_changes_and_carries_permissions(tmp_path):
     b = bundle(hub)
     assert group_members(b, "design-reviewers") == ["kim", "doc-reviewer"], "listed first, then everyone holding the role"
     assert b["groups"]["design-reviewers"]["resolved"] == ["kim", "doc-reviewer"]
-    assert groups_of(b, "doc-reviewer") == ["design-reviewers", "junior-cogs"]
+    assert groups_of(b, "doc-reviewer") == ["cogs", "design-reviewers", "junior-cogs"]
     # The plural "Leads" names the leads group (no such role): the permission is the group's, and "Why?" cites the group.
     perm = next(r for r in b["permissions"] if r["source"]["text"] == "Leads may approve gizmos in Designs.")
     assert perm["subject"] == "group:leads"
