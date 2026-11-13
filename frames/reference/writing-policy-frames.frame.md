@@ -19,7 +19,9 @@ reported to the author as unparsed.
 A plural role, "may" or "may not", an action, an object, "in", a folder.
 Example: Finance clerks may create bills in Finance/Payables.
 Reading a folder: Controllers may read Finance.
-Commenting: Staff may comment on anything in Quality.
+Commenting: Staff may comment on anything in Quality. Whoever may read a
+record may comment on it, so such a sentence is needed only to say more
+than reading does; "may not comment" and "when a person confirms" narrow it.
 One cog by name: The it-admin cog may not approve documents in Policy.
 A cog's action a person confirms first: The stores cog may move stock
 items in Inventory/Stock when a storekeeper confirms. ("when a person

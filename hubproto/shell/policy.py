@@ -298,7 +298,7 @@ proposal <code>{esc(meta.get('proposal_id') or '-')}</code>{(' reviewed by ' + e
         obj_words = {o: ("anything" if o == "*" else type_name(next((n for n, t in self.hub.kernel.types.items() if t.get("object") == o), o)).lower()) for o in objects}
         body = f"""<h1>Why?</h1><p class="why">Ask whether a person may act, and see the policy sentence behind the answer.</p><form method="get" action="/why" class="card">{hidden_as(user)}
 <div class="fields"><label class="f"><span>Who</span><select name="principal">{''.join(f'<option value="{esc(m)}"{" selected" if m == principal else ""}>{esc(m)}</option>' for m in members)}</select></label>
-<label class="f"><span>Action</span><select name="action">{''.join(f'<option{" selected" if a == action else ""}>{a}</option>' for a in ("create", "read", "approve", "update", "delete"))}</select></label>
+<label class="f"><span>Action</span><select name="action">{''.join(f'<option{" selected" if a == action else ""}>{a}</option>' for a in ("create", "read", "comment", "approve", "update", "delete"))}</select></label>
 <label class="f"><span>What</span><select name="object">{''.join(f'<option value="{esc(o)}"{" selected" if o == obj else ""}>{esc(obj_words[o])}</option>' for o in objects)}</select></label>
 <label class="f"><span>Where</span><select name="folder">{''.join(f'<option value="{esc(f)}"{" selected" if f == folder else ""}>{esc(f)}</option>' for f in folders)}</select></label></div>
 <div class="actions"><button>Ask</button></div></form>

@@ -147,7 +147,8 @@ def test_autonomy_is_derived_per_action(released):
     narrowed = authz.autonomy(b, "doc-reviewer", "create", "document", "Quality/Controlled Documents")
     assert narrowed["mode"] == "propose" and narrowed["confirmer"] == "document-controller"
     assert not authz.check(b, "doc-reviewer", "comment", "nonconformance", "Quality/Nonconformances")["allowed"], "a confirm sentence is no allow"
-    refused = authz.autonomy(b, "organization", "comment", "task", "Tasks")
+    # It may not read Finance, so it may not comment there (whoever may read a record may comment on it, issue #89).
+    refused = authz.autonomy(b, "organization", "comment", "bill", "Finance/Payables")
     assert refused["mode"] == "refuse" and "no SOP lets organization" in refused["why"]
     denied = authz.autonomy(b, "it-admin", "approve", "document", "Policy")
     assert denied["mode"] == "refuse" and "The it-admin cog may not approve documents in Policy." in denied["why"]
@@ -162,7 +163,7 @@ def test_the_harness_acts_proposes_or_refuses_each_write(released):
     out = doc.execute("comment", {"number": ncr["number"], "text": "Shall I?"})
     assert out["proposed"] and "a person confirms it before it happens" in out["note"], "propose"
     org = tools(hub, "organization")
-    out = org.execute("message", {"to": "carol", "body": "hello"})
+    out = org.execute("propose_policy_change", {"frame": "finance-policy"})  # it reads Tasks (so may message there); no change orders
     assert "describe what should be done instead" in out["error"] and "organization may not do this on its own" in out["error"], "refuse"
     it = tools(hub, "it-admin", requester="bob")
     assert it.decide("propose_policy_change", {"frame": "finance-policy"})["mode"] == "act", "system administrators raise change orders"

@@ -249,6 +249,8 @@ Only inside these sections: `## Roles`, `## Members`, `## Groups`, `## Folders`,
                     Finance clerks may not approve bills in Finance/Payables.
                     Controllers may read Finance.
                     Staff may comment on anything in Quality.                 (anything = every object)
+                                                                (reading gives commenting: whoever may read a record may comment on it
+                                                                 unless a deny or a confirm-first sentence about commenting reaches them)
                     The it-admin cog may not approve documents in Policy.     (a permission naming one cog: subject cog:it-admin)
                     The quality-board group may read Quality.                 (a permission for a group: subject group:quality-board)
                     Administrators may read Policy.                           (a plural that names a group, not a role, is the group's)
