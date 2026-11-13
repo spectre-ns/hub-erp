@@ -195,8 +195,9 @@ hubproto/mentions.py).
 2. When the comment says what you want, save the document: press Ctrl+S, or **Finish editing** (the editor also
    saves on its own from time to time). The comment is picked up then: it becomes a message on the document's chatter
    from you and goes into the cog's queue, and saving does not wait for the cog. The editor bar shows which cog is
-   working on it. Pressing **Save** on the comment keeps it in the document but does not send it yet, so the cog never
-   answers a comment you are still writing (the editor also keeps a comment when you leave its box).
+   working on it. Pressing **Save** on the comment keeps it in the document but does not send it yet. The editor also
+   keeps a comment when you leave its box, and a kept comment goes out with the next save of any kind, the editor's
+   own included: finish a comment before you leave its box, or delete it.
 3. The cog answers in the comment thread:
    * a **question** gets an answer in a few sentences, from its procedures and the document;
    * a **review** gets its findings, filed as an evidence document;
