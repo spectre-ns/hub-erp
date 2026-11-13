@@ -65,7 +65,7 @@ switches it on, as an installation change recorded under this SOP (who, when,
 why, and the provider, which is evaluated and approved as a supplier under the
 supplier evaluation SOP), and only by the cogs bundled with it: by the senior
 cogs for compilation, reading the SOPs into rules on the compile-frame
-committee, and by any of them for the tasks assigned to it (an in-depth report,
+committee, and by any of them for the tasks assigned to that cog (an in-depth report,
 an analysis), working for the person who filed the task. Other cogs keep their
 bundled models. What may leave the hub to the provider is the SOP and policy
 text being compiled, its diff against the release in force, the rules in force

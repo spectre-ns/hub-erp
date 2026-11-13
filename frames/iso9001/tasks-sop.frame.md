@@ -1,7 +1,7 @@
 ---
 type: frame [0.2]
 name: tasks-sop
-description: "Tasks: any member of staff files a task for a person; it waits for that person and closes as done when they complete it. Used for quality objectives, management review actions and improvement suggestions."
+description: "Tasks: any member of staff files a task for a person or a cog; it waits for them and closes as done when they complete it (a cog that cannot hands it back). Used for quality objectives, management review actions and improvement suggestions."
 visibility: internal
 version: "0.1.2"
 scope: company
