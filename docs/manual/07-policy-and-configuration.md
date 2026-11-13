@@ -1030,7 +1030,7 @@ itself:
 * **Access management** through the organization model, by change order with a reason; "a cog is given only the roles
   its work needs and never a role that approves policy"; a quarterly access check (access review interval 90 days).
 * **Risk-based validation**, "in the manner of computer software assurance": the classes of 7.4. The example
-  company's IT SOP asks, for now, only **the review of the delta** for every class ("High-risk changes need the review
+  company's IT SOP asks only **the review of the delta** for every class ("High-risk changes need the review
   of the delta."), so no change order waits for test evidence; evidence may still be attached, and a failed test still
   stops it. An IT SOP that asks for more is enforced the same way: a high-risk item
   needs a **test record** (a scripted check: what was run, expected, what happened, pass or fail; or an attached

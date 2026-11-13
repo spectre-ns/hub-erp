@@ -94,6 +94,21 @@ def test_the_example_it_sop_asks_for_no_test_evidence(cc_hub):
     assert validation.requirements(hub, co["number"])[0].startswith("a test of"), "a failed test still stops it"
 
 
+def test_an_it_sop_that_asks_for_evidence_is_compiled_and_released_into_the_needs(released):
+    """The needs come from the sentences: an IT SOP that says high-risk changes need a test record and medium-risk ones a
+    test note is read, released and enforced as such."""
+    edit_frame(released, "it-sop", "High-risk changes need the review of the delta.\nMedium-risk changes need the review of the delta.",
+               "High-risk changes need a test record.\nMedium-risk changes need a test note.")
+    p = released.compile()
+    assert any(c["rule"]["kind"] == "validation_need" for c in p["changes"])
+    for r in ("bob", "carol"):
+        released.review(p["id"], r, approve_all=True)
+    released.release(p["id"], "bob")
+    pol = validation.policy(released)
+    assert pol["source"] == "release" and pol["needs"] == {"high": "test-record", "medium": "test-note", "low": "review"}
+    assert validation.annotate([{"id": "x", "op": "add", "rule": {"kind": "permission"}}], pol)[0]["validation"] == "test-record"
+
+
 def test_without_validation_sentences_the_defaults_apply_and_say_so(released):
     text = released.frames.get("it-sop").path.read_text()
     head, rest = text.split("## Validation\n", 1)

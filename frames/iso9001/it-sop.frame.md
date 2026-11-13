@@ -48,14 +48,14 @@ delta is classed: high risk when it changes who may approve, sign or see what
 (permissions, approval criteria, segregation of duties, members and roles, a
 cog's model or persona), medium when it changes how work flows (routing, due
 dates, processes, record types and required fields), low when it changes
-presentation only (form layouts, wording). For now every class is validated by
-the review of the delta itself: no test record or test note is required before
+presentation only (form layouts, wording). Every class is validated by the
+review of the delta itself: no test record or test note is required before
 approval. Evidence may still be attached to the change order and is kept with
 it: a test record (a document of type test-evidence, or a test record entered
 on the change order: what was run, what was expected, what happened, pass or
 fail) or a test note. A failed test stops the change order. The classes and
-what each needs are stated in the Validation section
-below; a change to them is a change order like any other.
+what each needs are stated in the Validation section below; a change to them is
+a change order like any other.
 
 Hosted models. The cogs run on the local models the installation provides. A
 hosted model (Claude, from Anthropic) is used only when a system administrator
