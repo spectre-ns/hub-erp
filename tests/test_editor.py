@@ -218,9 +218,9 @@ def test_the_editor_page_offers_members_and_roles_as_mentions(shell, working_doc
     shell["hub"].dms.undo_checkout(working_doc["locator"], by="alice")
 
 
-def test_the_editor_saves_when_a_comment_is_saved_and_never_on_every_change(shell, working_doc, monkeypatch):
+def test_the_editor_never_saves_on_a_change_or_a_kept_comment(shell, working_doc, monkeypatch):
     """Issue #67: the page saved two seconds after every change, so a pause in typing made a version and a cog came in
-    mid-sentence. It saves when Collabora says a comment was saved (Inserted_Comment), and after a cog answers."""
+    mid-sentence. A comment reaches the hub when the document is saved; the page saves only around a cog's answer."""
     import re
 
     monkeypatch.setenv("HUBPROTO_COLLABORA_URL", "http://editor.test:9980")
@@ -230,10 +230,10 @@ def test_the_editor_saves_when_a_comment_is_saved_and_never_on_every_change(shel
     assert status == 200
     script = text[text.index("<script>(function(){var frame"):]
     assert "Doc_ModifiedStatus" not in script, "a change alone never saves"
-    on_comment = re.search(r"if\(m\.MessageId==='Inserted_Comment'\)\{(.*?)\}\}\);", script, re.S)
-    assert on_comment and "MessageId:'Action_Save'" in on_comment.group(1), "a saved comment saves the document"
+    assert "Inserted_Comment" not in script, "a comment Collabora keeps (on Save, or when its box loses focus) is not sent"
     # The saves for a cog's answer stay: after it answered live, and before the hub writes a pending answer into the file.
-    assert script.count("MessageId:'Action_Save'") == 3
+    saves = [m.start() for m in re.finditer(r"MessageId:'Action_Save'", script)]
+    assert len(saves) == 2 and all(script.rfind("function poll", 0, i) != -1 for i in saves), "only in the answer path"
     shell["hub"].dms.undo_checkout(working_doc["locator"], by="alice")
 
 

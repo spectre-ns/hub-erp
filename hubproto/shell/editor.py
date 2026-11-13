@@ -77,9 +77,10 @@ class EditorMixin:
         body = bar + f'<iframe class="editor" id="editor" src="{esc(frame)}" title="{esc(title)} in the editor" allow="clipboard-read; clipboard-write"></iframe>'
         # @mentions inside the editor: Collabora asks the host page for suggestions (UI_Mention) and the page answers
         # (Action_Mention) with the members and roles of the release; a chosen name is inserted as "@name".
-        # A comment reaches the hub when it is saved (issue #67): Collabora says so (Inserted_Comment, on Save or Reply,
-        # and when it keeps a comment someone left the box of), and the page then saves the document. It never saves on
-        # every change: that made a version of every pause in typing and brought a cog in mid-sentence.
+        # A comment reaches the hub when the document is saved (issue #67): Ctrl+S, Finish editing or the editor's own
+        # periodic save. The page never saves on a change, nor when Collabora keeps a comment: Collabora keeps a draft
+        # as saved when its box loses focus, and tells the page the same as for Save, so either would bring a cog in
+        # mid-sentence (and saving on every change made a version of every pause in typing).
         bundle = self.bundle or {}
         public = (os.environ.get("HUBPROTO_PUBLIC_URL") or "").rstrip("/")
         people = [{"username": n, "profile": f"{public}/user/{n}", "kind": m.get("type", "person")} for n, m in sorted((bundle.get("members") or {}).items())]
@@ -98,7 +99,7 @@ if(m.MessageId==='UI_Mention'){{var v=m.Values||{{}};if(v.type==='autocomplete')
 var out=list.filter(function(x){{return x.username.toLowerCase().indexOf(q)===0}}).slice(0,10).map(function(x){{return {{username:x.username,profile:x.profile}}}});
 post({{MessageId:'Action_Mention',SendTime:Date.now(),Values:{{list:out}}}})}}}}
 if(m.MessageId==='Action_Save_Resp'){{if(window.__applyAfterSave){{window.__applyAfterSave=false;applyReplies()}}}}
-if(m.MessageId==='Inserted_Comment'){{clearTimeout(window.__saveSoon);window.__saveSoon=setTimeout(function(){{post({{MessageId:'Action_Save',Values:{{DontTerminateEdit:true,DontSaveIfUnmodified:true,Notify:true}}}})}},300)}}}});
+}});
 var repliesUrl={json.dumps(href("/editor-replies/" + quote(rec["locator"], safe=":"), user))};var applyUrl={json.dumps(href("/apply-replies", user))};var loc={json.dumps(rec["locator"])};var busy=false;var loadedVersion={len(self.hub.dms.versions(rec["locator"]))};
 function reloadFrame(why){{var s=document.getElementById('editstatus');if(s)s.textContent=why+'; reloading…';loadedVersion=1e9;frame.src=frame.src.replace(/&reload=\d+/,'')+'&reload='+Date.now();setTimeout(function(){{fetch(repliesUrl).then(function(r){{return r.json()}}).then(function(j){{loadedVersion=j.version;busy=false}})}},3000)}}
 function applyReplies(){{var fd=new FormData();fd.append('as',{json.dumps(user)});fd.append('doc',loc);fetch(applyUrl,{{method:'POST',body:fd}}).then(function(r){{return r.json()}}).then(function(j){{busy=false;if(j.applied>0){{var s=document.getElementById('editstatus');if(s)s.textContent='Replies from '+j.by.join(', ')+' written into the document; reloading…';frame.src=frame.src.replace(/&reload=\d+/,'')+'&reload='+Date.now()}}}}).catch(function(){{busy=false}})}}
