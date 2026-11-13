@@ -66,9 +66,13 @@ def test_the_auditor_cog_is_a_senior_cog_holding_only_the_internal_auditor_role(
                       ("create", "audit", "folder:Quality/Audits"), ("create", "document", "folder:Quality/Audits"),
                       ("create", "document", "folder:Quality/Working Documents")], writes
     for action, obj, folder in (("approve", "bill", "Finance/Payables"), ("create", "nonconformance", "Quality/Nonconformances"),
-                                ("comment", "*", "Quality"), ("approve", "document", "Policy"), ("create", "change-order", "Quality/Changes"),
+                                ("approve", "document", "Policy"), ("create", "change-order", "Quality/Changes"),
                                 ("update", "stock-item", "Inventory/Stock")):
         assert not authz.check(b, "auditor", action, obj, folder)["allowed"], f"the auditor may not {action} {obj} in {folder}"
+    # It comments where it reads, as anyone does (issue #89), and from nothing but its reading: no sentence gives it more.
+    for folder in TOP:
+        d = authz.check(b, "auditor", "comment", "*", folder)
+        assert d["allowed"] and d.get("implied") == "read", (folder, d["why"])
     assert not [c for c in b["approval_criteria"] if c["approver"] == "cog:auditor"], "it signs nothing within criteria"
 
 

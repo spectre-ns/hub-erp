@@ -134,7 +134,9 @@ hubproto/agent_inventory.py):
   permission, find parts and a part's stock.
 * **Acting** (where the SOPs let it): comment, message, start a process (the hub checks it may, and that the person it
   works for may), take its turn, complete a step, hand back, draft a document, review a document, edit a document,
-  create a record, update fields (never fields the hub manages), move, assign, link, change an item's state where no
+  create a record, update fields (never fields the hub manages), move, assign, link two records it may read (as it
+  comments: with concerns, references, caused, affects and the like; never a link the hub's own steps make and act on,
+  such as a change order's drafts, a revision, an attachment or a stock lot's history), change an item's state where no
   signature is needed, create a task, delegate to another cog, and the stock tools (chapter 4.9). Approving, making a
   document effective and making it obsolete happen only through the item's process.
 * **Configuration**: a cog's configuration tools record their change as a direct change on a change order, like

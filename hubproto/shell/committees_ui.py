@@ -188,17 +188,20 @@ class CommitteesMixin:
         if not perms:
             return "<p class='muted'>No permission sentence names it, one of its roles or one of its groups.</p>"
         rows = []
-        for r in perms:
+        for r in perms + authz.implied_comments(bundle, name):
             kind, _, who = str(r.get("via") or "").partition(":")
             via = {"role": f"its role {who.replace('-', ' ')}", "group": f"the {who} group", "cog": "its own name", "person": "its own name"}.get(kind, r.get("via") or "")
+            if r.get("implied_by"):  # whoever may read a record may comment on it: the read sentence is where it comes from
+                via += f"; it may read {str(r.get('resource') or '').partition(':')[2]}: {authz.IMPLIED}"
             eff = {"allow": chip("acts", "ok"), "propose": chip("proposes: a person confirms", "warn"), "deny": chip("may not", "crit")}.get(r.get("effect"), chip(r.get("effect")))
             try:
-                words = sentence({k: v for k, v in r.items() if k != "via"} | {"kind": "permission"}, bundle.get("processes") or {})
+                words = sentence({k: v for k, v in r.items() if k not in ("via", "implied_by")} | {"kind": "permission"}, bundle.get("processes") or {})
             except Exception:
                 words = (r.get("source") or {}).get("text") or ""
             rows.append([esc(words), f"<span style='white-space:nowrap'>{eff}</span>", esc(via), self._rule_link(r.get("source")) if r.get("source") else ""])
-        return ("<p class='why'>Every permission that reaches it, and what it comes through. A widening of any of these needs both policy "
-                "owners.</p>" + table(["Permission", "", "Through", "Stated in"], rows))
+        return ("<p class='why'>Every permission that reaches it, and what it comes through. Whoever may read a record may comment on it, "
+                "so each folder it reads it may comment in too, unless a sentence about commenting there says otherwise. A widening of any of "
+                "these needs both policy owners.</p>" + table(["Permission", "", "Through", "Stated in"], rows))
 
     def _member_committees_html(self, name: str) -> str:
         """The committees a member sits on, where each decides (workflow gates), and whether a cog member can vote there

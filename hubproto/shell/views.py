@@ -603,7 +603,8 @@ class ViewsMixin:
             confirms = [r for r in bundle.get("permissions") or [] if r.get("effect") == "propose" and r.get("subject") in
                         ({"cog:" + name} | {"role:" + x for x in m.get("roles") or []})]
             acts = ("<p>Derived action by action from the SOPs: it <b>acts</b> where a permission for it or its roles allows it, or the step is "
-                    "its own; it <b>proposes</b> where an SOP says a person confirms; anything else it only reads, and says what should be done.</p>"
+                    "its own, and comments wherever it may read (whoever may read a record may comment on it); it <b>proposes</b> where an SOP "
+                    "says a person confirms; anything else it only reads, and says what should be done.</p>"
                     + ("<ul>" + "".join(f"<li>{esc(r['source']['text'])} <span class='why'>{self._rule_link(r['source'])}</span></li>" for r in confirms) + "</ul>"
                        if confirms else ""))
             profile = [("About", esc(prof.get("about") or "-")),
@@ -786,7 +787,11 @@ class ViewsMixin:
             items += (f'<li class="kind-{kind}">{av}<div><div class="tl-head"><b>{name_html}</b><span class="kind-chip">{icon(ic)}{label}</span>'
                       f'<time datetime="{esc(at)}">{esc(when(at))}</time></div><div class="tl-body">{html_}</div></div></li>')
         composer = ""
-        if with_composer and self._is_member() and not self._viewing_cog():
+        may_comment = self._can_comment(rec) if with_composer and self._is_member() and not self._viewing_cog() else {"allowed": True}
+        if not may_comment["allowed"]:
+            obj = (self.hub.kernel.types.get(rec["type"]) or {}).get("object") or rec["type"]
+            composer = f"<p class='why' role='note'>You may not comment on {esc(rec['number'])}: {self._why_html(may_comment, 'comment', obj, rec['folder'])}</p>"
+        elif with_composer and self._is_member() and not self._viewing_cog():
             people = [(p, p) for p in self._people() if p != user]
             cogs = [(p, f"{p} (cog)") for p, mm in sorted(bundle["members"].items()) if mm["type"] == "cog"]
             owner = _owner(rec)

@@ -393,13 +393,15 @@ def friendly(message: str) -> str:
 
 
 def who_may(bundle: dict, action: str, obj: str, folder: str) -> list[str]:
-    """Roles the release lets act this way here (allows minus denies)."""
+    """Roles the release lets act this way here (allows minus denies). Whoever may read a record may comment on it, so
+    for commenting the readers count too."""
     def folder_matches(rule_folder: str) -> bool:
         return folder == rule_folder or folder.startswith(rule_folder + "/")
 
+    actions = {action, "read"} if action == "comment" else {action}
     allowed, denied = [], set()
     for rule in bundle.get("permissions", []):
-        if rule["action"] != action or rule["object"] not in ("*", obj) or not folder_matches(rule["resource"].partition(":")[2]):
+        if rule["action"] not in actions or rule["object"] not in ("*", obj) or not folder_matches(rule["resource"].partition(":")[2]):
             continue
         role = rule["subject"].partition(":")[2]
         if rule["effect"] == "deny":
@@ -414,6 +416,11 @@ def why_sentence(bundle: dict | None, decision: dict, principal: str, action: st
     rule = decision.get("rule") or {}
     src = rule.get("source") or {}
     cite = link_rule(src) if (link_rule and src) else (esc(f"{src.get('frame')} line {src.get('line')}") if src else "")
+    if decision.get("allowed") and decision.get("implied") == "read" and src:
+        from ..authz import IMPLIED
+
+        where = esc(str(rule.get("resource") or "").partition(":")[2] or folder)
+        return f"Allowed: may read {where} ({cite}: “{esc(src.get('text', ''))}”); {esc(IMPLIED)}."
     if decision.get("allowed"):
         return f"Allowed by {cite}: “{esc(src.get('text', ''))}”" if src else esc(decision.get("why", "allowed"))
     bundle = bundle or {"members": {}, "permissions": []}
