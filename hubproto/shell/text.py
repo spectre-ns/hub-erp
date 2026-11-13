@@ -552,6 +552,10 @@ def track_sentence(ev: dict, link_number=None) -> str:
         recs = [x.get("record", "") for x in ev.get("links") or []]
         return (f"{'when it was ' + esc(ev.get('when')) + ', ' if ev.get('when') else ''}the hub linked it to what its work produced: "
                 + ", ".join(link(r) for r in recs))
+    if t == "record.produced_not_linked":
+        recs = [x.get("record", "") for x in ev.get("not_linked") or []]
+        return (f"{'when it was ' + esc(ev.get('when')) + ', ' if ev.get('when') else ''}the hub could not link it to what its work produced"
+                + (": " + ", ".join(link(r) for r in recs) if recs else "") + f". {esc(ev.get('reason', ''))}")
     return esc(t.replace(".", " ").replace("_", " "))
 
 

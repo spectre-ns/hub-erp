@@ -717,7 +717,10 @@ the task; its comments, messages, reviews and links are not counted. When you co
 (TASK-*n*, NCR-*n*, DOC-*n*, separated by spaces or commas), and the hub links each one you may read, refusing a number
 that does not exist or that you cannot read. A task handed back is linked to what was produced so far. The links are
 made by the hub, recorded on the task's Track and in its history ("the hub linked it to what its work produced: ..."), never twice, and show on the task
-under **Links** as "produces" and on each record as "produced-by" (hubproto/runner.py, `_link_produced`).
+under **Links** as "produces" and on each record as "produced-by" (hubproto/runner.py, `_link_produced`). A record that
+cannot be linked never stops the completion: the task is still completed or handed back, and its history says which
+records the hub could not link and why ("the hub could not link it to what its work produced: ..."). The hub refuses a
+change order that would leave the sentence in force without the "produces" relation in the link vocabulary.
 
 ## 3.16 Design control and requirements
 

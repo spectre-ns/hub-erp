@@ -314,6 +314,15 @@ def _shipped(hub, doc: str) -> dict:
     return data
 
 
+def _linking_processes(hub) -> list[str]:
+    """The processes in force that say "Completing the <item> links it to what its work produced." (they link with produces)."""
+    try:
+        procs = (hub.current_bundle() or {}).get("processes") or {}
+    except Exception:  # no release in force yet
+        return []
+    return sorted(n for n, p in procs.items() if isinstance(p, dict) and p.get("links_produced"))
+
+
 def _events_with(hub, pattern: str, type_: str | None = None) -> int:
     sql = "SELECT COUNT(*) FROM events WHERE data LIKE ?" + (" AND type = ?" if type_ else "")
     args = (pattern,) + ((type_,) if type_ else ())
@@ -353,6 +362,9 @@ def check_one(hub, docs: dict[str, dict], c: dict, types: dict | None = None) ->
         n = _events_with(hub, f'%"rel": "{key}"%', "record.linked")
         if n:
             errors.append(f"{key} is never removed: {n} link(s) between records use it")
+        elif key == "produces" and _linking_processes(hub):
+            errors.append(f"produces is never removed while a process in force links its item to what its work produced "
+                          f"({', '.join(_linking_processes(hub))})")
         elif key in _shipped(hub, doc):
             errors.append(f"{key} is never removed: the hub's own steps link records with it")
     else:

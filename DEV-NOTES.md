@@ -312,6 +312,10 @@ write tool records on its agent-run event the records the cog wrote events on du
 `Runner.cog_products` reads the cog's assigned runs (`q<task id>`) on the item. A person names what their work
 produced when they complete the item (`decide(produced=...)`, the card's "What your work produced" field,
 `hubproto decide --produced`); each must exist and be readable by them (`record.produced_named`). No model is involved.
+Linking never stops the completion or hand-back: each record is linked on its own, and one that cannot be (the link
+vocabulary in force has no `produces`) is recorded as `record.produced_not_linked` with why, shown in the item's history.
+The consistency guard refuses a release whose processes link with `produces` while the link vocabulary (in force, with
+what the change order carries) lacks it, and `produces` is never removed while a process in force links with it.
 
 **Cogs** (change control v2, section 7). A cog's profile is its identity; its persona (shared) says how it behaves;
 the bundle's `cogs[name]` is the merged view (`about`, `model`, `persona`, the persona's fields, the composed `prompt`).

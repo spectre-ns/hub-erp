@@ -883,28 +883,55 @@ class Runner:
         record its work created or changed, as far as it went (``when``: "completed" or "handed back"). The work is what
         the cogs assigned to it wrote (``cog_products``) and the records the people who completed it named
         (``decide(produced=...)``). Never the item itself, never evidence (reviews, test evidence); a record linked
-        already is not linked again. The hub links them (no model), and the Track says what it linked and why."""
+        already is not linked again. The hub links them (no model), and the Track says what it linked and why.
+
+        Linking never stops the completion or the hand-back it follows (PR #93 review): each record is linked on its own,
+        and one that cannot be linked (the link vocabulary in force has no ``produces``, say) is left out, carried on
+        past, and recorded on the Track as ``record.produced_not_linked`` with why, in words; the item's history shows it."""
         if not state.get("record") or not self.links_produced(state):
             return []
         item = self.kernel.get(state["record"])
         if item is None:
             return []
         have = {l["target"] for l in item.get("links") or [] if l["rel"] == "produces"}
-        found = self.cog_products(item["locator"]) + [(p["record"], p["by"]) for p in state.get("produced") or []]
+        try:
+            found = self.cog_products(item["locator"])
+        except Exception as e:  # what the cogs wrote cannot be read: what the people named is still linked
+            found = []
+            track.append({"type": "record.produced_not_linked", "run_id": state["id"], "record": item["locator"], "by": "hub",
+                          "when": when, "not_linked": [], "reason": f"what the cogs' work on it produced could not be read ({e})"})
+        found += [(p["record"], p["by"]) for p in state.get("produced") or []]
         linked: list[dict] = []
+        missed: list[dict] = []
         for ref, who in found:
             rec = self.kernel.get(ref)
             if rec is None or rec["locator"] == item["locator"] or rec["locator"] in have:
                 continue
             if rec["type"] == "document" and (rec.get("fields") or {}).get("doc_class") == "evidence":
                 continue
-            self.kernel.link(item["locator"], "produces", rec["locator"], by="hub", run_id=state["id"], release=state["release"])
+            try:
+                self.kernel.link(item["locator"], "produces", rec["locator"], by="hub", run_id=state["id"], release=state["release"])
+            except Exception as e:  # never the completion's undoing: say what was not linked, and why
+                if rec["locator"] not in {m["record"] for m in missed}:
+                    missed.append({"record": rec["locator"], "number": rec["number"], "by": who, "why": self._why_not_linked(e)})
+                continue
             have.add(rec["locator"])
             linked.append({"record": rec["locator"], "number": rec["number"], "by": who})
         if linked:
             track.append({"type": "record.produced_linked", "run_id": state["id"], "record": item["locator"], "by": "hub",
                           "when": when, "links": linked})
+        if missed:
+            reasons = list(dict.fromkeys(m["why"] for m in missed))
+            track.append({"type": "record.produced_not_linked", "run_id": state["id"], "record": item["locator"], "by": "hub",
+                          "when": when, "not_linked": missed, "reason": "; ".join(reasons)})
         return [x["record"] for x in linked]
+
+    @staticmethod
+    def _why_not_linked(e: Exception) -> str:
+        if isinstance(e, KernelGuardError) and e.guard == "link-vocabulary":
+            return ("the link vocabulary in force has no produces relation; a policy owner adds it (produces, inverse "
+                    "produced-by) on a change order, then links these records on the item")
+        return str(getattr(e, "detail", "") or e) or type(e).__name__
 
     def _named_products(self, state: dict, bundle: dict, by: str, refs: list[str]) -> list[dict]:
         """The records a person names as what their work on the item produced, checked: the process links them, each

@@ -190,3 +190,82 @@ def test_the_task_page_shows_what_it_produced_and_the_card_asks_for_it(released,
     finally:
         server.shutdown()
         server.server_close()
+
+
+# ---------------------------------------------------------------- a vocabulary without produces (PR #93 review)
+def without_produces(hub) -> None:
+    """The link vocabulary in force has no produces relation (a hub whose kept vocabulary predates it)."""
+    hub.kernel.config_hook = None
+    hub.kernel.link_vocab = {k: v for k, v in hub.kernel.link_vocab.items() if k != "produces"}
+
+
+def test_a_completion_finishes_and_says_what_it_could_not_link_when_the_vocabulary_lacks_produces(released):
+    from hubproto.shell.text import track_sentence
+
+    hub = released
+    run_id = hub.runner.submit("task", {"record": {"title": "Write the torque procedure", "assignee": "bob"}}, owner="carol")
+    task = hub.runner.load(run_id)["record"]
+    doc = hub.dms.create(title="Torque procedure", doc_class="working", folder="Quality/Working Documents", by="bob")
+    without_produces(hub)
+    s = hub.runner.decide(run_id, "bob", "approve", meaning="wrote the procedure", payload_digest=seen(hub.runner, run_id),
+                          produced=[doc["number"]])
+    assert s["status"] == "completed", "the run finishes: linking never stops a completion"
+    assert hub.kernel.get(task)["state"] == "done" and produced(hub, task) == []
+    track = hub.runner.track(run_id)
+    assert [e["type"] for e in track][-1] == "run.completed"
+    [ev] = [e for e in track if e["type"] == "record.produced_not_linked"]
+    assert ev["when"] == "completed" and [x["number"] for x in ev["not_linked"]] == [doc["number"]]
+    assert "no produces relation" in ev["reason"] and ev["not_linked"][0]["by"] == "bob"
+    assert not [e for e in track if e["type"] == "record.produced_linked"]
+    # The task's history says it, in words.
+    text = track_sentence(ev)
+    assert "could not link it to what its work produced" in text and doc["number"] in text and "no produces relation" in text
+
+
+def test_a_hand_back_goes_through_and_says_what_it_could_not_link_when_the_vocabulary_lacks_produces(released, monkeypatch):
+    hub = released
+    without_produces(hub)
+    monkeypatch.setattr(hub.model, "complete_with_tools", assigned_cog(lambda number: [
+        ("create_document", {"title": "Half a plan", "folder": "Quality/Controlled Documents", "text": "# Half a plan"}),
+        ("hand_back", {"number": number, "reason": "I need the torque specs from a person"}),
+        ("finish", {"summary": "Started the plan; handed it back."})]))
+    run_id, state = file_task(hub, "qa-manager", "carol", "Write a calibration plan")
+    assert state["status"] == "waiting" and state["pending"]["assignees"] == ["carol"], "the hand-back went through"
+    assert produced(hub, state["record"]) == []
+    [ev] = [e for e in hub.runner.track(run_id) if e["type"] == "record.produced_not_linked"]
+    assert ev["when"] == "handed back" and len(ev["not_linked"]) == 1 and "no produces relation" in ev["reason"]
+    # carol completes it: the run finishes, and the Track says again what was not linked.
+    s = hub.runner.decide(run_id, "carol", "approve", meaning="finished the plan", payload_digest=seen(hub.runner, run_id))
+    assert s["status"] == "completed" and hub.kernel.get(state["record"])["state"] == "done"
+    assert [e["when"] for e in hub.runner.track(run_id) if e["type"] == "record.produced_not_linked"] == ["handed back", "completed"]
+
+
+def test_a_release_that_links_with_produces_needs_produces_in_the_link_vocabulary(released):
+    from hubproto import configdocs
+    from hubproto.eco import carried_record_types
+    from hubproto.guards import consistency_guard
+
+    hub = released
+    rules = hub.releases.rules(hub.releases.current()["digest"])
+    vocab = {k: v for k, v in hub.kernel.link_vocab.items() if k != "produces"}
+    found = [f for f in consistency_guard(rules, hub.registry.ids(), hub.kernel.types, vocab) if f.severity == "error"]
+    assert [f.rule_key for f in found] == [rule_key(the_task_process(rules))], [f.detail for f in found]
+    assert "the link vocabulary has no produces relation" in found[0].detail
+    assert not [f for f in consistency_guard(rules, hub.registry.ids(), hub.kernel.types, hub.kernel.link_vocab)
+                if "produces" in f.detail], "with produces in the vocabulary, nothing to say"
+    # A compile against a vocabulary without it is refused: the finding blocks.
+    without_produces(hub)
+    p = hub.compile()
+    assert any(f["severity"] == "error" and "no produces relation" in f["detail"] for f in p["findings"])
+    # A change order that carries produces with the sentence compiles against the vocabulary it carries.
+    co = {"fields": {"config_changes": [{"id": "cfg-1", "doc": "links", "op": "set", "key": "produces", "value": "produced-by"}]}}
+    with carried_record_types(hub, co):
+        assert hub.kernel.link_vocab.get("produces") == "produced-by"
+        p = hub.compile()
+        assert not [f for f in p["findings"] if "produces" in f["detail"]]
+    assert "produces" not in hub.kernel.link_vocab, "restored afterwards"
+    # And the other way: produces is never removed while a process in force links with it.
+    hub.kernel.link_vocab = {**hub.kernel.link_vocab, "produces": "produced-by"}
+    _, errors, _ = configdocs.check(hub, [{"id": "cfg-2", "doc": "links", "op": "remove", "key": "produces"}],
+                                    base={"links": dict(hub.kernel.link_vocab), "retention": dict(hub.kernel.retention)})
+    assert any("while a process in force links its item to what its work produced (task)" in e for e in errors), errors
