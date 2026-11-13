@@ -198,8 +198,11 @@ def test_the_gateway_uses_ollama_when_configured(monkeypatch):
         from hubproto.model import ModelUnavailable
 
         monkeypatch.delenv("HUBPROTO_ALLOW_STAND_IN", raising=False)
+        monkeypatch.setenv("HUBPROTO_HOSTED_MODELS", "on")  # hosted models on, and no key: that is what it needs
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         with pytest.raises(ModelUnavailable, match="needs an Anthropic key"):
             g.complete(model="claude-sonnet-5-5", system="s", user="u")
+        monkeypatch.delenv("HUBPROTO_HOSTED_MODELS", raising=False)
         monkeypatch.setenv("HUBPROTO_ALLOW_STAND_IN", "1")
         # A model that does not answer never blocks the work.
         monkeypatch.setenv("HUBPROTO_OLLAMA_URL", "http://127.0.0.1:9")

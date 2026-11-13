@@ -91,7 +91,23 @@ def test_each_cogs_current_model_is_shown(released, ollama):
     ap = cogs["ap-reviewer"]
     assert ap["model"] == profiles["ap-reviewer"]["model"] == "ollama/gemma4:12b-it-qat" and ap["available"] and ap["runs"] == "local", ap
     senior = next(c for n, c in cogs.items() if profiles[n]["model"].startswith("claude"))
-    assert senior["available"] is False and "Anthropic key" in senior["note"], senior
+    assert senior["available"] is False and "hosted models are switched off here" in senior["note"], senior
+
+
+def test_a_claude_cog_with_hosted_models_off_is_told_that_not_a_missing_key(released, ollama, monkeypatch):
+    """Review of #81: with a key set and hosted models off, the reason is the switch, never the key."""
+    monkeypatch.delenv("HUBPROTO_HOSTED_MODELS", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    cogs = {c["cog"]: c for c in tools(released).execute("list_models", {})["cogs"]}
+    senior = next(c for c in cogs.values() if c["model"].startswith("claude"))
+    assert "hosted models are switched off here" in senior["note"] and "key" not in senior["note"].lower(), senior
+
+
+def test_an_ollama_address_is_never_shown_with_its_credentials():
+    from hubproto.model import safe_url
+
+    assert safe_url("http://user:s3cret@ollama.internal:11434/base?token=x") == "http://ollama.internal:11434/base"
+    assert safe_url("http://localhost:11434") == "http://localhost:11434"
 
 
 def test_the_tool_only_reads(released, ollama):

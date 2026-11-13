@@ -529,6 +529,19 @@ def prompt_budget_chars(model: str, max_tokens: int = 1200) -> int:
     return int(max(4096, num_ctx_for(model) - max_tokens - 1024) * 3.2)
 
 
+def safe_url(url: str) -> str:
+    """A server's address as it may be shown, logged or sent to a model: without the user and password it may carry."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    try:
+        parts = urlsplit(url or "")
+    except ValueError:
+        return "the configured address"
+    host = parts.hostname or ""
+    netloc = host + (f":{parts.port}" if parts.port else "") if "@" in (parts.netloc or "") else parts.netloc
+    return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+
+
 def ollama_models(refresh: bool = False) -> tuple[list[dict], str]:
     """The models installed in Ollama (cached for a minute): [{name, params, family, quant, size_gb, cloud}], and an error.
     ``cloud``: the model runs on Ollama's servers, not this machine (``ollama_cloud``)."""
@@ -546,7 +559,7 @@ def ollama_models(refresh: bool = False) -> tuple[list[dict], str]:
                   for m in data.get("models") or []]
         _TAGS.update(at=_clock(), models=sorted(models, key=lambda m: m["name"]), error="")
     except Exception as e:
-        _TAGS.update(at=_clock(), models=[], error=f"Ollama at {url} did not answer: {e}")
+        _TAGS.update(at=_clock(), models=[], error=f"Ollama at {safe_url(url)} did not answer: {e}")
     return _TAGS["models"], _TAGS["error"]
 
 
@@ -603,7 +616,9 @@ def resolve_model(model: str, refresh: bool = False) -> dict:
     if not model or model == DEFAULT_MODEL:
         why = "the profile names no model"
     elif model.startswith("claude"):
-        why, away = f"{model} needs an Anthropic key (ANTHROPIC_API_KEY)", True
+        why = (f"{model} needs an Anthropic key (ANTHROPIC_API_KEY)" if hosted_allowed() else
+               f"{model} is a hosted model, and hosted models are switched off here (HUBPROTO_HOSTED_MODELS)")
+        away = True
     elif cloud_refused(model):
         why, away = cloud_refused(model), True
     else:
@@ -623,7 +638,8 @@ def installed_models(bundle: dict | None = None, refresh: bool = False) -> dict:
     av = available_models(refresh)
     hosted = hosted_allowed()
     ollama = []
-    for m in av["ollama"]:
+    MAX_LISTED = 60  # a tool result and a review brief stay whole: the rest is counted, never cut mid-row
+    for m in av["ollama"][:MAX_LISTED]:
         name, cloud = f"ollama/{m['name']}", bool(m.get("cloud"))
         row = {"model": name, "params": m.get("params") or "", "family": m.get("family") or "", "quantization": m.get("quant") or ""}
         if not cloud:
@@ -634,6 +650,8 @@ def installed_models(bundle: dict | None = None, refresh: bool = False) -> dict:
             row["note"] = "not available while hosted models are off (HUBPROTO_HOSTED_MODELS)"
         ollama.append(row)
     out = {"hosted_models": "on" if hosted else "off", "ollama": ollama}
+    if len(av["ollama"]) > MAX_LISTED:
+        out["ollama_more"] = f"{len(av['ollama']) - MAX_LISTED} more installed models are not listed"
     if av["ollama_error"]:
         out["ollama_error"] = av["ollama_error"]
     if hosted:
