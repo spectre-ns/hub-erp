@@ -2043,8 +2043,12 @@ def cog_review(hub, co_ref, n: int, cog: str) -> dict:
         from .agent import close_site, site_tools, tool_turn
 
         # It may look things up, and act where its procedures let it, before it answers; but a reviewer never changes
-        # what it reviews: no write may name the change order, a draft it carries or a document it retires.
+        # what it reviews: no write may name the change order, a draft it carries or a document it retires. It works
+        # for the person who asked for the round (both_may: only what both may do); with no person, it only looks.
+        asked = rnd.get("requested_by") or ""
+        person = asked if ((_bundle(hub).get("members") or {}).get(asked) or {}).get("type") == "person" else ""
         site = site_tools(hub, cog, trigger="co-review", goal=f"Review round {n} of {co['number']}", about=co["locator"],
+                          requester=person, look_only="" if person else "no person asked for this review round, so it only looks",
                           protect=tuple(reviewed_refs(hub, co)),
                           protect_why=f"you are reviewing {co['number']}: a reviewer never changes the change order, what it carries or what it retires")
         try:
@@ -2091,9 +2095,11 @@ def cog_review(hub, co_ref, n: int, cog: str) -> dict:
 
 
 def reviewed_refs(hub, co: dict) -> list[str]:
-    """What a reviewer of the change order may not change in its tool run: the change order, the drafts it carries (and
-    the SOP names), and the documents it retires."""
+    """What a reviewer of the change order may not change in its tool run: the change order, the documents attached to
+    it (its test evidence), the drafts it carries (and the SOP names), and the documents it retires."""
     out = [co["locator"], co["number"]]
+    for d in (hub.dms.documents_of(co["locator"]) if hasattr(hub.dms, "documents_of") else []):
+        out += [d.get("locator") or "", d.get("number") or ""]
     for c in eco.carried(hub, co):
         out += [c["draft"]["locator"], c["draft"]["number"], c["name"] or ""]
         if c.get("in_force"):

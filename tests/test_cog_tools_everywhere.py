@@ -11,7 +11,7 @@ import pytest
 
 from conftest import ROOT, release_all
 from hubproto import automation, changecontrol as cc, eco, llm_extract, mentions, prose_drafting, sopdocs, wopi
-from hubproto.agent import AgentStore
+from hubproto.agent import AgentStore, AgentTools
 from hubproto.app import Hub
 from test_eco import write
 
@@ -260,3 +260,164 @@ def test_the_automation_model_steps_get_no_tools(monkeypatch):
             raise AssertionError("the classifier was offered tools")
 
     assert mentions.intent_of("What do you make of the scope?", model=NoTools(), model_name="x") == "message" and NoTools.calls
+
+
+# ---------------------------------------------------------------- review findings on PR #97
+def test_a_protected_record_cannot_be_written_under_another_spelling(released):
+    """The tools find a number in upper case ("TAſK-0001" is TASK-0001 there): the protection is checked on the record
+    the lookup resolves, whatever spelling named it."""
+    hub = released
+    task = hub.kernel.create("task", "Tasks", {"title": "Review me"}, by="carol")
+    t = AgentTools(hub, "quality-assistant", "spell", "derived", 9, AgentStore(hub.root / "state" / "agents"), requester="carol", goal="g")
+    t.protect([task["locator"], task["number"]], "you are reviewing it")
+    for spelling in (task["number"], task["number"].replace("S", "ſ"), task["number"].lower(), f"  {task['number'].swapcase()}\t"):
+        res = t.execute("comment", {"number": spelling, "text": "changed while reviewing"})
+        assert res.get("error") == "you are reviewing it", (spelling, res)
+    assert hub.inbox.on_record(task["locator"]) == [], "no spelling got a comment onto the protected record"
+
+
+def test_the_record_a_write_resolves_is_checked_even_when_its_words_are_not(released, monkeypatch):
+    """The second line: whatever the arguments say, a write whose tool resolves a protected record is refused."""
+    hub = released
+    task = hub.kernel.create("task", "Tasks", {"title": "Review me"}, by="carol")
+    other = hub.kernel.create("task", "Tasks", {"title": "Another"}, by="carol")
+    t = AgentTools(hub, "quality-assistant", "resolve", "derived", 9, AgentStore(hub.root / "state" / "agents"), requester="carol", goal="g")
+    t.protect([task["locator"]], "you are reviewing it")
+    real = AgentTools._find
+    monkeypatch.setattr(AgentTools, "_find", lambda self, n: real(self, task["number"] if n == "ALIAS" else n))
+    assert t.execute("comment", {"number": "ALIAS", "text": "x"}).get("error") == "you are reviewing it"
+    assert t.execute("comment", {"number": other["number"], "text": "fine"}).get("ok"), "another record is not protected"
+    assert hub.inbox.on_record(task["locator"]) == []
+
+
+def test_a_change_order_reviewer_works_for_the_person_who_asked_for_the_round(cc_hub, monkeypatch):
+    hub = cc_hub
+    co, _ = a_change_order(hub)
+    seen = {}
+    scripted("qa-manager", [], "- [advisory] general: fine", seen)(hub, monkeypatch)
+    cc.request_review(hub, co["number"], "alice", panel=["qa-manager"])
+    assert "comment" in seen["offered"]
+    sites = []
+    import hubproto.agent as agent_mod
+    real_site = agent_mod.site_tools
+    monkeypatch.setattr(agent_mod, "site_tools", lambda *a, **k: sites.append(k) or real_site(*a, **k))
+    co = hub.kernel.get(co["locator"])
+    n = cc.current_round(co)["n"]
+    cc._record_result(hub, co, n, "qa-manager", {"status": "pending"})
+    cc.cog_review(hub, co["number"], n, "qa-manager")
+    assert sites[-1]["requester"] == "alice" and not sites[-1]["look_only"], "both_may applies: it works for alice"
+
+    # A round no person asked for: the reviewer only looks.
+    def by_hub(r):
+        r["requested_by"] = "hub"
+    cc._update_round(hub, hub.kernel.get(co["locator"]), n, by_hub)
+    cc._record_result(hub, co["number"], n, "qa-manager", {"status": "pending"})
+    seen.clear()
+    cc.cog_review(hub, co["number"], n, "qa-manager")
+    assert sites[-1]["requester"] == "" and "no person asked" in sites[-1]["look_only"]
+    assert "comment" not in seen["offered"] and "get_record" in seen["offered"], "no person: look tools only"
+
+
+def test_a_change_order_reviewer_may_not_change_the_evidence_attached_to_it(cc_hub, monkeypatch):
+    from hubproto import validation
+
+    hub = cc_hub
+    co, _ = a_change_order(hub)
+    ev = validation.attach_evidence(hub, co["number"], by="alice", filename="t.txt", content=b"FAILED", result="fail", text="it failed")
+    assert ev["number"] in cc.reviewed_refs(hub, hub.kernel.get(co["locator"]))
+    seen = {}
+    scripted("qa-manager", [("update_fields", {"number": ev["number"], "fields": {"result": "pass"}}),
+                            ("comment", {"number": ev["number"], "text": "x"})], "- [advisory] general: fine", seen)(hub, monkeypatch)
+    cc.request_review(hub, co["number"], "alice", panel=["qa-manager"])
+    for tool, res in seen["results"]:
+        assert "a reviewer never changes" in res.get("error", ""), (tool, res)
+
+
+def test_a_change_order_reviewer_may_not_hand_work_to_anyone_while_it_reviews(cc_hub, monkeypatch):
+    hub = cc_hub
+    co, draft = a_change_order(hub)
+    seen = {}
+    scripted("qa-manager", [("delegate_to_cog", {"cog": "quality-assistant", "goal": f"Replace 'quality manager' with 'reviewer' in {draft['number']}."}),
+                            ("create_task", {"title": f"Edit {draft['number']}", "assignee": "quality-assistant"})],
+             "- [advisory] general: fine", seen)(hub, monkeypatch)
+    cc.request_review(hub, co["number"], "alice", panel=["qa-manager"])
+    for tool, res in seen["results"]:
+        assert "may not hand work to anyone" in res.get("error", ""), (tool, res)
+    assert not [t for t in hub.queue.list(cog="quality-assistant") if "Replace" in (t.get("title") or "")]
+    assert not hub.kernel.query(type_="task")
+
+
+def test_a_reply_whose_model_fails_after_a_tool_call_closes_its_run(released, monkeypatch):
+    from hubproto.model import ModelUnavailable
+
+    hub = released
+    ncr = hub.kernel.create("ncr", "Quality/Nonconformances", {"title": "Bent pins"}, by="carol")
+    task = hub.kernel.create("task", "Tasks", {"title": "t"}, by="carol")
+
+    def fails(**kw):
+        if kw.get("by") != "quality-assistant":
+            return {"text": "", "stand_in": True, "model": "stand-in", "tool_calls": []}
+        kw["call_tool"]("get_record", {"number": ncr["number"]})
+        raise ModelUnavailable("the server went away")
+
+    monkeypatch.setattr(hub.model, "complete_with_tools", fails)
+    try:
+        hub.send("carol", "quality-assistant", "Q", f"@quality-assistant what about {ncr['number']}?", record=task["locator"])
+    except Exception:
+        pass  # how the reply site answers a failed model is unchanged; its tool run must not stay open
+    [run], store = runs_of(hub, "quality-assistant", "answer")
+    end = store.load(run["run"])[-1]
+    assert end["type"] == "finished" and end["status"] == "unavailable" and "went away" in end["error"], end
+
+
+def test_an_edit_whose_model_errors_after_proposing_closes_its_run_as_proposed(released, monkeypatch):
+    from hubproto.agent import close_site, site_tools, tool_turn
+
+    hub = released
+    doc = a_document(hub)
+    site = site_tools(hub, "quality-assistant", trigger="edit", goal="g", requester="carol")
+    site["tools"].proposed.append({"tool": "comment", "arguments": {}, "confirmer": "person"})
+
+    def boom(**kw):
+        kw["call_tool"]("get_record", {"number": doc["number"]})
+        raise RuntimeError("bad answer")
+
+    monkeypatch.setattr(hub.model, "complete_with_tools", boom)
+    with pytest.raises(RuntimeError):
+        tool_turn(hub.model, site, model="x", system="s", user="u", by="quality-assistant", max_tokens=10)
+    end = site["store"].load(site["run"])[-1]
+    assert end["type"] == "finished" and end["status"] == "proposed" and "RuntimeError: bad answer" in end["error"], end
+    assert close_site(site, {"text": "late"}) == "", "a run is closed once"
+
+
+def test_a_long_prompt_is_trimmed_in_its_middle_and_the_tools_count(monkeypatch):
+    import io
+    import json
+    import urllib.error
+
+    from hubproto import model as model_mod
+
+    head, tail = "WHO YOU ARE: the head " + "h" * 500, "OUTPUT FORMAT and the rule about untrusted text " + "t" * 500
+    system = head + "m" * 20000 + tail
+    cut = model_mod.fit_prompt(system, 4000)
+    assert cut.startswith(head) and cut.endswith(tail) and "context trimmed" in cut and len(cut) <= 4000 + 10
+
+    monkeypatch.setenv("HUBPROTO_MODEL_MAX_CHARS", "12000")
+    monkeypatch.delenv("HUBPROTO_MODEL_THINK", raising=False)
+    monkeypatch.setattr(model_mod, "ollama_url", lambda: "http://ollama.invalid")
+    tools = [{"name": f"tool{i}", "description": "d" * 400, "parameters": {"type": "object", "properties": {}}} for i in range(10)]
+    sent = []
+
+    def fetch(req, timeout):
+        body = json.loads(req.data)
+        sent.append(body)
+        if "think" in body:
+            raise urllib.error.HTTPError(req.full_url, 400, "bad", {}, io.BytesIO(b'{"error": "model does not support think"}'))
+        return {"message": {"content": "the answer"}}
+
+    monkeypatch.setattr(model_mod, "_fetch_json", fetch)
+    text, _ = model_mod.ModelGateway._ollama_tools(None, "ollama/x", system, "the question", None, tools, lambda n, a: {}, 100, 2, str)
+    assert text == "the answer" and "think" in sent[0] and "think" not in sent[1], "a model that refuses the flag is asked again without it"
+    sys_sent = sent[1]["messages"][0]["content"]
+    assert sys_sent.startswith(head) and sys_sent.endswith(tail), "the head and the tail are never cut"
+    assert len(sys_sent) + len("the question") + len(json.dumps(sent[1]["tools"])) <= 12000, "the tool definitions count"

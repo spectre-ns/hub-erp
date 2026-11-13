@@ -539,6 +539,21 @@ def prompt_budget_chars(model: str, max_tokens: int = 1200) -> int:
     return int(max(4096, num_ctx_for(model) - max_tokens - 1024) * 3.2)
 
 
+TRIMMED = "\n[... context trimmed to fit the model's window ...]\n"
+
+
+def fit_prompt(system: str, room: int) -> str:
+    """The system prompt cut to about ``room`` characters from its middle (the reference and context sections): its
+    head (who the cog is, its authority) and its tail (the output format, the closing rule about untrusted text) are
+    never cut. At least 2,000 characters are kept."""
+    room = max(room, 2000)
+    if len(system) <= room:
+        return system
+    tail = max(room * 2 // 5, min(4000, room // 2))
+    head = max(room - tail - len(TRIMMED), 0)
+    return system[:head] + TRIMMED + system[len(system) - tail:]
+
+
 def safe_url(url: str) -> str:
     """A server's address as it may be shown, logged or sent to a model: without the user and password it may carry."""
     from urllib.parse import urlsplit, urlunsplit
@@ -790,8 +805,7 @@ class ModelGateway:
         name = served_name(model)
         ceiling = prompt_budget_chars(model, max_tokens)  # what fits in the model's window with room to answer
         if len(system) + len(user) > ceiling:
-            keep = max(ceiling - len(user) - 200, 2000)
-            system = system[:keep] + "\n[... context trimmed to fit the model's window]"
+            system = fit_prompt(system, ceiling - len(user) - 200)
         payload = {"model": name, "stream": False,
                    "options": {"num_predict": max_tokens, "num_ctx": num_ctx_for(model)},
                    "messages": [{"role": "system", "content": system}]
@@ -872,13 +886,14 @@ class ModelGateway:
 
     def _ollama_tools(self, model, system, user, history, tools, run, max_tokens, max_rounds, as_text):
         name = served_name(model)
-        ceiling = prompt_budget_chars(model, max_tokens)  # as _ollama: what fits in the model's window with room to answer
+        fns = [{"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["parameters"]}} for t in tools]
+        # As _ollama: what fits in the model's window with room to answer; the tool definitions take their share of it.
+        ceiling = prompt_budget_chars(model, max_tokens) - len(json.dumps(fns))
         if len(system) + len(user) > ceiling:
-            system = system[:max(ceiling - len(user) - 200, 2000)] + "\n[... context trimmed to fit the model's window]"
+            system = fit_prompt(system, ceiling - len(user) - 200)
         think = not os.environ.get("HUBPROTO_MODEL_THINK")
         msgs = [{"role": "system", "content": system}] + [{"role": t["role"], "content": t["content"]} for t in (history or []) if t.get("content")] \
             + [{"role": "user", "content": user}]
-        fns = [{"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["parameters"]}} for t in tools]
         usage = {"prompt_tokens": 0, "output_tokens": 0, "served_model": name}
         for round_ in range(max_rounds + 1):
             payload = {"model": name, "stream": False, "messages": msgs, "tools": fns if round_ < max_rounds else [],

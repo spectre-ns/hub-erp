@@ -204,11 +204,15 @@ recorded as an agent run (6.8) with every call on it; one that calls none is ans
 hub, not the model, adds to the reply what it refused ("Not done (the hub refused): ...") and how many actions wait
 for confirmation, with the link to the run (hubproto/agent.py, `site_tools`, `tool_turn`, `close_site`).
 
-* **A reviewer never changes what it reviews.** Reviewing an item, no write may name the item or its documents.
-  Reviewing a change order, no write may name the change order, the drafts it carries, their SOPs or the documents it
-  retires; and a cog that has become a contributor to the change order by the end of its review (any other way) is
-  not counted: its result says so, and it is excluded like any contributor (chapter 7.9; hubproto/changecontrol.py,
-  `cog_review`, `reviewed_refs`).
+* **A reviewer never changes what it reviews.** Reviewing an item, no write may reach the item or its documents.
+  Reviewing a change order, no write may reach the change order, the documents attached to it (its test evidence), the
+  drafts it carries, their SOPs or the documents it retires. The hub checks the record each tool actually finds, so
+  no other spelling of a number gets round it. While it reviews, a cog may not hand work to anyone either (a task,
+  another cog's queue, an assignment, a process): it says in its answer who should do what. A cog that has become a
+  contributor to the change order by the end of its review (any other way) is not counted: its result says so, and it
+  is excluded like any contributor (chapter 7.9; hubproto/changecontrol.py, `cog_review`, `reviewed_refs`).
+* **A change-order reviewer works for the person who asked for the round**: only what both may do. A round no person
+  asked for gets a reviewer that only looks.
 * **An edit is its operations.** The edit task may look things up first, but the document is changed only by the
   operations it returns, written as the person asking (chapter 5.7); a tool may not write to that document.
 * **A review for a decision only looks.** A judgment for an approval (6.6) or an adversarial lens has look tools
@@ -216,6 +220,8 @@ for confirmation, with the link to the run (hubproto/agent.py, `site_tools`, `to
 * **The hub's own model steps have no tools**: reading the SOP changes (Compile the Frame), drafting prose for direct
   changes, suggesting the panel, sending related changes back, and classifying what a mention asks. They answer in
   their own format, and the hub checks what they say (chapter 7).
+* If the model fails part way, the reply's run is closed with the reason (its proposals can still be confirmed),
+  and the reply answers the failure as before.
 * A model that Ollama says cannot call tools answers without them, as before; so does a tool run's own review or edit
   (a `review_document` or `edit_document` the cog called), which never opens a second tool loop.
 
