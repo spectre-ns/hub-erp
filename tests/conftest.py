@@ -67,6 +67,18 @@ def released(hub) -> Hub:
     return hub
 
 
+@pytest.fixture
+def evidence_required(monkeypatch):
+    """An IT SOP that asks for evidence: high-risk changes need a test record, medium-risk ones a test note. The example
+    company's IT SOP asks only for the review of the delta, so a test of the evidence rules states the stricter needs."""
+    from hubproto import validation
+
+    real = validation.policy
+    strict = {"high": "test-record", "medium": "test-note", "low": "review"}
+    monkeypatch.setattr(validation, "policy", lambda hub=None, bundle=None: {**real(hub, bundle), "needs": dict(strict)})
+    return strict
+
+
 def edit_frame(hub: Hub, name: str, old: str, new: str, bump: str | None = None) -> None:
     frame = hub.frames.get(name)
     text = frame.path.read_text()

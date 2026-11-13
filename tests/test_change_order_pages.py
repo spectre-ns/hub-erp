@@ -524,7 +524,7 @@ def _post_file(shell, path, fields, files):
         return e.code, e.url, e.read().decode("utf-8")
 
 
-def test_a_test_report_is_attached_as_validation_evidence_from_the_page(shell):
+def test_a_test_report_is_attached_as_validation_evidence_from_the_page(shell, evidence_required):
     """The Validation section takes a test report as a file: filed as a test-evidence document on the change order, it
     counts as a test record, so the change order can be signed without typing a record."""
     from hubproto import validation

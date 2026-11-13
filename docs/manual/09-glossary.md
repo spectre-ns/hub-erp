@@ -338,8 +338,9 @@ delta item "suggested by a reviewer" (chapter 7.9).
 **Supplier part.** What can be ordered from one supplier for a part (SP-*n*): SKU, pack quantity, price breaks, lead
 time (chapter 4.2).
 
-**Test evidence.** What the IT SOP's validation needs before a change order is approved: a test record (scripted
-check, expected and actual result) for a high-risk item, a test note for a medium-risk one (chapter 7.16).
+**Test evidence.** What the IT SOP's validation may ask for before a change order is approved: a test record (scripted
+check, expected and actual result) or a test note. The example company's IT SOP asks only for the review of the delta;
+a failed test still stops a change order (chapter 7.16).
 
 **Track.** The append-only, chained record of every step of a run (chapter 2.10).
 
